@@ -14,7 +14,11 @@ const MONTHS = ["Jan","Fév","Mar","Avr","Mai","Juin","Juil","Août","Sep","Oct"
 const MONTHS_L = ["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
 
 const CSS = `@import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;600;700&display=swap');
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;min-height:100%;height:100%}
 body,input,select,textarea,button,pre,code{font-family:'Open Sans',system-ui,-apple-system,'Segoe UI',sans-serif}
+body{background:#edf2f7;color:#0f172a;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;}
+button,select,textarea{font:inherit;color:inherit}
 ::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-thumb{background:#cbd5dd;border-radius:5px}
 ::-webkit-scrollbar-track{background:transparent}
 .f8{font-size:8px}.f9{font-size:9px}.f95{font-size:9.5px}.f10{font-size:10px}.f105{font-size:10.5px}
@@ -35,10 +39,11 @@ body,input,select,textarea,button,pre,code{font-family:'Open Sans',system-ui,-ap
 .mw420{max-width:420px}.mw1520{max-width:1520px}
 .mnw52{min-width:52px}.mnw260{min-width:260px}.w38{width:38px}.w46{width:46%}.h22{height:22px}
 .top3{top:3px}.lf3{left:3px}.lf21{left:21px}.pl18{padding-left:18px}.z60{z-index:60}
-.m-input{width:100%;padding:6px 10px;font-size:13px;border:1px solid #cbd5e1;border-radius:3px;background:#fff;color:#1e293b;line-height:1.5}
+.m-input{width:100%;min-height:42px;padding:10px 12px;font-size:13px;border:1px solid #cbd5e1;border-radius:0.85rem;background:#f8fafc;color:#1e293b;line-height:1.5;transition:border-color .2s,box-shadow .2s;}
 .m-input:hover{border-color:#94a3b8}
-.m-input:focus{outline:none;border-color:#007DBC;box-shadow:0 0 0 2px rgba(0,125,188,.16)}
+.m-input:focus{outline:none;border-color:#007DBC;box-shadow:0 0 0 0.25rem rgba(0,125,188,.18)}
 .m-input[readonly]{background:#f8fafc;color:#64748b}
+.m-btn-primary,.m-btn-sec,.m-btn-ghost,.m-btn-danger{border-width:1px;border-style:solid;border-radius:0.85rem;transition:background .2s,color .2s,border-color .2s;}
 .m-btn-primary{background:#0b77c2;color:#fff;border-color:#0b77c2}
 .m-btn-primary:hover{background:#085387;border-color:#085387}
 .m-btn-sec{background:#fff;color:#0b77c2;border-color:#cbd5e1}
@@ -54,7 +59,7 @@ body,input,select,textarea,button,pre,code{font-family:'Open Sans',system-ui,-ap
 .m-cell2:hover{box-shadow:inset 0 0 0 2px #26bde2}
 .m-hatch{background:repeating-linear-gradient(45deg,#f6f8f9,#f6f8f9 3px,#eceff2 3px,#eceff2 6px)}
 .m-code{font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;font-size:12px;line-height:1.6;
-  background:#0f172a;color:#e2e8f0;border-radius:3px;padding:12px;width:100%;border:0;resize:vertical}
+  background:#0f172a;color:#e2e8f0;border-radius:0.75rem;padding:12px;width:100%;border:0;resize:vertical}
 .m-code:focus{outline:2px solid #007DBC}
 input[type=checkbox],input[type=radio]{accent-color:#007DBC;width:14px;height:14px}
 @media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important}}`;

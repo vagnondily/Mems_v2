@@ -25,8 +25,12 @@ export const config = {
   dataKey: crypto.createHash("sha256").update(requireSecret("DATA_KEY")).digest(),
   tokenTtl: process.env.TOKEN_TTL || "8h",
   cookieName: "mems_token",
-  corsOrigins: (process.env.CORS_ORIGINS || "http://localhost:5173")
-    .split(",").map(s=>s.trim()).filter(Boolean),
+  corsOrigins: (() => {
+    const defaultDev = ["http://localhost:5173", "http://127.0.0.1:5173"];
+    const envOrigins = (process.env.CORS_ORIGINS || "http://localhost:5173")
+      .split(",").map(s => s.trim()).filter(Boolean);
+    return isProd ? envOrigins : [...new Set([...envOrigins, ...defaultDev])];
+  })(),
   trustProxy: bool(process.env.TRUST_PROXY, false),
   rateLoginMax: int(process.env.RATE_LOGIN_MAX, 10),
   rateApiMax: int(process.env.RATE_API_MAX, 600),
