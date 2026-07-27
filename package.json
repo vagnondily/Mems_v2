@@ -1,0 +1,17 @@
+{
+  "name": "mems",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MEMS — Monitoring & Evaluation Management System",
+  "scripts": {
+    "install:all": "cd server && npm install && cd ../web && npm install",
+    "migrate": "cd server && npm run migrate",
+    "seed": "cd server && npm run seed",
+    "dev:server": "cd server && npm run dev",
+    "dev:web": "cd web && npm run dev",
+    "build": "cd web && npm run build",
+    "start": "cd server && npm start",
+    "test": "cd server && npm test && cd ../web && npm test"
+  },
+  "engines": { "node": ">=20" }
+}

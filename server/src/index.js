@@ -1,0 +1,111 @@
+import express from "express";
+import helmet from "helmet";
+import cors from "cors";
+import compression from "compression";
+import cookieParser from "cookie-parser";
+import rateLimit from "express-rate-limit";
+import path from "node:path";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
+import { config } from "./config.js";
+import { db, migrate, integrity } from "./db.js";
+import { log } from "./lib/logger.js";
+import { authenticate } from "./lib/auth.js";
+import authRoutes from "./routes/auth.js";
+import stateRoutes from "./routes/state.js";
+import siteRoutes from "./routes/sites.js";
+import collectionRoutes from "./routes/collections.js";
+import geoRoutes from "./routes/geo.js";
+import userRoutes from "./routes/users.js";
+import analyticsRoutes from "./routes/analytics.js";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+migrate(path.join(here, "..", "migrations"));
+
+export const app = express();
+app.disable("x-powered-by");
+if(config.trustProxy) app.set("trust proxy", 1);
+
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
+      imgSrc: ["'self'", "data:", "blob:"],
+      connectSrc: ["'self'", ...config.corsOrigins],
+      frameSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+    },
+  },
+  crossOriginEmbedderPolicy: false,
+  referrerPolicy: { policy: "same-origin" },
+}));
+app.use(compression());
+app.use(cookieParser());
+app.use(express.json({ limit: `${config.maxBodyMb}mb` }));
+app.use(cors({
+  origin(origin, cb){
+    /* Requêtes sans origine : outils en ligne de commande, sondes de santé. */
+    if(!origin || config.corsOrigins.includes(origin)) return cb(null, true);
+    return cb(new Error("origine non autorisée"));
+  },
+  credentials: true,
+}));
+
+/* Journalisation courte, sans corps de requête : aucun secret ne transite par les logs. */
+app.use((req, res, next) => {
+  const t0 = Date.now();
+  res.on("finish", () => {
+    if(req.path === "/api/health") return;
+    log.debug("requête", { m:req.method, p:req.path, s:res.statusCode, ms:Date.now()-t0 });
+  });
+  next();
+});
+
+const apiLimiter = rateLimit({ windowMs: 60_000, limit: config.rateApiMax,
+  standardHeaders: "draft-7", legacyHeaders: false,
+  message: { error:"trop de requêtes, patientez une minute" } });
+app.use("/api", apiLimiter);
+
+app.get("/api/health", (req, res) => {
+  const i = integrity();
+  res.json({ status: i.foreignKeyViolations===0 && i.integrity==="ok" ? "ok" : "dégradé",
+    version:"1.0.0", uptime: Math.round(process.uptime()), database: i });
+});
+
+app.use("/api/auth", authRoutes);
+app.use("/api", authenticate, stateRoutes);
+app.use("/api/sites", authenticate, siteRoutes);
+app.use("/api/geo", authenticate, geoRoutes);
+app.use("/api/users", authenticate, userRoutes);
+app.use("/api/analytics", authenticate, analyticsRoutes);
+app.use("/api", authenticate, collectionRoutes);
+
+/* En production le serveur sert aussi le frontend compilé. */
+const webDist = path.join(here, "..", "..", "web", "dist");
+if(fs.existsSync(webDist)){
+  app.use(express.static(webDist, { maxAge:"1h", index:false }));
+  app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(path.join(webDist, "index.html")));
+}
+
+app.use((req, res) => res.status(404).json({ error:"ressource introuvable" }));
+
+/* Rien du détail interne ne remonte au client. */
+app.use((err, req, res, next) => {
+  const status = err.status || (/origine non autorisée/.test(err.message) ? 403 : 500);
+  if(status >= 500) log.error("erreur non gérée", { message:err.message, stack:err.stack?.split("\n")[1] });
+  res.status(status).json({ error: status >= 500 ? "erreur interne" : err.message });
+});
+
+if(process.env.NODE_ENV !== "test"){
+  app.listen(config.port, config.host, () => {
+    log.info("MEMS démarré", { port:config.port, base:config.dbFile, production:config.isProd });
+    const n = db.prepare("SELECT COUNT(*) c FROM users").get().c;
+    if(!n) log.warn("aucun compte : lancez « npm run seed » pour créer l'administrateur initial");
+  });
+}
+export default app;

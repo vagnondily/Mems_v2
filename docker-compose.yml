@@ -1,0 +1,27 @@
+services:
+  mems:
+    build: .
+    image: mems:1.0.0
+    container_name: mems
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_FILE: /app/server/data/mems.db
+      TRUST_PROXY: "1"
+    ports:
+      - "127.0.0.1:4000:4000"     # exposé en local ; publiez via un reverse proxy TLS
+    volumes:
+      - mems-data:/app/server/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    tmpfs:
+      - /tmp
+
+volumes:
+  mems-data:
