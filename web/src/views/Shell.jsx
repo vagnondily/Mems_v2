@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { BarChart3, CalendarRange, ChevronDown, Cog, Database, FileText, LayoutDashboard, LogOut } from "lucide-react";
-import { Badge } from "../components/ui.jsx";
+import { Badge, Logo } from "../components/ui.jsx";
 import { clsx } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
 import { Sources } from "./ActualData.jsx";
@@ -101,7 +101,9 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync }){
       <footer className="border-t border-slate-200 bg-white px-5 py-3 flex items-center gap-3 f11 text-slate-500">
         {db.settings.logo
           ? <img src={db.settings.logo} alt="" className="h-6" />
-          : <div className="w-6 h-6 rounded grid place-items-center f8 font-extrabold c-deep" style={{background:C.aqua}}>ME</div>}
+          : <div className="h-6">
+              <Logo width="120" height="24" className="h-6 w-auto" />
+            </div>}
         <span>{db.settings.org} — {db.settings.unit}</span>
         <span className="ml-auto">MEMS · exercice {db.year}</span>
       </footer>

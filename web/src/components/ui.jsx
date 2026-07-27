@@ -1,21 +1,51 @@
+import { useId } from "react";
 import { Layers, X } from "lucide-react";
 import { clsx, n } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
 
 /* ══════════════════ Composants d'interface ══════════════════ */
 const Card = ({ title, subtitle, right, children, className, flush }) => (
-  <section className={clsx("bg-white border border-slate-200 rounded", className)}>
+  <section className={clsx("bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm", className)}>
     {(title || right) && (
-      <header className="flex items-center gap-3 px-4 py-3 border-b border-slate-100">
+      <header className="flex items-center gap-3 px-5 py-4 border-b border-slate-100">
         <div className="min-w-0">
           {title && <h3 className="f13 font-semibold text-slate-800 truncate">{title}</h3>}
           {subtitle && <p className="f115 text-slate-500 mt-0.5">{subtitle}</p>}
         </div>
         <div className="ml-auto flex items-center gap-2 shrink-0 flex-wrap justify-end">{right}</div>
       </header>)}
-    <div className={flush ? "" : "p-4"}>{children}</div>
+    <div className={flush ? "" : "p-5"}>{children}</div>
   </section>
 );
+const Logo = ({ width="100%", height="100%", className }) => {
+  const id = useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 160" width={width} height={height} className={className}>
+      <defs>
+        <linearGradient id={`humGrad${id}`} x1="0%" y1="100%" x2="100%" y2="0%">
+          <stop offset="0%" stopColor="#0284C7" />
+          <stop offset="60%" stopColor="#059669" />
+          <stop offset="100%" stopColor="#10B981" />
+        </linearGradient>
+        <linearGradient id={`targetGrad${id}`} x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#F59E0B" />
+          <stop offset="100%" stopColor="#D97706" />
+        </linearGradient>
+      </defs>
+      <g transform="translate(15, 10)">
+        <path d="M 25 95 A 50 50 0 1 1 115 95" fill="none" stroke={`url(#humGrad${id})`} strokeWidth="9" strokeLinecap="round" />
+        <path d="M 52 90 Q 52 65 62 55 Q 62 80 52 90 Z" fill="#0284C7" />
+        <path d="M 88 90 Q 88 55 78 45 Q 78 75 88 90 Z" fill="#059669" />
+        <rect x="67" y="35" width="6" height="55" rx="3" fill={`url(#humGrad${id})`} />
+        <circle cx="70" cy="20" r="10" fill={`url(#targetGrad${id})`} />
+        <circle cx="70" cy="20" r="4" fill="#FFFFFF" />
+      </g>
+      <text x="165" y="84" fontFamily="System-UI, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" fontSize="58" fontWeight="800" letterSpacing="2" fill="#0F172A">MEMS</text>
+      <circle cx="370" cy="74" r="6" fill="#D97706" />
+      <text x="167" y="112" fontFamily="System-UI, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" fontSize="11.5" fontWeight="700" letterSpacing="1.5" fill="#475569">HUMANITARIAN MONITORING &amp; EVALUATION SYSTEM</text>
+    </svg>
+  );
+};
 const Btn = ({ kind="primary", size="md", icon:Icon, children, className, ...p }) => {
   const k = { primary:"m-btn-primary", sec:"m-btn-sec", ghost:"m-btn-ghost", danger:"m-btn-danger" }[kind];
   const s = size==="sm" ? "px-2.5 py-1 f11" : "px-3.5 py-1.5 f13";
@@ -140,4 +170,4 @@ function parseCSV(txt){
   return rows.filter(r=>r.some(c=>c!=="")).map(r=>Object.fromEntries(head.map((h,i)=>[h,(r[i]??"").trim()])));
 }
 
-export { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, Toast, download, inputCls, parseCSV, toCSV };
+export { Badge, Bar2, Btn, Card, Empty, Field, Input, Logo, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, Toast, download, inputCls, parseCSV, toCSV };
