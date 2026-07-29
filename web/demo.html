@@ -110,47 +110,95 @@
         panels: [
           { title: 'Exigence minimale de suivi', text: 'Les objectifs prioritaires sont affichés avec le statut de réalisation et les tâches urgentes.' },
           { title: 'Trois derniers mois', text: 'Suivi des indicateurs opérationnels et de couverture sur la période récente.' }
-        ]
+        ],
+        table: {
+          header: ['Zone', 'Sites actifs', 'Visites planifiées', 'Taux de réalisation'],
+          rows: [
+            ['Ambovombe', '23', '18', '78%'],
+            ['Ampanihy', '38', '33', '87%'],
+            ['Manakara', '17', '15', '88%'],
+            ['Toliara', '11', '10', '91%']
+          ]
+        },
+        note: 'La page d’accueil donne un aperçu rapide des sites, des tendances et des résultats par zone.'
       },
       planning: {
         title: 'Planning',
-        subtitle: 'Paramètres de couverture et planification des visites.',
+        subtitle: 'Calendrier des visites et paramètres de couverture.',
+        cards: [
+          { label: 'Sites planifiés', value: '112' },
+          { label: 'Visites urgentes', value: '14' },
+          { label: 'Couverture cible', value: '91%' }
+        ],
+        panels: [
+          { title: 'Couverture terrain', text: 'Le plan de couverture par bureau et activité est visible dans le tableau ci-dessous.' },
+          { title: 'Prochaines échéances', text: 'Les visites critiques sont priorisées pour le mois à venir.' }
+        ],
         table: {
           header: ['Activité', 'Bureau', 'Sites prévus', 'Risque', 'Statut'],
           rows: [
             ['URT', 'Ambovombe', '23', 'Moyen', 'Active'],
             ['SMP', 'Ampanihy', '38', 'Élevé', 'Active'],
-            ['NTA', 'Manakara', '17', 'Faible', 'Inactive'],
+            ['NTA', 'Manakara', '17', 'Faible', 'Planifiée'],
             ['CAR', 'Toliara', '11', 'Moyen', 'Active']
           ]
-        }
+        },
+        note: 'Les statuts reflètent la priorité et le risque des visites sur le terrain.'
       },
       actual: {
         title: 'Actual Data',
         subtitle: 'Suivi terrain et données opérationnelles.',
         cards: [
           { label: 'Visites réalisées', value: '94' },
-          { label: 'Taux réel', value: '82%' },
-          { label: 'Distributions', value: '12' }
+          { label: 'Données saisies', value: '78%' },
+          { label: 'Issues identifiées', value: '5' }
         ],
-        map: 'Carte des sites actifs avec filtres de statut et activité.'
+        panels: [
+          { title: 'Synthèse des observations', text: 'La collecte terrain montre des écarts à corriger sur certains sites et une bonne progression globale.' },
+          { title: 'Sources de données', text: 'Les formulaires ODK et les rapports terrain alimentent les analyses et les tableaux de bord.' }
+        ],
+        map: 'Carte des sites actifs avec filtres de statut et activité.',
+        table: {
+          header: ['Site', 'Zone', 'Statut', 'Visites', 'Dernière visite'],
+          rows: [
+            ['Ambovombe 1', 'Ambovombe', 'Active', '8', '14/07/2026'],
+            ['Ampanihy Est', 'Ampanihy', 'Active', '12', '11/07/2026'],
+            ['Manakara Nord', 'Manakara', 'Inactive', '4', '05/07/2026'],
+            ['Toliara Ouest', 'Toliara', 'Active', '5', '09/07/2026']
+          ]
+        }
       },
       analytics: {
         title: 'Analyses',
-        subtitle: 'Graphiques de performances et couverture.',
+        subtitle: 'Indicateurs consolidés et scripts d’analyse.',
         bars: [
           { label: 'URT', value: 78, color: '#2563eb' },
           { label: 'NTA', value: 88, color: '#0ea5e9' },
           { label: 'SMP', value: 72, color: '#38bdf8' }
-        ]
+        ],
+        items: [
+          { title: 'Coverage SQL', description: 'Agrégations mensuelles de couverture par bureau.' },
+          { title: 'Trend script', description: 'Profil de performance des activités sur le trimestre.' }
+        ],
+        note: 'Les analyses permettent de visualiser les résultats par activité et par zone.'
       },
       reports: {
         title: 'Rapports',
-        subtitle: 'Modèles de rapport et export ODK simulé.',
+        subtitle: 'Construction de rapports et extractions ODK simulées.',
+        cards: [
+          { label: 'Rapports générés', value: '18' },
+          { label: 'Exports ODK', value: '4' },
+          { label: 'Modèles disponibles', value: '6' }
+        ],
         items: [
-          { title: 'Rapport mensuel de suivi', description: 'Rapport synthétique des indicateurs et de la couverture.' },
-          { title: 'Note de couverture trimestrielle', description: 'Synthèse projetée des performances par bureau.' }
-        ]
+          { title: 'Rapport mensuel de suivi', description: 'Synthèse des indicateurs et de la couverture opérationnelle.' },
+          { title: 'Note de couverture trimestrielle', description: 'Analyse des performances et recommandations par bureau.' }
+        ],
+        actions: [
+          { label: 'Générer un rapport', hint: 'Créer un PDF de synthèse.' },
+          { label: 'Exporter ODK', hint: 'Télécharger les données à partir de la source terrain.' }
+        ],
+        note: 'Les rapports sont produits à partir des données du suivi et des extraits ODK.'
       }
     };
 
@@ -207,9 +255,20 @@
         section.innerHTML = `
           <h3>Paramètres de couverture</h3>
           <table class="table"><thead><tr>${page.table.header.map(th => `<th>${th}</th>`).join('')}</tr></thead><tbody>${page.table.rows.map(row => `
-            <tr>${row.map((cell, idx) => idx === 4 ? `<td><span class="status-chip ${cell.toLowerCase()}">${cell}</span></td>` : `<td>${cell}</td>`).join('')}</tr>
+            <tr>${row.map((cell, idx) => {
+              if (idx === 2 && page.title === 'Accueil') return `<td>${cell}</td>`;
+              if (idx === 4) return `<td><span class="status-chip ${cell.toLowerCase()}">${cell}</span></td>`;
+              return `<td>${cell}</td>`;
+            }).join('')}</tr>
           `).join('')}</tbody></table>`;
         demoContent.appendChild(section);
+      }
+
+      if (page.note) {
+        const noteSection = document.createElement('div');
+        noteSection.className = 'panel';
+        noteSection.innerHTML = `<h3>Résumé</h3><p>${page.note}</p>`;
+        demoContent.appendChild(noteSection);
       }
 
       if (page.map) {
@@ -241,6 +300,19 @@
           itemNode.className = 'report-card';
           itemNode.innerHTML = `<h3>${item.title}</h3><p>${item.description}</p>`;
           section.appendChild(itemNode);
+        });
+        demoContent.appendChild(section);
+      }
+
+      if (page.actions) {
+        const section = document.createElement('div');
+        section.className = 'panel';
+        section.innerHTML = '<h3>Actions disponibles</h3>';
+        page.actions.forEach(action => {
+          const actionNode = document.createElement('div');
+          actionNode.className = 'report-card';
+          actionNode.innerHTML = `<h3>${action.label}</h3><p>${action.hint}</p>`;
+          section.appendChild(actionNode);
         });
         demoContent.appendChild(section);
       }

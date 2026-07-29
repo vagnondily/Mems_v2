@@ -7,6 +7,7 @@ analyse des données ODK Central, cartographie et restitution.
 - **Frontend** : React 18 + Vite, sans framework de composants imposé
 - **Backend** : Node 20 + Express + SQLite (WAL), schéma relationnel avec clés étrangères
 - **Tests** : 25 tests d'API + 10 tests de bout en bout pilotant l'interface réelle
+- **Démo hors ligne** : `web/demo.html` présente une version statique de l'interface pour les présentations
 
 ---
 
@@ -43,6 +44,14 @@ docker compose up -d
 
 Le conteneur écoute sur `127.0.0.1:4000`. Publiez-le derrière un reverse proxy TLS
 (voir §7) : l'application ne termine pas elle-même le chiffrement.
+
+### Démo hors ligne
+
+Ouvrez directement `web/demo.html` dans un navigateur pour une version de présentation qui illustre l'interface sans exiger de serveur en local.
+
+- Navigation multi-onglets simulée
+- Données factices pour les écrans principaux
+- Lecture simple via le fichier HTML
 
 ---
 
