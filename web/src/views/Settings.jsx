@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api.js";
+import { useGeoCascade, resetGeoCache } from "../lib/geo.js";
 import { Activity, Building2, CalendarRange, Check, ClipboardList, Download, FileText, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
 import { Area, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
@@ -21,7 +22,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can }){
       <Tabs items={items} value={sub} onChange={setSub} />
       {sub==="general" && <SetGeneral db={db} set={set} />}
       {sub==="sites" && <SitesModule db={db} set={set} me={me} notify={notify} can={can} context="settings" />}
-      {sub==="locations" && <SetLocations db={db} set={set} notify={notify} can={can} />}
+      {sub==="locations" && <SetLocations db={db} notify={notify} can={can} />}
       {sub==="indicators" && <SetIndicators db={db} set={set} notify={notify} can={can} />}
       {sub==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
       {sub==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} />}
@@ -443,14 +444,15 @@ function BulkBar({ db, sel, rows, communes, onSelectCommune, onApply, onClear })
 function SiteModal({ open, site, db, onClose, onSave }){
   const [tab,setTab] = useState("id"); const [f,setF] = useState({});
   useEffect(()=>{ setF(site||{}); setTab("id"); },[site]);
+  /* Cascade servie par le serveur, avant tout retour anticipé : un hook ne peut
+     pas être conditionnel. Chaque niveau ne demande que les enfants du précédent. */
+  const geo = useGeoCascade({ adm1:f.adm1, adm2:f.adm2, adm3:f.adm3 });
+  const [adm1s, adm2s, adm3s, adm4s] =
+    [geo.adm1, geo.adm2, geo.adm3, geo.adm4].map(rows => rows.map(x => x.name));
   if(!open) return null;
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
   const code = (db.lists.poiSub.find(p=>p.label===f.poiSubtype)||{}).code || "";
   const sc = siteScore(f, db.weights, db); const req = siteRequirement(db, { ...f, id:f.id||"__" });
-  const adm1s = [...new Set(db.geo.map(g=>g.adm1).filter(Boolean))];
-  const adm2s = [...new Set(db.geo.filter(g=>!f.adm1||g.adm1===f.adm1).map(g=>g.adm2).filter(Boolean))];
-  const adm3s = [...new Set(db.geo.filter(g=>(!f.adm1||g.adm1===f.adm1)&&(!f.adm2||g.adm2===f.adm2)).map(g=>g.adm3).filter(Boolean))];
-  const adm4s = [...new Set(db.geo.filter(g=>(!f.adm1||g.adm1===f.adm1)&&(!f.adm2||g.adm2===f.adm2)&&(!f.adm3||g.adm3===f.adm3)).map(g=>g.adm4).filter(Boolean))].slice(0,400);
   return (
     <Modal open wide onClose={onClose} title={site?.id?`Site ${site.id}`:"Nouveau site"}
       subtitle="Identification, codification et critères de risque"
@@ -554,13 +556,43 @@ function SiteModal({ open, site, db, onClose, onSave }){
 }
 
 /* ── Localités : niveaux administratifs issus du shapefile ── */
-function SetLocations({ db, set, notify, can }){
+/* ── Localités : référentiel administratif versionné ──
+   Le découpage n'est plus une liste plate éditable ligne à ligne : c'est un arbre
+   (région → district → commune → fokontany) chargé par millésime. Sites, population
+   et distributions s'y raccrochent, donc il ne se modifie pas à la main — on importe
+   un nouveau millésime, et l'ancien reste disponible. */
+function SetLocations({ db, notify, can }){
   const [draft,setDraft] = useState(null); const [status,setStatus] = useState(null);
-  const [map,setMap] = useState({}); const [mode,setMode] = useState("replace");
+  const [map,setMap] = useState({}); const [label,setLabel] = useState("");
   const [depth,setDepth] = useState("adm4"); const [busy,setBusy] = useState(false);
-  const [q,setQ] = useState(""); const [f1,setF1] = useState(""); const [f2,setF2] = useState("");
-  const rows = db.geo.filter(g => (!f1||g.adm1===f1) && (!f2||g.adm2===f2)
-    && (!q || [g.adm0,g.adm1,g.adm2,g.adm3,g.adm4,g.code].join(" ").toLowerCase().includes(q.toLowerCase())));
+  const [versions,setVersions] = useState([]);
+
+  /* Répertoire : filtres en cascade et pagination, tout vient du serveur. */
+  const [sel,setSel] = useState({ adm1:"", adm2:"", adm3:"" });
+  const [q,setQ] = useState(""); const [page,setPage] = useState(0);
+  const [dir,setDir] = useState({ rows:[], total:0, version:null, loading:true });
+  const geo = useGeoCascade(sel);
+  const PER = 200;
+
+  const loadVersions = () => api.geoVersions().then(r=>setVersions(r.rows||[])).catch(()=>{});
+  useEffect(()=>{ loadVersions(); },[]);
+
+  /* Le parent le plus profond réellement choisi borne la requête. */
+  const parent = geo.codes.adm3 || geo.codes.adm2 || geo.codes.adm1 || "";
+  useEffect(()=>{
+    let alive = true;
+    setDir(d=>({ ...d, loading:true }));
+    const qs = new URLSearchParams({ level:"adm4", limit:String(PER), offset:String(page*PER) });
+    if(parent) qs.set("parent", parent);
+    if(q.trim()) qs.set("search", q.trim());
+    const id = setTimeout(() => {
+      api.geo("?"+qs).then(r => { if(alive) setDir({ ...r, loading:false }); })
+        .catch(e => { if(alive) setDir({ rows:[], total:0, version:null, loading:false, error:e.message }); });
+    }, q ? 280 : 0);                       /* la recherche attend la fin de la frappe */
+    return () => { alive = false; clearTimeout(id); };
+  }, [parent, q, page]);
+  useEffect(()=>{ setPage(0); }, [parent, q]);
+
   const onFile = async (file) => {
     setStatus({ kind:"info", text:"Lecture du fichier…" });
     try{
@@ -573,10 +605,12 @@ function SetLocations({ db, set, notify, can }){
         adm2:guessField(d.fields,GUESS.adm2), adm3:guessField(d.fields,GUESS.adm3),
         adm4:guessField(d.fields,GUESS.adm4), code:guessField(d.fields,GUESS.code) });
       setDepth(guessField(d.fields,GUESS.adm4) ? "adm4" : "adm3");
+      setLabel(file.name.replace(/\.[^.]+$/,"") + " — " + new Date().toISOString().slice(0,10));
       setStatus({ kind:"ok", text:`${d.rows.length.toLocaleString("fr-FR")} objets lus depuis ${d.src} · ${d.fields.length} champs attributaires`
         + (d.geomSkipped ? " · centroïdes repris des attributs, la géométrie n'a pas eu besoin d'être ouverte" : "") });
     }catch(e){ setDraft(null); setStatus({ kind:"err", text:e.message }); }
   };
+
   /* Ce que l'on retiendra du fichier : au-delà du niveau choisi, les doublons sont regroupés. */
   const preview = useMemo(() => {
     if(!draft) return [];
@@ -600,7 +634,7 @@ function SetLocations({ db, set, notify, can }){
     return out;
   }, [draft, map, depth]);
 
-  /* L'écriture passe par le serveur : une transaction, des contraintes, une trace. */
+  /* L'écriture passe par le serveur : il reconstruit l'arbre, en une transaction. */
   const commit = async () => {
     if(!draft || !preview.length){
       notify("Aucune localité exploitable : vérifiez la correspondance des champs", "err"); return;
@@ -610,19 +644,35 @@ function SetLocations({ db, set, notify, can }){
       const rows = preview.map(g => ({ adm0:g.adm0 || null, adm1:g.adm1 || null, adm2:g.adm2 || null,
         adm3:g.adm3 || null, adm4:g.adm4 || null, pcode:g.code || null,
         lat: g.lat === "" ? null : Number(g.lat), lon: g.lon === "" ? null : Number(g.lon) }));
-      const r = await api.importGeo(mode, rows);
-      const fresh = await api.geo("?limit=4000");
-      set(d => { d.geo = fresh.rows.map(x => ({ ...x, code:x.pcode })); d.geoCount = r.total; return d; });
-      setDraft(null);
-      setStatus({ kind:"ok", text:`${r.imported.toLocaleString("fr-FR")} localités importées · ${r.total.toLocaleString("fr-FR")} au total dans le répertoire` });
-      notify(`${r.imported.toLocaleString("fr-FR")} localité(s) importée(s)`, "ok");
+      const r = await api.importGeo(rows, label.trim() || `Import du ${new Date().toISOString().slice(0,10)}`,
+        draft.src || null);
+      resetGeoCache(); setDraft(null); setSel({ adm1:"", adm2:"", adm3:"" }); setPage(0);
+      await loadVersions();
+      const c = r.counts || {};
+      setStatus({ kind:"ok", text:`${r.imported.toLocaleString("fr-FR")} unités enregistrées — `
+        + [["adm1","régions"],["adm2","districts"],["adm3","communes"],["adm4","fokontany"]]
+            .filter(([k])=>c[k]).map(([k,l])=>`${c[k].toLocaleString("fr-FR")} ${l}`).join(", ")
+        + (r.rejected ? ` · ${r.rejected} ligne(s) écartée(s)` : "") });
+      notify(`Référentiel importé : ${r.imported.toLocaleString("fr-FR")} unités`, "ok");
     }catch(e){
-      setStatus({ kind:"err", text:e.message });
+      setStatus({ kind:"err", text:e.message + (e.details ? " — " + JSON.stringify(e.details).slice(0,180) : "") });
       notify("Import refusé : " + e.message, "err");
     }
     setBusy(false);
   };
-  const exp = () => download("localites.csv", toCSV(db.geo, ["adm0","adm1","adm2","adm3","adm4","code","lat","lon"]), "text/csv");
+
+  const activate = async (id, lb) => {
+    try{ await api.setGeoVersion(id); resetGeoCache();
+      setSel({ adm1:"", adm2:"", adm3:"" }); setPage(0); await loadVersions();
+      notify(`Référentiel courant : « ${lb} »`, "ok");
+    }catch(e){ notify("Changement refusé : " + e.message, "err"); }
+  };
+
+  const exp = () => download("localites.csv",
+    toCSV(dir.rows, ["adm1","adm2","adm3","adm4","pcode","lat","lon"]), "text/csv");
+
+  const cur = db.geoVersion;
+  const pages = Math.ceil(dir.total / PER);
   return (
     <>
       <Note>Importez le découpage administratif du niveau 0 au niveau 4 depuis une archive <b>.zip</b> contenant
@@ -630,24 +680,41 @@ function SetLocations({ db, set, notify, can }){
         le navigateur, aucun fichier n'est transmis à un serveur. Lorsque la table attributaire porte déjà des
         colonnes de centroïdes — <code className="bg-white px-1 rounded">X</code> et
         <code className="bg-white px-1 rounded mx-1">Y</code>, ou latitude et longitude — la géométrie n'est pas
-        ouverte du tout : une archive de plusieurs dizaines de mégaoctets se lit alors en une seconde.
-        Les coordonnées doivent être en WGS 84.</Note>
+        ouverte du tout. Les coordonnées doivent être en WGS 84.
+        <br /><br />
+        Pour le référentiel complet de Madagascar — environ 18 000 fokontany — préférez la ligne de commande,
+        qui lit le fichier sans le charger en mémoire :
+        <code className="bg-white px-1 rounded mx-1">node src/import-geo.js fichier.csv --label "COD-AB v2023.1"</code>
+      </Note>
+
+      {cur ? (
+        <Card title="Référentiel courant" subtitle={`« ${cur.label} » — importé le ${String(cur.importedAt||"").slice(0,10)}`}>
+          <StatRow>
+            {[["adm1","Régions"],["adm2","Districts"],["adm3","Communes"],["adm4","Fokontany"]].map(([k,l])=>(
+              <Stat key={k} label={l} value={fmt(cur.counts?.[k] || 0)} />))}
+            <Stat label="Total des unités" value={fmt(cur.units)} />
+          </StatRow>
+        </Card>
+      ) : (
+        <Note tone="warn"><b>Aucun référentiel chargé.</b> Les listes administratives resteront vides
+          tant qu'un découpage n'aura pas été importé.</Note>
+      )}
+
       <Card title="Importer un découpage administratif"
-        right={<><Btn size="sm" kind="sec" icon={Download} onClick={exp}>Exporter CSV</Btn>
-          {can("edit") && <Btn size="sm" icon={Plus} onClick={()=>set(d=>{ d.geo.unshift({ id:uid("g"),
-            adm0:"",adm1:"",adm2:"",adm3:"",adm4:"",code:"",lat:"",lon:"" }); return d; })}>Ajouter</Btn>}</>}>
+        right={<Btn size="sm" kind="sec" icon={Download} onClick={exp} disabled={!dir.rows.length}>Exporter la page</Btn>}>
         <div className="grid grid-cols-2 gap-x-4">
           <Field label="Fichier du découpage">
-            <input type="file" accept=".zip,.shp,.dbf,.geojson,.json" disabled={!can("edit")}
+            <input type="file" accept=".zip,.shp,.dbf,.geojson,.json" disabled={!can("admin")}
               onChange={e=>e.target.files[0]&&onFile(e.target.files[0])}
               className="w-full f125 border border-dashed border-slate-300 rounded p-2 bg-slate-50 cursor-pointer" /></Field>
           <div className="self-center">{status && <Note tone={status.kind}>{status.text}</Note>}</div>
         </div>
+        {!can("admin") && <Note tone="warn">L'import du découpage est réservé aux administrateurs.</Note>}
         {draft && (
           <>
             <div className="grid grid-cols-4 gap-x-3">
-              {[["adm0","Niveau 0 — pays"],["adm1","Niveau 1"],["adm2","Niveau 2"],["adm3","Niveau 3"],
-                ["adm4","Niveau 4"],["code","Code administratif"]].map(([k,l])=>(
+              {[["adm0","Niveau 0 — pays"],["adm1","Niveau 1 — région"],["adm2","Niveau 2 — district"],
+                ["adm3","Niveau 3 — commune"],["adm4","Niveau 4 — fokontany"],["code","Code administratif"]].map(([k,l])=>(
                 <Field key={k} label={l}><Select value={map[k]||""} onChange={e=>setMap(m=>({...m,[k]:e.target.value}))}
                   empty="— aucun —" options={draft.fields} /></Field>))}
               <Field label="Niveau de détail à conserver"
@@ -655,14 +722,15 @@ function SetLocations({ db, set, notify, can }){
                 <Select value={depth} onChange={e=>setDepth(e.target.value)}
                   options={[["adm1","Jusqu'au niveau 1"],["adm2","Jusqu'au niveau 2"],
                             ["adm3","Jusqu'au niveau 3"],["adm4","Niveau 4 complet"]]} /></Field>
-              <Field label="Mode d'import"><Select value={mode} onChange={e=>setMode(e.target.value)}
-                options={[["replace","Remplacer les localités"],["merge","Compléter la liste"]]} /></Field>
+              <Field label="Nom du millésime" hint="Il identifie ce chargement dans l'historique">
+                <Input value={label} onChange={e=>setLabel(e.target.value)} placeholder="COD-AB v2023.1" /></Field>
             </div>
-            <Note tone={preview.length > 12000 ? "warn" : "info"}>
-              <b>{preview.length.toLocaleString("fr-FR")} localités</b> seront enregistrées
+            <Note tone="info">
+              <b>{preview.length.toLocaleString("fr-FR")} lignes</b> seront envoyées
               {depth !== "adm4" && " après regroupement des doublons"}, dont{" "}
               {preview.filter(g => g.lat !== "").length.toLocaleString("fr-FR")} avec coordonnées.
-              {preview.length > 12000 && " À ce volume, l'import se fait en une transaction et le répertoire reste paginé à l'affichage."}
+              Le serveur en déduit l'arbre complet : les niveaux supérieurs sont créés une seule fois,
+              quel que soit le nombre de lignes qui les répètent.
             </Note>
             <TableWrap max="mh240">
               <thead><tr>{["Niveau 0","Niveau 1","Niveau 2","Niveau 3","Niveau 4","Code","Latitude","Longitude"].map(h=><Th key={h}>{h}</Th>)}</tr></thead>
@@ -670,42 +738,68 @@ function SetLocations({ db, set, notify, can }){
                 <tr key={i}>{["adm0","adm1","adm2","adm3","adm4","code"].map(k=><Td key={k}>{g[k]}</Td>)}
                   <Td num className="f11">{g.lat}</Td><Td num className="f11">{g.lon}</Td></tr>))}</tbody>
             </TableWrap>
-            <Btn className="mt-3" icon={Upload} disabled={busy || !preview.length} onClick={commit}>
-              {busy ? "Import en cours…" : `Importer ${preview.length.toLocaleString("fr-FR")} localités`}</Btn>
+            <Btn className="mt-3" icon={Upload} disabled={busy || !preview.length || !can("admin")} onClick={commit}>
+              {busy ? "Import en cours…" : `Importer ${preview.length.toLocaleString("fr-FR")} lignes`}</Btn>
           </>)}
       </Card>
-      <Card flush title="Répertoire des localités" subtitle={`${(db.geoCount ?? db.geo.length).toLocaleString("fr-FR")} entrées au total · ${db.geo.length.toLocaleString("fr-FR")} chargées ici`}
+
+      {versions.length > 1 && (
+        <Card flush title="Millésimes" subtitle="Changer de millésime ne perd rien : les précédents restent disponibles">
+          <TableWrap>
+            <thead><tr><Th>Millésime</Th><Th>Provenance</Th><Th num>Unités</Th><Th>Importé le</Th><Th>Par</Th><Th /></tr></thead>
+            <tbody>{versions.map(v=>(
+              <tr key={v.id} className={clsx("hover:bg-sky-50", v.current && "bg-sky-50")}>
+                <Td><b>{v.label}</b>{v.current && <Badge tone="g" className="ml-2">courant</Badge>}</Td>
+                <Td className="text-slate-500">{v.source || "—"}</Td>
+                <Td num>{fmt(v.units)}</Td>
+                <Td className="f115">{String(v.importedAt||"").slice(0,16)}</Td>
+                <Td className="text-slate-500">{v.importedBy || "—"}</Td>
+                <Td className="text-right">{!v.current && can("admin") &&
+                  <Btn size="sm" kind="sec" icon={RefreshCw} onClick={()=>activate(v.id, v.label)}>Activer</Btn>}</Td>
+              </tr>))}</tbody>
+          </TableWrap>
+        </Card>)}
+
+      <Card flush title="Répertoire des localités"
+        subtitle={dir.loading ? "Chargement…"
+          : `${fmt(dir.total)} fokontany dans la sélection · page ${page+1} sur ${Math.max(1,pages)}`}
         right={<>
-          <Select value={f1} onChange={e=>{setF1(e.target.value);setF2("");}} empty="Tous les niveaux 1"
-            options={[...new Set(db.geo.map(g=>g.adm1).filter(Boolean))]} className="mi-py1 mi-xs mi-wauto" />
-          <Select value={f2} onChange={e=>setF2(e.target.value)} empty="Tous les niveaux 2"
-            options={[...new Set(db.geo.filter(g=>!f1||g.adm1===f1).map(g=>g.adm2).filter(Boolean))]} className="mi-py1 mi-xs mi-wauto" />
+          <Select value={sel.adm1} onChange={e=>setSel({ adm1:e.target.value, adm2:"", adm3:"" })}
+            empty="Toutes les régions" options={geo.adm1.map(x=>x.name)} className="mi-py1 mi-xs mi-wauto" />
+          <Select value={sel.adm2} onChange={e=>setSel(s=>({ ...s, adm2:e.target.value, adm3:"" }))}
+            empty="Tous les districts" options={geo.adm2.map(x=>x.name)} className="mi-py1 mi-xs mi-wauto"
+            disabled={!sel.adm1} />
+          <Select value={sel.adm3} onChange={e=>setSel(s=>({ ...s, adm3:e.target.value }))}
+            empty="Toutes les communes" options={geo.adm3.map(x=>x.name)} className="mi-py1 mi-xs mi-wauto"
+            disabled={!sel.adm2} />
           <div className="relative"><Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
             <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Rechercher…" className={clsx(inputCls,"pl-7 mi-py1 w-44")} /></div></>}>
         <TableWrap>
-          <thead><tr>{["Niveau 0","Niveau 1","Niveau 2","Niveau 3","Niveau 4","Code"].map(h=><Th key={h}>{h}</Th>)}
-            <Th num>Latitude</Th><Th num>Longitude</Th><Th num>Sites</Th><Th /></tr></thead>
-          <tbody>{rows.slice(0,300).map(g=>{ const i=db.geo.indexOf(g);
-            const cnt = db.sites.filter(s=>s.adm3===g.adm3 && g.adm3).length;
-            return (<tr key={g.id} className="hover:bg-sky-50">
-              {["adm0","adm1","adm2","adm3","adm4","code"].map(k=>(
-                <Td key={k}><input value={g[k]||""} disabled={!can("edit")} onChange={e=>set(d=>{ d.geo[i][k]=e.target.value; return d; })}
-                  className="w-28 px-1.5 py-0.5 f12 border border-transparent hover:border-slate-300 rounded" /></Td>))}
-              {["lat","lon"].map(k=>(
-                <Td key={k} num><input type="number" step="0.000001" value={g[k]??""} disabled={!can("edit")}
-                  onChange={e=>set(d=>{ d.geo[i][k]=e.target.value; return d; })}
-                  className="w-24 px-1.5 py-0.5 f12 text-right border border-transparent hover:border-slate-300 rounded" /></Td>))}
+          <thead><tr>{["Région","District","Commune","Fokontany","P-code"].map(h=><Th key={h}>{h}</Th>)}
+            <Th num>Latitude</Th><Th num>Longitude</Th><Th num>Sites</Th></tr></thead>
+          <tbody>{dir.rows.map(g=>{
+            const cnt = db.sites.filter(s=>g.adm3 && s.adm3===g.adm3).length;
+            return (<tr key={g.pcode} className="hover:bg-sky-50">
+              <Td className="text-slate-500">{g.adm1||"—"}</Td><Td className="text-slate-500">{g.adm2||"—"}</Td>
+              <Td>{g.adm3||"—"}</Td><Td className="font-medium text-slate-800">{g.name}</Td>
+              <Td className="f115 c-bd">{g.pcode}</Td>
+              <Td num className="f115">{g.lat ?? "—"}</Td><Td num className="f115">{g.lon ?? "—"}</Td>
               <Td num className="text-slate-500">{cnt||""}</Td>
-              <Td className="text-right">{can("del") && <button onClick={()=>set(d=>{ d.geo.splice(i,1); return d; })}
-                className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</Td>
             </tr>); })}</tbody>
         </TableWrap>
-        {rows.length>300 && <div className="px-4 py-2 f115 text-slate-500">300 premières lignes affichées sur {fmt(rows.length)}.</div>}
+        {!dir.loading && !dir.rows.length && (
+          <div className="px-4 py-8 text-center f125 text-slate-500">
+            {dir.error ? dir.error : "Aucune localité dans cette sélection."}</div>)}
+        {pages > 1 && (
+          <div className="px-4 py-2 flex items-center gap-2 f115 text-slate-500 border-t border-slate-100">
+            <Btn size="sm" kind="sec" disabled={page===0} onClick={()=>setPage(p=>p-1)}>Précédent</Btn>
+            <span>{fmt(page*PER+1)} – {fmt(Math.min((page+1)*PER, dir.total))} sur {fmt(dir.total)}</span>
+            <Btn size="sm" kind="sec" disabled={page>=pages-1} onClick={()=>setPage(p=>p+1)}>Suivant</Btn>
+          </div>)}
       </Card>
     </>);
 }
 
-/* ── Masterlist des indicateurs ── */
 function SetIndicators({ db, set, notify, can }){
   const [edit,setEdit] = useState(null);
   const save = (ind) => { set(d => { const i=d.indicators.findIndex(x=>x.id===ind.id);

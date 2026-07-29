@@ -6,6 +6,10 @@ import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat,
 import { clsx, computeParam, fmt, n, pct, r1, r2, siteScore, uid } from "../lib/calc.js";
 import { ACT_CATEGORIES, C, DURATIONS, D_PARTNERS, MONITORING_TYPES, MONTHS, MONTHS_L, SITE_TYPES, coverageRows, siteDerived } from "../lib/constants.js";
 import { PageHead } from "./Shell.jsx";
+import { useGeoCascade } from "../lib/geo.js";
+
+/* Conserve la valeur déjà enregistrée dans la liste, même absente du référentiel courant. */
+const withCurrent = (list, v) => (v && !list.includes(v)) ? [v, ...list] : list;
 
 /* ══════════════════ Grille mensuelle ══════════════════ */
 function MonthGrid({ rows, labelOf, subOf, cellOf, onCell, footerOf }){
@@ -645,11 +649,13 @@ function PddBulkBar({ sel, rows, fields, onSelectAll, onClear, onApply }){
 }
 function PddModal({ open, line, db, onClose, onSave }){
   const [f,setF] = useState({});
+  /* Avant tout retour anticipé : un hook ne peut pas être conditionnel. */
+  const geo = useGeoCascade({ adm1:f.region, adm2:f.district });
   useEffect(()=>{ setF(line||{}); },[line]);
   if(!open) return null;
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
   const r = pddRates(f); const pl = pddPlanned(f);
-  const regions = [...new Set(db.geo.map(g=>g.adm1).filter(Boolean))];
+  const regions = geo.adm1.map(x=>x.name);
   return (
     <Modal open wide onClose={onClose} title={line?.id?`PDD — ${f.commune}`:"Nouvelle ligne de plan"}
       subtitle="Planification, puis saisie des réalisations"
@@ -664,9 +670,17 @@ function PddModal({ open, line, db, onClose, onSave }){
         <Field label="Activity tag"><Input value={f.tag||""} onChange={e=>u("tag",e.target.value)} /></Field>
         <Field label="Activité principale" className="col-span-3"><Input value={f.actMain||""} onChange={e=>u("actMain",e.target.value)} /></Field>
         <Field label="Bureau de terrain"><Input value={f.bureau||""} onChange={e=>u("bureau",e.target.value)} /></Field>
-        <Field label="Région"><Select value={f.region||""} onChange={e=>u("region",e.target.value)} empty="—" options={regions} /></Field>
-        <Field label="District"><Input value={f.district||""} onChange={e=>u("district",e.target.value)} /></Field>
-        <Field label="Commune"><Input value={f.commune||""} onChange={e=>u("commune",e.target.value)} /></Field>
+        <Field label="Région"><Select value={f.region||""} empty="—" options={withCurrent(regions, f.region)}
+          onChange={e=>{ u("region",e.target.value); u("district",""); u("commune",""); }} /></Field>
+        {/* District et commune viennent du référentiel plutôt que d'une saisie libre :
+            c'est ce qui rend l'agrégation « par commune » fiable. La valeur déjà
+            enregistrée reste proposée même si elle n'y figure pas, pour ne rien effacer. */}
+        <Field label="District"><Select value={f.district||""} empty="—" disabled={!f.region}
+          onChange={e=>{ u("district",e.target.value); u("commune",""); }}
+          options={withCurrent(geo.adm2.map(x=>x.name), f.district)} /></Field>
+        <Field label="Commune"><Select value={f.commune||""} empty="—" disabled={!f.district}
+          onChange={e=>u("commune",e.target.value)}
+          options={withCurrent(geo.adm3.map(x=>x.name), f.commune)} /></Field>
         <Field label="Modalité"><Select value={f.modality||"Food"} onChange={e=>u("modality",e.target.value)} options={PDD_MODALITIES} /></Field>
         <Field label="Type de denrée"><Select value={f.commodity||""} onChange={e=>u("commodity",e.target.value)}
           empty="—" options={PDD_COMMODITIES} /></Field>

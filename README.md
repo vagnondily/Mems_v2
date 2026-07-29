@@ -6,7 +6,7 @@ analyse des données ODK Central, cartographie et restitution.
 
 - **Frontend** : React 18 + Vite, sans framework de composants imposé
 - **Backend** : Node 20 + Express + SQLite (WAL), schéma relationnel avec clés étrangères
-- **Tests** : 25 tests d'API + 10 tests de bout en bout pilotant l'interface réelle
+- **Tests** : 29 tests d'API + 10 tests de bout en bout pilotant l'interface réelle
 
 ---
 
@@ -52,6 +52,7 @@ Le conteneur écoute sur `127.0.0.1:4000`. Publiez-le derrière un reverse proxy
 mems/
 ├─ server/                     API et base de données
 │  ├─ migrations/001_init.sql  schéma relationnel complet
+│  ├─ migrations/002_geo_unit.sql  référentiel administratif versionné
 │  ├─ src/
 │  │  ├─ index.js              montage Express, sécurité, service du frontend compilé
 │  │  ├─ config.js             lecture et contrôle des variables d'environnement
@@ -60,9 +61,11 @@ mems/
 │  │  ├─ lib/auth.js           bcrypt, JWT, sessions, contrôle des droits
 │  │  ├─ lib/validate.js       schémas Zod de toutes les entrées
 │  │  ├─ lib/crypto.js         chiffrement au repos, génération d'identifiants
+│  │  ├─ lib/geo.js            construction de l'arbre administratif, millésimes
+│  │  ├─ import-geo.js         chargement du référentiel complet en ligne de commande
 │  │  ├─ lib/logger.js         journal avec masquage des secrets
 │  │  └─ routes/               auth, state, sites, geo, users, analytics, collections
-│  └─ test/api.test.js         25 tests d'intégration
+│  └─ test/api.test.js         29 tests d'intégration
 └─ web/                        interface
    ├─ src/
    │  ├─ App.jsx               racine : session, file d'écriture, routage des onglets
@@ -80,7 +83,7 @@ mems/
 
 ## 3. Modèle de données
 
-Vingt-quatre tables. Les clés étrangères sont **déclarées et contrôlées**
+Vingt-six tables. Les clés étrangères sont **déclarées et contrôlées**
 (`PRAGMA foreign_keys = ON`), avec `ON DELETE CASCADE` là où la dépendance est
 existentielle et `ON DELETE SET NULL` là où elle est seulement descriptive.
 
@@ -89,7 +92,7 @@ existentielle et `ON DELETE SET NULL` là où elle est seulement descriptive.
 ```
 offices ──┬─< sites ──┬─< site_months        (PK composite site_id, year, month)
           │           ├─< visits             (cascade : supprimer un site supprime ses visites)
-          │           └── geo                (référence facultative vers le découpage)
+          │           └── geo                (référence héritée, remplacée par geo_unit)
           ├─< coverage_params                (unique : office_id + activity_tag)
           ├─< users                          (rattachement d'un compte à un bureau)
           └─< pdd
@@ -107,6 +110,8 @@ population ──< population_values             (PK composite population_id, ye
 
 odk_forms ──< datasets ──< scripts
 
+geo_version ──< geo_unit                     (arbre : parent_pcode, un seul millésime courant)
+
 users ──< sessions                           (cascade : supprimer un compte ferme ses sessions)
       └─< audit                              (SET NULL : la trace survit au compte)
 ```
@@ -121,6 +126,65 @@ users ──< sessions                           (cascade : supprimer un compte 
 | `audit.user_id` en `SET NULL` | la trace d'une action survit à la suppression du compte qui l'a faite |
 | `odk_forms.token_enc` | le jeton d'accès à la source externe est chiffré en AES-256-GCM, jamais renvoyé par l'API |
 | `CHECK` sur `security IN (0,1,3,99)`, `risk_level BETWEEN 1 AND 3`, etc. | la codification métier est garantie par la base, pas seulement par l'interface |
+| `geo_unit` en arbre versionné plutôt que table plate | une commune est une ligne : on peut enfin y attacher population, ciblage et distributions |
+
+### Le référentiel géographique
+
+Le découpage administratif est un **arbre versionné**, pas une liste plate :
+
+```
+geo_version ──< geo_unit ──┐
+                    ↑      │  parent_pcode : chaque unité pointe vers son parent
+                    └──────┘  adm0 → adm1 → adm2 → adm3 → adm4
+```
+
+Pour Madagascar : 23 régions, 119 districts, ~1 695 communes, ~18 000 fokontany —
+soit environ **19 800 unités**, chargées en une seconde et demie.
+
+| Colonne | À quoi elle sert |
+|---|---|
+| `pcode` | code officiel du jeu source ; dérivé du chemin de façon **déterministe** s'il est absent, pour qu'il reste stable d'un import à l'autre |
+| `name_norm` | nom sans accents ni ponctuation : c'est la clé qui rapproche un fichier saisi à la main du référentiel |
+| `path` | chemin matérialisé des p-codes — « tout ce qui est sous la région Androy » tient en un seul `LIKE` |
+| `geo_version.is_current` | index unique partiel : **un seul millésime courant**, garanti par la base |
+
+Deux partenaires n'ont pas la même liste de fokontany, et le découpage évolue. Le
+versionnement permet de changer de millésime sans rien perdre : les précédents restent
+consultables, et l'on peut revenir en arrière.
+
+#### Charger le référentiel officiel
+
+La source de référence est le **COD-AB** (Common Operational Datasets — Administrative
+Boundaries) publié par OCHA sur HDX, qui descend jusqu'au niveau 4 (fokontany) avec les
+p-codes officiels. L'INSTAT (RGPH-3, 2018) fait foi pour la population.
+
+```bash
+cd server
+node src/import-geo.js mdg_adm4.csv --label "COD-AB v2023.1" --source "HDX / OCHA"
+
+# Vérifier avant d'écrire
+node src/import-geo.js mdg_adm4.csv --dry
+```
+
+Les en-têtes usuels (`ADM1_FR`, `ADM2_PCODE`, `Y`, `X`…) sont reconnus automatiquement.
+Sinon, désignez-les explicitement :
+
+```bash
+node src/import-geo.js liste.csv --label "INSTAT 2018" \
+  --map "REGION=adm1,DISTRICT=adm2,COMMUNE=adm3,FOKONTANY=adm4"
+```
+
+Le fichier est lu ligne à ligne, jamais chargé d'un bloc. Les niveaux supérieurs sont
+**déduits et dédoublonnés** : une commune répétée sur quarante lignes de fokontany ne
+produit qu'une seule unité. Les lignes à trou (« région, puis rien, puis commune ») sont
+écartées et listées plutôt que rattachées au mauvais parent.
+
+L'interface propose aussi l'import d'un shapefile (Paramètres → Localités), lu dans le
+navigateur. Pour 18 000 fokontany, préférez la ligne de commande.
+
+> **Le référentiel ne transite plus par `/state`.** Il pesait plus que tout le reste réuni
+> et se retrouvait tronqué à 4 000 lignes. L'interface interroge `/api/geo/levels` niveau
+> par niveau, au fur et à mesure de ce qu'elle affiche.
 
 ### Vérifier l'intégrité à tout moment
 
@@ -147,8 +211,11 @@ elles exigent un jeton — en-tête `Authorization: Bearer …` ou cookie `httpO
 | GET/POST/PUT/DELETE | `/sites`, `/sites/:id` | lecture / `edit` / `del` | registre des sites |
 | PUT | `/sites/:id/months` | `edit` | fiche mensuelle ; crée la visite et met à jour la dernière visite |
 | POST | `/sites/bulk` | `edit` | modification groupée, champs sur liste blanche |
-| GET | `/geo`, `/geo/levels` | connecté | répertoire administratif, listes en cascade |
-| POST | `/geo/bulk` | `admin` | import transactionnel du découpage |
+| GET | `/geo` | connecté | répertoire paginé, filtré par unité parente ou par recherche |
+| GET | `/geo/levels` | connecté | enfants d'une unité — la cascade se fait un niveau à la fois |
+| GET | `/geo/versions` | connecté | millésimes du référentiel |
+| PUT | `/geo/versions/:id/current` | `admin` | change le millésime courant |
+| POST | `/geo/bulk` | `admin` | import : le serveur reconstruit l'arbre en une transaction |
 | GET/POST/PUT/DELETE | `/users` | `admin` | gestion des comptes |
 | GET | `/analytics/map` | connecté | points cartographiques filtrés |
 | GET | `/analytics/coverage` | connecté | couverture mensuelle agrégée en SQL |
@@ -238,7 +305,8 @@ curl -sI http://localhost:4000/api/health | grep -i "content-security-policy\|x-
 | Un calcul semble faux | tous les calculs métier sont dans `web/src/lib/calc.js`, avec les formules en commentaire |
 | Les libellés ODK n'apparaissent pas | le XLSForm n'est pas joint — Paramètres → ODK Central |
 | Les points n'apparaissent pas sur la carte | les sites n'ont pas de latitude ni de longitude ; l'API renvoie `count: 0` |
-| Import de localités refusé | coordonnées hors WGS 84, ou droit `admin` manquant |
+| Import de localités refusé | coordonnées hors WGS 84, droit `admin` manquant, ou collision de p-code — le message indique les deux chemins en conflit |
+| Les listes de régions ou communes sont vides | aucun millésime courant : `SELECT label, units FROM geo_version WHERE is_current=1;` |
 
 Journaux du serveur : `LOG_LEVEL=debug` fait apparaître méthode, chemin, code et durée de
 chaque requête. Les corps ne sont jamais journalisés.
@@ -339,7 +407,7 @@ jamais un fichier déjà appliqué en production.
 ### Tests
 
 ```bash
-npm test              # 25 tests d'API puis 10 tests de bout en bout
+npm test              # 29 tests d'API puis 10 tests de bout en bout
 cd server && npm test # API seule
 cd web && npm test    # interface seule, contre un serveur réellement démarré
 ```

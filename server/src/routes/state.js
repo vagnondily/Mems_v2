@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
+import { currentVersion } from "../lib/geo.js";
 
 const r = Router();
 const J = (v, d) => { try{ return JSON.parse(v); }catch(e){ return d; } };
@@ -100,11 +101,16 @@ r.get("/state", (req, res) => {
     benefActual:p.benef_actual, received:p.received, distributed:p.distributed,
     status:p.status, note:p.note||"" }));
 
-  /* Le découpage administratif peut être volumineux : on n'envoie que ce qui sert aux listes. */
-  const geoCount = db.prepare("SELECT COUNT(*) c FROM geo").get().c;
-  const geo = db.prepare(
-    `SELECT id, adm0, adm1, adm2, adm3, adm4, pcode AS code, lat, lon FROM geo
-     ORDER BY adm1, adm2, adm3, adm4 LIMIT 4000`).all();
+  /* Le découpage administratif ne transite plus par /state : à ~18 000 fokontany,
+     il pesait plus que tout le reste réuni et se retrouvait tronqué à 4 000 lignes.
+     L'interface interroge /api/geo/levels au fur et à mesure de ce qu'elle affiche. */
+  const gv = currentVersion();
+  const geoVersion = gv ? {
+    id:gv.id, label:gv.label, units:gv.units, importedAt:gv.imported_at,
+    counts: Object.fromEntries(db.prepare(
+      `SELECT level, COUNT(*) c FROM geo_unit WHERE version_id=? GROUP BY level`)
+      .all(gv.id).map(x => [x.level, x.c])),
+  } : null;
 
   const odkForms = db.prepare("SELECT * FROM odk_forms").all().map(f => ({
     id:f.id, name:f.name, formId:f.form_id, project:f.project||"", kind:f.kind,
@@ -118,7 +124,7 @@ r.get("/state", (req, res) => {
   res.json({
     year, me: { id:u.id, role:u.role, office_id:u.office_id },
     offices, partners, categories: cats, sites, params, visits, indicators, outcomes,
-    outputs, population, pdd, geo, geoCount, odkForms, settings,
+    outputs, population, pdd, geoVersion, odkForms, settings,
     outcomePlan: Object.fromEntries(
       Object.entries(db.prepare("SELECT * FROM outcome_plan WHERE year=?").all(year)
         .reduce((acc,r2) => { const code = indByKey[r2.indicator_id]; if(!code) return acc;

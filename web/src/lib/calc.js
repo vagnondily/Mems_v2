@@ -19,31 +19,7 @@ async function sha256(txt){
     return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,"0")).join(""); }
   catch(e){ let h=0; for(let i=0;i<txt.length;i++){ h=(h*31+txt.charCodeAt(i))|0; } return "fb"+(h>>>0).toString(16); }
 }
-const KEY = "mems:v4", GEO_KEY = "mems:geo";
-async function loadDB(){
-  try{
-    const r = await window.storage.get(KEY); if(!r?.value) return null;
-    const db = JSON.parse(r.value);
-    if(db.__geoExternal){ try{ const g = await window.storage.get(GEO_KEY);
-      db.geo = g?.value ? JSON.parse(g.value) : []; }catch(e){ db.geo = []; } delete db.__geoExternal; }
-    return db;
-  }catch(e){ return null; }
-}
-/* Le découpage administratif peut compter des dizaines de milliers d'entrées :
-   on l'écrit dans sa propre clé pour ne pas saturer l'enregistrement principal. */
-async function saveDB(db){
-  try{
-    const geo = db.geo || [];
-    if(geo.length > 2000){
-      await window.storage.set(GEO_KEY, JSON.stringify(geo));
-      await window.storage.set(KEY, JSON.stringify({ ...db, geo:[], __geoExternal:true }));
-    } else {
-      await window.storage.set(KEY, JSON.stringify(db));
-      try{ await window.storage.delete(GEO_KEY); }catch(e){}
-    }
-    return true;
-  }catch(e){ return false; }
-}
+const KEY = "mems:v4";
 
 /* ══════════════════ Calculs métier ══════════════════ */
 function siteScore(s, weights, db){

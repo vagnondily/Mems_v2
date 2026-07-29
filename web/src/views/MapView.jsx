@@ -5,6 +5,7 @@ import { fmt, pct, n, r2, clsx } from "../lib/calc.js";
 import { download, toCSV } from "../components/ui.jsx";
 import { Card, Btn, Select, Stat, StatRow, Empty, Note, Bar2, TableWrap, Th, Td, inputCls } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
+import { useGeoCascade, names } from "../lib/geo.js";
 
 /* Projection équirectangulaire simple, suffisante pour un pays et sans dépendance externe.
    Aucune tuile n'est appelée : la carte fonctionne hors ligne et ne fuite aucune donnée. */
@@ -62,9 +63,24 @@ export default function MapView({ db, me, notify, go }){
 
   const proj = useMemo(() => makeProjection(bounds, W, H), [bounds]);
   const tags = useMemo(() => [...new Set(rows.map(s => s.activity_tag).filter(Boolean))].sort(), [rows]);
-  const adm1s = useMemo(() => [...new Set(db.geo.map(g => g.adm1).filter(Boolean))].sort(), [db.geo]);
-  const adm2s = useMemo(() => [...new Set(db.geo.filter(g => !f.adm1 || g.adm1 === f.adm1)
-    .map(g => g.adm2).filter(Boolean))].sort(), [db.geo, f.adm1]);
+  /* Le référentiel vient du serveur, niveau par niveau : le navigateur ne
+     charge jamais les 18 000 fokontany pour alimenter deux listes déroulantes. */
+  const geo = useGeoCascade({ adm1: f.adm1 });
+  /* Repères de fond : centroïdes des communes du périmètre affiché. Bornés à 1 200
+     points — au-delà, ils forment une tache grise sans rien apprendre. */
+  const [geoMarks, setGeoMarks] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    const qs = new URLSearchParams({ level:"adm3", limit:"1200" });
+    if(geo.codes.adm2) qs.set("parent", geo.codes.adm2);
+    else if(geo.codes.adm1) qs.set("parent", geo.codes.adm1);
+    api.geo("?"+qs)
+      .then(r => { if(alive) setGeoMarks((r.rows||[]).filter(g => g.lat != null && g.lon != null)); })
+      .catch(() => { if(alive) setGeoMarks([]); });
+    return () => { alive = false; };
+  }, [geo.codes.adm1, geo.codes.adm2]);
+  const adm1s = useMemo(() => names(geo.adm1), [geo.adm1]);
+  const adm2s = useMemo(() => names(geo.adm2), [geo.adm2]);
 
   const palette = useMemo(() => {
     const t = {}; tags.forEach((x,i) => { t[x] = [C.brand, C.ok, C.warn, C.orange, C.aqua, C.magenta, C.navy][i % 7]; });
@@ -188,8 +204,8 @@ export default function MapView({ db, me, notify, go }){
                 </defs>
                 <rect width={W} height={H} fill="url(#grid)" />
                 <g transform={`translate(${view.dx},${view.dy}) scale(${view.k})`}>
-                  {/* Repères de communes : centroïdes du découpage administratif importé */}
-                  {(db.geo || []).filter(g => g.lat && g.lon).slice(0, 1200).map((g,i) => (
+                  {/* Repères de communes : centroïdes du référentiel, chargés à la demande */}
+                  {geoMarks.map((g,i) => (
                     <circle key={"g"+i} data-geo="1" cx={proj.x(+g.lon)} cy={proj.y(+g.lat)} r={1.2/view.k}
                             fill="#b9c6d1" opacity={0.7} />
                   ))}

@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import { db, migrate, integrity } from "./db.js";
 import { log } from "./lib/logger.js";
+import { backfillFromLegacy } from "./lib/geo.js";
 import { authenticate } from "./lib/auth.js";
 import authRoutes from "./routes/auth.js";
 import stateRoutes from "./routes/state.js";
@@ -21,6 +22,10 @@ import analyticsRoutes from "./routes/analytics.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 migrate(path.join(here, "..", "migrations"));
+/* Une base créée avant la migration 002 a son découpage dans l'ancienne table plate :
+   on le reprend une seule fois vers l'arbre, sinon le référentiel apparaîtrait vide. */
+const _geoBackfill = backfillFromLegacy();
+if(_geoBackfill) log.info("référentiel repris depuis l'ancienne table", _geoBackfill);
 
 export const app = express();
 app.disable("x-powered-by");

@@ -8,6 +8,7 @@ import { C, D_ADJUST, MONTHS, MONTHS_L, SERIES } from "../lib/constants.js";
 import { DistributionActual, rate } from "./Planning.jsx";
 import { SitesModule } from "./Settings.jsx";
 import { PageHead } from "./Shell.jsx";
+import { useGeoCascade, names } from "../lib/geo.js";
 
 /* ══════════════════ Actual Data ══════════════════ */
 function ActualData({ db, set, sub, setSub, me, notify, can, go }){
@@ -317,6 +318,8 @@ function OutcomeData({ db, set, notify, can, go }){
 }
 function OutcomeModal({ open, row, db, onClose, onSave }){
   const [f,setF] = useState({});
+  /* Appelé avant tout retour anticipé : un hook ne peut pas être conditionnel. */
+  const outcomeGeo = useGeoCascade({});
   useEffect(()=>{ setF(row||{}); },[row]);
   if(!open) return null;
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
@@ -330,7 +333,7 @@ function OutcomeModal({ open, row, db, onClose, onSave }){
           setF(p=>({...p, indicator:e.target.value, planned:i?i.target:p.planned})); }}
           options={db.indicators.map(i=>[i.id, `${i.id} — ${i.name.slice(0,44)}`])} /></Field>
         <Field label="Zone"><Select value={f.adm1||""} onChange={e=>u("adm1",e.target.value)} empty="Toutes zones"
-          options={[...new Set(db.geo.map(g=>g.adm1))]} /></Field>
+          options={names(outcomeGeo.adm1)} /></Field>
         <Field label="Ronde de collecte"><Input value={f.round||""} onChange={e=>u("round",e.target.value)} placeholder="Référence, Suivi S1, Finale" /></Field>
         <Field label="Date de collecte"><Input type="date" value={f.date||""} onChange={e=>u("date",e.target.value)} /></Field>
         <Field label={`Valeur planifiée${ind?" ("+ind.unit+")":""}`}><Input type="number" step="0.1" value={f.planned??0} onChange={e=>u("planned",n(e.target.value))} /></Field>

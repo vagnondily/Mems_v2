@@ -292,20 +292,91 @@ test("couverture : agrégation mensuelle cohérente avec la base", async () => {
   assert.equal(total, direct);
 });
 
-test("import de localités : transaction, remplacement et comptage", async () => {
+test("référentiel : l'import construit l'arbre complet et crée un millésime", async () => {
   const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  /* 500 fokontany répartis sur 20 communes d'un même district. */
   const rows = Array.from({ length: 500 }, (_, i) => ({
     adm0:"Madagascar", adm1:"Androy", adm2:"Ambovombe-Androy",
     adm3:`Commune ${i%20}`, adm4:`Fokontany ${i}`, pcode:`MG${100000+i}`,
     lat:-25+(i%100)/100, lon:45+(i%100)/100 }));
   const r = await request(app).post("/api/geo/bulk").set("Authorization", `Bearer ${t}`)
-    .send({ mode:"replace", rows });
+    .send({ label:"Test import", rows });
   assert.equal(r.status, 200);
-  assert.equal(r.body.imported, 500);
-  assert.equal(r.body.total, 500);
+  /* Les niveaux supérieurs sont déduits et dédoublonnés : 1 pays + 1 région
+     + 1 district + 20 communes + 500 fokontany. */
+  assert.deepEqual(r.body.counts, { adm0:1, adm1:1, adm2:1, adm3:20, adm4:500 });
+  assert.equal(r.body.imported, 523);
+  assert.equal(r.body.rejected, 0);
 
-  const lv = await request(app).get("/api/geo/levels?adm1=Androy").set("Authorization", `Bearer ${t}`);
-  assert.equal(lv.body.adm3.length, 20);
+  /* Cascade : les enfants d'une unité se demandent par le code du parent. */
+  const top = await request(app).get("/api/geo/levels").set("Authorization", `Bearer ${t}`);
+  assert.equal(top.body.rows.length, 1, "un seul niveau adm1 dans ce jeu");
+  const androy = top.body.rows[0];
+  assert.equal(androy.name, "Androy");
+
+  const districts = await request(app).get(`/api/geo/levels?parent=${androy.pcode}`)
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(districts.body.rows.length, 1);
+  const communes = await request(app).get(`/api/geo/levels?parent=${districts.body.rows[0].pcode}`)
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(communes.body.rows.length, 20);
+
+  /* Le répertoire est paginé : les 18 000 fokontany ne partent jamais d'un bloc. */
+  const page = await request(app).get("/api/geo?level=adm4&limit=50")
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(page.body.total, 500);
+  assert.equal(page.body.rows.length, 50);
+  /* Chaque fokontany porte ses ancêtres, résolus par la chaîne des parents. */
+  const f = page.body.rows[0];
+  assert.equal(f.adm1, "Androy");
+  assert.equal(f.adm2, "Ambovombe-Androy");
+  assert.ok(f.adm3.startsWith("Commune "));
+
+  /* Le chemin matérialisé permet de descendre depuis n'importe quel niveau. */
+  const sous = await request(app).get(`/api/geo?parent=${communes.body.rows[0].pcode}&level=adm4`)
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(sous.body.total, 25, "500 fokontany / 20 communes");
+});
+
+test("référentiel : millésimes successifs, un seul courant à la fois", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const before = await request(app).get("/api/geo/versions").set("Authorization", `Bearer ${t}`);
+  const nb = before.body.rows.length;
+  assert.ok(nb >= 1);
+  assert.equal(before.body.rows.filter(v => v.current).length, 1, "un seul millésime courant");
+
+  await request(app).post("/api/geo/bulk").set("Authorization", `Bearer ${t}`)
+    .send({ label:"Millésime suivant", rows:[
+      { adm1:"Atsimo-Andrefana", adm2:"Toliara II", adm3:"Belalanda", adm4:"Belalanda" }] });
+  const after = await request(app).get("/api/geo/versions").set("Authorization", `Bearer ${t}`);
+  assert.equal(after.body.rows.length, nb+1);
+  assert.equal(after.body.rows.filter(v => v.current).length, 1);
+  assert.equal(after.body.rows.find(v => v.current).label, "Millésime suivant");
+
+  /* Revenir à un millésime antérieur ne perd rien : l'ancien est toujours là. */
+  const ancien = after.body.rows.find(v => v.label === "Test import");
+  const sw = await request(app).put(`/api/geo/versions/${ancien.id}/current`)
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(sw.status, 200);
+  const now = await request(app).get("/api/geo?level=adm4&limit=1").set("Authorization", `Bearer ${t}`);
+  assert.equal(now.body.total, 500, "le référentiel précédent est revenu");
+});
+
+test("référentiel : nom mal orthographié rapproché, ligne trouée écartée", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const r = await request(app).post("/api/geo/bulk").set("Authorization", `Bearer ${t}`)
+    .send({ label:"Test rapprochement", rows:[
+      { adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Antanimora Sud", adm4:"A" },
+      /* accents, casse et tiret différents : doit rejoindre la même commune */
+      { adm1:"ANDROY", adm2:"Ambovombe Androy", adm3:"ANTANIMORA-SUD", adm4:"B" },
+      /* niveau intermédiaire manquant : écartée plutôt que mal rattachée */
+      { adm1:"Anosy", adm2:"", adm3:"Tolagnaro", adm4:"C" },
+    ]});
+  assert.equal(r.status, 200);
+  assert.equal(r.body.counts.adm1, 1, "une seule région malgré les variantes d'écriture");
+  assert.equal(r.body.counts.adm3, 1, "une seule commune malgré les variantes d'écriture");
+  assert.equal(r.body.counts.adm4, 2);
+  assert.equal(r.body.rejected, 1, "la ligne trouée est écartée");
 });
 
 test("import de localités : hors plage géographique rejeté", async () => {

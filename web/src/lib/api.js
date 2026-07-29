@@ -61,9 +61,12 @@ export const api = {
   saveSettings:   (obj)        => call("PUT", "/settings", obj),
   setVisitStatus: (id, status) => call("PUT", `/visits/${encodeURIComponent(id)}/status`, { status }),
 
-  geo:        (q="")         => call("GET", `/geo${q}`),
-  geoLevels:  (q="")         => call("GET", `/geo/levels${q}`),
-  importGeo:  (mode, rows)   => call("POST", "/geo/bulk", { mode, rows }),
+  geo:          (q="")            => call("GET", `/geo${q}`),
+  geoLevels:    (q="")            => call("GET", `/geo/levels${q}`),
+  geoVersions:  ()                => call("GET", "/geo/versions"),
+  setGeoVersion:(id)              => call("PUT", `/geo/versions/${encodeURIComponent(id)}/current`),
+  /* Un import crée un millésime complet : le serveur reconstruit l'arbre. */
+  importGeo:    (rows, label, source) => call("POST", "/geo/bulk", { rows, label, source }),
 
   users:      ()             => call("GET", "/users"),
   createUser: (u)            => call("POST", "/users", u),

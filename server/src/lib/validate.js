@@ -114,11 +114,17 @@ export const schemas = {
     tabs: z.array(z.string().max(40)).max(20).default([]),
     active: z.coerce.boolean().default(true),
   }),
+  /* Un import crée un millésime complet : il n'y a plus de « mode ». Remplacer ou
+     fusionner n'aurait pas de sens sur un référentiel dont l'arbre doit être cohérent. */
   geoBulk: z.object({
-    mode: z.enum(["replace","merge"]).default("replace"),
+    label:  z.string().min(1).max(160).optional(),
+    source: z.string().max(300).optional(),
     rows: z.array(z.object({
       adm0: nullableStr(120), adm1: nullableStr(120), adm2: nullableStr(120),
-      adm3: nullableStr(120), adm4: nullableStr(120), pcode: nullableStr(40),
+      adm3: nullableStr(120), adm4: nullableStr(120),
+      pcode:  nullableStr(40),
+      pcode0: nullableStr(40), pcode1: nullableStr(40), pcode2: nullableStr(40),
+      pcode3: nullableStr(40), pcode4: nullableStr(40),
       lat: z.coerce.number().min(-90).max(90).nullish(),
       lon: z.coerce.number().min(-180).max(180).nullish(),
     })).max(60000),

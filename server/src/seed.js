@@ -5,6 +5,7 @@ import { db, migrate, tx } from "./db.js";
 import { config } from "./config.js";
 import { log } from "./lib/logger.js";
 import { newId } from "./lib/crypto.js";
+import { buildUnits, writeVersion } from "./lib/geo.js";
 import { hashPassword } from "./lib/auth.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -89,7 +90,9 @@ if(info){
     for(const t of ["site_months","visits","sites","coverage_params","outputs","outcomes","outcome_plan",
                     "population_values","population","pdd","datasets","scripts","odk_forms",
                     "report_templates","dashboards","indicators","activity_categories","partners",
-                    "poi_subtypes","offices","users","settings"]) db.prepare(`DELETE FROM ${t}`).run();
+                    "poi_subtypes","offices","users","settings",
+                    /* geo_version efface geo_unit en cascade */
+                    "geo_version","geo"]) db.prepare(`DELETE FROM ${t}`).run();
 
     const officeId = {};
     const insOffice = db.prepare("INSERT INTO offices (id,name,code,kind) VALUES (?,?,?,?)");
@@ -108,9 +111,22 @@ if(info){
     const insPoi = db.prepare("INSERT INTO poi_subtypes (id,label,code) VALUES (?,?,?)");
     POI.forEach(([l,c]) => insPoi.run(newId("poi"), l, c));
 
+    /* Table plate historique — conservée tant que sites.geo_id la référence. */
     const insGeo = db.prepare("INSERT INTO geo (id,adm0,adm1,adm2,adm3,lat,lon) VALUES (?,?,?,?,?,?,?)");
     GEO.forEach(g => insGeo.run(newId("geo"), g[0], g[1], g[2], g[3],
       r5(-25+Math.random()*8), r5(43.5+Math.random()*4)));
+
+    /* Référentiel arborescent : c'est lui que l'application interroge désormais.
+       Trois fokontany par commune, pour que la cascade ait quatre niveaux réels. */
+    const geoRows = [];
+    GEO.forEach(([adm0, adm1, adm2, adm3]) => {
+      for(let k = 1; k <= 3; k++)
+        geoRows.push({ adm0, adm1, adm2, adm3,
+          adm4: `${adm3} ${["Centre","Nord","Sud"][k-1]}`,
+          lat: r5(-25+Math.random()*8), lon: r5(43.5+Math.random()*4) });
+    });
+    const { units } = buildUnits(geoRows);
+    writeVersion({ label:"Jeu de démonstration", source:"seed.js", units });
 
     const insInd = db.prepare(`INSERT INTO indicators (id,code,name,basket,unit,target,direction,method,frequency)
                                VALUES (?,?,?,?,?,?,?,?,?)`);
