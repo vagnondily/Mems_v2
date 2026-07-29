@@ -13,9 +13,16 @@ const loginLimiter = rateLimit({ windowMs: 15*60_000, limit: config.rateLoginMax
   standardHeaders:"draft-7", legacyHeaders:false, skipSuccessfulRequests:true,
   message:{ error:"trop de tentatives, réessayez dans quelques minutes" } });
 
+/* Le nom du bureau accompagne le compte : l'interface cloisonne et affiche par nom,
+   pas par identifiant, et n'a aucun autre moyen de le résoudre avant /state. */
+const officeName = (id) => id
+  ? (db.prepare("SELECT name FROM offices WHERE id=?").get(id)?.name || "")
+  : "";
+
 const publicUser = (u) => ({
   id:u.id, email:u.email, first_name:u.first_name, last_name:u.last_name, title:u.title,
-  office_id:u.office_id, role:u.role, tabs: JSON.parse(u.tabs || "[]"),
+  office_id:u.office_id, office: officeName(u.office_id),
+  role:u.role, tabs: JSON.parse(u.tabs || "[]"),
   active: !!u.active, must_change_pw: !!u.must_change_pw, last_login:u.last_login,
 });
 

@@ -199,6 +199,49 @@ test("cloisonnement : un compte rattaché à un bureau ne voit que ses sites", a
   assert.equal(r.status, 403);
 });
 
+/* Le cloisonnement ne valait que pour les sites : visites, distributions, paramètres et
+   journal partaient en clair vers tous les bureaux. Ce test verrouille la correction. */
+test("cloisonnement : visites, distributions, paramètres et journal suivent le bureau", async () => {
+  const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
+  const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${t}`);
+  assert.equal(st.status, 200);
+
+  /* Chaque collection doit contenir exactement les lignes du bureau — ni plus, ni moins —
+     et le jeu d'essai doit comporter des lignes d'ailleurs, sans quoi le test ne prouve rien. */
+  for(const [table, key, label] of [["visits","visits","visites"],
+                                    ["pdd","pdd","distributions"],
+                                    ["coverage_params","params","paramètres"]]){
+    const sien = db.prepare(`SELECT COUNT(*) c FROM ${table} WHERE office_id=?`).get(office.id).c;
+    const ailleurs = db.prepare(
+      `SELECT COUNT(*) c FROM ${table} WHERE office_id IS NULL OR office_id<>?`).get(office.id).c;
+    assert.ok(ailleurs > 0, `le jeu d'essai contient des ${label} d'autres bureaux`);
+    assert.equal(st.body[key].length, sien,
+      `${label} : le bureau reçoit ses ${sien} ligne(s), et rien des ${ailleurs} autres`);
+  }
+
+  assert.ok(st.body.visits.every(v => v.office === office.name),
+    "aucune visite d'un autre bureau");
+  assert.ok(st.body.pdd.every(p => p.office_id === office.id),
+    "aucune ligne de distribution d'un autre bureau");
+  assert.ok(st.body.params.every(p => p.office_id === office.id),
+    "aucun paramètre de couverture d'un autre bureau");
+  assert.ok(st.body.audit.every(a => !a.office || a.office === office.name),
+    "aucune entrée de journal d'un autre bureau");
+});
+
+test("identité : le nom du bureau accompagne le compte, pour l'affichage et le cloisonnement", async () => {
+  const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
+  const r = await login("terrain@test.local", "TerrainMotDePasse1");
+  assert.equal(r.body.user.office, office.name);
+  const me = await request(app).get("/api/auth/me").set("Authorization", `Bearer ${r.body.token}`);
+  assert.equal(me.body.user.office, office.name);
+  /* Un compte sans rattachement reste sans bureau : la chaîne vide, jamais « undefined ». */
+  const sansBureau = await request(app).get("/api/auth/me")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(sansBureau.body.user.office, "");
+});
+
 test("comptes : politique de mot de passe et garde-fous d'administration", async () => {
   const faible = await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"faible@test.local", password:"court", first_name:"Faible", role:"viewer" });

@@ -4,7 +4,7 @@ import { PolarAngleAxis, Area, AreaChart, Bar, BarChart, CartesianGrid, Composed
 import { Badge, Bar2, Btn, Card, Empty, Select, Stat, TableWrap, Td, Th } from "../components/ui.jsx";
 import { computeMMR, fmt, monthsSince, n, pct, r1, r2, siteRequirement } from "../lib/calc.js";
 import { C, D_TAGS, MONTHS, MONTHS_L, SERIES } from "../lib/constants.js";
-import { Planning, pddAgg, pddRates, rate } from "./Planning.jsx";
+import { pddAgg, pddRates, rate } from "./Planning.jsx";
 import { PageHead } from "./Shell.jsx";
 
 /* ══════════════════ Accueil ══════════════════ */

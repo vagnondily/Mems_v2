@@ -45,12 +45,18 @@ r.get("/state", (req, res) => {
     plan: byId[s.id],
   }));
 
-  const params = db.prepare("SELECT * FROM coverage_params").all().map(p => ({
+  const params = (officeFilter
+    ? db.prepare("SELECT * FROM coverage_params WHERE office_id=?").all(officeFilter)
+    : db.prepare("SELECT * FROM coverage_params").all()
+  ).map(p => ({
     id:p.id, csp:p.csp||"", office: officeName[p.office_id]||"", office_id:p.office_id,
     tag:p.activity_tag, category: catName[p.category_id]||"", category_id:p.category_id,
     duration:p.duration, riskLevel:p.risk_level, feasiblePerMonth:p.feasible_per_month }));
 
-  const visits = db.prepare("SELECT * FROM visits ORDER BY visit_date DESC LIMIT 5000").all().map(v => ({
+  const visits = (officeFilter
+    ? db.prepare("SELECT * FROM visits WHERE office_id=? ORDER BY visit_date DESC LIMIT 5000").all(officeFilter)
+    : db.prepare("SELECT * FROM visits ORDER BY visit_date DESC LIMIT 5000").all()
+  ).map(v => ({
     id:v.id, siteId:v.site_id, date:v.visit_date, office: officeName[v.office_id]||"",
     tag:v.activity_tag||"", monitor:v.monitor||"", form:v.form_id||"", status:v.status }));
 
@@ -59,6 +65,10 @@ r.get("/state", (req, res) => {
     target:i.target, dir:i.direction, method:i.method||"", freq:i.frequency||"" }));
   const indByKey = Object.fromEntries(indicators.map(i=>[i.key, i.id]));
 
+  /* Les résultats n'ont aucune dimension « bureau » dans le schéma : ils sont mesurés par
+     région (adm1), pas par bureau. Un cloisonnement correct suppose la table de portée
+     géographique (office_scope) ; d'ici là, ils restent visibles de tous — c'est assumé,
+     ce sont des indicateurs agrégés, non des données opérationnelles nominatives. */
   const outcomes = db.prepare("SELECT * FROM outcomes").all().map(o => ({
     id:o.id, indicator: indByKey[o.indicator_id] || "", indicator_id:o.indicator_id,
     adm1:o.adm1||"", round:o.round_label||"", planned:o.planned, value:o.value,
@@ -74,8 +84,15 @@ r.get("/state", (req, res) => {
     base:p.base, rate:p.rate,
     values: Object.fromEntries(popVals.filter(v=>v.population_id===p.id).map(v=>[v.year, v.value])) }));
 
-  const pdd = db.prepare("SELECT * FROM pdd ORDER BY year, month, bureau").all().map(p => ({
-    id:p.id, year:p.year, month:p.month, wbs:p.wbs||"", actType:p.act_type, tag:p.activity_tag||"",
+  const pdd = (officeFilter
+    ? db.prepare("SELECT * FROM pdd WHERE office_id=? ORDER BY year, month, bureau").all(officeFilter)
+    : db.prepare("SELECT * FROM pdd ORDER BY year, month, bureau").all()
+  ).map(p => ({
+    /* office_id doit figurer ici : le client renvoie la collection telle qu'il l'a reçue,
+       et un champ absent est réécrit à NULL par la synchronisation — le rattachement au
+       bureau était donc effacé à chaque enregistrement du plan de distribution. */
+    id:p.id, office_id:p.office_id, year:p.year, month:p.month, wbs:p.wbs||"",
+    actType:p.act_type, tag:p.activity_tag||"",
     actMain:p.act_main||"", bureau:p.bureau, region:p.region||"", district:p.district||"",
     commune:p.commune||"", partner: partnerName[p.partner_id]||"", partner_id:p.partner_id,
     modality:p.modality, commodity:p.commodity||"", days:p.days,
@@ -115,8 +132,12 @@ r.get("/state", (req, res) => {
       id:t.id, name:t.name, blocks:J(t.blocks,[]), intro:t.intro||"" })),
     dashboards: db.prepare("SELECT * FROM dashboards").all().map(d => ({
       id:d.id, name:d.name, widgets:J(d.widgets,[]) })),
-    audit: db.prepare("SELECT * FROM audit WHERE kind<>'securite' ORDER BY at DESC LIMIT 60").all()
-      .map(a => ({ id:a.id, at:a.at, user:a.user_label||"", office:a.office||"", kind:a.kind, text:a.text })),
+    /* Le journal révèle qui fait quoi : il suit le même cloisonnement que les données. */
+    audit: (officeFilter
+      ? db.prepare(`SELECT * FROM audit WHERE kind<>'securite' AND office=?
+                    ORDER BY at DESC LIMIT 60`).all(officeName[officeFilter] || "")
+      : db.prepare("SELECT * FROM audit WHERE kind<>'securite' ORDER BY at DESC LIMIT 60").all()
+    ).map(a => ({ id:a.id, at:a.at, user:a.user_label||"", office:a.office||"", kind:a.kind, text:a.text })),
     users: (u.role==="super" || u.role==="admin")
       ? db.prepare("SELECT id,email,first_name,last_name,title,office_id,role,tabs,active FROM users ORDER BY first_name").all()
           .map(x => ({ ...x, tabs:J(x.tabs,[]), active:!!x.active }))

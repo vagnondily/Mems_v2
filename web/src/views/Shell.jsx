@@ -3,9 +3,6 @@ import { BarChart3, CalendarRange, ChevronDown, Cog, Database, FileText, LayoutD
 import { Badge, BrandMark } from "../components/ui.jsx";
 import { clsx } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
-import { Sources } from "./ActualData.jsx";
-import { Scripts } from "./Analytics.jsx";
-import { Planning } from "./Planning.jsx";
 
 /* ══════════════════ Coquille ══════════════════ */
 const NAV = [
@@ -41,9 +38,10 @@ function SyncBadge({ sync }){
     </span>);
 }
 
-function Shell({ db, me, tab, sub, setTab, children, onLogout, sync }){
+/* `allowed` est calculé une seule fois par App (resolveTabs) et transmis ici :
+   deux règles divergentes laissaient un compte sans aucune navigation. */
+function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, allowed = [] }){
   const [open,setOpen] = useState(null); const [menu,setMenu] = useState(false);
-  const allowed = me.tabs || db.roles[me.role]?.tabs || [];
   useEffect(()=>{ const h=()=>{setOpen(null);setMenu(false);};
     window.addEventListener("click",h); return ()=>window.removeEventListener("click",h); },[]);
   const initials = (me.firstName?.[0]||"") + (me.lastName?.[0]||"");
@@ -103,6 +101,8 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync }){
       </header>
       <main className="flex-1 mw1520 w-full mx-auto px-5 py-6">{children}</main>
       <footer className="border-t border-slate-200 bg-white px-5 py-3 flex items-center gap-3 f11 text-slate-500">
+        {db.settings.logo && <img src={db.settings.logo} alt="" className="h-6 w-auto shrink-0"
+          onError={e=>{ e.currentTarget.style.display="none"; }} />}
         <div>{db.settings.org} — {db.settings.unit}</div>
         <span className="ml-auto">MEMS · exercice {db.year}</span>
       </footer>

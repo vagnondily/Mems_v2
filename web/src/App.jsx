@@ -39,6 +39,24 @@ const DEV_ADMIN_CREDENTIALS = import.meta.env?.DEV ? {
   password: "MemsAdmin2026",
 } : null;
 
+/* Le serveur parle snake_case, l'interface camelCase. Un seul point de conversion :
+   sans lui, me.firstName et me.office sont undefined partout (« Bonjour undefined »,
+   avatar « ? », cloisonnement d'interface inopérant). */
+const normalizeMe = (u) => u && ({
+  ...u,
+  firstName: u.first_name || "",
+  lastName:  u.last_name  || "",
+  title:     u.title      || "",
+  office:    u.office     || "",
+  tabs: Array.isArray(u.tabs) ? u.tabs : [],
+});
+
+/* Onglets autorisés : une seule règle, partagée par App et par la coquille.
+   `tabs` vaut [] par défaut côté serveur ; il faut donc retomber sur le rôle,
+   sinon un compte se retrouve avec une navigation vide. */
+const resolveTabs = (u) =>
+  (u?.tabs?.length ? u.tabs : D_ROLES[u?.role]?.tabs) || ["home"];
+
 export default function App(){
   const [db, setDb] = useState(null);
   const [me, setMe] = useState(null);
@@ -100,12 +118,12 @@ export default function App(){
       setFatal("Le serveur ne répond pas. Vérifiez qu'il est démarré et que l'adresse de l'API est correcte.");
       setPhase("fatal"); return;
     }
-    try{ const { user } = await api.me(); setMe(user); await loadState(); setPhase("ready"); }
+    try{ const { user } = await api.me(); setMe(normalizeMe(user)); await loadState(); setPhase("ready"); }
     catch(e){
       if(DEV_ADMIN_CREDENTIALS){
         try{
           const r = await api.login(DEV_ADMIN_CREDENTIALS.email, DEV_ADMIN_CREDENTIALS.password);
-          setToken(r.token); setMe(r.user); await loadState(); setPhase("ready");
+          setToken(r.token); setMe(normalizeMe(r.user)); await loadState(); setPhase("ready");
           notify(`Bienvenue ${r.user.first_name}`, "ok");
           return;
         }catch(loginError){}
@@ -115,7 +133,7 @@ export default function App(){
   })(); }, [loadState, notify]);
 
   const onLogin = async (user, token) => {
-    setToken(token); setMe(user); await loadState(); setPhase("ready");
+    setToken(token); setMe(normalizeMe(user)); await loadState(); setPhase("ready");
     notify(`Bienvenue ${user.first_name}`, "ok");
   };
   const onLogout = async () => {
@@ -143,12 +161,9 @@ export default function App(){
 
   const setTab = (t, s) => { setTabState(t); if(s) setSubs(x => ({ ...x, [t]:s })); };
   const setSub = (t) => (s) => setSubs(x => ({ ...x, [t]:s }));
-  const can = useCallback((f) => {
-    if(!me) return false;
-    const caps = { super:{edit:1,del:1,validate:1,admin:1}, admin:{edit:1,del:1,validate:1,admin:1},
-      validator:{edit:1,validate:1}, editor:{edit:1}, viewer:{} }[me.role] || {};
-    return !!caps[f];
-  }, [me]);
+  /* Une seule matrice de droits côté client (D_ROLES), alignée sur celle du serveur.
+     Le serveur reste l'arbitre : ceci ne fait que masquer ce qu'il refuserait. */
+  const can = useCallback((f) => !!D_ROLES[me?.role]?.[f], [me]);
 
   useEffect(() => {
     const h = (e) => { if(queue.current?.busy){ e.preventDefault(); e.returnValue = ""; } };
@@ -177,12 +192,11 @@ export default function App(){
     <Toast list={toasts} />
   </>);
 
-  const allowed = (me.tabs && me.tabs.length) ? me.tabs
-    : ["home","planning","actual","analytics","reports"];
+  const allowed = resolveTabs(me);
   const view = allowed.includes(tab) ? tab : (allowed[0] || "home");
 
   return (<>
-    <Shell db={db} me={me} tab={view} sub={subs[view]} setTab={setTab}
+    <Shell db={db} me={me} tab={view} sub={subs[view]} setTab={setTab} allowed={allowed}
            onLogout={onLogout} sync={sync} notify={notify}>
       <Boundary reset={view + "|" + (subs[view] || "")}>
         {view==="home" && <Home db={db} me={me} go={setTab} />}

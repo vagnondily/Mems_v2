@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api.js";
-import { Activity, Building2, CalendarRange, Check, ClipboardList, Copy, Download, FileText, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
+import { Activity, Building2, CalendarRange, Check, ClipboardList, Download, FileText, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
 import { Area, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, n, pct, r2, r5, siteRequirement, siteScore, uid } from "../lib/calc.js";
@@ -26,7 +26,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can }){
       {sub==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
       {sub==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} />}
       {sub==="templates" && <SetTemplates db={db} set={set} notify={notify} can={can} />}
-      {sub==="api" && <SetApi db={db} set={set} notify={notify} />}
+      {sub==="api" && <SetApi db={db} notify={notify} />}
       {sub==="users" && <SetUsers db={db} set={set} me={me} notify={notify} />}
     </div>);
 }
@@ -39,14 +39,18 @@ function SetGeneral({ db, set }){
       <Card title="Identité et affichage">
         <Field label="Nom de l'organisation"><Input value={s.org} onChange={e=>u("org",e.target.value)} /></Field>
         <Field label="Unité responsable"><Input value={s.unit} onChange={e=>u("unit",e.target.value)} /></Field>
-        <Field label="Logo du pied de page" hint="Adresse d'une image accessible"><Input value={s.logo} onChange={e=>u("logo",e.target.value)} placeholder="https://…/logo.png" /></Field>
+        {/* La politique de sécurité du contenu n'autorise que les images de même origine
+            ou en data: — un lien externe serait bloqué par le navigateur, sans message. */}
+        <Field label="Logo du pied de page"
+          hint="Chemin servi par l'application (/logo.png) ou image en data: — les adresses externes sont bloquées par la politique de sécurité">
+          <Input value={s.logo} onChange={e=>u("logo",e.target.value)} placeholder="/logo.png" /></Field>
         <div className="grid grid-cols-2 gap-x-3">
-          <Field label="Devise"><Select value={s.currency} onChange={e=>u("currency",e.target.value)} options={["MGA","USD","EUR"]} /></Field>
-          <Field label="Format de date"><Select value={s.dateFmt} onChange={e=>u("dateFmt",e.target.value)} options={["DD/MM/YYYY","YYYY-MM-DD","MM/DD/YYYY"]} /></Field>
-          <Field label="Éléments par page"><Input type="number" value={s.pageSize} onChange={e=>u("pageSize",n(e.target.value))} /></Field>
-          <Field label="Synchronisation (min)"><Input type="number" value={s.syncInterval} onChange={e=>u("syncInterval",n(e.target.value))} /></Field>
+          <Field label="Éléments par page" hint="Pagination des tableaux de planification">
+            <Input type="number" value={s.pageSize} onChange={e=>u("pageSize",n(e.target.value))} /></Field>
         </div>
-        <Sw label="Notifications dans l'application" on={s.notifications} onChange={v=>u("notifications",v)} />
+        {/* Devise, format de date, intervalle de synchronisation et notifications ont été
+            retirés : aucun code ne les lisait. Les rétablir suppose de les brancher
+            réellement (formatage des montants et des dates, cadence de la file d'envoi). */}
       </Card>
       {LISTS.map(([k,label])=>(
         <Card key={k} title={label} subtitle={`${db.lists[k].length} entrées`}>
@@ -1026,8 +1030,8 @@ function SetTemplates({ db, set, notify, can }){
 }
 
 /* ── API ── */
-function SetApi({ db, set, notify }){
-  const s = db.settings; const u=(k,v)=>set(d=>{ d.settings[k]=v; return d; });
+function SetApi({ db, notify }){
+  const s = db.settings;
   const endpoints = [["/api/v1/sites","Registre des sites avec score et couverture"],
     ["/api/v1/plan","Plan de suivi mensuel, planifié et réalisé"],
     ["/api/v1/params","Paramètres de couverture et colonnes calculées"],
@@ -1047,18 +1051,18 @@ function SetApi({ db, set, notify }){
   return (
     <div className="grid gap-4" style={{gridTemplateColumns:"360px 1fr"}}>
       <Card title="Accès applicatif">
-        <Sw label="Activer l'accès en lecture" hint="Ouvre les points d'entrée aux outils décisionnels" on={s.apiEnabled} onChange={v=>u("apiEnabled",v)} />
-        <Field label="Jeton d'accès" className="mt-3">
-          <div className="flex gap-1.5"><Input readOnly value={s.apiToken} className="f115" />
-            <Btn size="sm" kind="sec" icon={Copy} onClick={()=>{ navigator.clipboard?.writeText(s.apiToken); notify("Jeton copié","ok"); }} /></div></Field>
-        <Btn size="sm" kind="sec" icon={RefreshCw} onClick={()=>{ u("apiToken", uid("tok")+uid("")); notify("Jeton régénéré","ok"); }}>Régénérer</Btn>
+        <div className="rounded bg-amber-50 border border-amber-200 px-3 py-2.5 f115 text-amber-900 leading-relaxed">
+          <b>Non disponible.</b> L'accès en lecture par jeton n'est pas encore servi par
+          l'application : les points d'entrée ci-contre décrivent la structure prévue, aucun
+          n'est actif. En attendant, utilisez l'instantané JSON.
+        </div>
         <div className="mt-4 pt-4 border-t border-slate-100">
           <Btn size="sm" icon={Download} onClick={snapshot}>Télécharger un instantané JSON</Btn>
           <p className="f115 text-slate-500 mt-2 leading-relaxed">
-            En l'absence de serveur, cet instantané se charge directement dans un outil décisionnel par
-            « Obtenir les données → JSON ». Après déploiement, les mêmes structures seront servies en direct.</p></div>
+            Cet instantané se charge directement dans un outil décisionnel par
+            « Obtenir les données → JSON ». Il reflète votre périmètre au moment du téléchargement.</p></div>
       </Card>
-      <Card flush title="Points d'entrée" subtitle="Structure prévue pour tout client compatible REST">
+      <Card flush title="Points d'entrée" subtitle="Structure prévue — aucun de ces points d'entrée n'est actif à ce jour">
         <TableWrap max="mh420">
           <thead><tr><Th>Point d'entrée</Th><Th>Contenu</Th><Th>Méthode</Th></tr></thead>
           <tbody>{endpoints.map(([e,d2])=>(
@@ -1066,10 +1070,10 @@ function SetApi({ db, set, notify }){
               <Td className="text-slate-600">{d2}</Td><Td><Badge tone="b">GET</Badge></Td></tr>))}</tbody>
         </TableWrap>
         <div className="p-4 border-t border-slate-100">
-          <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">Exemple d'appel</div>
+          <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">Forme prévue de l'appel</div>
           <pre className="px-3 py-2.5 rounded bg-slate-900 text-slate-100 f115 overflow-auto">
 {`GET https://mems.example.org/api/v1/sites?year=${db.year}
-Authorization: Token ${String(s.apiToken).slice(0,12)}…
+Authorization: Token <jeton à émettre>
 Accept: application/json`}</pre></div>
       </Card>
     </div>);
