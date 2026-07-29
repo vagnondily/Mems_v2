@@ -37,7 +37,8 @@ r.get("/state", (req, res) => {
     antenne:s.antenne||"", activityCategory: catName[s.category_id] || "", category_id:s.category_id,
     activityTag:s.activity_tag||"", programArea:s.program_area||"", programTag:s.program_tag||"",
     poiSubtype:s.poi_subtype||"", siteType:s.site_type||"", monitoringType:s.monitoring_type||"",
-    duration:s.duration||"", adm1:s.adm1||"", adm2:s.adm2||"", adm3:s.adm3||"", adm4:s.adm4||"",
+    duration:s.duration||"", geo_pcode:s.geo_pcode||null,
+    adm1:s.adm1||"", adm2:s.adm2||"", adm3:s.adm3||"", adm4:s.adm4||"",
     urbanArea:s.urban_area, lat:s.lat, lon:s.lon, security:s.security, modality:s.modality||"",
     beneficiaries:s.beneficiaries, partner: partnerName[s.partner_id] || "", partner_id:s.partner_id,
     responsible:s.responsible||"", lastVisit:s.last_visit||"",
@@ -92,7 +93,8 @@ r.get("/state", (req, res) => {
     /* office_id doit figurer ici : le client renvoie la collection telle qu'il l'a reçue,
        et un champ absent est réécrit à NULL par la synchronisation — le rattachement au
        bureau était donc effacé à chaque enregistrement du plan de distribution. */
-    id:p.id, office_id:p.office_id, year:p.year, month:p.month, wbs:p.wbs||"",
+    id:p.id, office_id:p.office_id, geo_pcode:p.geo_pcode||null,
+    year:p.year, month:p.month, wbs:p.wbs||"",
     actType:p.act_type, tag:p.activity_tag||"",
     actMain:p.act_main||"", bureau:p.bureau, region:p.region||"", district:p.district||"",
     commune:p.commune||"", partner: partnerName[p.partner_id]||"", partner_id:p.partner_id,

@@ -103,6 +103,65 @@ r.get("/", (req, res) => {
     version: { id:v.id, label:v.label, units:v.units } });
 });
 
+/* ── Couverture géographique ─────────────────────────────────────────
+   « Quelles unités ne portent aucun site ? » — la question que le modèle plat
+   ne savait pas poser. Un site rattaché à un fokontany compte aussi pour sa
+   commune, son district et sa région : le comptage se fait par préfixe de chemin.
+
+   Deux requêtes plutôt qu'une jointure sur LIKE : à quelques milliers de sites
+   le regroupement en mémoire est exact et instantané, là où la jointure
+   comparerait chaque unité à chaque site. */
+r.get("/coverage", (req, res) => {
+  const q = z.object({
+    parent: z.string().max(64).optional(),
+    level:  z.enum(["adm1","adm2","adm3","adm4"]).default("adm3"),
+    limit:  z.coerce.number().int().min(1).max(5000).default(1000),
+  }).safeParse(req.query);
+  if(!q.success) return res.status(422).json({ error:"filtres invalides" });
+  const v = version();
+  if(!v) return res.json({ level:q.data.level, total:0, covered:0, rows:[], version:null });
+
+  const { parent, level, limit } = q.data;
+  const where = ["u.version_id = ?", "u.level = ?"]; const args = [v.id, level];
+  if(parent){
+    const p = db.prepare("SELECT path FROM geo_unit WHERE version_id=? AND pcode=?").get(v.id, parent);
+    if(!p) return res.json({ level, total:0, covered:0, rows:[], version:{ id:v.id, label:v.label } });
+    where.push("(u.path = ? OR u.path LIKE ?)"); args.push(p.path, p.path + "/%");
+  }
+  const units = db.prepare(
+    `SELECT u.pcode, u.name, u.path, p1.name p1, p2.name p2, p3.name p3, p4.name p4
+     FROM geo_unit u ${ANCESTRY}
+     WHERE ${where.join(" AND ")} ORDER BY u.path LIMIT ?`).all(...args, limit);
+
+  /* Chaque site apporte le chemin de l'unité à laquelle il est rattaché.
+     Le cloisonnement par bureau s'applique ici comme partout ailleurs. */
+  const scoped = ["viewer","editor","validator"].includes(req.user.role) && req.user.office_id;
+  const sites = db.prepare(
+    `SELECT s.status, s.last_visit, gu.path
+     FROM sites s JOIN geo_unit gu ON gu.pcode = s.geo_pcode AND gu.version_id = ?
+     ${scoped ? "WHERE s.office_id = ?" : ""}`).all(...(scoped ? [v.id, req.user.office_id] : [v.id]));
+
+  const rows = units.map(u => {
+    const mine = sites.filter(s => s.path === u.path || s.path.startsWith(u.path + "/"));
+    const last = mine.map(s => s.last_visit).filter(Boolean).sort().pop() || "";
+    const depth = LEVELS.indexOf(level);
+    const out = { pcode:u.pcode, name:u.name, sites:mine.length,
+      active: mine.filter(s => s.status === "Active").length,
+      inactive: mine.filter(s => s.status === "Inactive").length,
+      lastVisit: last };
+    [u.p1, u.p2, u.p3, u.p4].forEach((nm, i) => {
+      const lvl = LEVELS[depth-1-i]; if(lvl && nm != null) out[lvl] = nm; });
+    return out;
+  });
+
+  res.json({ level, total: rows.length, covered: rows.filter(x => x.sites > 0).length,
+    sitesLinked: sites.length,
+    sitesUnlinked: db.prepare(
+      `SELECT COUNT(*) c FROM sites WHERE geo_pcode IS NULL ${scoped ? "AND office_id=?" : ""}`)
+      .get(...(scoped ? [req.user.office_id] : [])).c,
+    rows, version:{ id:v.id, label:v.label } });
+});
+
 /* ── Millésimes ────────────────────────────────────────────────────── */
 r.get("/versions", (req, res) => {
   res.json({ rows: db.prepare(`SELECT v.*, u.first_name AS by_name

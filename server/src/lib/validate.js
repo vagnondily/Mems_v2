@@ -34,6 +34,9 @@ export const schemas = {
     poi_subtype: nullableStr(120), poi_subtype_code: nullableStr(20),
     site_type: nullableStr(120), monitoring_type: nullableStr(120), duration: nullableStr(40),
     geo_id: nullableStr(64),
+    /* Rattachement au référentiel. Quand il est fourni, adm1…adm4 en sont dérivés
+       côté serveur : les libellés ne peuvent plus diverger de l'arbre. */
+    geo_pcode: nullableStr(64),
     adm1: nullableStr(120), adm2: nullableStr(120), adm3: nullableStr(120), adm4: nullableStr(120),
     urban_area: z.enum(["Oui","Non"]).default("Non"),
     lat: z.coerce.number().min(-90).max(90).nullish(),

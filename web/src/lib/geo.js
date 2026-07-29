@@ -28,8 +28,8 @@ export function resetGeoCache(){ cache.clear(); }
 /* `sel` porte les noms choisis : { adm1, adm2, adm3 }.
    Retourne les options de chaque niveau, et les codes correspondants. */
 export function useGeoCascade(sel = {}){
-  const [state, setState] = useState({ ...EMPTY, codes:{}, loading:true });
-  const { adm1, adm2, adm3 } = sel;
+  const [state, setState] = useState({ ...EMPTY, codes:{}, pcode:null, loading:true });
+  const { adm1, adm2, adm3, adm4 } = sel;
 
   useEffect(() => {
     let alive = true;
@@ -37,19 +37,19 @@ export function useGeoCascade(sel = {}){
       const out = { ...EMPTY }, codes = {};
       out.adm1 = await levels(null);
       /* On descend tant que le niveau courant est choisi et reconnu. */
-      let parent = null;
-      for(let i = 0; i < LEVELS.length - 1; i++){
-        const name = [adm1, adm2, adm3][i];
-        const hit = name ? out[LEVELS[i]].find(x => x.name === name) : null;
+      const chosen = [adm1, adm2, adm3, adm4];
+      for(let i = 0; i < LEVELS.length; i++){
+        const hit = chosen[i] ? out[LEVELS[i]].find(x => x.name === chosen[i]) : null;
         if(!hit) break;
         codes[LEVELS[i]] = hit.pcode;
-        parent = hit.pcode;
-        out[LEVELS[i+1]] = await levels(parent);
+        if(i + 1 < LEVELS.length) out[LEVELS[i+1]] = await levels(hit.pcode);
       }
-      if(alive) setState({ ...out, codes, loading:false });
+      /* Le rattachement retenu est le niveau le plus profond effectivement choisi. */
+      const pcode = codes.adm4 || codes.adm3 || codes.adm2 || codes.adm1 || null;
+      if(alive) setState({ ...out, codes, pcode, loading:false });
     })();
     return () => { alive = false; };
-  }, [adm1, adm2, adm3]);
+  }, [adm1, adm2, adm3, adm4]);
 
   return state;
 }

@@ -446,7 +446,7 @@ function SiteModal({ open, site, db, onClose, onSave }){
   useEffect(()=>{ setF(site||{}); setTab("id"); },[site]);
   /* Cascade servie par le serveur, avant tout retour anticipé : un hook ne peut
      pas être conditionnel. Chaque niveau ne demande que les enfants du précédent. */
-  const geo = useGeoCascade({ adm1:f.adm1, adm2:f.adm2, adm3:f.adm3 });
+  const geo = useGeoCascade({ adm1:f.adm1, adm2:f.adm2, adm3:f.adm3, adm4:f.adm4 });
   const [adm1s, adm2s, adm3s, adm4s] =
     [geo.adm1, geo.adm2, geo.adm3, geo.adm4].map(rows => rows.map(x => x.name));
   if(!open) return null;
@@ -457,7 +457,7 @@ function SiteModal({ open, site, db, onClose, onSave }){
     <Modal open wide onClose={onClose} title={site?.id?`Site ${site.id}`:"Nouveau site"}
       subtitle="Identification, codification et critères de risque"
       footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
-        <Btn icon={Save} onClick={()=>onSave(f)}>{site?.id?"Mettre à jour":"Créer le site"}</Btn></>}>
+        <Btn icon={Save} onClick={()=>onSave({ ...f, geo_pcode: geo.pcode })}>{site?.id?"Mettre à jour":"Créer le site"}</Btn></>}>
       <Tabs className="mb-4" value={tab} onChange={setTab}
         items={[["id","Identification"],["risk","Critères de risque"],["plan","Suivi"]]} />
       {tab==="id" && (

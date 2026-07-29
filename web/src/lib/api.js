@@ -64,6 +64,7 @@ export const api = {
   geo:          (q="")            => call("GET", `/geo${q}`),
   geoLevels:    (q="")            => call("GET", `/geo/levels${q}`),
   geoVersions:  ()                => call("GET", "/geo/versions"),
+  geoCoverage:  (q="")            => call("GET", `/geo/coverage${q}`),
   setGeoVersion:(id)              => call("PUT", `/geo/versions/${encodeURIComponent(id)}/current`),
   /* Un import crée un millésime complet : le serveur reconstruit l'arbre. */
   importGeo:    (rows, label, source) => call("POST", "/geo/bulk", { rows, label, source }),

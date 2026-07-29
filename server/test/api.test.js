@@ -422,3 +422,62 @@ test("route inconnue : anonyme refusé, authentifié informé", async () => {
   assert.equal(auth.body.error, "ressource introuvable");
   assert.ok(!/at |\.js:/.test(JSON.stringify(auth.body)), "aucune trace interne ne fuit");
 });
+
+test("rattachement : un site pointe vers une unité, ses libellés en descendent", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  /* On repart d'un référentiel connu. */
+  await request(app).post("/api/geo/bulk").set("Authorization", `Bearer ${t}`)
+    .send({ label:"Test rattachement", rows:[
+      { adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Ambovombe", adm4:"Ambovombe Centre",
+        pcode:"MG81101001001", lat:-25.173, lon:46.087 },
+      { adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Ambovombe", adm4:"Antanandava", pcode:"MG81101001002" },
+      { adm1:"Androy", adm2:"Tsihombe", adm3:"Tsihombe", adm4:"Tsihombe Centre", pcode:"MG81103001001" },
+    ]});
+
+  /* Les libellés envoyés par le client sont faux : le serveur les remplace par
+     ceux du référentiel, dérivés du rattachement. */
+  const r = await request(app).post("/api/sites").set("Authorization", `Bearer ${t}`)
+    .send({ code:"LNK-001", name:"CSB II de contrôle", geo_pcode:"MG81101001001",
+            adm1:"Saisie erronée", adm2:"Saisie erronée", adm3:"Saisie erronée", adm4:"Saisie erronée" });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.site.adm1, "Androy");
+  assert.equal(r.body.site.adm2, "Ambovombe-Androy");
+  assert.equal(r.body.site.adm3, "Ambovombe");
+  assert.equal(r.body.site.adm4, "Ambovombe Centre");
+  /* Sans coordonnées propres, celles du référentiel servent de repli. */
+  assert.equal(r.body.site.lat, -25.173);
+
+  /* Les coordonnées propres au site priment : une école n'est pas au centroïde. */
+  const r2 = await request(app).post("/api/sites").set("Authorization", `Bearer ${t}`)
+    .send({ code:"LNK-002", name:"École précise", geo_pcode:"MG81101001001", lat:-25.2, lon:46.1 });
+  assert.equal(r2.body.site.lat, -25.2);
+
+  /* Un p-code inconnu n'écrase rien : mieux vaut garder les libellés existants. */
+  const r3 = await request(app).post("/api/sites").set("Authorization", `Bearer ${t}`)
+    .send({ code:"LNK-003", name:"Hors référentiel", geo_pcode:"INEXISTANT", adm1:"Conservé" });
+  assert.equal(r3.body.site.adm1, "Conservé");
+});
+
+test("couverture : les unités sans aucun site sont identifiées", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const c = await request(app).get("/api/geo/coverage?level=adm4").set("Authorization", `Bearer ${t}`);
+  assert.equal(c.status, 200);
+  assert.equal(c.body.total, 3, "trois fokontany dans ce référentiel");
+  /* Deux sites sont sur Ambovombe Centre, aucun sur les deux autres. */
+  const centre = c.body.rows.find(x => x.name === "Ambovombe Centre");
+  assert.equal(centre.sites, 2);
+  assert.equal(c.body.covered, 1, "un seul fokontany couvert");
+  assert.equal(c.body.rows.filter(x => x.sites === 0).length, 2, "deux trous de couverture");
+  /* Les ancêtres accompagnent chaque unité. */
+  assert.equal(centre.adm3, "Ambovombe");
+  assert.equal(centre.adm1, "Androy");
+
+  /* Un site rattaché à un fokontany compte aussi pour sa commune et sa région. */
+  const parCommune = await request(app).get("/api/geo/coverage?level=adm3")
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(parCommune.body.rows.find(x => x.name === "Ambovombe").sites, 2);
+  assert.equal(parCommune.body.rows.find(x => x.name === "Tsihombe").sites, 0);
+
+  /* Les sites non rattachés sont comptés à part plutôt qu'ignorés en silence. */
+  assert.ok(c.body.sitesUnlinked > 0, "les sites hérités sans rattachement sont signalés");
+});

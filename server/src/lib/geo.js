@@ -120,6 +120,62 @@ export function writeVersion({ label, source, units, userId = null, makeCurrent 
 export const currentVersion = () =>
   db.prepare("SELECT * FROM geo_version WHERE is_current=1").get() || null;
 
+/* ── Rapprochement d'un libellé vers le référentiel ────────────────────
+   On descend l'arbre niveau par niveau en comparant les formes normalisées :
+   chaque niveau est cherché parmi les seuls enfants du niveau retenu au-dessus.
+   C'est ce qui lève l'ambiguïté — plusieurs communes du pays portent le même nom,
+   mais une seule s'appelle ainsi dans ce district.
+
+   Retourne l'unité la plus profonde atteinte, et à quel niveau la descente s'est
+   arrêtée. Un rattachement partiel (commune trouvée, fokontany inconnu) vaut mieux
+   qu'un rattachement faux : l'appelant décide s'il l'accepte. */
+export function resolveUnit(names, versionId){
+  const v = versionId || currentVersion()?.id;
+  if(!v) return { pcode:null, level:null, matched:[], ambiguous:false };
+
+  const byParent = db.prepare(
+    `SELECT pcode, name, level FROM geo_unit WHERE version_id=? AND parent_pcode IS ? AND name_norm=?`);
+  const byLevel = db.prepare(
+    `SELECT pcode, name, level FROM geo_unit WHERE version_id=? AND level=? AND name_norm=?`);
+
+  let parent = null, found = null, matched = [], ambiguous = false;
+  for(const level of LEVELS){
+    const raw = names[level];
+    if(!raw) continue;
+    const norm = normalizeName(raw);
+    if(!norm) continue;
+    /* Au premier niveau rencontré on cherche par niveau ; ensuite, uniquement
+       parmi les enfants de ce qui a déjà été retenu. */
+    const hits = parent === null && !found
+      ? byLevel.all(v, level, norm)
+      : byParent.all(v, parent, norm);
+    if(hits.length !== 1){
+      if(hits.length > 1) ambiguous = true;
+      break;                     /* inconnu ou ambigu : on s'arrête à ce qu'on tient */
+    }
+    found = hits[0]; parent = found.pcode; matched.push(level);
+  }
+  return { pcode: found?.pcode ?? null, level: found?.level ?? null, name: found?.name ?? null,
+           matched, ambiguous };
+}
+
+/* Les libellés d'affichage redescendent du rattachement : ils ne sont plus saisis,
+   donc ils ne peuvent plus diverger du référentiel. */
+export function labelsFor(pcode, versionId){
+  const v = versionId || currentVersion()?.id;
+  const out = { adm1:"", adm2:"", adm3:"", adm4:"", lat:null, lon:null };
+  if(!v || !pcode) return out;
+  let cur = db.prepare("SELECT * FROM geo_unit WHERE version_id=? AND pcode=?").get(v, pcode);
+  if(cur){ out.lat = cur.lat; out.lon = cur.lon; }
+  while(cur){
+    if(cur.level in out) out[cur.level] = cur.name;
+    cur = cur.parent_pcode
+      ? db.prepare("SELECT * FROM geo_unit WHERE version_id=? AND pcode=?").get(v, cur.parent_pcode)
+      : null;
+  }
+  return out;
+}
+
 /* Reprise de l'ancienne table plate `geo` vers l'arbre, une seule fois.
    Sans elle, une base existante se retrouverait avec un référentiel vide. */
 export function backfillFromLegacy(){
