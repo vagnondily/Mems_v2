@@ -19,6 +19,7 @@ import collectionRoutes from "./routes/collections.js";
 import geoRoutes from "./routes/geo.js";
 import userRoutes from "./routes/users.js";
 import analyticsRoutes from "./routes/analytics.js";
+import caseloadRoutes from "./routes/caseload.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 migrate(path.join(here, "..", "migrations"));
@@ -91,6 +92,7 @@ app.use("/api/sites", authenticate, siteRoutes);
 app.use("/api/geo", authenticate, geoRoutes);
 app.use("/api/users", authenticate, userRoutes);
 app.use("/api/analytics", authenticate, analyticsRoutes);
+app.use("/api/caseload", authenticate, caseloadRoutes);
 app.use("/api", authenticate, collectionRoutes);
 
 /* En production le serveur sert aussi le frontend compilé. */

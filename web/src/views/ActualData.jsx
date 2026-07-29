@@ -140,6 +140,146 @@ function ProcessData({ db, set, notify, can, go }){
 }
 
 /* ── Outputs et population ── */
+/* Population, ciblage et distribution par unité et par période — les nombres.
+   Trois taux en découlent :
+     ciblage     = personnes ciblées / population
+     couverture  = bénéficiaires planifiés / personnes ciblées
+     réalisation = bénéficiaires servis / bénéficiaires planifiés */
+function CaseloadView({ db, notify, can }){
+  const [level,setLevel] = useState("adm3");
+  const [year,setYear]   = useState(db.year);
+  const [month,setMonth] = useState("");          /* "" = toute l'année */
+  const [tag,setTag]     = useState("");          /* "" = total dédoublonné */
+  const [sel,setSel]     = useState({ adm1:"", adm2:"" });
+  const geo = useGeoCascade(sel);
+  const [d,setD] = useState({ rows:[], totals:null, loading:true });
+  const [tags,setTags] = useState([]);
+
+  const parent = geo.codes.adm2 || geo.codes.adm1 || "";
+  useEffect(() => {
+    let alive = true;
+    setD(x => ({ ...x, loading:true }));
+    const qs = new URLSearchParams({ year:String(year), level });
+    if(month !== "") qs.set("month", month);
+    if(tag) qs.set("tag", tag);
+    if(parent) qs.set("parent", parent);
+    api.caseload("?"+qs)
+      .then(r => { if(alive) setD({ ...r, loading:false }); })
+      .catch(e => { if(alive) setD({ rows:[], totals:null, loading:false, error:e.message }); });
+    return () => { alive = false; };
+  }, [year, month, tag, level, parent]);
+  useEffect(() => { api.caseloadTags(year).then(r=>setTags(r.rows||[])).catch(()=>{}); }, [year]);
+
+  const t = d.totals;
+  const LBL = { adm1:"région", adm2:"district", adm3:"commune", adm4:"fokontany" };
+  const tone = (v, bon, moyen) => v == null ? "" : v >= bon ? "ok" : v >= moyen ? "warn" : "bad";
+
+  const exporter = () => {
+    download(`population_ciblage_${year}${month!==""?"_"+MONTHS[+month]:""}${tag?"_"+tag:""}.csv`,
+      toCSV(d.rows.map(r => ({ Région:r.adm1||"", District:r.adm2||"", Commune:r.adm3||"",
+        Unité:r.name, "P-code":r.pcode, Population:r.population, Ménages:r.households,
+        Ciblés:r.targeted, "Taux de ciblage %":r.tauxCiblage ?? "",
+        "Bénéficiaires planifiés":r.planned, "Couverture du ciblage %":r.tauxCouverture ?? "",
+        "Bénéficiaires servis":r.actual, "Réalisation %":r.tauxRealisation ?? "",
+        "Tonnage (t)":r.tonnage, "Montant":r.amount, Source:r.source })),
+        ["Région","District","Commune","Unité","P-code","Population","Ménages","Ciblés",
+         "Taux de ciblage %","Bénéficiaires planifiés","Couverture du ciblage %",
+         "Bénéficiaires servis","Réalisation %","Tonnage (t)","Montant","Source"]),
+      "text/csv");
+    notify("Population et ciblage exportés","ok");
+  };
+
+  if(!db.geoVersion) return (
+    <Note tone="warn"><b>Aucun référentiel chargé.</b> Population et ciblage se rattachent aux
+      unités administratives. Chargez un millésime depuis Paramètres → Localités.</Note>);
+
+  return (
+    <>
+      <Note>Population, ménages et personnes ciblées par {LBL[level]}, mis en regard du plan de
+        distribution de la période. {tag
+          ? <>Le ciblage affiché est celui de l'activité <b>{tag}</b>.</>
+          : <><b>Le total « toutes activités » n'est pas la somme des activités</b> : une même
+            personne peut être ciblée par plusieurs programmes. Il provient de lignes propres,
+            dédoublonnées.</>}</Note>
+
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <Select value={level} onChange={e=>setLevel(e.target.value)} className="mi-py1 mi-xs mi-wauto"
+          options={[["adm1","Par région"],["adm2","Par district"],["adm3","Par commune"],["adm4","Par fokontany"]]} />
+        <Select value={String(year)} onChange={e=>setYear(+e.target.value)} className="mi-py1 mi-xs mi-wauto"
+          options={[db.year-1, db.year, db.year+1].map(y=>[String(y), String(y)])} />
+        <Select value={month} onChange={e=>setMonth(e.target.value)} empty="Toute l'année"
+          options={MONTHS_L.map((m,i)=>[String(i), m])} className="mi-py1 mi-xs mi-wauto" />
+        <Select value={tag} onChange={e=>setTag(e.target.value)} empty="Toutes activités (dédoublonné)"
+          options={tags.map(x=>[x.tag, `${x.tag} — ${fmt(x.targeted)} ciblés`])}
+          className="mi-py1 mi-xs mi-wauto" />
+        <Select value={sel.adm1} onChange={e=>setSel({ adm1:e.target.value, adm2:"" })}
+          empty="Toutes les régions" options={geo.adm1.map(x=>x.name)} className="mi-py1 mi-xs mi-wauto" />
+        <Select value={sel.adm2} onChange={e=>setSel(s=>({ ...s, adm2:e.target.value }))}
+          empty="Tous les districts" options={geo.adm2.map(x=>x.name)} className="mi-py1 mi-xs mi-wauto"
+          disabled={!sel.adm1} />
+        <Btn size="sm" kind="sec" icon={Download} onClick={exporter} disabled={!d.rows.length}>Exporter</Btn>
+      </div>
+
+      {t && (
+        <StatRow>
+          <Stat label="Population" value={fmt(t.population)} sub={`${fmt(t.households)} ménages`} />
+          <Stat label="Personnes ciblées" value={fmt(t.targeted)}
+            sub={tag ? `activité ${tag}` : "toutes activités, dédoublonné"} />
+          <Stat label="Taux de ciblage" value={t.tauxCiblage != null ? t.tauxCiblage+" %" : "—"}
+            sub="ciblés / population" />
+          <Stat label="Bénéficiaires planifiés" value={fmt(t.planned)} sub="plan de distribution" />
+          <Stat label="Couverture du ciblage" value={t.tauxCouverture != null ? t.tauxCouverture+" %" : "—"}
+            sub="planifiés / ciblés" tone={tone(t.tauxCouverture, 90, 60)} />
+          <Stat label="Réalisation" value={t.tauxRealisation != null ? t.tauxRealisation+" %" : "—"}
+            sub={`${fmt(t.actual)} servis`} tone={tone(t.tauxRealisation, 90, 60)} />
+        </StatRow>)}
+
+      {t && t.renseignees < t.unites && (
+        <Note tone="warn">{fmt(t.unites - t.renseignees)} {LBL[level]}(s) sur {fmt(t.unites)} n'ont
+          ni population ni ciblage renseignés : elles comptent pour zéro dans les totaux.</Note>)}
+
+      <Card flush title={`Population, ciblage et distribution par ${LBL[level]}`}
+        subtitle={d.loading ? "Chargement…"
+          : `${fmt(d.rows.length)} ${LBL[level]}(s) · ${year}${month!==""?" — "+MONTHS_L[+month]:""}${tag?" — "+tag:""}`}>
+        <TableWrap max="mh520">
+          <thead><tr>
+            {level!=="adm1" && <Th>Région</Th>}
+            {(level==="adm3"||level==="adm4") && <Th>District</Th>}
+            <Th>{LBL[level].replace(/^./,c=>c.toUpperCase())}</Th>
+            <Th num>Population</Th><Th num>Ménages</Th><Th num>Ciblés</Th><Th num>Ciblage</Th>
+            <Th num>Planifiés</Th><Th num>Couverture</Th><Th num>Servis</Th><Th num>Réalisation</Th>
+            <Th num>Tonnage</Th></tr></thead>
+          <tbody>{d.rows.map(r=>(
+            <tr key={r.pcode} className={clsx("hover:bg-sky-50", !r.population && "bg-amber-50/40")}>
+              {level!=="adm1" && <Td className="text-slate-500">{r.adm1||"—"}</Td>}
+              {(level==="adm3"||level==="adm4") && <Td className="text-slate-500">{r.adm2||"—"}</Td>}
+              <Td className="font-medium text-slate-800">{r.name}</Td>
+              <Td num>{r.population ? fmt(r.population) : "—"}</Td>
+              <Td num className="text-slate-500">{r.households ? fmt(r.households) : "—"}</Td>
+              <Td num><b>{r.targeted ? fmt(r.targeted) : "—"}</b></Td>
+              <Td num>{r.tauxCiblage != null
+                ? <Badge tone={r.tauxCiblage>=30?"y":""}>{r.tauxCiblage} %</Badge> : "—"}</Td>
+              <Td num>{r.planned ? fmt(r.planned) : "—"}</Td>
+              <Td num>{r.tauxCouverture != null
+                ? <Badge tone={r.tauxCouverture>=90?"g":r.tauxCouverture>=60?"y":"r"}>{r.tauxCouverture} %</Badge> : "—"}</Td>
+              <Td num className="text-slate-600">{r.actual ? fmt(r.actual) : "—"}</Td>
+              <Td num>{r.tauxRealisation != null
+                ? <Badge tone={r.tauxRealisation>=90?"g":r.tauxRealisation>=60?"y":"r"}>{r.tauxRealisation} %</Badge> : "—"}</Td>
+              <Td num className="text-slate-500">{r.tonnage || "—"}</Td>
+            </tr>))}</tbody>
+        </TableWrap>
+        {!d.loading && !d.rows.length && (
+          <div className="px-4 py-8 text-center f125 text-slate-500">
+            {d.error ? d.error : "Aucune unité dans cette sélection."}</div>)}
+      </Card>
+
+      {!can("edit") ? null : (
+        <Note>La saisie se fait par import : le modèle attendu porte une ligne par unité et par
+          activité, avec le p-code en clé. Les lignes absentes du fichier ne sont pas supprimées,
+          deux bureaux peuvent donc téléverser le même mois sans s'effacer mutuellement.</Note>)}
+    </>);
+}
+
 function OutputData({ db, set, notify, can }){
   const [tab,setTab] = useState("outputs"); const [year,setYear] = useState(db.year);
   const cell = (tag,mi) => db.outputs.find(o=>o.tag===tag && o.month===mi);
@@ -152,7 +292,7 @@ function OutputData({ db, set, notify, can }){
   return (
     <>
       <Tabs className="mb-4" value={tab} onChange={setTab}
-        items={[["outputs","Bénéficiaires par activité"],["population","Population des zones"]]} />
+        items={[["outputs","Bénéficiaires par activité"],["population","Population, ciblage et distribution"]]} />
       {tab==="outputs" ? (
         <>
           <Note>Pour chaque mois, saisissez les bénéficiaires planifiés et atteints, et qualifiez l'ajustement :
@@ -198,59 +338,10 @@ function OutputData({ db, set, notify, can }){
               </BarChart></ResponsiveContainer>
           </Card>
         </>
-      ) : (
-        <>
-          <Note>La population est projetée à partir d'une base <b>{POP_BASE_YEAR}</b> et d'un taux d'accroissement annuel :
-            population estimée = base × (1 + taux)<sup>année − {POP_BASE_YEAR}</sup>. Toute valeur saisie manuellement
-            pour une année donnée prend le pas sur l'estimation et apparaît en gras.</Note>
-          <Card flush title="Population par zone" subtitle={`Base ${POP_BASE_YEAR}, taux d'accroissement et valeurs saisies`}
-            right={can("edit") && <Btn size="sm" icon={Plus}
-              onClick={()=>set(d=>{ d.population.push({ key:"Nouvelle zone", level:"adm2", base:0, rate:2.5, values:{} }); return d; })}>Ajouter une zone</Btn>}>
-            <TableWrap>
-              <thead><tr><Th>Zone</Th><Th>Niveau</Th><Th num>Base {POP_BASE_YEAR}</Th><Th num>Taux (%)</Th>
-                {[db.year-2,db.year-1,db.year,db.year+1].map(y=><Th key={y} num>{y}</Th>)}<Th /></tr></thead>
-              <tbody>{db.population.map((p,i)=>(
-                <tr key={i} className="hover:bg-sky-50">
-                  <Td><input value={p.key} disabled={!can("edit")} onChange={e=>set(d=>{ d.population[i].key=e.target.value; return d; })}
-                    className="w-40 px-1.5 py-0.5 f12 border border-transparent hover:border-slate-300 rounded" /></Td>
-                  <Td><select value={p.level} disabled={!can("edit")} onChange={e=>set(d=>{ d.population[i].level=e.target.value; return d; })}
-                    className="px-1.5 py-0.5 f115 border border-slate-200 rounded">
-                    {[["adm1","Niveau 1"],["adm2","Niveau 2"],["adm3","Niveau 3"]].map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></Td>
-                  <Td num><input type="number" value={p.base} disabled={!can("edit")} onChange={e=>set(d=>{ d.population[i].base=n(e.target.value); return d; })}
-                    className="w-28 px-1.5 py-0.5 f12 text-right border border-slate-200 rounded" /></Td>
-                  <Td num><input type="number" step="0.1" value={p.rate} disabled={!can("edit")} onChange={e=>set(d=>{ d.population[i].rate=n(e.target.value); return d; })}
-                    className="w-20 px-1.5 py-0.5 f12 text-right border border-slate-200 rounded" /></Td>
-                  {[db.year-2,db.year-1,db.year,db.year+1].map(y=>{ const v=populationFor(db,p.key,y);
-                    return (<Td key={y} num>
-                      <input value={(p.values&&p.values[y])??""} disabled={!can("edit")}
-                        placeholder={v?fmt(v.value):"—"} onChange={e=>set(d=>{ d.population[i].values = d.population[i].values||{};
-                          d.population[i].values[y] = e.target.value; return d; })}
-                        className={clsx("w-24 px-1.5 py-0.5 f12 text-right border border-slate-200 rounded",
-                          v && v.source==="saisie" && "font-bold text-slate-900")} /></Td>); })}
-                  <Td className="text-right">{can("del") && <button onClick={()=>set(d=>{ d.population.splice(i,1); return d; })}
-                    className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</Td>
-                </tr>))}</tbody>
-            </TableWrap>
-          </Card>
-          <Card title="Projection de population" subtitle="Estimations issues de la base et du taux d'accroissement">
-            <ResponsiveContainer width="100%" height={250}>
-              <LineChart data={Array.from({length:10},(_,k)=>{ const y=POP_BASE_YEAR+k; const row={annee:String(y)};
-                db.population.slice(0,6).forEach(p=>{ const v=populationFor(db,p.key,y); row[p.key]= v?v.value:0; }); return row; })}
-                margin={{top:6,right:6,left:6,bottom:0}}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#eef2f5" vertical={false} />
-                <XAxis dataKey="annee" tick={{fontSize:11,fill:C.t2}} axisLine={{stroke:"#e2e8ec"}} tickLine={false} />
-                <YAxis tick={{fontSize:10,fill:C.t2}} axisLine={false} tickLine={false} width={62} tickFormatter={v=>fmt(v)} />
-                <Tooltip contentStyle={{fontSize:11,borderRadius:3}} formatter={v=>fmt(v)} />
-                <Legend wrapperStyle={{fontSize:10.5}} />
-                {db.population.slice(0,6).map((p,i)=>(
-                  <Line key={p.key} type="monotone" dataKey={p.key} stroke={SERIES[i%SERIES.length]} strokeWidth={2} dot={false} />))}
-              </LineChart></ResponsiveContainer>
-          </Card>
-        </>)}
+      ) : <CaseloadView db={db} notify={notify} can={can} />}
     </>);
 }
 
-/* ── Outcomes ── */
 function OutcomeData({ db, set, notify, can, go }){
   const [edit,setEdit] = useState(null); const [fInd,setFInd] = useState("");
   const rows = db.outcomes.filter(o=>!fInd||o.indicator===fInd)

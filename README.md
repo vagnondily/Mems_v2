@@ -6,7 +6,7 @@ analyse des données ODK Central, cartographie et restitution.
 
 - **Frontend** : React 18 + Vite, sans framework de composants imposé
 - **Backend** : Node 20 + Express + SQLite (WAL), schéma relationnel avec clés étrangères
-- **Tests** : 31 tests d'API + 10 tests de bout en bout pilotant l'interface réelle
+- **Tests** : 35 tests d'API + 10 tests de bout en bout pilotant l'interface réelle
 
 ---
 
@@ -54,6 +54,7 @@ mems/
 │  ├─ migrations/001_init.sql  schéma relationnel complet
 │  ├─ migrations/002_geo_unit.sql  référentiel administratif versionné
 │  ├─ migrations/003_sites_geo.sql rattachement des sites et du PDD au référentiel
+│  ├─ migrations/004_caseload.sql  population, ménages et personnes ciblées
 │  ├─ src/
 │  │  ├─ index.js              montage Express, sécurité, service du frontend compilé
 │  │  ├─ config.js             lecture et contrôle des variables d'environnement
@@ -67,7 +68,7 @@ mems/
 │  │  ├─ link-geo.js           rapprochement des données existantes vers le référentiel
 │  │  ├─ lib/logger.js         journal avec masquage des secrets
 │  │  └─ routes/               auth, state, sites, geo, users, analytics, collections
-│  └─ test/api.test.js         31 tests d'intégration
+│  └─ test/api.test.js         35 tests d'intégration
 └─ web/                        interface
    ├─ src/
    │  ├─ App.jsx               racine : session, file d'écriture, routage des onglets
@@ -85,7 +86,7 @@ mems/
 
 ## 3. Modèle de données
 
-Vingt-six tables. Les clés étrangères sont **déclarées et contrôlées**
+Vingt-sept tables. Les clés étrangères sont **déclarées et contrôlées**
 (`PRAGMA foreign_keys = ON`), avec `ON DELETE CASCADE` là où la dépendance est
 existentielle et `ON DELETE SET NULL` là où elle est seulement descriptive.
 
@@ -108,7 +109,9 @@ partners ──< sites
 indicators ──┬─< outcomes                    (cascade)
              └─< outcome_plan                (PK composite indicator_id, year, month)
 
-population ──< population_values             (PK composite population_id, year)
+population ──< population_values             (table héritée, remplacée par caseload)
+
+caseload                                     (geo_pcode + année + mois + activité)
 
 odk_forms ──< datasets ──< scripts
 
@@ -205,6 +208,44 @@ sites partagent la même commune. Quand un site porte un `geo_pcode`, ses libell
 à `adm4` en sont **dérivés côté serveur** et ne peuvent plus diverger du référentiel. Ses
 coordonnées propres priment : une école n'est pas au centroïde de son fokontany.
 
+### Population, ciblage et distribution
+
+`population` était annuelle, clée sur un texte libre sans lien avec le découpage, et
+n'avait aucun champ « ciblés » : ni le taux de ciblage ni le croisement avec le plan de
+distribution n'étaient calculables. `caseload` porte les deux dimensions qui manquaient —
+l'unité administrative (par p-code) et la période.
+
+**Le ciblage diffère selon l'activité, et les additionner donne un total faux** : une
+personne ciblée par les cantines scolaires et par la nutrition serait comptée deux fois.
+D'où deux natures de lignes :
+
+| `activity_tag` | Ce que porte la ligne |
+|---|---|
+| `URT`, `NTA`, `SMP`… | ciblage propre à une activité |
+| `''` (chaîne vide) | total de l'unité, **dédoublonné** |
+
+La chaîne vide plutôt que `NULL` : en SQLite deux `NULL` sont distincts, une contrainte
+d'unicité portant sur `NULL` ne contraindrait donc rien. Deux index partiels distinguent
+la valeur annuelle (`month IS NULL`) de la valeur mensuelle.
+
+Trois taux en découlent, tous visibles dans *Actual Data → Outputs et population* :
+
+| Taux | Formule |
+|---|---|
+| **Ciblage** | personnes ciblées ÷ population |
+| **Couverture du ciblage** | bénéficiaires planifiés ÷ personnes ciblées |
+| **Réalisation** | bénéficiaires servis ÷ bénéficiaires planifiés |
+
+La saisie se fait à la commune ; une vue par district ou par région **agrège vers le
+haut**. Si le caseload est renseigné à plusieurs niveaux sous la même unité, seul le plus
+fin est retenu — sinon on compterait deux fois.
+
+`PUT /api/caseload` écrit **ligne à ligne**, jamais par remplacement de collection : deux
+bureaux qui saisissent le même mois touchent des unités disjointes et ne s'effacent pas
+mutuellement. Les lignes absentes du corps ne sont pas supprimées. Les incohérences —
+p-code inconnu, plus de ciblés que d'habitants — sont rejetées **avec leur motif**, sans
+annuler le reste.
+
 #### Voir les trous de couverture
 
 Planning → Couverture et MMR → *Couverture géographique* croise le référentiel et le
@@ -243,6 +284,9 @@ elles exigent un jeton — en-tête `Authorization: Bearer …` ou cookie `httpO
 | GET | `/geo` | connecté | répertoire paginé, filtré par unité parente ou par recherche |
 | GET | `/geo/levels` | connecté | enfants d'une unité — la cascade se fait un niveau à la fois |
 | GET | `/geo/coverage` | connecté | unités couvertes et non couvertes, à tout niveau |
+| GET | `/caseload` | connecté | population, ciblage et distribution par unité et par période |
+| GET | `/caseload/tags` | connecté | activités pour lesquelles un ciblage est renseigné |
+| PUT | `/caseload` | `edit` | écriture ligne à ligne, sans suppression implicite |
 | GET | `/geo/versions` | connecté | millésimes du référentiel |
 | PUT | `/geo/versions/:id/current` | `admin` | change le millésime courant |
 | POST | `/geo/bulk` | `admin` | import : le serveur reconstruit l'arbre en une transaction |
@@ -452,7 +496,7 @@ jamais un fichier déjà appliqué en production.
 ### Tests
 
 ```bash
-npm test              # 31 tests d'API puis 10 tests de bout en bout
+npm test              # 35 tests d'API puis 10 tests de bout en bout
 cd server && npm test # API seule
 cd web && npm test    # interface seule, contre un serveur réellement démarré
 ```

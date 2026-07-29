@@ -478,6 +478,112 @@ test("couverture : les unités sans aucun site sont identifiées", async () => {
   assert.equal(parCommune.body.rows.find(x => x.name === "Ambovombe").sites, 2);
   assert.equal(parCommune.body.rows.find(x => x.name === "Tsihombe").sites, 0);
 
-  /* Les sites non rattachés sont comptés à part plutôt qu'ignorés en silence. */
-  assert.ok(c.body.sitesUnlinked > 0, "les sites hérités sans rattachement sont signalés");
+  /* Un site sans rattachement est compté à part plutôt qu'omis en silence des totaux. */
+  await request(app).post("/api/sites").set("Authorization", `Bearer ${t}`)
+    .send({ code:"ORPHELIN-1", name:"Site sans rattachement" });
+  const c2 = await request(app).get("/api/geo/coverage?level=adm4").set("Authorization", `Bearer ${t}`);
+  assert.ok(c2.body.sitesUnlinked > 0, "le site sans rattachement est signalé");
+});
+
+
+/* Les tests précédents ont chargé d'autres millésimes ; le caseload du jeu d'essai
+   est rattaché à celui du seed. On le réactive avant de mesurer quoi que ce soit. */
+async function activerMillesimeDuSeed(token){
+  const v = await request(app).get("/api/geo/versions").set("Authorization", `Bearer ${token}`);
+  const seed = v.body.rows.find(x => x.label === "Jeu de démonstration");
+  assert.ok(seed, "le millésime du jeu de démonstration existe");
+  if(!seed.current)
+    await request(app).put(`/api/geo/versions/${seed.id}/current`)
+      .set("Authorization", `Bearer ${token}`);
+}
+
+test("population et ciblage : les trois taux se calculent par unité et par période", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(t);
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${t}`);
+  const year = st.body.year;
+
+  const c = await request(app).get(`/api/caseload?level=adm3&year=${year}`)
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(c.status, 200);
+  assert.ok(c.body.rows.length > 0, "des communes sont renseignées");
+
+  const r = c.body.rows.find(x => x.population > 0 && x.planned > 0);
+  assert.ok(r, "au moins une commune a population et distribution");
+  assert.equal(r.tauxCiblage,     Math.round((r.targeted / r.population) * 1000) / 10);
+  assert.equal(r.tauxCouverture,  Math.round((r.planned  / r.targeted)   * 1000) / 10);
+  assert.equal(r.tauxRealisation, Math.round((r.actual   / r.planned)    * 1000) / 10);
+
+  /* Le total « toutes activités » est dédoublonné : il est inférieur à la somme
+     des activités, sinon une personne ciblée deux fois serait comptée deux fois. */
+  const tags = await request(app).get(`/api/caseload/tags?year=${year}`)
+    .set("Authorization", `Bearer ${t}`);
+  assert.ok(tags.body.rows.length >= 2, "plusieurs activités portent un ciblage");
+  const sommeActivites = tags.body.rows.reduce((s, x) => s + x.targeted, 0);
+  assert.ok(c.body.totals.targeted < sommeActivites,
+    `total dédoublonné (${c.body.totals.targeted}) < somme des activités (${sommeActivites})`);
+  assert.ok(/non de la somme des activités/.test(c.body.avertissement),
+    "la réponse avertit que le total n'est pas la somme des activités");
+});
+
+test("population et ciblage : la saisie par commune remonte aux niveaux supérieurs", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(t);
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${t}`);
+  const year = st.body.year;
+  const parCommune = await request(app).get(`/api/caseload?level=adm3&year=${year}`)
+    .set("Authorization", `Bearer ${t}`);
+  const parRegion  = await request(app).get(`/api/caseload?level=adm1&year=${year}`)
+    .set("Authorization", `Bearer ${t}`);
+  assert.ok(parRegion.body.rows.length < parCommune.body.rows.length);
+  /* L'agrégation ne perd ni n'invente rien : les totaux coïncident. */
+  assert.equal(parRegion.body.totals.population, parCommune.body.totals.population);
+  assert.equal(parRegion.body.totals.targeted,   parCommune.body.totals.targeted);
+  assert.ok(parRegion.body.rows.some(r => r.population > 0), "les régions portent une population");
+});
+
+test("population et ciblage : écriture par ligne, sans effacer ce qui n'est pas envoyé", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(t);
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${t}`);
+  const year = st.body.year;
+  const avant = await request(app).get(`/api/caseload?level=adm3&year=${year}`)
+    .set("Authorization", `Bearer ${t}`);
+  const cible = avant.body.rows.find(x => x.population > 0);
+
+  const w = await request(app).put("/api/caseload").set("Authorization", `Bearer ${t}`)
+    .send({ rows:[{ geo_pcode:cible.pcode, level:"adm3", year, activity_tag:"",
+                    population: cible.population, households: cible.households,
+                    targeted: 4242, source:"test" }] });
+  assert.equal(w.status, 200);
+  assert.equal(w.body.modifies, 1, "la ligne existante est mise à jour, pas dupliquée");
+
+  const apres = await request(app).get(`/api/caseload?level=adm3&year=${year}`)
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(apres.body.rows.find(x => x.pcode === cible.pcode).targeted, 4242);
+  /* Les autres communes n'ont pas été touchées : c'est toute la différence avec
+     une synchronisation de collection entière. */
+  assert.equal(apres.body.rows.length, avant.body.rows.length);
+  const autre = avant.body.rows.find(x => x.pcode !== cible.pcode && x.population > 0);
+  assert.equal(apres.body.rows.find(x => x.pcode === autre.pcode).targeted, autre.targeted);
+});
+
+test("population et ciblage : les valeurs incohérentes sont rejetées avec leur motif", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(t);
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${t}`);
+  const cible = (await request(app).get(`/api/caseload?level=adm3&year=${st.body.year}`)
+    .set("Authorization", `Bearer ${t}`)).body.rows[0];
+
+  const r = await request(app).put("/api/caseload").set("Authorization", `Bearer ${t}`)
+    .send({ rows:[
+      { geo_pcode:"PCODE_INEXISTANT", year:st.body.year, population:100, targeted:10 },
+      { geo_pcode:cible.pcode, year:st.body.year, population:1000, targeted:9999 },
+    ]});
+  assert.equal(r.status, 200);
+  assert.equal(r.body.rejetes, 2);
+  assert.ok(/absent du référentiel/.test(r.body.rejets[0].message));
+  assert.ok(/9999 ciblés pour 1000 habitants/.test(r.body.rejets[1].message));
+  /* Un rejet partiel n'annule pas le reste : ici tout est rejeté, rien n'est écrit. */
+  assert.equal(r.body.crees + r.body.modifies, 0);
 });

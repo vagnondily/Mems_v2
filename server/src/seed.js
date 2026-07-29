@@ -5,7 +5,7 @@ import { db, migrate, tx } from "./db.js";
 import { config } from "./config.js";
 import { log } from "./lib/logger.js";
 import { newId } from "./lib/crypto.js";
-import { buildUnits, writeVersion } from "./lib/geo.js";
+import { buildUnits, writeVersion, resolveUnit } from "./lib/geo.js";
 import { hashPassword } from "./lib/auth.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -88,7 +88,7 @@ if(info){
   const pwHash = await hashPassword(info.plainPassword);
   tx(() => {
     for(const t of ["site_months","visits","sites","coverage_params","outputs","outcomes","outcome_plan",
-                    "population_values","population","pdd","datasets","scripts","odk_forms",
+                    "population_values","population","caseload","pdd","datasets","scripts","odk_forms",
                     "report_templates","dashboards","indicators","activity_categories","partners",
                     "poi_subtypes","offices","users","settings",
                     /* geo_version efface geo_unit en cascade */
@@ -219,6 +219,7 @@ if(info){
         `${YEAR}-06-20`, 180+Math.floor(Math.random()*300));
     }));
 
+    /* Table historique, conservée le temps de la reprise (voir src/link-geo.js). */
     const insPop = db.prepare("INSERT INTO population (id,area_key,level,base,rate) VALUES (?,?,?,?,?)");
     [...new Set(GEO.map(g=>g[2]))].forEach(k =>
       insPop.run(newId("pop"), k, "adm2", 40000+Math.floor(Math.random()*160000), 2.7));
@@ -231,12 +232,16 @@ if(info){
        @district,@commune,@partner_id,@modality,@commodity,@days,@benef_planned,@households,
        @tonnage,@amount,@benef_actual,@received,@distributed,@status)`);
     const BUREAUX = OFFICES.filter(o=>o[1]!=="HQ");
+    /* Un bureau par commune, pas tous les bureaux dans toutes les communes :
+       sinon les volumes cumulés donnent des communes à un million d'habitants. */
+    const bureauDe = {};
+    GEO.forEach((g,i) => { bureauDe[g[3]] = BUREAUX[i % BUREAUX.length]; });
     [Math.max(0,new Date().getMonth()-1), new Date().getMonth()].forEach(mi =>
-      BUREAUX.forEach(([oname, code]) => GEO.slice(0,4).forEach(g =>
+      GEO.forEach(g => { const [oname, code] = bureauDe[g[3]];
         ["GD","PREVMA"].forEach(actType => {
           if(Math.random() < 0.25) return;
           const modality = actType==="GD" ? pick(["Food","Food","Cash"]) : "Food";
-          const bp = 1500 + Math.floor(Math.random()*22000);
+          const bp = 1200 + Math.floor(Math.random()*9000);
           const days = actType==="GD" ? 15 : 30;
           const tonnage = modality==="Food" ? r2(bp*days*0.0006*(0.8+Math.random()*0.5)) : 0;
           const amount = modality==="Cash" ? Math.round(bp*days*1600) : 0;
@@ -252,7 +257,7 @@ if(info){
             days, benef_planned:bp, households:Math.round(bp/5), tonnage, amount,
             benef_actual:Math.round(bp*cb), received:r2((modality==="Food"?tonnage:amount)*cr),
             distributed:r2((modality==="Food"?tonnage:amount)*cd), status: cd>0 ? "done" : "planned" });
-        }))));
+        }); }));
 
     db.prepare("INSERT INTO report_templates (id,name,blocks,intro) VALUES (?,?,?,?)")
       .run(newId("tpl"), "Rapport mensuel de suivi",
@@ -273,6 +278,58 @@ if(info){
       dateFmt:"DD/MM/YYYY", pageSize:25, syncInterval:30, notifications:true,
       odkBase:"https://odk-central.example.org", opSize:"Large" })
       .forEach(([k,v]) => setS.run(k, JSON.stringify(v)));
+
+
+    /* Sites et plan de distribution rattachés au référentiel dès la génération :
+       le jeu de démonstration est cohérent sans passer par src/link-geo.js. */
+    {
+      const gv = db.prepare("SELECT id FROM geo_version WHERE is_current=1").get();
+      const lier = (table, cols) => {
+        const upd = db.prepare(`UPDATE ${table} SET geo_pcode=? WHERE id=?`);
+        let n = 0;
+        for(const row of db.prepare(`SELECT * FROM ${table}`).all()){
+          const names = {}; for(const [lvl, col] of Object.entries(cols)) names[lvl] = row[col];
+          const m = resolveUnit(names, gv.id);
+          if(m.pcode){ upd.run(m.pcode, row.id); n++; }
+        }
+        return n;
+      };
+      lier("sites", { adm1:"adm1", adm2:"adm2", adm3:"adm3", adm4:"adm4" });
+      lier("pdd",   { adm1:"region", adm2:"district", adm3:"commune" });
+    }
+
+    /* Population et ciblage par commune — dérivés du plan de distribution afin que
+       les taux restent plausibles. Un taux de couverture de 2 700 % dans un jeu de
+       démonstration décrédibilise l'outil avant même qu'on l'ait regardé.
+
+       Le ciblage diffère selon l'activité ; la ligne « toutes activités » porte le
+       total dédoublonné, donc inférieur à la somme des activités. */
+    const insCl = db.prepare(`INSERT INTO caseload
+      (id,geo_pcode,level,year,month,activity_tag,population,households,targeted,targeted_hh,source)
+      VALUES (?,?,?,?,NULL,?,?,?,?,?,?)`);
+    const SOURCE = "INSTAT RGPH-3 2018, projeté 2,7 %";
+    const plannedBy = Object.fromEntries(db.prepare(
+      `SELECT geo_pcode, SUM(benef_planned) p FROM pdd
+       WHERE year=? AND geo_pcode IS NOT NULL GROUP BY geo_pcode`).all(YEAR).map(x=>[x.geo_pcode,x.p]));
+    db.prepare(`SELECT pcode, name FROM geo_unit
+      WHERE version_id=(SELECT id FROM geo_version WHERE is_current=1) AND level='adm3'`)
+      .all().forEach(c => {
+        const planned = plannedBy[c.pcode] || 0;
+        /* Cible déduite du planifié : couverture entre 80 % et 110 %. */
+        const total = planned
+          ? Math.round(planned / (0.8 + Math.random()*0.3))
+          : 4000 + Math.floor(Math.random()*16000);
+        /* Population telle que le taux de ciblage tombe entre 20 % et 35 %. */
+        const pop = Math.round(total / (0.20 + Math.random()*0.15));
+        const hh  = Math.round(pop/4.8);
+        insCl.run(newId("cl"), c.pcode, "adm3", YEAR, "", pop, hh, total, Math.round(total/4.8), SOURCE);
+        /* Les activités se recouvrent : leur somme dépasse le total dédoublonné. */
+        const brut = total / 0.72;
+        [["URT",0.46],["NTA",0.26],["SMP",0.28]].forEach(([tag,share]) => {
+          const t = Math.round(brut*share);
+          insCl.run(newId("cl"), c.pcode, "adm3", YEAR, tag, pop, hh, t, Math.round(t/4.8), SOURCE);
+        });
+      });
 
     const uid = newId("user");
     db.prepare(`INSERT INTO users (id,email,pw_hash,first_name,last_name,title,office_id,role,tabs,active,must_change_pw)
