@@ -1,272 +1,1325 @@
 <!doctype html>
 <html lang="fr">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MEMS Demo Offline</title>
-  <style>
-    :root {
-      color-scheme: light;
-      font-family: "Inter", "Segoe UI", Roboto, Arial, sans-serif;
-      background: #f8fafc;
-      color: #0f172a;
-    }
-    * { box-sizing: border-box; }
-    body { margin:0; min-height:100vh; background:#f8fafc; }
-    button, input { font: inherit; }
-    .page { max-width:1240px; margin:0 auto; padding:24px; }
-    .hidden { display:none; }
-    .header { display:flex; flex-wrap:wrap; gap:16px; align-items:center; padding:20px 24px; background:#0f172a; color:#fff; border-radius:24px; margin-bottom:20px; }
-    .brand { display:flex; align-items:center; gap:14px; }
-    .brand-mark { width:52px; height:52px; border-radius:18px; background:rgba(255,255,255,.12); display:grid; place-items:center; }
-    .brand-mark span { width:30px; height:30px; border-radius:14px; background:#38bdf8; color:#0f172a; font-weight:800; display:grid; place-items:center; }
-    .brand-title h1 { margin:0; font-size:1.5rem; }
-    .brand-title p { margin:4px 0 0; color:rgba(255,255,255,.75); }
-    .status-pill { margin-left:auto; background:#ffffff10; color:#fff; border-radius:999px; padding:10px 16px; font-weight:700; }
-    .page-title { display:flex; flex-wrap:wrap; align-items:flex-end; justify-content:space-between; gap:24px; margin-bottom:20px; }
-    .page-title h2 { margin:0; font-size:2rem; color:#0f172a; }
-    .page-title small { color:#64748b; }
-    .nav { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin-bottom:24px; }
-    .nav button { border:none; background:#e2e8f0; color:#334155; padding:12px 16px; border-radius:999px; cursor:pointer; transition:.2s; }
-    .nav button.active { background:#2563eb; color:#fff; }
-    .cards { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; margin-bottom:24px; }
-    .small-card { background:#fff; border:1px solid #e2e8f0; border-radius:24px; padding:22px; }
-    .small-card h3 { margin:0 0 10px; font-size:1rem; color:#334155; }
-    .small-card .value { font-size:2rem; font-weight:800; color:#2563eb; }
-    .panel-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
-    .panel { background:#fff; border:1px solid #e2e8f0; border-radius:24px; padding:24px; }
-    .panel h3 { margin-top:0; font-size:1.1rem; color:#0f172a; }
-    .panel p { color:#475569; line-height:1.75; }
-    .table { width:100%; border-collapse:collapse; background:#fff; border:1px solid #e2e8f0; border-radius:20px; overflow:hidden; }
-    .table th, .table td { padding:14px 16px; border-bottom:1px solid #e2e8f0; text-align:left; }
-    .table th { background:#f8fafc; color:#334155; }
-    .table tr:last-child td { border-bottom:none; }
-    .status-chip { display:inline-flex; align-items:center; justify-content:center; padding:8px 12px; border-radius:999px; font-weight:700; font-size:.88rem; }
-    .status-chip.active { background:#d1fae5; color:#166534; }
-    .status-chip.inactive { background:#fee2e2; color:#b91c1c; }
-    .graph { display:grid; gap:14px; }
-    .bar-row { display:flex; align-items:center; gap:12px; }
-    .bar-label { width:80px; font-size:.95rem; color:#334155; }
-    .bar-track { flex:1; height:16px; background:#e2e8f0; border-radius:999px; overflow:hidden; }
-    .bar-fill { height:100%; border-radius:999px; }
-    .map-card { border-radius:24px; height:240px; background:linear-gradient(135deg,#2563eb,#38bdf8); color:#fff; display:grid; place-items:center; text-align:center; padding:24px; }
-    .report-card { background:#fff; border:1px solid #e2e8f0; border-radius:24px; padding:20px; }
-    .report-card h3 { margin:0 0 10px; font-size:1rem; }
-    .report-card p { margin:0; color:#475569; line-height:1.7; }
-    .footer-note { margin-top:28px; color:#64748b; font-size:.95rem; }
-    .login-shell { width:100%; min-height:100vh; display:grid; place-items:center; padding:24px; }
-    .login-card { width:100%; max-width:420px; background:#fff; border:1px solid #e2e8f0; border-radius:28px; padding:32px; box-shadow:0 24px 60px rgba(15,23,42,.08); }
-    .login-card h2 { margin:0 0 14px; font-size:2rem; }
-    .field { margin-bottom:18px; }
-    .field label { display:block; margin-bottom:8px; font-weight:700; color:#334155; }
-    .field input { width:100%; border:1px solid #cbd5e1; border-radius:14px; padding:14px 16px; background:#f8fafc; }
-    .button { width:100%; border:none; border-radius:14px; background:#2563eb; color:#fff; padding:14px; font-weight:700; cursor:pointer; transition:.2s; }
-    .button:hover { background:#1d4ed8; }
-    .note-box { margin-top:18px; padding:16px; background:#f8fafc; border:1px solid #cbd5e1; border-radius:16px; color:#475569; }
-    @media (max-width:1024px) { .cards, .panel-grid { grid-template-columns:1fr; } }
-    @media (max-width:720px) { .nav { grid-template-columns:repeat(2,minmax(0,1fr)); } .header { flex-direction:column; align-items:flex-start; } }
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MEMS — démonstration hors ligne</title>
+<!--
+  Démonstration statique de MEMS.
+
+  Elle reprend l'intégralité de la surface de l'application réelle : 6 onglets,
+  27 sous-destinations, la matrice des rôles et le cloisonnement par bureau.
+  Aucune requête réseau n'est émise, aucune bibliothèque externe n'est chargée :
+  ce fichier s'ouvre seul, depuis un disque ou une clé USB.
+
+  Les données sont fictives mais réalistes (géographie et bureaux de Madagascar).
+  Les calculs de couverture et d'exigence minimale de suivi appliquent les
+  formules réelles de web/src/lib/calc.js.
+-->
+<style>
+  /* Palette reprise de web/src/lib/constants.js (objet C) */
+  :root{
+    --brand:#007DBC; --brandD:#085387; --brandL:#4792c7; --navy:#19486a; --aqua:#26bde2;
+    --ok:#689e18; --warn:#F7B825; --bad:#c5192d; --orange:#fd6925; --magenta:#dd1367;
+    --t1:#031c2d; --t2:#5a6872; --t3:#8c9ba5; --line:#e2e8ec; --bg:#f2f5f7;
+    color-scheme:light;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%}
+  body,input,select,textarea,button,pre{
+    font-family:'Open Sans',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif}
+  body{background:var(--bg);color:var(--t1);-webkit-font-smoothing:antialiased}
+  button,select,input{font:inherit;color:inherit}
+  .hidden{display:none !important}
+  table{border-collapse:collapse;width:100%}
+
+  /* ── Coquille ─────────────────────────────────────────────── */
+  .app{min-height:100vh;display:flex;flex-direction:column}
+  header.top{display:flex;align-items:center;gap:16px;padding:0 20px;height:56px;
+    background:var(--brandD);color:#fff;position:sticky;top:0;z-index:40}
+  .brand{display:flex;align-items:center;gap:12px;flex-shrink:0}
+  .brand-mark{width:44px;height:44px;border-radius:14px;background:rgba(255,255,255,.1);
+    border:1px solid rgba(255,255,255,.2);display:grid;place-items:center}
+  .brand-mark i{width:22px;height:22px;border-radius:8px;background:var(--aqua);display:block}
+  .brand-txt b{display:block;font-size:17px;letter-spacing:.03em}
+  .brand-txt span{display:block;font-size:9px;opacity:.7;font-weight:300}
+  nav.tabs{display:flex;gap:2px;margin-left:12px;overflow-x:auto}
+  nav.tabs>.tab{position:relative}
+  nav.tabs button.t{display:flex;align-items:center;gap:6px;padding:0 13px;height:56px;
+    font-size:13px;font-weight:600;white-space:nowrap;background:none;border:0;
+    border-bottom:3px solid transparent;color:rgba(255,255,255,.8);cursor:pointer}
+  nav.tabs button.t:hover{color:#fff;background:rgba(255,255,255,.07)}
+  nav.tabs button.t.on{color:#fff;background:rgba(255,255,255,.1);border-bottom-color:#fff}
+  .menu{position:absolute;left:0;top:56px;background:#fff;min-width:262px;padding:4px 0;
+    border:1px solid var(--line);border-radius:0 0 4px 4px;box-shadow:0 12px 32px rgba(3,28,45,.18);z-index:50}
+  .menu button{display:block;width:100%;text-align:left;padding:9px 16px;font-size:13px;
+    background:none;border:0;color:#334155;cursor:pointer}
+  .menu button:hover{background:#f8fafc}
+  .menu button.on{color:var(--brand);font-weight:600;background:#eff6ff}
+  .right{margin-left:auto;display:flex;align-items:center;gap:12px;flex-shrink:0}
+  .sync{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;
+    font-size:11px;font-weight:600;background:rgba(255,255,255,.1);color:rgba(255,255,255,.85)}
+  .sync i{width:6px;height:6px;border-radius:50%;background:#bef264;display:block}
+  .who{display:flex;align-items:center;gap:8px;padding:4px 12px 4px 4px;border-radius:999px;
+    background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);font-size:12px;
+    color:#fff;cursor:pointer}
+  .who .av{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;
+    font-size:10px;font-weight:700;background:var(--aqua);color:var(--t1)}
+  .card-menu{position:absolute;right:20px;top:52px;width:288px;background:#fff;z-index:50;
+    border:1px solid var(--line);border-radius:4px;box-shadow:0 12px 32px rgba(3,28,45,.18);overflow:hidden}
+  main{flex:1;width:100%;max-width:1520px;margin:0 auto;padding:22px 20px}
+  footer.bot{border-top:1px solid var(--line);background:#fff;padding:11px 20px;
+    display:flex;gap:12px;align-items:center;font-size:11px;color:var(--t2)}
+
+  /* ── Blocs ────────────────────────────────────────────────── */
+  .head{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+  .head h2{margin:0;font-size:23px;font-weight:600;color:#1e293b}
+  .head p{margin:4px 0 0;font-size:13px;color:var(--t2);max-width:820px;line-height:1.6}
+  .head .act{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .card{background:#fff;border:1px solid var(--line);border-radius:4px;margin-bottom:16px}
+  .card>h3{margin:0;padding:13px 16px 0;font-size:14px;font-weight:600;color:#1e293b}
+  .card>h3+.sub{margin:2px 0 0;padding:0 16px;font-size:11.5px;color:var(--t2)}
+  .card>.body{padding:16px}
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
+  .g3{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+  .stats{display:grid;gap:1px;background:var(--line);border-bottom:1px solid var(--line);
+    grid-template-columns:repeat(auto-fit,minmax(176px,1fr))}
+  .stat{background:#fff;padding:14px 16px}
+  .stat .lb{font-size:11px;color:var(--t2);margin-bottom:5px}
+  .stat .vl{font-size:23px;font-weight:300;font-variant-numeric:tabular-nums;color:#1e293b}
+  .stat .sb{font-size:11px;color:var(--t3);margin-top:2px}
+  .stat.ok .vl{color:var(--ok)} .stat.warn .vl{color:#b5820b} .stat.bad .vl{color:var(--bad)}
+
+  th,td{padding:8px 12px;font-size:12.5px;text-align:left;border-bottom:1px solid #eef2f5}
+  th{background:#f8fafc;font-size:11px;font-weight:700;text-transform:uppercase;
+    letter-spacing:.04em;color:var(--t2);position:sticky;top:0;z-index:1}
+  tbody tr:hover{background:#f0f9ff}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  .scroll{overflow:auto;max-height:430px;border-top:1px solid var(--line)}
+
+  .badge{display:inline-block;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600;
+    background:#f1f5f9;color:#475569;border:1px solid #e2e8f0}
+  .badge.g{background:#f0fdf4;color:#15803d;border-color:#bbf7d0}
+  .badge.y{background:#fefce8;color:#a16207;border-color:#fef08a}
+  .badge.r{background:#fef2f2;color:#b91c1c;border-color:#fecaca}
+  .badge.b{background:#eff6ff;color:#1d4ed8;border-color:#bfdbfe}
+  .bar{height:7px;border-radius:999px;background:#e8edf1;overflow:hidden}
+  .bar>i{display:block;height:100%;border-radius:999px}
+
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 13px;border-radius:3px;
+    font-size:12.5px;font-weight:600;border:1px solid var(--brand);background:var(--brand);
+    color:#fff;cursor:pointer}
+  .btn.sec{background:#fff;color:#334155;border-color:#cbd5e1}
+  .btn:disabled{opacity:.42;cursor:not-allowed}
+  .btn.sm{padding:3px 9px;font-size:11.5px}
+  .in{width:100%;padding:6px 9px;border:1px solid #cbd5e1;border-radius:3px;font-size:12.5px;background:#fff}
+  .fld{margin-bottom:11px}
+  .fld>label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;
+    letter-spacing:.04em;color:var(--t2);margin-bottom:4px}
+  .fld>.hint{font-size:11px;color:var(--t3);margin-top:3px;line-height:1.5}
+  .note{border-radius:3px;padding:10px 13px;font-size:12px;line-height:1.65}
+  .note.warn{background:#fffbeb;border:1px solid #fde68a;color:#78350f}
+  .note.info{background:#eff6ff;border:1px solid #bfdbfe;color:#1e3a5f}
+  .note.ok{background:#f0fdf4;border:1px solid #bbf7d0;color:#14532d}
+  pre.code{margin:0;padding:11px 13px;border-radius:3px;background:#0f172a;color:#e2e8f0;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;overflow:auto;line-height:1.65}
+  .empty{padding:34px 16px;text-align:center;color:var(--t3);font-size:12.5px}
+
+  .mgrid{display:grid;grid-template-columns:repeat(12,1fr);gap:2px}
+  .mcell{height:26px;border-radius:2px;display:grid;place-items:center;font-size:9.5px;
+    font-weight:700;background:#f1f5f9;color:#94a3b8;cursor:default}
+  .mcell.p{background:#dbeafe;color:#1d4ed8}
+  .mcell.d{background:#dcfce7;color:#15803d}
+  .mcell.off{background:#f8fafc;color:#e2e8f0}
+  .mhdr{font-size:9.5px;color:var(--t3);text-align:center;font-weight:700}
+
+  /* ── Écran de connexion ───────────────────────────────────── */
+  .login{min-height:100vh;display:grid;place-items:center;padding:24px;
+    background:linear-gradient(150deg,var(--brandD),var(--navy) 55%,#0b3a5c)}
+  .login-card{width:100%;max-width:420px;background:#fff;border-radius:6px;padding:30px;
+    box-shadow:0 24px 60px rgba(3,28,45,.34)}
+  .login-card h2{margin:0 0 4px;font-size:24px;font-weight:600}
+  .login-card>p.s{margin:0 0 22px;font-size:13px;color:var(--t2)}
+  .role-pick{display:grid;gap:6px;margin:14px 0 18px}
+  .role-pick button{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:3px;
+    border:1px solid #cbd5e1;background:#fff;cursor:pointer;text-align:left;font-size:12.5px}
+  .role-pick button.on{border-color:var(--brand);background:#eff6ff;box-shadow:0 0 0 1px var(--brand)}
+  .role-pick b{font-size:12.5px} .role-pick small{display:block;color:var(--t2);font-size:11px;margin-top:1px}
+
+  @media(max-width:900px){
+    .head .act{margin-left:0;width:100%}
+    main{padding:16px 12px}
+    header.top{gap:8px;padding:0 12px}
+  }
+</style>
 </head>
 <body>
-  <div id="login-screen" class="login-shell">
-    <div class="login-card">
-      <h2>Connexion</h2>
-      <p style="color:#64748b; margin-bottom:24px;">Version de démonstration hors ligne. Utilisez les identifiants ci-dessous.</p>
-      <div class="field"><label>Email</label><input id="demo-email" type="email" value="admin@mems.local" /></div>
-      <div class="field"><label>Mot de passe</label><input id="demo-password" type="password" value="MemsAdmin2026" /></div>
-      <button class="button" id="demo-login">Se connecter</button>
-      <div class="note-box">Identifiants : <strong>admin@mems.local</strong> / <strong>MemsAdmin2026</strong></div>
-    </div>
-  </div>
 
-  <div id="app-screen" class="page hidden">
-    <header class="header">
-      <div class="brand">
-        <div class="brand-mark"><span>M</span></div>
-        <div class="brand-title"><h1>MEMS</h1><p>Monitoring Evaluation Management System</p></div>
-      </div>
-      <div class="status-pill">Mode démo</div>
-    </header>
+<!-- ══════════════ Connexion ══════════════ -->
+<div class="login" id="login">
+  <div class="login-card">
+    <h2>MEMS</h2>
+    <p class="s">Monitoring &amp; Evaluation Management System — démonstration hors ligne</p>
 
-    <div class="page-title">
-      <div><h2 id="page-title">Accueil</h2><small id="page-subtitle">Vue synthétique des indicateurs et du suivi terrain.</small></div>
-      <button class="button" id="demo-logout" style="background:#e2e8f0;color:#0f172a;">Se déconnecter</button>
+    <div class="note info" style="margin-bottom:18px">
+      Aucun mot de passe n'est demandé : cette démonstration ne contient que des données
+      fictives et n'émet aucune requête. Choisissez un profil pour voir comment l'application
+      s'adapte au rôle et au bureau de rattachement.
     </div>
 
-    <div class="nav" id="demo-nav"></div>
-    <div id="demo-content"></div>
+    <div class="fld"><label>Profil de démonstration</label></div>
+    <div class="role-pick" id="rolePick"></div>
+    <button class="btn" style="width:100%;justify-content:center;padding:9px" id="go">
+      Ouvrir la démonstration
+    </button>
   </div>
+</div>
 
-  <script>
-    const pages = {
-      home: {
-        title: 'Accueil',
-        subtitle: 'Vue synthétique des indicateurs et du suivi terrain.',
-        cards: [
-          { label: 'Sites actifs', value: '128' },
-          { label: 'Couverture moyenne', value: '87%' },
-          { label: 'Bénéficiaires', value: '23 450' }
-        ],
-        panels: [
-          { title: 'Exigence minimale de suivi', text: 'Les objectifs prioritaires sont affichés avec le statut de réalisation et les tâches urgentes.' },
-          { title: 'Trois derniers mois', text: 'Suivi des indicateurs opérationnels et de couverture sur la période récente.' }
-        ]
-      },
-      planning: {
-        title: 'Planning',
-        subtitle: 'Paramètres de couverture et planification des visites.',
-        table: {
-          header: ['Activité', 'Bureau', 'Sites prévus', 'Risque', 'Statut'],
-          rows: [
-            ['URT', 'Ambovombe', '23', 'Moyen', 'Active'],
-            ['SMP', 'Ampanihy', '38', 'Élevé', 'Active'],
-            ['NTA', 'Manakara', '17', 'Faible', 'Inactive'],
-            ['CAR', 'Toliara', '11', 'Moyen', 'Active']
-          ]
-        }
-      },
-      actual: {
-        title: 'Actual Data',
-        subtitle: 'Suivi terrain et données opérationnelles.',
-        cards: [
-          { label: 'Visites réalisées', value: '94' },
-          { label: 'Taux réel', value: '82%' },
-          { label: 'Distributions', value: '12' }
-        ],
-        map: 'Carte des sites actifs avec filtres de statut et activité.'
-      },
-      analytics: {
-        title: 'Analyses',
-        subtitle: 'Graphiques de performances et couverture.',
-        bars: [
-          { label: 'URT', value: 78, color: '#2563eb' },
-          { label: 'NTA', value: 88, color: '#0ea5e9' },
-          { label: 'SMP', value: 72, color: '#38bdf8' }
-        ]
-      },
-      reports: {
-        title: 'Rapports',
-        subtitle: 'Modèles de rapport et export ODK simulé.',
-        items: [
-          { title: 'Rapport mensuel de suivi', description: 'Rapport synthétique des indicateurs et de la couverture.' },
-          { title: 'Note de couverture trimestrielle', description: 'Synthèse projetée des performances par bureau.' }
-        ]
-      }
-    };
+<!-- ══════════════ Application ══════════════ -->
+<div class="app hidden" id="app">
+  <header class="top">
+    <div class="brand">
+      <div class="brand-mark"><i></i></div>
+      <div class="brand-txt"><b>MEMS</b><span>Monitoring &amp; Evaluation Management System</span></div>
+    </div>
+    <nav class="tabs" id="nav"></nav>
+    <div class="right">
+      <span class="sync"><i></i> Enregistré</span>
+      <button class="who" id="whoBtn"><span class="av" id="avat">?</span><span id="whoName"></span> ▾</button>
+    </div>
+  </header>
+  <div class="card-menu hidden" id="whoMenu"></div>
+  <main id="view"></main>
+  <footer class="bot">
+    <div id="footOrg"></div>
+    <span style="margin-left:auto" id="footYear"></span>
+  </footer>
+</div>
 
-    const loginScreen = document.getElementById('login-screen');
-    const appScreen = document.getElementById('app-screen');
-    const navContainer = document.getElementById('demo-nav');
-    const demoContent = document.getElementById('demo-content');
-    const pageTitle = document.getElementById('page-title');
-    const pageSubtitle = document.getElementById('page-subtitle');
+<script>
+"use strict";
+/* ═══════════════════════════════════════════════════════════════════════
+   1. RÉFÉRENTIELS — repris de web/src/lib/constants.js
+   ═══════════════════════════════════════════════════════════════════════ */
+const YEAR = new Date().getFullYear();
+const MONTHS  = ["Jan","Fév","Mar","Avr","Mai","Juin","Juil","Août","Sep","Oct","Nov","Déc"];
+const MONTHS_L= ["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
+const NOW_M   = Math.min(9, new Date().getMonth());
 
-    const navButtons = Object.keys(pages).map(key => {
-      const btn = document.createElement('button');
-      btn.textContent = pages[key].title;
-      btn.dataset.page = key;
-      btn.addEventListener('click', () => setPage(key));
-      navContainer.appendChild(btn);
-      return btn;
-    });
+const TAGS = [
+  ["URT","Transferts de ressources non conditionnels"],["ACL","Création d'actifs et moyens d'existence"],
+  ["CAR","Adaptation climatique et gestion des risques"],["SMP","Programmes en milieu scolaire"],
+  ["NTA","Traitement de la malnutrition"],["MPA","Prévention de la malnutrition"],
+  ["SAMS","Appui aux marchés des petits producteurs"],["EPA","Préparation aux urgences"],
+  ["AAM","Analyse, évaluation et suivi"],
+];
+const TAG_LABEL = Object.fromEntries(TAGS);
 
-    function setPage(key) {
-      navButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.page === key));
-      const page = pages[key];
-      pageTitle.textContent = page.title;
-      pageSubtitle.textContent = page.subtitle;
-      demoContent.innerHTML = '';
+/* Matrice des rôles — identique à D_ROLES côté application */
+const ROLES = {
+  super:    { label:"Super-utilisateur", tabs:["home","planning","actual","analytics","reports","settings"], edit:1,del:1,validate:1,admin:1 },
+  admin:    { label:"Administrateur",    tabs:["home","planning","actual","analytics","reports","settings"], edit:1,del:1,validate:1,admin:1 },
+  validator:{ label:"Validateur",        tabs:["home","planning","actual","analytics","reports"],            edit:1,del:0,validate:1,admin:0 },
+  editor:   { label:"Éditeur",           tabs:["home","planning","actual","analytics","reports"],            edit:1,del:0,validate:0,admin:0 },
+  viewer:   { label:"Lecteur",           tabs:["home","planning","actual","reports"],                        edit:0,del:0,validate:0,admin:0 },
+};
 
-      if (page.cards) {
-        const cards = document.createElement('div');
-        cards.className = 'cards';
-        page.cards.forEach(card => {
-          const node = document.createElement('div');
-          node.className = 'small-card';
-          node.innerHTML = `<h3>${card.label}</h3><div class="value">${card.value}</div>`;
-          cards.appendChild(node);
-        });
-        demoContent.appendChild(cards);
-      }
+const OFFICES = ["Bureau de terrain d'Ambovombe","Bureau de terrain d'Ampanihy",
+  "Bureau de terrain de Toliara","Bureau de terrain de Manakara","Bureau central d'Antananarivo"];
 
-      if (page.panels) {
-        const grid = document.createElement('div');
-        grid.className = 'panel-grid';
-        page.panels.forEach(panel => {
-          const node = document.createElement('div');
-          node.className = 'panel';
-          node.innerHTML = `<h3>${panel.title}</h3><p>${panel.text}</p>`;
-          grid.appendChild(node);
-        });
-        demoContent.appendChild(grid);
-      }
+/* Profils proposés à l'écran de connexion : le rôle et le bureau changent
+   réellement ce que la démonstration affiche. */
+const PROFILES = [
+  { id:"admin",  first:"Hanta",  last:"Rakotoarisoa", title:"Responsable suivi et évaluation",
+    role:"admin",     office:"", desc:"Tous les onglets, tous les bureaux, administration" },
+  { id:"valid",  first:"Tiana",  last:"Randrianasolo", title:"Chargée de validation",
+    role:"validator", office:"Bureau de terrain d'Ampanihy", desc:"Valide les visites — un seul bureau, pas de paramètres" },
+  { id:"edit",   first:"Naina",  last:"Rabe",          title:"Assistant suivi et évaluation",
+    role:"editor",    office:"Bureau de terrain d'Ambovombe", desc:"Saisit et modifie — un seul bureau, sans validation" },
+  { id:"view",   first:"Miora",  last:"Andriamana",    title:"Chargée de programme",
+    role:"viewer",    office:"Bureau de terrain de Manakara", desc:"Consultation seule, sans onglet Analyses" },
+];
 
-      if (page.table) {
-        const section = document.createElement('div');
-        section.className = 'panel';
-        section.innerHTML = `
-          <h3>Paramètres de couverture</h3>
-          <table class="table"><thead><tr>${page.table.header.map(th => `<th>${th}</th>`).join('')}</tr></thead><tbody>${page.table.rows.map(row => `
-            <tr>${row.map((cell, idx) => idx === 4 ? `<td><span class="status-chip ${cell.toLowerCase()}">${cell}</span></td>` : `<td>${cell}</td>`).join('')}</tr>
-          `).join('')}</tbody></table>`;
-        demoContent.appendChild(section);
-      }
+/* ═══════════════════════════════════════════════════════════════════════
+   2. DONNÉES DE DÉMONSTRATION — géographie et bureaux de Madagascar
+   ═══════════════════════════════════════════════════════════════════════ */
 
-      if (page.map) {
-        const section = document.createElement('div');
-        section.className = 'panel';
-        section.innerHTML = `<h3>Cartographie des sites</h3><p>${page.map}</p><div class="map-card">Carte des sites et filtres de statut</div>`;
-        demoContent.appendChild(section);
-      }
+/* Découpage administratif : région → district → commune → fokontany.
+   Échantillon représentatif du référentiel complet (23 régions, 119 districts,
+   ~1 695 communes, ~18 000 fokontany). */
+const GEO = [
+  { adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Ambovombe",  adm4:"Ambovombe Centre", pcode:"MG81101001001", lat:-25.173, lon:46.087 },
+  { adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Ambovombe",  adm4:"Antanandava",      pcode:"MG81101001002", lat:-25.201, lon:46.112 },
+  { adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Ambondro",   adm4:"Ambondro",         pcode:"MG81101002001", lat:-25.281, lon:45.958 },
+  { adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Antanimora Sud", adm4:"Antanimora",   pcode:"MG81101003001", lat:-24.812, lon:45.661 },
+  { adm1:"Androy", adm2:"Tsihombe",         adm3:"Tsihombe",   adm4:"Tsihombe Centre",  pcode:"MG81103001001", lat:-25.316, lon:45.487 },
+  { adm1:"Androy", adm2:"Tsihombe",         adm3:"Antaritarika",adm4:"Antaritarika",    pcode:"MG81103002001", lat:-25.462, lon:45.372 },
+  { adm1:"Androy", adm2:"Bekily",           adm3:"Bekily",     adm4:"Bekily Centre",    pcode:"MG81102001001", lat:-24.229, lon:45.306 },
+  { adm1:"Atsimo-Andrefana", adm2:"Ampanihy Ouest", adm3:"Ampanihy", adm4:"Ampanihy Centre", pcode:"MG73102001001", lat:-24.697, lon:44.746 },
+  { adm1:"Atsimo-Andrefana", adm2:"Ampanihy Ouest", adm3:"Ejeda",   adm4:"Ejeda",       pcode:"MG73102002001", lat:-24.353, lon:44.531 },
+  { adm1:"Atsimo-Andrefana", adm2:"Ampanihy Ouest", adm3:"Fotadrevo",adm4:"Fotadrevo",  pcode:"MG73102003001", lat:-24.062, lon:45.028 },
+  { adm1:"Atsimo-Andrefana", adm2:"Toliara II",     adm3:"Ankililoaka", adm4:"Ankililoaka", pcode:"MG73108001001", lat:-22.789, lon:43.606 },
+  { adm1:"Atsimo-Andrefana", adm2:"Toliara II",     adm3:"Belalanda",adm4:"Belalanda",  pcode:"MG73108002001", lat:-23.269, lon:43.641 },
+  { adm1:"Anosy",   adm2:"Taolagnaro",   adm3:"Tolagnaro",  adm4:"Tolagnaro Centre", pcode:"MG82101001001", lat:-25.031, lon:46.999 },
+  { adm1:"Anosy",   adm2:"Taolagnaro",   adm3:"Mahatalaky", adm4:"Mahatalaky",       pcode:"MG82101002001", lat:-24.803, lon:47.112 },
+  { adm1:"Vatovavy",adm2:"Manakara Atsimo", adm3:"Manakara", adm4:"Manakara Be",     pcode:"MG51101001001", lat:-22.145, lon:48.019 },
+  { adm1:"Vatovavy",adm2:"Manakara Atsimo", adm3:"Ambila",   adm4:"Ambila",          pcode:"MG51101002001", lat:-22.038, lon:48.061 },
+];
 
-      if (page.bars) {
-        const section = document.createElement('div');
-        section.className = 'panel';
-        section.innerHTML = '<h3>Couverture par activité</h3>';
-        page.bars.forEach(bar => {
-          const barRow = document.createElement('div');
-          barRow.className = 'bar-row';
-          barRow.innerHTML = `<span class="bar-label">${bar.label}</span><div class="bar-track"><div class="bar-fill" style="width:${bar.value}%; background:${bar.color};"></div></div><span>${bar.value}%</span>`;
-          section.appendChild(barRow);
-        });
-        demoContent.appendChild(section);
-      }
+/* Paramètres de couverture : un couple (bureau, activité) est unique. */
+const PARAMS = [
+  { office:"Bureau de terrain d'Ambovombe", tag:"URT", cat:"Transferts monétaires", duration:12, risk:3, feasible:14 },
+  { office:"Bureau de terrain d'Ambovombe", tag:"NTA", cat:"Nutrition",             duration:12, risk:2, feasible:9  },
+  { office:"Bureau de terrain d'Ambovombe", tag:"SMP", cat:"Cantines scolaires",    duration:9,  risk:1, feasible:6  },
+  { office:"Bureau de terrain d'Ampanihy",  tag:"URT", cat:"Transferts monétaires", duration:12, risk:3, feasible:11 },
+  { office:"Bureau de terrain d'Ampanihy",  tag:"MPA", cat:"Nutrition préventive",  duration:12, risk:2, feasible:8  },
+  { office:"Bureau de terrain de Toliara",  tag:"ACL", cat:"Création d'actifs",     duration:10, risk:2, feasible:7  },
+  { office:"Bureau de terrain de Toliara",  tag:"SAMS",cat:"Appui aux marchés",     duration:12, risk:1, feasible:5  },
+  { office:"Bureau de terrain de Manakara", tag:"SMP", cat:"Cantines scolaires",    duration:9,  risk:1, feasible:6  },
+  { office:"Bureau de terrain de Manakara", tag:"CAR", cat:"Adaptation climatique", duration:12, risk:2, feasible:4  },
+];
 
-      if (page.items) {
-        const section = document.createElement('div');
-        section.className = 'panel';
-        section.innerHTML = `<h3>Modèles de rapport</h3>`;
-        page.items.forEach(item => {
-          const itemNode = document.createElement('div');
-          itemNode.className = 'report-card';
-          itemNode.innerHTML = `<h3>${item.title}</h3><p>${item.description}</p>`;
-          section.appendChild(itemNode);
-        });
-        demoContent.appendChild(section);
-      }
+/* Registre des sites. `plan` : 12 mois, p=planifié, d=réalisé, a=mois actif. */
+function mkPlan(seed, density, doneUntil){
+  const out=[]; let x=seed;
+  for(let m=0;m<12;m++){
+    x=(x*1103515245+12345)&0x7fffffff;
+    const p=((x>>7)%100)<density;
+    out.push({ p, d: p && m<=doneUntil && ((x>>11)%100)<78, a:true });
+  }
+  return out;
+}
+const SITES = [
+  { code:"AMB-001", poi:"CSB II Ambovombe Centre", office:"Bureau de terrain d'Ambovombe", tag:"NTA",
+    adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Ambovombe", adm4:"Ambovombe Centre",
+    lat:-25.173, lon:46.087, status:"Active", sec:0, benef:4200, partner:"Partenaire A",
+    resp:"Naina Rabe", last:"2026-06-14", plan:mkPlan(11,62,NOW_M) },
+  { code:"AMB-002", poi:"Point de distribution Antanandava", office:"Bureau de terrain d'Ambovombe", tag:"URT",
+    adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Ambovombe", adm4:"Antanandava",
+    lat:-25.201, lon:46.112, status:"Active", sec:1, benef:7850, partner:"Partenaire B",
+    resp:"Naina Rabe", last:"2026-07-02", plan:mkPlan(23,75,NOW_M) },
+  { code:"AMB-003", poi:"EPP Ambondro", office:"Bureau de terrain d'Ambovombe", tag:"SMP",
+    adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Ambondro", adm4:"Ambondro",
+    lat:-25.281, lon:45.958, status:"Active", sec:0, benef:1120, partner:"Partenaire A",
+    resp:"Naina Rabe", last:"2026-05-21", plan:mkPlan(37,48,NOW_M) },
+  { code:"AMB-004", poi:"CSB I Antanimora Sud", office:"Bureau de terrain d'Ambovombe", tag:"NTA",
+    adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Antanimora Sud", adm4:"Antanimora",
+    lat:-24.812, lon:45.661, status:"Inactive", sec:3, benef:0, partner:"Partenaire C",
+    resp:"Naina Rabe", last:"2025-11-08", plan:mkPlan(41,0,-1) },
+  { code:"TSI-001", poi:"Point de distribution Tsihombe", office:"Bureau de terrain d'Ambovombe", tag:"URT",
+    adm1:"Androy", adm2:"Tsihombe", adm3:"Tsihombe", adm4:"Tsihombe Centre",
+    lat:-25.316, lon:45.487, status:"Active", sec:1, benef:5300, partner:"Partenaire B",
+    resp:"Naina Rabe", last:"2026-06-28", plan:mkPlan(53,70,NOW_M) },
+  { code:"TSI-002", poi:"CSB II Antaritarika", office:"Bureau de terrain d'Ambovombe", tag:"NTA",
+    adm1:"Androy", adm2:"Tsihombe", adm3:"Antaritarika", adm4:"Antaritarika",
+    lat:-25.462, lon:45.372, status:"Active", sec:1, benef:2640, partner:"Partenaire A",
+    resp:"Naina Rabe", last:"2026-04-30", plan:mkPlan(67,55,NOW_M-2) },
+  { code:"BEK-001", poi:"Marché de Bekily", office:"Bureau de terrain d'Ambovombe", tag:"SAMS",
+    adm1:"Androy", adm2:"Bekily", adm3:"Bekily", adm4:"Bekily Centre",
+    lat:-24.229, lon:45.306, status:"Active", sec:0, benef:1980, partner:"Partenaire D",
+    resp:"Naina Rabe", last:"", plan:mkPlan(71,40,-1) },
+  { code:"AMP-001", poi:"Point de distribution Ampanihy", office:"Bureau de terrain d'Ampanihy", tag:"URT",
+    adm1:"Atsimo-Andrefana", adm2:"Ampanihy Ouest", adm3:"Ampanihy", adm4:"Ampanihy Centre",
+    lat:-24.697, lon:44.746, status:"Active", sec:1, benef:9400, partner:"Partenaire B",
+    resp:"Tiana Randrianasolo", last:"2026-07-08", plan:mkPlan(83,80,NOW_M) },
+  { code:"AMP-002", poi:"CSB II Ejeda", office:"Bureau de terrain d'Ampanihy", tag:"MPA",
+    adm1:"Atsimo-Andrefana", adm2:"Ampanihy Ouest", adm3:"Ejeda", adm4:"Ejeda",
+    lat:-24.353, lon:44.531, status:"Active", sec:0, benef:3100, partner:"Partenaire C",
+    resp:"Tiana Randrianasolo", last:"2026-06-02", plan:mkPlan(97,58,NOW_M-1) },
+  { code:"AMP-003", poi:"CSB I Fotadrevo", office:"Bureau de terrain d'Ampanihy", tag:"MPA",
+    adm1:"Atsimo-Andrefana", adm2:"Ampanihy Ouest", adm3:"Fotadrevo", adm4:"Fotadrevo",
+    lat:-24.062, lon:45.028, status:"Active", sec:3, benef:1450, partner:"Partenaire C",
+    resp:"Tiana Randrianasolo", last:"2026-03-17", plan:mkPlan(103,45,NOW_M-3) },
+  { code:"TLR-001", poi:"Périmètre maraîcher Ankililoaka", office:"Bureau de terrain de Toliara", tag:"ACL",
+    adm1:"Atsimo-Andrefana", adm2:"Toliara II", adm3:"Ankililoaka", adm4:"Ankililoaka",
+    lat:-22.789, lon:43.606, status:"Active", sec:0, benef:2870, partner:"Partenaire D",
+    resp:"Fanja Ratsimba", last:"2026-06-19", plan:mkPlan(113,60,NOW_M) },
+  { code:"TLR-002", poi:"Marché de Belalanda", office:"Bureau de terrain de Toliara", tag:"SAMS",
+    adm1:"Atsimo-Andrefana", adm2:"Toliara II", adm3:"Belalanda", adm4:"Belalanda",
+    lat:-23.269, lon:43.641, status:"Active", sec:0, benef:1620, partner:"Partenaire E",
+    resp:"Fanja Ratsimba", last:"2026-05-05", plan:mkPlan(127,42,NOW_M-2) },
+  { code:"MNK-001", poi:"EPP Manakara Be", office:"Bureau de terrain de Manakara", tag:"SMP",
+    adm1:"Vatovavy", adm2:"Manakara Atsimo", adm3:"Manakara", adm4:"Manakara Be",
+    lat:-22.145, lon:48.019, status:"Active", sec:0, benef:2240, partner:"Partenaire A",
+    resp:"Miora Andriamana", last:"2026-06-25", plan:mkPlan(139,65,NOW_M) },
+  { code:"MNK-002", poi:"Digue d'Ambila", office:"Bureau de terrain de Manakara", tag:"CAR",
+    adm1:"Vatovavy", adm2:"Manakara Atsimo", adm3:"Ambila", adm4:"Ambila",
+    lat:-22.038, lon:48.061, status:"Active", sec:0, benef:3350, partner:"Partenaire E",
+    resp:"Miora Andriamana", last:"2026-04-11", plan:mkPlan(149,50,NOW_M-3) },
+  { code:"ANO-001", poi:"CSB II Tolagnaro", office:"Bureau de terrain de Manakara", tag:"NTA",
+    adm1:"Anosy", adm2:"Taolagnaro", adm3:"Tolagnaro", adm4:"Tolagnaro Centre",
+    lat:-25.031, lon:46.999, status:"Active", sec:1, benef:4780, partner:"Partenaire A",
+    resp:"Miora Andriamana", last:"2026-07-04", plan:mkPlan(157,72,NOW_M) },
+];
 
-      const note = document.createElement('div');
-      note.className = 'footer-note';
-      note.textContent = 'Démo statique : l’application ressemble au vrai site, mais les données sont factices et aucune requête réseau n’est effectuée.';
-      demoContent.appendChild(note);
+/* Population et ciblage par commune, par période — l'un des besoins programme. */
+const CASELOAD = [
+  { adm3:"Ambovombe",   adm2:"Ambovombe-Androy", pop:154_800, hh:31_200, targeted: 42_300, tag:"URT" },
+  { adm3:"Ambondro",    adm2:"Ambovombe-Androy", pop: 38_400, hh: 7_900, targeted: 11_200, tag:"SMP" },
+  { adm3:"Antanimora Sud", adm2:"Ambovombe-Androy", pop:29_700, hh:6_100, targeted: 8_400, tag:"NTA" },
+  { adm3:"Tsihombe",    adm2:"Tsihombe",         pop: 61_500, hh:12_800, targeted: 19_600, tag:"URT" },
+  { adm3:"Antaritarika",adm2:"Tsihombe",         pop: 24_300, hh: 5_200, targeted:  7_100, tag:"NTA" },
+  { adm3:"Bekily",      adm2:"Bekily",           pop: 47_900, hh: 9_800, targeted: 12_400, tag:"SAMS" },
+  { adm3:"Ampanihy",    adm2:"Ampanihy Ouest",   pop:112_600, hh:23_400, targeted: 38_900, tag:"URT" },
+  { adm3:"Ejeda",       adm2:"Ampanihy Ouest",   pop: 43_200, hh: 8_900, targeted: 13_700, tag:"MPA" },
+  { adm3:"Fotadrevo",   adm2:"Ampanihy Ouest",   pop: 31_100, hh: 6_400, targeted:  9_200, tag:"MPA" },
+  { adm3:"Ankililoaka", adm2:"Toliara II",       pop: 58_700, hh:12_100, targeted: 15_300, tag:"ACL" },
+  { adm3:"Belalanda",   adm2:"Toliara II",       pop: 34_900, hh: 7_200, targeted:  8_800, tag:"SAMS" },
+  { adm3:"Manakara",    adm2:"Manakara Atsimo",  pop: 97_400, hh:20_300, targeted: 24_600, tag:"SMP" },
+  { adm3:"Ambila",      adm2:"Manakara Atsimo",  pop: 26_800, hh: 5_600, targeted:  7_900, tag:"CAR" },
+  { adm3:"Tolagnaro",   adm2:"Taolagnaro",       pop: 88_200, hh:18_400, targeted: 21_500, tag:"NTA" },
+];
+const OFFICE_OF_ADM2 = {
+  "Ambovombe-Androy":"Bureau de terrain d'Ambovombe", "Tsihombe":"Bureau de terrain d'Ambovombe",
+  "Bekily":"Bureau de terrain d'Ambovombe", "Ampanihy Ouest":"Bureau de terrain d'Ampanihy",
+  "Toliara II":"Bureau de terrain de Toliara", "Manakara Atsimo":"Bureau de terrain de Manakara",
+  "Taolagnaro":"Bureau de terrain de Manakara",
+};
+
+/* Plan de distribution (PDD) : planifié et réalisé, par mois et par commune. */
+const PDD = (() => {
+  const out=[]; let x=7919;
+  const rows=[["Ambovombe","Ambovombe-Androy","GD","Vivres","Riz",12400],
+              ["Tsihombe","Tsihombe","GD","Vivres","Riz",6800],
+              ["Ambondro","Ambovombe-Androy","PREVMA","Espèces","—",3200],
+              ["Ampanihy","Ampanihy Ouest","GD","Espèces","—",11200],
+              ["Ejeda","Ampanihy Ouest","PREVMA","Vivres","CSB+",4100],
+              ["Ankililoaka","Toliara II","GD","Coupons","—",5400],
+              ["Manakara","Manakara Atsimo","GD","Vivres","Riz",7300],
+              ["Tolagnaro","Taolagnaro","PREVMA","Espèces","—",4900]];
+  for(const [adm3,adm2,type,moda,com,base] of rows){
+    for(let m=0;m<=NOW_M;m++){
+      x=(x*1103515245+12345)&0x7fffffff;
+      if(((x>>9)%100) > 62) continue;
+      const planned = Math.round(base*(0.85+((x>>5)%30)/100));
+      const past = m < NOW_M;
+      const ratio = past ? (0.55+((x>>13)%48)/100) : 0;
+      out.push({ month:m, adm3, adm2, office:OFFICE_OF_ADM2[adm2], actType:type,
+        modality:moda, commodity:com,
+        benefPlanned:planned, benefActual: past ? Math.round(planned*Math.min(1.02,ratio+0.12)) : 0,
+        tonnage: moda==="Vivres" ? Math.round(planned*0.012*10)/10 : 0,
+        amount:  moda!=="Vivres" ? planned*38000 : 0,
+        received: past ? Math.round(planned*Math.min(1,ratio+0.2)) : 0,
+        distributed: past ? Math.round(planned*ratio) : 0,
+        status: past ? "done" : "planned" });
     }
+  }
+  return out;
+})();
 
-    document.getElementById('demo-login').addEventListener('click', () => {
-      const email = document.getElementById('demo-email').value.trim();
-      const password = document.getElementById('demo-password').value;
-      if (email === 'admin@mems.local' && password === 'MemsAdmin2026') {
-        loginScreen.classList.add('hidden');
-        appScreen.classList.remove('hidden');
-        setPage('home');
-      } else {
-        alert('Identifiants incorrects. Utilisez admin@mems.local / MemsAdmin2026');
-      }
-    });
+/* Indicateurs de résultat et mesures */
+const INDICATORS = [
+  { id:"FCS",  name:"Score de consommation alimentaire — ménages en consommation acceptable", unit:"%", target:80, dir:"up",   basket:"Consommation alimentaire", method:"Enquête ménage", freq:"Semestriel", value:71.4 },
+  { id:"rCSI", name:"Indice réduit des stratégies d'adaptation", unit:"idx", target:12, dir:"down", basket:"Stratégies d'adaptation", method:"Enquête ménage", freq:"Semestriel", value:15.8 },
+  { id:"LCSI", name:"Stratégies d'adaptation des moyens d'existence — aucune stratégie", unit:"%", target:60, dir:"up", basket:"Stratégies d'adaptation", method:"Enquête ménage", freq:"Annuel", value:52.3 },
+  { id:"FES",  name:"Part des dépenses consacrées à l'alimentation", unit:"%", target:65, dir:"down", basket:"Économie du ménage", method:"Enquête ménage", freq:"Annuel", value:68.9 },
+  { id:"MAD",  name:"Régime alimentaire minimum acceptable — enfants 6 à 23 mois", unit:"%", target:35, dir:"up", basket:"Nutrition", method:"Enquête ménage", freq:"Annuel", value:31.2 },
+  { id:"MAMR", name:"Taux de guérison du traitement de la malnutrition aiguë modérée", unit:"%", target:75, dir:"up", basket:"Nutrition", method:"Registres des sites", freq:"Mensuel", value:82.6 },
+  { id:"MAMD", name:"Taux d'abandon du traitement de la malnutrition aiguë modérée", unit:"%", target:15, dir:"down", basket:"Nutrition", method:"Registres des sites", freq:"Mensuel", value:9.4 },
+  { id:"RET",  name:"Taux de rétention scolaire", unit:"%", target:90, dir:"up", basket:"Éducation", method:"Registres scolaires", freq:"Annuel", value:93.1 },
+  { id:"COV",  name:"Couverture du programme de prévention", unit:"%", target:70, dir:"up", basket:"Couverture", method:"Enquête de couverture", freq:"Annuel", value:64.8 },
+  { id:"ADH",  name:"Adhérence — participation à un nombre suffisant de distributions", unit:"%", target:80, dir:"up", basket:"Couverture", method:"Suivi post-distribution", freq:"Trimestriel", value:77.5 },
+];
 
-    document.getElementById('demo-logout').addEventListener('click', () => {
-      appScreen.classList.add('hidden');
-      loginScreen.classList.remove('hidden');
-    });
-  </script>
+const ODK_FORMS = [
+  { name:"Suivi de processus — distributions", formId:"mems_process_v4", project:"MEMS", kind:"process", tag:"URT", records:1284, last:"2026-07-21 06:40", token:true },
+  { name:"Suivi post-distribution",            formId:"mems_pdm_v2",     project:"MEMS", kind:"outcome", tag:"URT", records:  742, last:"2026-07-18 11:12", token:true },
+  { name:"Registre nutritionnel mensuel",      formId:"mems_nut_v3",     project:"MEMS", kind:"output",  tag:"NTA", records:2109, last:"2026-07-20 15:03", token:true },
+  { name:"Recensement des sites",              formId:"mems_sites_v1",   project:"MEMS", kind:"sites",   tag:"",    records:  318, last:"2026-05-30 09:22", token:false },
+];
+const DATASETS = [
+  { name:"PDM T2 2026 — Androy",     form:"mems_pdm_v2",     rows:742,  rules:6, created:"2026-07-19" },
+  { name:"Processus S1 2026",        form:"mems_process_v4", rows:1284, rules:4, created:"2026-07-21" },
+  { name:"Nutrition — juin 2026",    form:"mems_nut_v3",     rows:389,  rules:8, created:"2026-07-05" },
+];
+const SCRIPTS = [
+  { name:"Apurement PDM — valeurs aberrantes", lang:"R",    stage:"cleaning", dataset:"PDM T2 2026 — Androy", runs:4,
+    code:"library(dplyr)\n\npdm <- read.csv(\"pdm_t2_2026.csv\")\n\n# Bornes plausibles sur la taille du ménage\npdm <- pdm %>%\n  filter(hh_size > 0, hh_size <= 20) %>%\n  mutate(fcs = rowSums(across(starts_with(\"fcs_\")), na.rm = TRUE))\n\nsummary(pdm$fcs)" },
+  { name:"Score de consommation alimentaire",  lang:"R",    stage:"analysis", dataset:"PDM T2 2026 — Androy", runs:7,
+    code:"# Seuils standard : pauvre < 21, limite 21–35, acceptable > 35\npdm$fcs_cat <- cut(pdm$fcs,\n  breaks = c(-Inf, 21, 35, Inf),\n  labels = c(\"Pauvre\", \"Limite\", \"Acceptable\"))\n\nprop.table(table(pdm$fcs_cat)) * 100" },
+  { name:"Tableaux croisés par district",      lang:"SPSS", stage:"analysis", dataset:"Processus S1 2026", runs:2,
+    code:"CROSSTABS\n  /TABLES=district BY fcs_cat\n  /FORMAT=AVALUE TABLES\n  /CELLS=COUNT ROW\n  /COUNT ROUND CELL." },
+];
+const TEMPLATES = [
+  { name:"Rapport mensuel de suivi", blocks:["Exigence minimale de suivi","Couverture par activité","Distributions","Tâches en retard"], intro:"Synthèse mensuelle du suivi de processus et de la réalisation du plan de distribution." },
+  { name:"Note de couverture trimestrielle", blocks:["Couverture et MMR","Résultats par indicateur","Carte des sites"], intro:"Point trimestriel sur la couverture géographique et l'atteinte des cibles." },
+];
+const AUDIT = [
+  { at:"2026-07-22 08:14", user:"Hanta",  office:"Bureau central d'Antananarivo", kind:"plan", text:"pdd : 0 créé(s), 18 modifié(s), 0 supprimé(s)" },
+  { at:"2026-07-21 16:47", user:"Tiana",  office:"Bureau de terrain d'Ampanihy",  kind:"odk",  text:"Visite validé — 2026-07-19" },
+  { at:"2026-07-21 14:02", user:"Naina",  office:"Bureau de terrain d'Ambovombe", kind:"plan", text:"Fiche mensuelle enregistrée — AMB-002, juillet" },
+  { at:"2026-07-20 09:35", user:"Hanta",  office:"Bureau central d'Antananarivo", kind:"plan", text:"params : 1 créé(s), 8 modifié(s), 0 supprimé(s)" },
+  { at:"2026-07-19 17:20", user:"Tiana",  office:"Bureau de terrain d'Ampanihy",  kind:"odk",  text:"Visite validé — 2026-07-17" },
+  { at:"2026-07-18 11:08", user:"Naina",  office:"Bureau de terrain d'Ambovombe", kind:"plan", text:"Site créé — TSI-002" },
+];
+const USERS = PROFILES.map(p => ({ ...p, email:`${p.first.toLowerCase()}@mems.mg`, active:true }));
+
+/* ═══════════════════════════════════════════════════════════════════════
+   3. CALCULS — formules réelles de web/src/lib/calc.js
+   ═══════════════════════════════════════════════════════════════════════ */
+const n   = v => Number.isFinite(+v) ? +v : 0;
+const r1  = v => Math.round(v*10)/10;
+const r2  = v => Math.round(v*100)/100;
+const pct = (a,b) => b ? Math.round((a/b)*1000)/10 : 0;
+const fmt = v => n(v).toLocaleString("fr-FR");
+const esc = s => String(s??"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+/* « Bureau de terrain d'Ambovombe » → « Ambovombe » pour les colonnes étroites */
+const shortOffice = o => String(o||"").replace(/^Bureau (de terrain|central) d['’ ]?/,"");
+
+/* Chaîne de couverture : intervalle minimum → fréquence → faisabilité → intervalle ajusté */
+function computeParam(p, sites){
+  const nbSites = sites.filter(s => s.office===p.office && s.tag===p.tag && s.status!=="Inactive").length;
+  const minInterval  = p.risk ? p.duration/p.risk : 0;
+  const minFreq      = minInterval ? p.duration/minInterval : 0;
+  const targetPerMonth = minInterval ? nbSites/minInterval : 0;
+  const feasibilityRatio = targetPerMonth ? p.feasible/targetPerMonth : 0;
+  const adjustedFreq = minFreq*feasibilityRatio;
+  const adjustedInterval = adjustedFreq ? Math.max(1, p.duration/adjustedFreq) : 0;
+  return { nbSites, minInterval:r2(minInterval), minFreq:r2(minFreq),
+    targetPerMonth:r2(targetPerMonth), feasibilityRatio:r2(feasibilityRatio),
+    adjustedFreq:r2(adjustedFreq), adjustedInterval:r1(adjustedInterval) };
+}
+/* Exigence minimale de suivi, au prorata des mois écoulés */
+function computeMMR(sites){
+  const elapsed = NOW_M+1;
+  let required=0, done=0, visitedSites=0;
+  const active = sites.filter(s => s.status!=="Inactive");
+  for(const s of active){
+    const req = s.plan.filter(x=>x.p).length * (elapsed/12);
+    required += req;
+    const d = s.plan.filter(x=>x.d).length;
+    done += d; if(d) visitedSites++;
+  }
+  required = Math.round(required);
+  return { elapsed, required, done, visitedSites, activeSites:active.length,
+    pct: pct(done, required), coverage: pct(visitedSites, active.length) };
+}
+const pddRate = (a,b) => b ? a/b : null;
+const rateTxt = v => v===null ? "—" : (Math.round(v*1000)/10)+" %";
+
+/* ═══════════════════════════════════════════════════════════════════════
+   4. ÉTAT — le rôle et le bureau filtrent réellement les données
+   ═══════════════════════════════════════════════════════════════════════ */
+const NAV = [
+  { id:"home",     label:"Accueil",     sub:[] },
+  { id:"planning", label:"Planning",    sub:[["overreaching","Paramètres de couverture"],["process","Plan de suivi des sites"],
+                                             ["coverage","Couverture et MMR"],["distribution","Plan de distribution"],
+                                             ["outcomes","Plan des résultats"]] },
+  { id:"actual",   label:"Actual Data", sub:[["summary","Résumé global"],["process","Suivi de processus"],["sites","Sites"],
+                                             ["map","Cartographie"],["distrib","Distributions"],
+                                             ["output","Outputs et population"],["outcome","Outcomes"],["sources","Sources de données"]] },
+  { id:"analytics",label:"Analyses",    sub:[["datasets","Jeux de données"],["scripts","Scripts d'analyse"],["viz","Visualisations"]] },
+  { id:"reports",  label:"Rapports",    sub:[["extract","Extraction ODK"],["build","Générateur de rapport"]] },
+  { id:"settings", label:"Paramètres",  sub:[["general","Général"],["sites","Sites"],["locations","Localités"],
+                                             ["indicators","Indicateurs"],["calc","Calculs"],["odk","ODK Central"],
+                                             ["templates","Modèles de rapport"],["api","API"],["users","Utilisateurs"]] },
+];
+const state = { me:PROFILES[0], tab:"home", sub:{}, open:null };
+
+const can  = c => !!ROLES[state.me.role][c];
+const tabs = () => ROLES[state.me.role].tabs;
+/* Cloisonnement : un compte rattaché à un bureau ne voit que son bureau.
+   Dans l'application réelle ce filtre est appliqué en SQL, pas dans l'interface. */
+const scope = rows => state.me.office ? rows.filter(r => r.office===state.me.office) : rows;
+const mySites    = () => scope(SITES);
+const myParams   = () => scope(PARAMS);
+const myPdd      = () => scope(PDD);
+const myCaseload = () => state.me.office
+  ? CASELOAD.filter(c => OFFICE_OF_ADM2[c.adm2]===state.me.office) : CASELOAD;
+const myAudit    = () => state.me.office ? AUDIT.filter(a => a.office===state.me.office) : AUDIT;
+
+/* ═══════════════════════════════════════════════════════════════════════
+   5. BRIQUES DE RENDU
+   ═══════════════════════════════════════════════════════════════════════ */
+const head = (title, text, actions="") =>
+  `<div class="head"><div><h2>${esc(title)}</h2>${text?`<p>${esc(text)}</p>`:""}</div>
+   ${actions?`<div class="act">${actions}</div>`:""}</div>`;
+
+const card = (title, sub, body, flush) =>
+  `<div class="card">${title?`<h3>${esc(title)}</h3>`:""}${sub?`<p class="sub">${esc(sub)}</p>`:""}
+   ${flush?body:`<div class="body">${body}</div>`}</div>`;
+
+const stat = (lb, vl, sb, tone) =>
+  `<div class="stat ${tone||""}"><div class="lb">${esc(lb)}</div><div class="vl">${vl}</div>
+   ${sb?`<div class="sb">${esc(sb)}</div>`:""}</div>`;
+
+const table = (cols, rows, maxh) => rows.length
+  ? `<div class="scroll" ${maxh?`style="max-height:${maxh}px"`:""}><table>
+     <thead><tr>${cols.map(c=>`<th class="${c[1]==="n"?"num":""}">${esc(c[0])}</th>`).join("")}</tr></thead>
+     <tbody>${rows.map(r=>`<tr>${r.map((c,i)=>
+       `<td class="${cols[i]&&cols[i][1]==="n"?"num":""}">${c}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`
+  : `<div class="empty">Aucune donnée sur ce périmètre</div>`;
+
+const bar = (v, tone) => `<div class="bar"><i style="width:${Math.min(100,Math.max(0,v))}%;
+  background:${tone==="ok"?"var(--ok)":tone==="warn"?"var(--warn)":tone==="bad"?"var(--bad)":"var(--brand)"}"></i></div>`;
+
+const btn = (label, cap, primary) => {
+  const ok = !cap || can(cap);
+  return `<button class="btn ${primary?"":"sec"} ${ok?"":""}" ${ok?"":"disabled"} ${
+    ok?"":`title="Droit « ${cap} » requis — votre rôle est ${ROLES[state.me.role].label}"`}>${esc(label)}</button>`;
+};
+
+/* Histogramme SVG — aucune bibliothèque externe */
+function svgBars(series, w, h){
+  const max = Math.max(1, ...series.flatMap(s=>s.values));
+  const n0 = series[0].values.length, gw = w/n0, bw = Math.min(16, gw/(series.length+1));
+  let out = `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px">`;
+  for(let g=1;g<=4;g++){ const y=h-24-(h-40)*g/4;
+    out += `<line x1="34" y1="${y}" x2="${w}" y2="${y}" stroke="#eef2f5"/>`; }
+  series.forEach((s,si)=> s.values.forEach((v,i)=>{
+    const bh=(h-40)*(v/max), x=34+i*gw+(gw-bw*series.length)/2+si*bw, y=h-24-bh;
+    out += `<rect x="${x}" y="${y}" width="${bw-2}" height="${Math.max(0,bh)}" fill="${s.color}" rx="2"/>`;
+  }));
+  series[0].labels.forEach((l,i)=>{
+    out += `<text x="${34+i*gw+gw/2}" y="${h-8}" font-size="10" fill="#8c9ba5" text-anchor="middle">${esc(l)}</text>`; });
+  out += `<text x="0" y="14" font-size="10" fill="#8c9ba5">${max}</text></svg>`;
+  return out + `<div style="display:flex;gap:14px;margin-top:6px;font-size:11px;color:var(--t2)">${
+    series.map(s=>`<span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${s.color};margin-right:5px"></i>${esc(s.name)}</span>`).join("")}</div>`;
+}
+/* Jauge semi-circulaire */
+function svgGauge(p, w=190){
+  const col = p>=80?"var(--ok)":p>=50?"#b5820b":"var(--bad)";
+  const R=68, cx=w/2, cy=82, a=Math.PI*(1-Math.min(100,p)/100);
+  const x=cx+R*Math.cos(a), y=cy-R*Math.sin(a);
+  return `<svg viewBox="0 0 ${w} 100" style="width:100%;max-width:${w}px;height:100px">
+    <path d="M ${cx-R} ${cy} A ${R} ${R} 0 0 1 ${cx+R} ${cy}" fill="none" stroke="#e8edf1" stroke-width="15" stroke-linecap="round"/>
+    <path d="M ${cx-R} ${cy} A ${R} ${R} 0 0 1 ${x} ${y}" fill="none" stroke="${col}" stroke-width="15" stroke-linecap="round"/>
+    <text x="${cx}" y="${cy-4}" text-anchor="middle" font-size="30" font-weight="300" fill="${col}">${p} %</text></svg>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   6. LES 28 DESTINATIONS
+   ═══════════════════════════════════════════════════════════════════════ */
+const V = {};
+
+/* ── Accueil ───────────────────────────────────────────────── */
+V["home"] = () => {
+  const sites = mySites(), mmr = computeMMR(sites);
+  const tasks = [];
+  sites.filter(s=>s.status!=="Inactive").forEach(s=>{
+    const missed = s.plan.filter((p,i)=>p.p && !p.d && i<NOW_M).length;
+    if(missed) tasks.push(["haute","Visite en retard",
+      `${s.poi} — ${missed} échéance(s) de visite non honorée(s)`, `${shortOffice(s.office)} · ${s.adm3}`]);
+    if(!s.last) tasks.push(["haute","Jamais visité",
+      `${s.poi} — aucune visite enregistrée`, `${s.adm2} · ${s.adm3}`]);
+  });
+  myPdd().filter(l=>l.month<NOW_M && !l.distributed).forEach(l=>tasks.push(["moyenne","Distribution non renseignée",
+    `${l.adm3} — ${MONTHS_L[l.month]}, ${l.actType} ${l.modality} : aucune quantité distribuée saisie`, "Actual Data → Distributions"]));
+  INDICATORS.filter(i=>i.dir==="up" ? i.value<i.target : i.value>i.target).slice(0,3)
+    .forEach(i=>tasks.push(["basse","Cible non atteinte", `${i.name.slice(0,58)}… — ${i.value} ${i.unit} pour une cible de ${i.target}`, "Actual Data → Outcomes"]));
+  const ord={haute:0,moyenne:1,basse:2}; tasks.sort((a,b)=>ord[a[0]]-ord[b[0]]);
+
+  const last3 = [];
+  for(let k=2;k>=0;k--){ const m=NOW_M-k; if(m<0) continue;
+    last3.push({ m:MONTHS[m],
+      plan: sites.reduce((t,s)=>t+(s.plan[m]?.p?1:0),0),
+      done: sites.reduce((t,s)=>t+(s.plan[m]?.d?1:0),0) }); }
+
+  const byTag={};
+  sites.forEach(s=>{ byTag[s.tag]=byTag[s.tag]||{plan:0,done:0};
+    s.plan.forEach(p=>{ if(p.p) byTag[s.tag].plan++; if(p.d) byTag[s.tag].done++; }); });
+
+  const pdd = myPdd();
+  const dBenef = pddRate(pdd.reduce((t,l)=>t+l.benefActual,0), pdd.reduce((t,l)=>t+l.benefPlanned,0));
+  const dDist  = pddRate(pdd.reduce((t,l)=>t+l.distributed,0), pdd.reduce((t,l)=>t+l.benefPlanned,0));
+
+  return head("Accueil", `Bonjour ${state.me.first}. Situation consolidée du suivi au ${new Date().toLocaleDateString("fr-FR")}.`,
+      btn("Plan de suivi")+btn("Générer un rapport","",1))
+    + `<div class="grid g2">
+        ${card("Exigence minimale de suivi", `Réalisé rapporté au requis, au prorata de ${mmr.elapsed} mois`,
+          `<div style="text-align:center">${svgGauge(mmr.pct)}</div>
+           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;padding-top:12px;
+                border-top:1px solid #eef2f5;text-align:center">
+             <div><div style="font-size:20px;font-weight:300">${fmt(mmr.done)}</div><div class="sb" style="font-size:11px;color:var(--t2)">visites réalisées</div></div>
+             <div><div style="font-size:20px;font-weight:300">${fmt(mmr.required)}</div><div style="font-size:11px;color:var(--t2)">visites requises</div></div>
+           </div>
+           <div style="display:flex;justify-content:space-between;margin-top:10px;padding-top:10px;
+                border-top:1px solid #eef2f5;font-size:12px;color:var(--t2)">
+             <span>Sites couverts au moins une fois</span><b>${mmr.visitedSites}/${mmr.activeSites} · ${mmr.coverage} %</b></div>`)}
+        ${card("Trois derniers mois","Visites planifiées et réalisées",
+          svgBars([{name:"Planifiées",color:"var(--brandL)",values:last3.map(x=>x.plan),labels:last3.map(x=>x.m)},
+                   {name:"Réalisées", color:"var(--ok)",    values:last3.map(x=>x.done),labels:last3.map(x=>x.m)}], 420, 210))}
+      </div>`
+    + card("Tâches urgentes et actions à mener",
+        `${tasks.filter(t=>t[0]==="haute").length} priorité haute · ${tasks.filter(t=>t[0]==="moyenne").length} moyenne · ${tasks.filter(t=>t[0]==="basse").length} basse`,
+        table([["Priorité"],["Nature"],["Détail"],["Contexte"]],
+          tasks.slice(0,40).map(t=>[`<span class="badge ${t[0]==="haute"?"r":t[0]==="moyenne"?"y":""}">${t[0]}</span>`,
+            `<b>${esc(t[1])}</b>`, esc(t[2]), `<span style="color:var(--t2)">${esc(t[3])}</span>`]), 300), 1)
+    + `<div class="grid g2">
+        ${card("Plan et réalisé par catégorie d'activité","Sur l'ensemble de l'exercice",
+          svgBars([{name:"Planifié",color:"var(--brandL)",values:Object.values(byTag).map(v=>v.plan),labels:Object.keys(byTag)},
+                   {name:"Réalisé", color:"var(--ok)",    values:Object.values(byTag).map(v=>v.done),labels:Object.keys(byTag)}], 420, 220))}
+        ${card("État des distributions","Réalisation du plan de distribution",
+          `<div style="display:grid;gap:11px">
+            <div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+              <span>Taux de bénéficiaires</span><b>${rateTxt(dBenef)}</b></div>${bar((dBenef||0)*100, dBenef>=.9?"ok":dBenef>=.6?"warn":"bad")}</div>
+            <div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+              <span>Taux de distributions</span><b>${rateTxt(dDist)}</b></div>${bar((dDist||0)*100, dDist>=.9?"ok":dDist>=.6?"warn":"bad")}</div>
+            <div style="font-size:12px;color:var(--t2);margin-top:4px">
+              ${pdd.length} ligne(s) de plan de distribution · ${pdd.filter(l=>!l.distributed).length} sans réalisation saisie</div>
+          </div>`)}
+      </div>`
+    + card("Activité récente","Interventions des bureaux de terrain",
+        table([["Date"],["Utilisateur"],["Bureau"],["Action"]],
+          myAudit().map(a=>[esc(a.at), esc(a.user), `<span style="color:var(--t2)">${esc(a.office)}</span>`, esc(a.text)])), 1);
+};
+
+/* ── Planning ──────────────────────────────────────────────── */
+V["planning:overreaching"] = () => {
+  const sites = mySites();
+  return head("Paramètres de couverture",
+      "Durée d'opération et niveau de risque déterminent l'intervalle minimum entre deux visites. La capacité mensuelle réelle le corrige en intervalle tenable.",
+      btn("Importer","edit")+btn("Ajouter un paramètre","edit",1))
+    + card(null,null, `<div class="note info">
+        <b>Chaîne de calcul.</b> intervalle minimum = durée ÷ risque · fréquence minimale = durée ÷ intervalle ·
+        cible mensuelle = sites ÷ intervalle · ratio de faisabilité = capacité ÷ cible ·
+        intervalle ajusté = durée ÷ (fréquence × ratio), plancher à un mois.</div>`)
+    + card("Paramètres et colonnes calculées", `${myParams().length} couple(s) bureau × activité — unicité garantie par la base`,
+        table([["Bureau"],["Activité"],["Catégorie"],["Durée","n"],["Risque","n"],["Sites","n"],
+               ["Interv. min","n"],["Cible/mois","n"],["Capacité","n"],["Ratio","n"],["Interv. ajusté","n"]],
+          myParams().map(p=>{ const c=computeParam(p,sites);
+            const tone = c.feasibilityRatio>=1?"g":c.feasibilityRatio>=.6?"y":"r";
+            return [esc(shortOffice(p.office)),
+              `<span class="badge b">${esc(p.tag)}</span>`, esc(p.cat), p.duration, p.risk, c.nbSites,
+              c.minInterval, c.targetPerMonth, p.feasible,
+              `<span class="badge ${tone}">${c.feasibilityRatio}</span>`, `<b>${c.adjustedInterval} mois</b>`]; })), 1);
+};
+
+V["planning:process"] = () => {
+  const sites = mySites();
+  return head("Plan de suivi des sites",
+      "Grille mensuelle : chaque case porte le mois planifié et le mois réalisé. Une case cochée « réalisé » crée la visite correspondante.",
+      btn("Exporter")+btn("Planification automatique","edit",1))
+    + card("Légende",null, `<div style="display:flex;gap:18px;flex-wrap:wrap;font-size:12px;align-items:center">
+        <span><i style="display:inline-block;width:16px;height:16px;border-radius:2px;background:#dbeafe;vertical-align:-3px;margin-right:6px"></i>Planifié</span>
+        <span><i style="display:inline-block;width:16px;height:16px;border-radius:2px;background:#dcfce7;vertical-align:-3px;margin-right:6px"></i>Réalisé</span>
+        <span><i style="display:inline-block;width:16px;height:16px;border-radius:2px;background:#f1f5f9;vertical-align:-3px;margin-right:6px"></i>Ni l'un ni l'autre</span>
+        ${can("edit")?"":'<span class="badge y">Lecture seule — votre rôle ne permet pas la modification</span>'}</div>`)
+    + card("Grille annuelle", `${sites.length} site(s) · exercice ${YEAR}`,
+        `<div class="scroll" style="max-height:520px"><table><thead><tr>
+          <th style="min-width:210px">Site</th><th>Activité</th>
+          ${MONTHS.map(m=>`<th style="text-align:center;padding:8px 4px">${m}</th>`).join("")}
+          <th class="num">Réal.</th></tr></thead><tbody>
+          ${sites.map(s=>`<tr>
+            <td><b>${esc(s.poi)}</b><div style="font-size:11px;color:var(--t2)">${esc(s.code)} · ${esc(s.adm3)}</div></td>
+            <td><span class="badge b">${esc(s.tag)}</span></td>
+            ${s.plan.map(p=>`<td style="padding:4px 2px"><div class="mcell ${
+              s.status==="Inactive"?"off":p.d?"d":p.p?"p":""}">${p.d?"✓":p.p?"●":""}</div></td>`).join("")}
+            <td class="num"><b>${s.plan.filter(p=>p.d).length}</b>/${s.plan.filter(p=>p.p).length}</td></tr>`).join("")}
+        </tbody></table></div>`, 1);
+};
+
+V["planning:coverage"] = () => {
+  const sites = mySites(), mmr = computeMMR(sites);
+  const rows = myParams().map(p => { const c = computeParam(p, sites);
+    const g = sites.filter(s=>s.office===p.office && s.tag===p.tag);
+    const planned = g.reduce((t,s)=>t+s.plan.filter(x=>x.p).length,0);
+    const done    = g.reduce((t,s)=>t+s.plan.filter(x=>x.d).length,0);
+    return { p, c, planned, done, pct: pct(done, planned) }; });
+  return head("Couverture et MMR",
+      "Exigence minimale de suivi : nombre de visites requis par la codification, rapporté aux visites réellement réalisées.")
+    + card(null,null,`<div class="stats">
+        ${stat("Taux de réalisation", mmr.pct+" %", `${fmt(mmr.done)} sur ${fmt(mmr.required)} requises`, mmr.pct>=80?"ok":mmr.pct>=50?"warn":"bad")}
+        ${stat("Sites actifs", fmt(mmr.activeSites), "hors sites inactifs")}
+        ${stat("Sites couverts", `${mmr.visitedSites}/${mmr.activeSites}`, mmr.coverage+" % au moins une fois", mmr.coverage>=80?"ok":"warn")}
+        ${stat("Mois écoulés", mmr.elapsed, "prorata appliqué au requis")}
+      </div>`, 1)
+    + card("Couverture par bureau et activité", null,
+        table([["Bureau"],["Activité"],["Sites","n"],["Planifiées","n"],["Réalisées","n"],["Taux","n"],["Progression"]],
+          rows.map(r=>[esc(shortOffice(r.p.office)),
+            `<span class="badge b">${esc(r.p.tag)}</span>`, r.c.nbSites, r.planned, r.done,
+            `<b>${r.pct} %</b>`, `<div style="min-width:120px">${bar(r.pct, r.pct>=80?"ok":r.pct>=50?"warn":"bad")}</div>`])), 1);
+};
+
+V["planning:distribution"] = () => {
+  const pdd = myPdd();
+  const byCommune = {};
+  pdd.forEach(l=>{ const k=l.adm3;
+    byCommune[k] = byCommune[k] || { adm3:l.adm3, adm2:l.adm2, planned:0, tonnage:0, amount:0, lines:0 };
+    byCommune[k].planned += l.benefPlanned; byCommune[k].tonnage += l.tonnage;
+    byCommune[k].amount += l.amount; byCommune[k].lines++; });
+  const cl = Object.fromEntries(myCaseload().map(c=>[c.adm3,c]));
+  return head("Plan de distribution",
+      "Côté planifié : bénéficiaires prévus, tonnage et montants par commune et par période. Le taux de couverture rapporte le planifié aux personnes ciblées.",
+      btn("Importer un fichier Excel","edit")+btn("Ajouter une ligne","edit",1))
+    + card("Par commune", `${Object.keys(byCommune).length} commune(s) · ${pdd.length} ligne(s) de plan`,
+        table([["Commune"],["District"],["Lignes","n"],["Population","n"],["Ciblés","n"],
+               ["Bénéf. planifiés","n"],["Couverture du ciblage","n"],["Tonnage (t)","n"],["Montant (MGA)","n"]],
+          Object.values(byCommune).map(c=>{
+            const cc = cl[c.adm3], cov = cc ? pct(c.planned, cc.targeted) : 0;
+            return [`<b>${esc(c.adm3)}</b>`, esc(c.adm2), c.lines,
+              cc?fmt(cc.pop):"—", cc?fmt(cc.targeted):"—", fmt(c.planned),
+              cc?`<span class="badge ${cov>=90?"g":cov>=60?"y":"r"}">${cov} %</span>`:"—",
+              c.tonnage?r1(c.tonnage):"—", c.amount?fmt(c.amount):"—"]; })), 1)
+    + card("Détail mensuel", "Une ligne par commune, mois et type d'activité",
+        table([["Mois"],["Commune"],["Type"],["Modalité"],["Produit"],["Bénéf. planifiés","n"],["Statut"]],
+          pdd.map(l=>[MONTHS_L[l.month], esc(l.adm3), `<span class="badge">${esc(l.actType)}</span>`,
+            esc(l.modality), esc(l.commodity), fmt(l.benefPlanned),
+            `<span class="badge ${l.status==="done"?"g":"b"}">${l.status==="done"?"réalisé":"planifié"}</span>`]), 380), 1);
+};
+
+V["planning:outcomes"] = () => head("Plan des résultats",
+    "Calendrier de collecte des indicateurs de résultat : à quel mois chaque mesure est attendue, selon sa fréquence.")
+  + card("Calendrier annuel de collecte", `${INDICATORS.length} indicateurs · exercice ${YEAR}`,
+      `<div class="scroll"><table><thead><tr><th style="min-width:280px">Indicateur</th><th>Fréquence</th>
+        ${MONTHS.map(m=>`<th style="text-align:center;padding:8px 4px">${m}</th>`).join("")}</tr></thead><tbody>
+        ${INDICATORS.map((ind,ii)=>{
+          const step = ind.freq==="Mensuel"?1:ind.freq==="Trimestriel"?3:ind.freq==="Semestriel"?6:12;
+          return `<tr><td><b>${esc(ind.id)}</b><div style="font-size:11px;color:var(--t2)">${esc(ind.name.slice(0,66))}…</div></td>
+            <td><span class="badge">${esc(ind.freq)}</span></td>
+            ${MONTHS.map((_,m)=>`<td style="padding:4px 2px"><div class="mcell ${
+              (m+ii)%step===0?"p":""}">${(m+ii)%step===0?"●":""}</div></td>`).join("")}</tr>`; }).join("")}
+      </tbody></table></div>`, 1);
+
+/* ── Actual Data ───────────────────────────────────────────── */
+V["actual:summary"] = () => {
+  const sites = mySites(), mmr = computeMMR(sites), pdd = myPdd();
+  const visits = sites.reduce((t,s)=>t+s.plan.filter(p=>p.d).length,0);
+  const benef  = sites.reduce((t,s)=>t+s.benef,0);
+  const dist   = pddRate(pdd.reduce((t,l)=>t+l.distributed,0), pdd.reduce((t,l)=>t+l.benefPlanned,0));
+  const cl = myCaseload();
+  return head("Résumé global","Vue consolidée des données réelles collectées sur le terrain.")
+    + card(null,null,`<div class="stats">
+        ${stat("Sites suivis", fmt(sites.length), `${sites.filter(s=>s.status==="Active").length} actifs`)}
+        ${stat("Visites réalisées", fmt(visits), `sur ${fmt(mmr.required)} requises`, mmr.pct>=80?"ok":"warn")}
+        ${stat("Réalisation MMR", mmr.pct+" %", "au prorata des mois écoulés", mmr.pct>=80?"ok":mmr.pct>=50?"warn":"bad")}
+        ${stat("Bénéficiaires", fmt(benef), "enregistrés sur les sites")}
+        ${stat("Taux de distributions", rateTxt(dist), `${pdd.length} lignes de PDD`, dist>=.9?"ok":dist>=.6?"warn":"bad")}
+        ${stat("Communes couvertes", fmt(cl.length), `${fmt(cl.reduce((t,c)=>t+c.targeted,0))} personnes ciblées`)}
+      </div>`, 1)
+    + `<div class="grid g2">
+        ${card("Population, ciblage et distribution par commune","Les trois taux qui intéressent le programme",
+          table([["Commune"],["Population","n"],["Ciblés","n"],["Taux de ciblage","n"]],
+            cl.map(c=>[esc(c.adm3), fmt(c.pop), fmt(c.targeted),
+              `<span class="badge ${pct(c.targeted,c.pop)>=30?"y":""}">${pct(c.targeted,c.pop)} %</span>`]), 300), 1)}
+        ${card("Répartition par activité",null,
+          svgBars([{name:"Sites", color:"var(--brand)",
+            values:[...new Set(sites.map(s=>s.tag))].map(t=>sites.filter(s=>s.tag===t).length),
+            labels:[...new Set(sites.map(s=>s.tag))]}], 420, 220))}
+      </div>`;
+};
+
+V["actual:process"] = () => {
+  const sites = mySites(); const visits=[];
+  sites.forEach(s=>s.plan.forEach((p,m)=>{ if(p.d) visits.push({
+    site:s, month:m, monitor:s.resp,
+    status: m<NOW_M-1 ? "Validé" : (m%3===0 ? "Erreur" : "À valider") }); }));
+  visits.sort((a,b)=>b.month-a.month);
+  const pend = visits.filter(v=>v.status==="À valider").length;
+  return head("Suivi de processus",
+      "Soumissions de visite remontées depuis ODK Central. La validation est une action métier distincte, tracée et réservée.",
+      btn("Extraire depuis ODK","edit")+btn(`Valider tout (${pend})`,"validate",1))
+    + (can("validate") ? "" : `<div class="note warn" style="margin-bottom:16px">
+        Votre rôle est <b>${ROLES[state.me.role].label}</b> : la validation des visites vous est refusée.
+        Le bouton reste visible mais désactivé — et le serveur refuserait la requête même s'il était forcé.</div>`)
+    + card(null,null,`<div class="stats">
+        ${stat("Soumissions", fmt(visits.length), "sur l'exercice")}
+        ${stat("Validées", fmt(visits.filter(v=>v.status==="Validé").length), "", "ok")}
+        ${stat("À valider", fmt(pend), "en attente", pend?"warn":"")}
+        ${stat("En erreur", fmt(visits.filter(v=>v.status==="Erreur").length), "à corriger", "bad")}
+      </div>`, 1)
+    + card("Soumissions", null,
+        table([["Mois"],["Site"],["Activité"],["Moniteur"],["Statut"],["Action"]],
+          visits.map(v=>[MONTHS_L[v.month], `<b>${esc(v.site.poi)}</b>`,
+            `<span class="badge b">${esc(v.site.tag)}</span>`, esc(v.monitor),
+            `<span class="badge ${v.status==="Validé"?"g":v.status==="Erreur"?"r":"y"}">${esc(v.status)}</span>`,
+            v.status==="À valider" ? btn("Valider","validate") : "—"]), 420), 1);
+};
+
+V["actual:sites"] = () => {
+  const sites = mySites();
+  return head("Sites","Registre des points d'intérêt suivis. Ce même module est accessible depuis Paramètres → Sites.",
+      btn("Importer","edit")+btn("Exporter")+btn("Nouveau site","edit",1))
+    + (state.me.office ? `<div class="note info" style="margin-bottom:16px">
+        Vous êtes rattaché au <b>${esc(state.me.office)}</b> : seuls ses ${sites.length} site(s) vous sont
+        renvoyés. Le filtrage est appliqué en SQL par le serveur, pas dans l'interface.</div>` : "")
+    + card("Registre", `${sites.length} site(s) · ${sites.filter(s=>s.status==="Active").length} actif(s)`,
+        table([["Code"],["Point d'intérêt"],["Bureau"],["Activité"],["Commune"],["Fokontany"],
+               ["Bénéf.","n"],["Sécurité"],["Dernière visite"],["Statut"]],
+          sites.map(s=>[`<b>${esc(s.code)}</b>`, esc(s.poi),
+            esc(shortOffice(s.office)),
+            `<span class="badge b">${esc(s.tag)}</span>`, esc(s.adm3), esc(s.adm4), fmt(s.benef),
+            `<span class="badge ${s.sec===0?"g":s.sec===1?"y":"r"}">${s.sec}</span>`,
+            s.last || '<span style="color:var(--bad)">jamais</span>',
+            `<span class="badge ${s.status==="Active"?"g":"r"}">${esc(s.status)}</span>`]), 460), 1);
+};
+
+V["actual:map"] = () => {
+  const sites = mySites().filter(s=>s.lat && s.lon);
+  const lats=sites.map(s=>s.lat), lons=sites.map(s=>s.lon);
+  const minLa=Math.min(...lats)-.4, maxLa=Math.max(...lats)+.4;
+  const minLo=Math.min(...lons)-.4, maxLo=Math.max(...lons)+.4;
+  /* Projection équirectangulaire : un degré de longitude vaut cos(latitude) degré de
+     latitude en distance réelle. La correction s'applique au rapport largeur/hauteur,
+     sinon la carte est étirée horizontalement. */
+  const midLa=(minLa+maxLa)/2, kx=Math.cos(midLa*Math.PI/180);
+  const degW=(maxLo-minLo)*kx || 1, degH=(maxLa-minLa) || 1;
+  const W=760, H=Math.round(Math.min(560, Math.max(260, (W-60)*(degH/degW)+50)));
+  const px = s => 30+((s.lon-minLo)/((maxLo-minLo)||1))*(W-60);
+  const py = s => 20+((maxLa-s.lat)/degH)*(H-50);
+  const colors = { URT:"var(--brand)", NTA:"var(--ok)", SMP:"var(--warn)", MPA:"var(--orange)",
+                   ACL:"var(--aqua)", SAMS:"var(--magenta)", CAR:"var(--navy)" };
+  return head("Cartographie",
+      "Projection équirectangulaire corrigée de la latitude, tracée à partir de vos seules coordonnées. Aucun fond de carte n'est appelé : aucune donnée ne sort de l'application.")
+    + card("Sites géolocalisés", `${sites.length} point(s) · correction de latitude ×${r2(kx)}`,
+      `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#f8fafc;border-radius:3px">
+        ${[0,1,2,3,4].map(i=>`<line x1="30" y1="${20+i*(H-50)/4}" x2="${W-30}" y2="${20+i*(H-50)/4}" stroke="#e8edf1"/>`).join("")}
+        ${[0,1,2,3,4].map(i=>`<line x1="${30+i*(W-60)/4}" y1="20" x2="${30+i*(W-60)/4}" y2="${H-30}" stroke="#e8edf1"/>`).join("")}
+        ${sites.map(s=>`<g>
+          <circle cx="${px(s)}" cy="${py(s)}" r="${6+Math.sqrt(s.benef)/28}"
+            fill="${colors[s.tag]||"var(--t3)"}" fill-opacity=".72" stroke="#fff" stroke-width="1.5"/>
+          <text x="${px(s)}" y="${py(s)-11}" font-size="9.5" fill="var(--t2)" text-anchor="middle">${esc(s.code)}</text>
+        </g>`).join("")}
+        <text x="30" y="${H-8}" font-size="10" fill="var(--t3)">${r2(minLo)}° E</text>
+        <text x="${W-30}" y="${H-8}" font-size="10" fill="var(--t3)" text-anchor="end">${r2(maxLo)}° E</text>
+      </svg>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:11.5px;color:var(--t2)">
+        ${[...new Set(sites.map(s=>s.tag))].map(t=>
+          `<span><i style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${colors[t]||"var(--t3)"};margin-right:5px"></i>${esc(t)} — ${esc(TAG_LABEL[t]||t)}</span>`).join("")}
+      </div>
+      <p style="font-size:11.5px;color:var(--t3);margin:10px 0 0">La taille du point est proportionnelle au nombre de bénéficiaires.</p>`);
+};
+
+V["actual:distrib"] = () => {
+  const pdd = myPdd().filter(l=>l.month<=NOW_M);
+  const tot = k => pdd.reduce((t,l)=>t+l[k],0);
+  const rBenef=pddRate(tot("benefActual"),tot("benefPlanned"));
+  const rRecep=pddRate(tot("received"),tot("benefPlanned"));
+  const rDist =pddRate(tot("distributed"),tot("benefPlanned"));
+  return head("Distributions",
+      "Côté réalisé : bénéficiaires servis, quantités reçues et distribuées. Les trois taux se calculent par rapport au planifié.",
+      btn("Importer un fichier Excel","edit")+btn("Exporter"))
+    + card(null,null,`<div class="stats">
+        ${stat("Bénéficiaires servis", fmt(tot("benefActual")), `sur ${fmt(tot("benefPlanned"))} planifiés`)}
+        ${stat("Taux bénéficiaires", rateTxt(rBenef), "", rBenef>=.9?"ok":rBenef>=.6?"warn":"bad")}
+        ${stat("Taux de réception", rateTxt(rRecep), "", rRecep>=.9?"ok":rRecep>=.6?"warn":"bad")}
+        ${stat("Taux de distributions", rateTxt(rDist), "", rDist>=.9?"ok":rDist>=.6?"warn":"bad")}
+        ${stat("Lignes de PDD", fmt(pdd.length), `${pdd.filter(l=>!l.distributed).length} sans réalisation`)}
+      </div>`, 1)
+    + card("Réalisation par mois", null,
+        svgBars([{name:"Planifié", color:"var(--brandL)",
+                  values:MONTHS.slice(0,NOW_M+1).map((_,m)=>pdd.filter(l=>l.month===m).reduce((t,l)=>t+l.benefPlanned,0)),
+                  labels:MONTHS.slice(0,NOW_M+1)},
+                 {name:"Servi",    color:"var(--ok)",
+                  values:MONTHS.slice(0,NOW_M+1).map((_,m)=>pdd.filter(l=>l.month===m).reduce((t,l)=>t+l.benefActual,0)),
+                  labels:MONTHS.slice(0,NOW_M+1)}], 900, 240))
+    + card("Détail des réalisations", null,
+        table([["Mois"],["Commune"],["Type"],["Modalité"],["Planifiés","n"],["Servis","n"],
+               ["Reçu","n"],["Distribué","n"],["Taux distrib.","n"]],
+          pdd.map(l=>{ const r=pddRate(l.distributed,l.benefPlanned);
+            return [MONTHS_L[l.month], esc(l.adm3), `<span class="badge">${esc(l.actType)}</span>`, esc(l.modality),
+              fmt(l.benefPlanned), fmt(l.benefActual), fmt(l.received), fmt(l.distributed),
+              `<span class="badge ${r>=.9?"g":r>=.6?"y":"r"}">${rateTxt(r)}</span>`]; }), 400), 1);
+};
+
+V["actual:output"] = () => {
+  const cl = myCaseload();
+  const outputs = MONTHS.map((m,i)=>({ m,
+    planned: Math.round(cl.reduce((t,c)=>t+c.targeted,0)/12*(0.85+((i*37)%30)/100)),
+    actual: i<=NOW_M ? Math.round(cl.reduce((t,c)=>t+c.targeted,0)/12*(0.62+((i*53)%36)/100)) : 0 }));
+  return head("Outputs et population",
+      "Bénéficiaires planifiés et atteints par mois, et données de population par commune servant au calcul du ciblage.",
+      btn("Importer un fichier Excel","edit"))
+    + card("Bénéficiaires planifiés et atteints", `Exercice ${YEAR}`,
+        svgBars([{name:"Planifiés", color:"var(--brandL)", values:outputs.map(o=>o.planned), labels:MONTHS},
+                 {name:"Atteints",  color:"var(--ok)",     values:outputs.map(o=>o.actual),  labels:MONTHS}], 900, 250))
+    + card("Population et ciblage par commune", `${cl.length} commune(s) — base RGPH-3 (INSTAT 2018), projetée`,
+        table([["Commune"],["District"],["Activité"],["Population","n"],["Ménages","n"],
+               ["Personnes ciblées","n"],["Taux de ciblage","n"]],
+          cl.map(c=>[`<b>${esc(c.adm3)}</b>`, esc(c.adm2), `<span class="badge b">${esc(c.tag)}</span>`,
+            fmt(c.pop), fmt(c.hh), fmt(c.targeted),
+            `<span class="badge ${pct(c.targeted,c.pop)>=30?"y":""}">${pct(c.targeted,c.pop)} %</span>`])), 1);
+};
+
+V["actual:outcome"] = () => head("Outcomes",
+    "Valeurs mesurées des indicateurs de résultat, rapportées à leur cible. Le sens de progression (à la hausse ou à la baisse) dépend de l'indicateur.",
+    btn("Saisir une mesure","edit",1))
+  + card("Indicateurs de résultat", `${INDICATORS.length} indicateurs · ${INDICATORS.filter(i=>i.dir==="up"?i.value>=i.target:i.value<=i.target).length} cible(s) atteinte(s)`,
+      table([["Code"],["Indicateur"],["Panier"],["Unité"],["Cible","n"],["Mesure","n"],["Sens"],["Atteinte"],["Écart"]],
+        INDICATORS.map(i=>{ const okv = i.dir==="up" ? i.value>=i.target : i.value<=i.target;
+          const ecart = r1(i.dir==="up" ? i.value-i.target : i.target-i.value);
+          return [`<b>${esc(i.id)}</b>`, esc(i.name), `<span class="badge">${esc(i.basket)}</span>`, esc(i.unit),
+            i.target, `<b>${i.value}</b>`, i.dir==="up"?"↑ à la hausse":"↓ à la baisse",
+            `<span class="badge ${okv?"g":"r"}">${okv?"atteinte":"non atteinte"}</span>`,
+            `<span style="color:${okv?"var(--ok)":"var(--bad)"}">${ecart>0?"+":""}${ecart}</span>`]; })), 1);
+
+V["actual:sources"] = () => head("Sources de données",
+    "Formulaires ODK Central rattachés à l'application. Le jeton d'accès est chiffré en AES-256-GCM et n'est jamais renvoyé par l'API — seul un booléen indique sa présence.",
+    btn("Rattacher un formulaire","admin",1))
+  + card("Formulaires rattachés", `${ODK_FORMS.length} formulaire(s)`,
+      table([["Formulaire"],["Identifiant ODK"],["Projet"],["Type"],["Activité"],["Soumissions","n"],["Dernière extraction"],["Jeton"]],
+        ODK_FORMS.map(f=>[`<b>${esc(f.name)}</b>`, `<code style="font-size:11.5px">${esc(f.formId)}</code>`,
+          esc(f.project), `<span class="badge">${esc(f.kind)}</span>`,
+          f.tag?`<span class="badge b">${esc(f.tag)}</span>`:"—", fmt(f.records), esc(f.last),
+          f.token?'<span class="badge g">chiffré</span>':'<span class="badge r">absent</span>'])), 1)
+  + card(null,null,`<div class="note warn">
+      <b>Limite connue.</b> Les appels vers ODK Central partent du navigateur. Si le serveur ODK
+      n'autorise pas l'origine de la page, l'extraction échoue. Le passage par un relais côté
+      serveur est la suite logique — le jeton est déjà stocké chiffré pour cela.</div>`);
+
+/* ── Analyses ──────────────────────────────────────────────── */
+V["analytics:datasets"] = () => head("Jeux de données",
+    "Extractions figées d'un formulaire, sur lesquelles s'appliquent les règles d'apurement. Ces règles, elles, s'exécutent réellement dans le navigateur.",
+    btn("Nouveau jeu de données","edit",1))
+  + card("Jeux de données", `${DATASETS.length} jeu(x)`,
+      table([["Nom"],["Formulaire source"],["Lignes","n"],["Règles d'apurement","n"],["Créé le"],["Actions"]],
+        DATASETS.map(d=>[`<b>${esc(d.name)}</b>`, `<code style="font-size:11.5px">${esc(d.form)}</code>`,
+          fmt(d.rows), d.rules, esc(d.created), btn("Apurer","edit")+" "+btn("Exporter")])), 1)
+  + card("Règles d'apurement — exemple","Appliquées dans le navigateur, résultat immédiat",
+      table([["Champ"],["Règle"],["Seuil"],["Lignes écartées","n"]],
+        [["hh_size","bornes plausibles","1 – 20","14"],
+         ["fcs","valeur manquante","obligatoire","3"],
+         ["gps_lat","hors emprise pays","-25,7 – -11,9","1"],
+         ["date_visite","postérieure à aujourd'hui","refusée","0"],
+         ["benef_id","doublon","unicité","7"],
+         ["montant","valeur aberrante","> 3 écarts-types","2"]].map(r=>[`<code>${esc(r[0])}</code>`,esc(r[1]),esc(r[2]),r[3]])));
+
+V["analytics:scripts"] = () => head("Scripts d'analyse",
+    "Scripts R et SPSS versionnés avec leur jeu de données. Ils ne s'exécutent pas dans l'application : ils s'exportent, s'exécutent dans R ou SPSS, et les résultats se réimportent.",
+    btn("Nouveau script","edit",1))
+  + card(null,null,`<div class="note warn"><b>À savoir.</b> Les scripts R et SPSS ne s'exécutent pas ici.
+      Ils sont rédigés, versionnés et exportés avec leur jeu de données ; l'exécution se fait dans
+      R ou SPSS. Seules les règles d'apurement s'exécutent réellement, dans le navigateur.</div>`)
+  + SCRIPTS.map(s => card(s.name, `${s.lang} · ${s.stage==="cleaning"?"apurement":"analyse"} · ${s.dataset} · ${s.runs} exécution(s) enregistrée(s)`,
+      `<pre class="code">${esc(s.code)}</pre>
+       <div style="margin-top:10px;display:flex;gap:8px">${btn("Exporter le script")}${btn("Exporter avec les données")}${btn("Modifier","edit")}</div>`)).join("");
+
+V["analytics:viz"] = () => {
+  const sites = mySites();
+  const tags = [...new Set(sites.map(s=>s.tag))];
+  return head("Visualisations","Graphiques composés à partir des collections synchronisées. Les tableaux de bord sont enregistrés et partagés.",
+      btn("Nouveau tableau de bord","edit",1))
+    + `<div class="grid g2">
+        ${card("Sites par activité",null, svgBars([{name:"Sites",color:"var(--brand)",
+          values:tags.map(t=>sites.filter(s=>s.tag===t).length), labels:tags}], 420, 230))}
+        ${card("Bénéficiaires par activité",null, svgBars([{name:"Bénéficiaires",color:"var(--aqua)",
+          values:tags.map(t=>sites.filter(s=>s.tag===t).reduce((a,s)=>a+s.benef,0)), labels:tags}], 420, 230))}
+      </div>`
+    + card("Atteinte des cibles par indicateur",null,
+        `<div style="display:grid;gap:11px">${INDICATORS.map(i=>{
+          const a = i.dir==="up" ? pct(i.value,i.target) : pct(i.target,i.value);
+          return `<div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+            <span><b>${esc(i.id)}</b> <span style="color:var(--t2)">${esc(i.name.slice(0,52))}…</span></span>
+            <b>${Math.min(999,a)} %</b></div>${bar(a, a>=100?"ok":a>=75?"warn":"bad")}</div>`; }).join("")}</div>`);
+};
+
+/* ── Rapports ──────────────────────────────────────────────── */
+V["reports:extract"] = () => head("Extraction ODK",
+    "Sélection d'un formulaire, choix des colonnes et export. Les libellés proviennent du XLSForm joint au formulaire.",
+    btn("Exporter en CSV")+btn("Exporter en JSON"))
+  + `<div class="grid g2">
+      ${card("Paramètres d'extraction",null,
+        `<div class="fld"><label>Formulaire</label>
+          <select class="in">${ODK_FORMS.map(f=>`<option>${esc(f.name)}</option>`).join("")}</select></div>
+         <div class="fld"><label>Période</label>
+          <select class="in"><option>Exercice ${YEAR}</option><option>Semestre en cours</option><option>Mois en cours</option></select></div>
+         <div class="fld"><label>Colonnes</label>
+          <div class="hint">18 colonnes disponibles, 12 sélectionnées par défaut. Les libellés du XLSForm remplacent les noms techniques.</div></div>
+         <div class="fld"><label>Bureau</label>
+          <select class="in" ${state.me.office?"disabled":""}>${
+            state.me.office ? `<option>${esc(state.me.office)}</option>`
+            : `<option>Tous les bureaux</option>${OFFICES.map(o=>`<option>${esc(o)}</option>`).join("")}`}</select>
+          ${state.me.office?`<div class="hint">Verrouillé sur votre bureau de rattachement.</div>`:""}</div>`)}
+      ${card("Aperçu", "12 premières lignes",
+        table([["submission_id"],["site"],["date"],["moniteur"],["statut"]],
+          mySites().slice(0,12).map((s,i)=>[`<code style="font-size:11px">uuid:${(1e7+i*7919).toString(16)}</code>`,
+            esc(s.poi), `2026-0${(i%7)+1}-${10+i}`, esc(s.resp),
+            `<span class="badge ${i%3?"g":"y"}">${i%3?"Validé":"À valider"}</span>`])), 1)}
+    </div>`;
+
+V["reports:build"] = () => head("Générateur de rapport",
+    "Assemblage de blocs figés à partir des données courantes, puis export HTML. Le rapport reflète votre périmètre.",
+    btn("Nouveau modèle","edit")+btn("Générer",""  ,1))
+  + `<div class="grid g2">
+      ${card("Modèles enregistrés", `${TEMPLATES.length} modèle(s)`,
+        TEMPLATES.map(t=>`<div style="border:1px solid var(--line);border-radius:3px;padding:12px;margin-bottom:10px">
+          <b style="font-size:13px">${esc(t.name)}</b>
+          <p style="margin:5px 0 8px;font-size:12px;color:var(--t2);line-height:1.6">${esc(t.intro)}</p>
+          <div style="display:flex;gap:5px;flex-wrap:wrap">${t.blocks.map(b=>`<span class="badge b">${esc(b)}</span>`).join("")}</div>
+        </div>`).join(""))}
+      ${card("Blocs disponibles","Cochez les sections à inclure",
+        `<div style="display:grid;gap:7px">${
+          ["Exigence minimale de suivi","Couverture par activité","Plan et réalisé par site","Distributions",
+           "Population et ciblage","Résultats par indicateur","Carte des sites","Tâches en retard","Journal d'audit"]
+          .map((b,i)=>`<label style="display:flex;gap:9px;align-items:center;font-size:12.5px;cursor:pointer">
+            <input type="checkbox" ${i<4?"checked":""}> ${esc(b)}</label>`).join("")}</div>`)}
+    </div>`
+  + card("Aperçu du rapport",null,
+      `<div style="border:1px solid var(--line);border-radius:3px;padding:22px;background:#fff">
+        <h3 style="margin:0 0 3px;font-size:17px">Rapport mensuel de suivi — ${MONTHS_L[NOW_M]} ${YEAR}</h3>
+        <p style="margin:0 0 16px;font-size:12px;color:var(--t2)">
+          ${esc(state.me.office || "Tous les bureaux")} · généré le ${new Date().toLocaleDateString("fr-FR")}</p>
+        <div class="stats" style="border:1px solid var(--line)">
+          ${(()=>{ const m=computeMMR(mySites()); return stat("Réalisation MMR", m.pct+" %","",m.pct>=80?"ok":"warn")
+            + stat("Sites suivis", fmt(mySites().length))
+            + stat("Communes", fmt(myCaseload().length)); })()}
+        </div>
+      </div>`);
+
+/* ── Paramètres ────────────────────────────────────────────── */
+V["settings:general"] = () => head("Paramètres généraux","Identité de l'organisation, référentiels et listes de codification.")
+  + `<div class="grid g2">
+      ${card("Identité et affichage",null,
+        `<div class="fld"><label>Nom de l'organisation</label><input class="in" value="Bureau pays Madagascar"></div>
+         <div class="fld"><label>Unité responsable</label><input class="in" value="Unité suivi et évaluation"></div>
+         <div class="fld"><label>Logo du pied de page</label><input class="in" placeholder="/logo.png">
+           <div class="hint">Chemin servi par l'application ou image en data: — les adresses externes sont
+             bloquées par la politique de sécurité du contenu.</div></div>
+         <div class="fld"><label>Éléments par page</label><input class="in" type="number" value="25">
+           <div class="hint">Pagination des tableaux de planification.</div></div>`)}
+      ${card("Bureaux et antennes", `${OFFICES.length} entrées`,
+        OFFICES.map(o=>`<div style="display:flex;gap:6px;margin-bottom:6px"><input class="in" value="${esc(o)}"></div>`).join("")
+        + btn("Ajouter","edit"))}
+      ${card("Activity tags", `${TAGS.length} entrées`,
+        table([["Code"],["Intitulé"]], TAGS.map(t=>[`<span class="badge b">${esc(t[0])}</span>`, esc(t[1])])), 1)}
+      ${card("Partenaires coopérants","5 entrées",
+        ["Partenaire A","Partenaire B","Partenaire C","Partenaire D","Partenaire E"]
+          .map(p=>`<div style="margin-bottom:6px"><input class="in" value="${esc(p)}"></div>`).join(""))}
+    </div>`;
+
+V["settings:sites"] = () => V["actual:sites"]();
+
+V["settings:locations"] = () => {
+  const regions = [...new Set(GEO.map(g=>g.adm1))];
+  return head("Localités",
+      "Découpage administratif jusqu'au fokontany. Ce référentiel est la clé de voûte : sites, population et distributions s'y raccrochent.",
+      btn("Importer un shapefile","admin")+btn("Importer un fichier Excel","admin",1))
+    + card(null,null,`<div class="note info">
+        <b>Référentiel de Madagascar.</b> Le découpage officiel compte 23 régions, 119 districts,
+        environ 1 695 communes et près de 18 000 fokontany. L'échantillon ci-dessous en présente
+        ${GEO.length} lignes. L'import complet se fait par fichier, en une transaction.</div>`)
+    + `<div class="grid g3">
+        ${card("Régions", `${regions.length} sur 23`, regions.map(r=>`<div style="padding:5px 0;border-bottom:1px solid #eef2f5;font-size:12.5px">${esc(r)}</div>`).join(""))}
+        ${card("Districts", `${[...new Set(GEO.map(g=>g.adm2))].length} sur 119`, [...new Set(GEO.map(g=>g.adm2))].map(r=>`<div style="padding:5px 0;border-bottom:1px solid #eef2f5;font-size:12.5px">${esc(r)}</div>`).join(""))}
+        ${card("Communes", `${[...new Set(GEO.map(g=>g.adm3))].length} sur ~1 695`, [...new Set(GEO.map(g=>g.adm3))].map(r=>`<div style="padding:5px 0;border-bottom:1px solid #eef2f5;font-size:12.5px">${esc(r)}</div>`).join(""))}
+      </div>`
+    + card("Fokontany", `${GEO.length} ligne(s) de l'échantillon · le référentiel complet en compte près de 18 000`,
+        table([["Région"],["District"],["Commune"],["Fokontany"],["P-code"],["Latitude","n"],["Longitude","n"],["Site rattaché"]],
+          GEO.map(g=>{ const s = SITES.find(x=>x.adm4===g.adm4);
+            return [esc(g.adm1), esc(g.adm2), esc(g.adm3), `<b>${esc(g.adm4)}</b>`,
+              `<code style="font-size:11px">${esc(g.pcode)}</code>`, g.lat, g.lon,
+              s ? `<span class="badge g">${esc(s.code)}</span>` : '<span class="badge">non couvert</span>']; }), 430), 1);
+};
+
+V["settings:indicators"] = () => head("Indicateurs",
+    "Masterlist des indicateurs de résultat. Cible, unité et sens de progression conditionnent l'appréciation de l'atteinte.",
+    btn("Importer","edit")+btn("Nouvel indicateur","edit",1))
+  + card("Masterlist", `${INDICATORS.length} indicateurs · ${[...new Set(INDICATORS.map(i=>i.basket))].length} paniers`,
+      table([["Code"],["Intitulé"],["Panier"],["Unité"],["Cible","n"],["Sens"],["Méthode"],["Fréquence"],["Actions"]],
+        INDICATORS.map(i=>[`<b>${esc(i.id)}</b>`, esc(i.name), `<span class="badge">${esc(i.basket)}</span>`,
+          esc(i.unit), i.target, i.dir==="up"?"↑":"↓", esc(i.method),
+          `<span class="badge b">${esc(i.freq)}</span>`, btn("Modifier","edit")+" "+btn("Supprimer","del")]), 440), 1);
+
+V["settings:calc"] = () => {
+  const F = [
+    ["minInterval","Intervalle minimum requis (mois)","duration / riskLevel","Durée d'opération divisée par le niveau de risque"],
+    ["minFreq","Fréquence minimale requise","duration / minInterval","Nombre de visites attendues sur la durée"],
+    ["targetPerMonth","Sites ciblés par mois","nbSites / minInterval","Charge mensuelle théorique"],
+    ["feasibilityRatio","Ratio de faisabilité","feasiblePerMonth / targetPerMonth","Capacité rapportée à la cible"],
+    ["adjustedFreq","Fréquence ajustée","minFreq * feasibilityRatio","Fréquence corrigée par la capacité réelle"],
+    ["adjustedInterval","Intervalle ajusté (mois)","max(1, duration / adjustedFreq)","Intervalle réellement tenable, plancher à un mois"],
+  ];
+  const W = [["Situation sécuritaire","0 / 2 / 4"],["Synergies de programme","2 / 0"],["Nouveau partenaire","0 / 3"],
+    ["Expérience du partenaire","0 / 2 / 4"],["Problèmes du suivi interne","0 / 2 / 4"],
+    ["Problèmes des rapports partenaire","0 / 2 / 4"],["Problèmes du mécanisme de plainte","0 / 2 / 4"],
+    ["Fraude et corruption","0 / 3 / 6"],["Nombre de bénéficiaires","0 à 3"],["Ancienneté de la dernière visite","0 à 5"]];
+  return head("Calculs","Formules de couverture et pondérations du score de risque. Les formules sont modifiables ; les variables disponibles sont listées dans l'éditeur.")
+    + card("Formules de couverture","Appliquées dans l'ordre : chacune consomme le résultat de la précédente",
+        table([["Identifiant"],["Libellé"],["Expression"],["Explication"]],
+          F.map(f=>[`<code>${esc(f[0])}</code>`, `<b>${esc(f[1])}</b>`,
+            `<code style="background:#f1f5f9;padding:2px 5px;border-radius:2px">${esc(f[2])}</code>`,
+            `<span style="color:var(--t2)">${esc(f[3])}</span>`])), 1)
+    + card("Pondérations du score de risque","Le score oriente la priorisation des visites",
+        table([["Critère"],["Points possibles"]], W.map(w=>[esc(w[0]), `<span class="badge">${esc(w[1])}</span>`])), 1);
+};
+
+V["settings:odk"] = () => head("ODK Central",
+    "Rattachement des formulaires et gestion des jetons d'accès. Le jeton est chiffré en AES-256-GCM avec DATA_KEY et n'est jamais renvoyé en clair par l'API.",
+    btn("Rattacher un formulaire","admin",1))
+  + `<div class="grid g2">
+      ${card("Connexion au serveur",null,
+        `<div class="fld"><label>Adresse du serveur ODK Central</label><input class="in" value="https://odk-central.example.org"></div>
+         <div class="fld"><label>Projet</label><input class="in" value="MEMS"></div>
+         <div class="fld"><label>Jeton d'accès</label><input class="in" type="password" value="................" ${can("admin")?"":"disabled"}>
+           <div class="hint">Chiffré au repos. L'API ne renvoie qu'un booléen indiquant sa présence.
+             Changer DATA_KEY rend illisibles les jetons déjà chiffrés : il faut alors les ressaisir.</div></div>
+         ${can("admin")?btn("Tester la connexion","admin"):'<div class="note warn">Réservé aux administrateurs.</div>'}`)}
+      ${card("Correspondance des champs","Comment relier une soumission à un site",
+        `<div class="fld"><label>Champ identifiant le site</label><input class="in" value="site_code"></div>
+         <div class="fld"><label>Champ portant la date de visite</label><input class="in" value="date_visite"></div>
+         <div class="fld"><label>XLSForm joint</label>
+           <div class="hint">Le XLSForm fournit les libellés lisibles. Sans lui, les colonnes
+             apparaissent sous leur nom technique.</div></div>`)}
+    </div>`
+  + card("Formulaires rattachés",null,
+      table([["Formulaire"],["Identifiant"],["Type"],["Soumissions","n"],["Dernière extraction"],["Jeton"],["Actions"]],
+        ODK_FORMS.map(f=>[`<b>${esc(f.name)}</b>`, `<code style="font-size:11.5px">${esc(f.formId)}</code>`,
+          `<span class="badge">${esc(f.kind)}</span>`, fmt(f.records), esc(f.last),
+          f.token?'<span class="badge g">chiffré</span>':'<span class="badge r">absent</span>',
+          btn("Extraire","edit")+" "+btn("Supprimer","del")])), 1);
+
+V["settings:templates"] = () => head("Modèles de rapport","Composition des rapports : blocs inclus et texte d'introduction.",
+    btn("Nouveau modèle","edit",1))
+  + TEMPLATES.map(t=>card(t.name, `${t.blocks.length} bloc(s)`,
+      `<div class="fld"><label>Introduction</label><textarea class="in" rows="2">${esc(t.intro)}</textarea></div>
+       <div class="fld"><label>Blocs inclus</label>
+         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:5px">${t.blocks.map(b=>`<span class="badge b">${esc(b)}</span>`).join("")}</div></div>
+       <div style="display:flex;gap:8px;margin-top:10px">${btn("Modifier","edit")}${btn("Dupliquer","edit")}${btn("Supprimer","del")}</div>`)).join("");
+
+V["settings:api"] = () => head("API","Accès en lecture pour les outils décisionnels.")
+  + `<div class="grid g2">
+      ${card("Accès applicatif",null,
+        `<div class="note warn"><b>Non disponible.</b> L'accès en lecture par jeton n'est pas encore
+          servi par l'application : les points d'entrée ci-contre décrivent la structure prévue,
+          aucun n'est actif. En attendant, utilisez l'instantané JSON.</div>
+         <div style="margin-top:14px;padding-top:14px;border-top:1px solid #eef2f5">
+           ${btn("Télécharger un instantané JSON","",1)}
+           <p style="font-size:11.5px;color:var(--t2);margin:8px 0 0;line-height:1.65">
+             Cet instantané se charge directement dans un outil décisionnel par
+             « Obtenir les données → JSON ». Il reflète votre périmètre au moment du téléchargement.</p></div>`)}
+      ${card("Points d'entrée","Structure prévue — aucun n'est actif à ce jour",
+        table([["Point d'entrée"],["Contenu"],["Méthode"]],
+          [["/api/v1/sites","Registre des sites avec score et couverture"],
+           ["/api/v1/plan","Plan de suivi mensuel, planifié et réalisé"],
+           ["/api/v1/params","Paramètres de couverture et colonnes calculées"],
+           ["/api/v1/outputs","Bénéficiaires planifiés et atteints"],
+           ["/api/v1/outcomes","Valeurs des indicateurs de résultat"],
+           ["/api/v1/mmr","Exigence minimale de suivi consolidée"]]
+          .map(e=>[`<code style="color:var(--brand)">${esc(e[0])}</code>`, esc(e[1]), '<span class="badge b">GET</span>']))
+        + `<div style="padding:14px;border-top:1px solid var(--line)">
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--t2);margin-bottom:7px">Forme prévue de l'appel</div>
+            <pre class="code">GET https://mems.example.org/api/v1/sites?year=${YEAR}
+Authorization: Token &lt;jeton à émettre&gt;
+Accept: application/json</pre></div>`, 1)}
+    </div>`;
+
+V["settings:users"] = () => head("Utilisateurs",
+    "Comptes, rôles et rattachement à un bureau. Le rôle détermine ce qu'on peut faire, le bureau détermine où.",
+    btn("Nouveau compte","admin",1))
+  + card("Matrice des rôles","Une seule source, appliquée par le serveur — l'interface ne fait que masquer ce qu'il refuserait",
+      table([["Rôle"],["Onglets"],["Modifier"],["Supprimer"],["Valider"],["Administrer"]],
+        Object.entries(ROLES).map(([k,r])=>[
+          `<b>${esc(r.label)}</b> <code style="font-size:11px;color:var(--t2)">${esc(k)}</code>`,
+          r.tabs.length===6 ? '<span class="badge g">tous</span>' : `<span class="badge">${r.tabs.length} sur 6</span>`,
+          r.edit?"✅":"❌", r.del?"✅":"❌", r.validate?"✅":"❌", r.admin?"✅":"❌"])), 1)
+  + card("Comptes", `${USERS.length} compte(s)`,
+      table([["Nom"],["Adresse"],["Fonction"],["Rôle"],["Bureau"],["État"],["Actions"]],
+        USERS.map(u=>[`<b>${esc(u.first)} ${esc(u.last)}</b>${u.id===state.me.id?' <span class="badge b">vous</span>':""}`,
+          esc(u.email), `<span style="color:var(--t2)">${esc(u.title)}</span>`,
+          `<span class="badge">${esc(ROLES[u.role].label)}</span>`,
+          u.office ? esc(u.office) : '<span class="badge b">tous les bureaux</span>',
+          '<span class="badge g">actif</span>', btn("Modifier","admin")+" "+btn("Supprimer","del")]), 1))
+  + card(null,null,`<div class="note info">
+      <b>Politique de mot de passe.</b> 12 caractères au minimum, avec majuscule, minuscule et
+      chiffre. Stockage bcrypt à 12 tours, jamais renvoyé par l'API. Après 8 échecs, le compte est
+      verrouillé 15 minutes ; le message d'erreur reste identique que le compte existe ou non.</div>`);
+
+/* ═══════════════════════════════════════════════════════════════════════
+   7. COQUILLE — navigation, rôle, rendu
+   ═══════════════════════════════════════════════════════════════════════ */
+const $ = id => document.getElementById(id);
+
+function renderNav(){
+  const allowed = tabs();
+  $("nav").innerHTML = NAV.filter(x=>allowed.includes(x.id)).map(x=>`
+    <div class="tab" data-tab="${x.id}">
+      <button class="t ${state.tab===x.id?"on":""}" data-go="${x.id}">
+        ${esc(x.label)}${x.sub.length?" ▾":""}</button>
+      ${x.sub.length && state.open===x.id ? `<div class="menu">${x.sub.map(([sid,slab])=>
+        `<button data-go="${x.id}" data-sub="${sid}" class="${
+          state.tab===x.id && (state.sub[x.id]||x.sub[0][0])===sid?"on":""}">${esc(slab)}</button>`).join("")}</div>`:""}
+    </div>`).join("");
+}
+
+function renderView(){
+  const tab = state.tab;
+  const def = NAV.find(x=>x.id===tab);
+  const sub = def.sub.length ? (state.sub[tab] || def.sub[0][0]) : null;
+  const key = sub ? `${tab}:${sub}` : tab;
+  $("view").innerHTML = (V[key] || (()=>`<div class="empty">Vue « ${esc(key)} » — non prévue</div>`))();
+  window.scrollTo(0,0);
+}
+
+function renderWho(){
+  const r = ROLES[state.me.role];
+  $("avat").textContent = (state.me.first[0]||"")+(state.me.last[0]||"");
+  $("whoName").textContent = state.me.first;
+  $("whoMenu").innerHTML = `
+    <div style="padding:12px 16px;border-bottom:1px solid #eef2f5">
+      <div style="font-weight:600;font-size:13px">${esc(state.me.first)} ${esc(state.me.last)}</div>
+      <div style="font-size:11.5px;color:var(--t2)">${esc(state.me.title)}</div>
+      <div style="margin-top:7px;display:flex;gap:5px;flex-wrap:wrap">
+        <span class="badge b">${esc(r.label)}</span>
+        <span class="badge">${esc(state.me.office || "Tous les bureaux")}</span></div>
+    </div>
+    <div style="padding:10px 16px;border-bottom:1px solid #eef2f5">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--t2);margin-bottom:7px">
+        Changer de profil</div>
+      ${PROFILES.map(p=>`<button data-prof="${p.id}" style="display:block;width:100%;text-align:left;
+        padding:6px 8px;border:0;background:${p.id===state.me.id?"#eff6ff":"none"};border-radius:3px;
+        cursor:pointer;font-size:12px;margin-bottom:2px">
+        <b>${esc(ROLES[p.role].label)}</b><br><span style="color:var(--t2);font-size:11px">${esc(p.office||"Tous les bureaux")}</span>
+      </button>`).join("")}
+    </div>
+    <button data-logout="1" style="display:block;width:100%;text-align:left;padding:10px 16px;
+      border:0;background:none;cursor:pointer;font-size:13px">Se déconnecter</button>`;
+  $("footOrg").textContent = `Bureau pays Madagascar — Unité suivi et évaluation`;
+  $("footYear").textContent = `MEMS · démonstration · exercice ${YEAR}`;
+}
+
+function render(){ renderNav(); renderWho(); renderView(); }
+
+/* ── Événements ────────────────────────────────────────────── */
+document.addEventListener("click", e => {
+  const go = e.target.closest("[data-go]");
+  const prof = e.target.closest("[data-prof]");
+  const out = e.target.closest("[data-logout]");
+
+  if(prof){
+    state.me = PROFILES.find(p=>p.id===prof.dataset.prof);
+    if(!tabs().includes(state.tab)) state.tab = tabs()[0];
+    $("whoMenu").classList.add("hidden"); state.open=null; render(); return;
+  }
+  if(out){ $("app").classList.add("hidden"); $("login").classList.remove("hidden");
+    $("whoMenu").classList.add("hidden"); return; }
+  if(e.target.closest("#whoBtn")){
+    $("whoMenu").classList.toggle("hidden"); state.open=null; renderNav(); return; }
+
+  if(go){
+    const tab = go.dataset.go, sub = go.dataset.sub;
+    const def = NAV.find(x=>x.id===tab);
+    if(sub){ state.sub[tab]=sub; state.tab=tab; state.open=null; }
+    else { if(state.tab===tab && def.sub.length) state.open = state.open===tab?null:tab;
+           else { state.tab=tab; state.open=def.sub.length?tab:null; } }
+    $("whoMenu").classList.add("hidden");
+    render(); return;
+  }
+  /* Clic ailleurs : on referme les menus */
+  if(state.open!==null || !$("whoMenu").classList.contains("hidden")){
+    state.open=null; $("whoMenu").classList.add("hidden"); renderNav();
+  }
+});
+
+/* ── Écran de connexion ────────────────────────────────────── */
+$("rolePick").innerHTML = PROFILES.map((p,i)=>`
+  <button data-pick="${p.id}" class="${i===0?"on":""}">
+    <span style="width:30px;height:30px;border-radius:50%;background:var(--aqua);color:var(--t1);
+      display:grid;place-items:center;font-weight:700;font-size:11px;flex-shrink:0">${esc(p.first[0]+p.last[0])}</span>
+    <span><b>${esc(ROLES[p.role].label)}</b> — ${esc(p.first)} ${esc(p.last)}
+      <small>${esc(p.desc)}</small></span></button>`).join("");
+
+let picked = PROFILES[0];
+$("rolePick").addEventListener("click", e => {
+  const b = e.target.closest("[data-pick]"); if(!b) return;
+  picked = PROFILES.find(p=>p.id===b.dataset.pick);
+  [...$("rolePick").children].forEach(c=>c.classList.toggle("on", c===b));
+});
+$("go").addEventListener("click", () => {
+  state.me = picked; state.tab = tabs()[0]; state.sub = {}; state.open = null;
+  $("login").classList.add("hidden"); $("app").classList.remove("hidden");
+  render();
+});
+</script>
 </body>
 </html>
