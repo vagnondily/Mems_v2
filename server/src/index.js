@@ -47,10 +47,13 @@ app.use(helmet({
 app.use(compression());
 app.use(cookieParser());
 app.use(express.json({ limit: `${config.maxBodyMb}mb` }));
+const isGithubDevOrigin = origin => /^https:\/\/[a-z0-9-]+\.app\.github\.dev$/i.test(origin);
 app.use(cors({
   origin(origin, cb){
     /* Requêtes sans origine : outils en ligne de commande, sondes de santé. */
-    if(!origin || config.corsOrigins.includes(origin)) return cb(null, true);
+    if(!origin) return cb(null, true);
+    if(!config.isProd) return cb(null, true);
+    if(config.corsOrigins.includes(origin)) return cb(null, true);
     return cb(new Error("origine non autorisée"));
   },
   credentials: true,

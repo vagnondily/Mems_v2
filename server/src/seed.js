@@ -89,7 +89,7 @@ if(info){
     for(const t of ["site_months","visits","sites","coverage_params","outputs","outcomes","outcome_plan",
                     "population_values","population","pdd","datasets","scripts","odk_forms",
                     "report_templates","dashboards","indicators","activity_categories","partners",
-                    "poi_subtypes","offices","settings"]) db.prepare(`DELETE FROM ${t}`).run();
+                    "poi_subtypes","offices","users","settings"]) db.prepare(`DELETE FROM ${t}`).run();
 
     const officeId = {};
     const insOffice = db.prepare("INSERT INTO offices (id,name,code,kind) VALUES (?,?,?,?)");

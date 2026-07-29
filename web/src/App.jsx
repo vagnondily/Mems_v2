@@ -34,6 +34,11 @@ const SHAPERS = {
   pdd: (rows, db) => rows.map(p => ({ ...p, year: p.year || db.year })),
 };
 
+const DEV_ADMIN_CREDENTIALS = import.meta.env?.DEV ? {
+  email: "admin@mems.local",
+  password: "MemsAdmin2026",
+} : null;
+
 export default function App(){
   const [db, setDb] = useState(null);
   const [me, setMe] = useState(null);
@@ -96,8 +101,18 @@ export default function App(){
       setPhase("fatal"); return;
     }
     try{ const { user } = await api.me(); setMe(user); await loadState(); setPhase("ready"); }
-    catch(e){ setPhase("login"); }
-  })(); }, [loadState]);
+    catch(e){
+      if(DEV_ADMIN_CREDENTIALS){
+        try{
+          const r = await api.login(DEV_ADMIN_CREDENTIALS.email, DEV_ADMIN_CREDENTIALS.password);
+          setToken(r.token); setMe(r.user); await loadState(); setPhase("ready");
+          notify(`Bienvenue ${r.user.first_name}`, "ok");
+          return;
+        }catch(loginError){}
+      }
+      setPhase("login");
+    }
+  })(); }, [loadState, notify]);
 
   const onLogin = async (user, token) => {
     setToken(token); setMe(user); await loadState(); setPhase("ready");

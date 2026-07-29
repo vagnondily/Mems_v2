@@ -3,7 +3,7 @@ import { Planning } from "../views/Planning.jsx";
 import { monthsSince, n, pct, r1, r2, siteRequirement } from "./calc.js";
 
 /* ══════════════════════════════════════════════════════════════════════
-   MEMS — Monitoring & Evaluation Management System
+   MEMS — Monitoring Evaluation Management System
    ═════════════════════════════════════════════════════════════════════ */
 
 const C = { brand:"#007DBC", brandD:"#085387", brandL:"#4792c7", navy:"#19486a", aqua:"#26bde2",

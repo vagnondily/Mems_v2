@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { BarChart3, CalendarRange, ChevronDown, Cog, Database, FileText, LayoutDashboard, LogOut } from "lucide-react";
-import { Badge, Logo } from "../components/ui.jsx";
+import { Badge, BrandMark } from "../components/ui.jsx";
 import { clsx } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
 import { Sources } from "./ActualData.jsx";
@@ -50,10 +50,14 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync }){
   return (
     <div className="min-h-screen flex flex-col" style={{background:C.bg}}>
       <header className="flex items-center gap-4 px-5 h-14 text-white sticky top-0 z-40" style={{background:C.brandD}}>
-        <div className="flex items-center gap-2.5 shrink-0">
-          <div className="w-7 h-7 rounded grid place-items-center f9 font-extrabold" style={{background:C.aqua,color:"#03293d"}}>ME</div>
-          <div className="leading-tight"><div className="font-bold tracking-wide f17">MEMS</div>
-            <div className="f8 font-light opacity-70 hidden sm:block">Monitoring &amp; Evaluation Management System</div></div>
+        <div className="flex items-center gap-3 shrink-0">
+          <div className="w-11 h-11 rounded-3xl bg-white/10 border border-white/20 grid place-items-center">
+            <BrandMark size={36} />
+          </div>
+          <div className="leading-tight">
+            <div className="font-bold tracking-wide f17">MEMS</div>
+            <div className="f8 font-light opacity-70 hidden sm:block">Monitoring &amp; Evaluation Management System</div>
+          </div>
         </div>
         <nav className="flex items-center gap-0.5 ml-4 overflow-x-auto">
           {NAV.filter(x=>allowed.includes(x.id)).map(x => (
@@ -99,12 +103,7 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync }){
       </header>
       <main className="flex-1 mw1520 w-full mx-auto px-5 py-6">{children}</main>
       <footer className="border-t border-slate-200 bg-white px-5 py-3 flex items-center gap-3 f11 text-slate-500">
-        {db.settings.logo
-          ? <img src={db.settings.logo} alt="" className="h-6" />
-          : <div className="h-6">
-              <Logo width="120" height="24" className="h-6 w-auto" />
-            </div>}
-        <span>{db.settings.org} — {db.settings.unit}</span>
+        <div>{db.settings.org} — {db.settings.unit}</div>
         <span className="ml-auto">MEMS · exercice {db.year}</span>
       </footer>
     </div>);

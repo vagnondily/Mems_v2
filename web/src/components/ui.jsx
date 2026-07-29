@@ -42,7 +42,31 @@ const Logo = ({ width="100%", height="100%", className }) => {
       </g>
       <text x="165" y="84" fontFamily="System-UI, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" fontSize="58" fontWeight="800" letterSpacing="2" fill="#0F172A">MEMS</text>
       <circle cx="370" cy="74" r="6" fill="#D97706" />
-      <text x="167" y="112" fontFamily="System-UI, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" fontSize="11.5" fontWeight="700" letterSpacing="1.5" fill="#475569">HUMANITARIAN MONITORING &amp; EVALUATION SYSTEM</text>
+      <text x="167" y="112" fontFamily="System-UI, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" fontSize="11.5" fontWeight="700" letterSpacing="1.5" fill="#475569">Monitoring Evaluation Management System</text>
+    </svg>
+  );
+};
+const BrandMark = ({ size = 40, className }) => {
+  const id = useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140" width={size} height={size} className={className}>
+      <defs>
+        <linearGradient id={`humGrad${id}`} x1="0%" y1="100%" x2="100%" y2="0%">
+          <stop offset="0%" stopColor="#0284C7" />
+          <stop offset="60%" stopColor="#059669" />
+          <stop offset="100%" stopColor="#10B981" />
+        </linearGradient>
+        <linearGradient id={`targetGrad${id}`} x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#F59E0B" />
+          <stop offset="100%" stopColor="#D97706" />
+        </linearGradient>
+      </defs>
+      <path d="M 20 80 A 40 40 0 1 1 100 80" fill="none" stroke={`url(#humGrad${id})`} strokeWidth="10" strokeLinecap="round" />
+      <path d="M 40 75 Q 40 50 50 40 Q 50 65 40 75 Z" fill="#0284C7" />
+      <path d="M 76 75 Q 76 40 66 30 Q 66 60 76 75 Z" fill="#059669" />
+      <rect x="55" y="25" width="6" height="40" rx="3" fill={`url(#humGrad${id})`} />
+      <circle cx="63" cy="15" r="8" fill={`url(#targetGrad${id})`} />
+      <circle cx="63" cy="15" r="3" fill="#FFFFFF" />
     </svg>
   );
 };
@@ -170,4 +194,4 @@ function parseCSV(txt){
   return rows.filter(r=>r.some(c=>c!=="")).map(r=>Object.fromEntries(head.map((h,i)=>[h,(r[i]??"").trim()])));
 }
 
-export { Badge, Bar2, Btn, Card, Empty, Field, Input, Logo, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, Toast, download, inputCls, parseCSV, toCSV };
+export { Badge, Bar2, BrandMark, Btn, Card, Empty, Field, Input, Logo, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, Toast, download, inputCls, parseCSV, toCSV };

@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MEMS Demo Offline</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Inter", "Segoe UI", Roboto, Arial, sans-serif;
+      background: #f8fafc;
+      color: #0f172a;
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; background:#f8fafc; }
+    button, input { font: inherit; }
+    .page { max-width:1240px; margin:0 auto; padding:24px; }
+    .hidden { display:none; }
+    .header { display:flex; flex-wrap:wrap; gap:16px; align-items:center; padding:20px 24px; background:#0f172a; color:#fff; border-radius:24px; margin-bottom:20px; }
+    .brand { display:flex; align-items:center; gap:14px; }
+    .brand-mark { width:52px; height:52px; border-radius:18px; background:rgba(255,255,255,.12); display:grid; place-items:center; }
+    .brand-mark span { width:30px; height:30px; border-radius:14px; background:#38bdf8; color:#0f172a; font-weight:800; display:grid; place-items:center; }
+    .brand-title h1 { margin:0; font-size:1.5rem; }
+    .brand-title p { margin:4px 0 0; color:rgba(255,255,255,.75); }
+    .status-pill { margin-left:auto; background:#ffffff10; color:#fff; border-radius:999px; padding:10px 16px; font-weight:700; }
+    .page-title { display:flex; flex-wrap:wrap; align-items:flex-end; justify-content:space-between; gap:24px; margin-bottom:20px; }
+    .page-title h2 { margin:0; font-size:2rem; color:#0f172a; }
+    .page-title small { color:#64748b; }
+    .nav { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin-bottom:24px; }
+    .nav button { border:none; background:#e2e8f0; color:#334155; padding:12px 16px; border-radius:999px; cursor:pointer; transition:.2s; }
+    .nav button.active { background:#2563eb; color:#fff; }
+    .cards { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; margin-bottom:24px; }
+    .small-card { background:#fff; border:1px solid #e2e8f0; border-radius:24px; padding:22px; }
+    .small-card h3 { margin:0 0 10px; font-size:1rem; color:#334155; }
+    .small-card .value { font-size:2rem; font-weight:800; color:#2563eb; }
+    .panel-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
+    .panel { background:#fff; border:1px solid #e2e8f0; border-radius:24px; padding:24px; }
+    .panel h3 { margin-top:0; font-size:1.1rem; color:#0f172a; }
+    .panel p { color:#475569; line-height:1.75; }
+    .table { width:100%; border-collapse:collapse; background:#fff; border:1px solid #e2e8f0; border-radius:20px; overflow:hidden; }
+    .table th, .table td { padding:14px 16px; border-bottom:1px solid #e2e8f0; text-align:left; }
+    .table th { background:#f8fafc; color:#334155; }
+    .table tr:last-child td { border-bottom:none; }
+    .status-chip { display:inline-flex; align-items:center; justify-content:center; padding:8px 12px; border-radius:999px; font-weight:700; font-size:.88rem; }
+    .status-chip.active { background:#d1fae5; color:#166534; }
+    .status-chip.inactive { background:#fee2e2; color:#b91c1c; }
+    .graph { display:grid; gap:14px; }
+    .bar-row { display:flex; align-items:center; gap:12px; }
+    .bar-label { width:80px; font-size:.95rem; color:#334155; }
+    .bar-track { flex:1; height:16px; background:#e2e8f0; border-radius:999px; overflow:hidden; }
+    .bar-fill { height:100%; border-radius:999px; }
+    .map-card { border-radius:24px; height:240px; background:linear-gradient(135deg,#2563eb,#38bdf8); color:#fff; display:grid; place-items:center; text-align:center; padding:24px; }
+    .report-card { background:#fff; border:1px solid #e2e8f0; border-radius:24px; padding:20px; }
+    .report-card h3 { margin:0 0 10px; font-size:1rem; }
+    .report-card p { margin:0; color:#475569; line-height:1.7; }
+    .footer-note { margin-top:28px; color:#64748b; font-size:.95rem; }
+    .login-shell { width:100%; min-height:100vh; display:grid; place-items:center; padding:24px; }
+    .login-card { width:100%; max-width:420px; background:#fff; border:1px solid #e2e8f0; border-radius:28px; padding:32px; box-shadow:0 24px 60px rgba(15,23,42,.08); }
+    .login-card h2 { margin:0 0 14px; font-size:2rem; }
+    .field { margin-bottom:18px; }
+    .field label { display:block; margin-bottom:8px; font-weight:700; color:#334155; }
+    .field input { width:100%; border:1px solid #cbd5e1; border-radius:14px; padding:14px 16px; background:#f8fafc; }
+    .button { width:100%; border:none; border-radius:14px; background:#2563eb; color:#fff; padding:14px; font-weight:700; cursor:pointer; transition:.2s; }
+    .button:hover { background:#1d4ed8; }
+    .note-box { margin-top:18px; padding:16px; background:#f8fafc; border:1px solid #cbd5e1; border-radius:16px; color:#475569; }
+    @media (max-width:1024px) { .cards, .panel-grid { grid-template-columns:1fr; } }
+    @media (max-width:720px) { .nav { grid-template-columns:repeat(2,minmax(0,1fr)); } .header { flex-direction:column; align-items:flex-start; } }
+  </style>
+</head>
+<body>
+  <div id="login-screen" class="login-shell">
+    <div class="login-card">
+      <h2>Connexion</h2>
+      <p style="color:#64748b; margin-bottom:24px;">Version de démonstration hors ligne. Utilisez les identifiants ci-dessous.</p>
+      <div class="field"><label>Email</label><input id="demo-email" type="email" value="admin@mems.local" /></div>
+      <div class="field"><label>Mot de passe</label><input id="demo-password" type="password" value="MemsAdmin2026" /></div>
+      <button class="button" id="demo-login">Se connecter</button>
+      <div class="note-box">Identifiants : <strong>admin@mems.local</strong> / <strong>MemsAdmin2026</strong></div>
+    </div>
+  </div>
+
+  <div id="app-screen" class="page hidden">
+    <header class="header">
+      <div class="brand">
+        <div class="brand-mark"><span>M</span></div>
+        <div class="brand-title"><h1>MEMS</h1><p>Monitoring Evaluation Management System</p></div>
+      </div>
+      <div class="status-pill">Mode démo</div>
+    </header>
+
+    <div class="page-title">
+      <div><h2 id="page-title">Accueil</h2><small id="page-subtitle">Vue synthétique des indicateurs et du suivi terrain.</small></div>
+      <button class="button" id="demo-logout" style="background:#e2e8f0;color:#0f172a;">Se déconnecter</button>
+    </div>
+
+    <div class="nav" id="demo-nav"></div>
+    <div id="demo-content"></div>
+  </div>
+
+  <script>
+    const pages = {
+      home: {
+        title: 'Accueil',
+        subtitle: 'Vue synthétique des indicateurs et du suivi terrain.',
+        cards: [
+          { label: 'Sites actifs', value: '128' },
+          { label: 'Couverture moyenne', value: '87%' },
+          { label: 'Bénéficiaires', value: '23 450' }
+        ],
+        panels: [
+          { title: 'Exigence minimale de suivi', text: 'Les objectifs prioritaires sont affichés avec le statut de réalisation et les tâches urgentes.' },
+          { title: 'Trois derniers mois', text: 'Suivi des indicateurs opérationnels et de couverture sur la période récente.' }
+        ]
+      },
+      planning: {
+        title: 'Planning',
+        subtitle: 'Paramètres de couverture et planification des visites.',
+        table: {
+          header: ['Activité', 'Bureau', 'Sites prévus', 'Risque', 'Statut'],
+          rows: [
+            ['URT', 'Ambovombe', '23', 'Moyen', 'Active'],
+            ['SMP', 'Ampanihy', '38', 'Élevé', 'Active'],
+            ['NTA', 'Manakara', '17', 'Faible', 'Inactive'],
+            ['CAR', 'Toliara', '11', 'Moyen', 'Active']
+          ]
+        }
+      },
+      actual: {
+        title: 'Actual Data',
+        subtitle: 'Suivi terrain et données opérationnelles.',
+        cards: [
+          { label: 'Visites réalisées', value: '94' },
+          { label: 'Taux réel', value: '82%' },
+          { label: 'Distributions', value: '12' }
+        ],
+        map: 'Carte des sites actifs avec filtres de statut et activité.'
+      },
+      analytics: {
+        title: 'Analyses',
+        subtitle: 'Graphiques de performances et couverture.',
+        bars: [
+          { label: 'URT', value: 78, color: '#2563eb' },
+          { label: 'NTA', value: 88, color: '#0ea5e9' },
+          { label: 'SMP', value: 72, color: '#38bdf8' }
+        ]
+      },
+      reports: {
+        title: 'Rapports',
+        subtitle: 'Modèles de rapport et export ODK simulé.',
+        items: [
+          { title: 'Rapport mensuel de suivi', description: 'Rapport synthétique des indicateurs et de la couverture.' },
+          { title: 'Note de couverture trimestrielle', description: 'Synthèse projetée des performances par bureau.' }
+        ]
+      }
+    };
+
+    const loginScreen = document.getElementById('login-screen');
+    const appScreen = document.getElementById('app-screen');
+    const navContainer = document.getElementById('demo-nav');
+    const demoContent = document.getElementById('demo-content');
+    const pageTitle = document.getElementById('page-title');
+    const pageSubtitle = document.getElementById('page-subtitle');
+
+    const navButtons = Object.keys(pages).map(key => {
+      const btn = document.createElement('button');
+      btn.textContent = pages[key].title;
+      btn.dataset.page = key;
+      btn.addEventListener('click', () => setPage(key));
+      navContainer.appendChild(btn);
+      return btn;
+    });
+
+    function setPage(key) {
+      navButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.page === key));
+      const page = pages[key];
+      pageTitle.textContent = page.title;
+      pageSubtitle.textContent = page.subtitle;
+      demoContent.innerHTML = '';
+
+      if (page.cards) {
+        const cards = document.createElement('div');
+        cards.className = 'cards';
+        page.cards.forEach(card => {
+          const node = document.createElement('div');
+          node.className = 'small-card';
+          node.innerHTML = `<h3>${card.label}</h3><div class="value">${card.value}</div>`;
+          cards.appendChild(node);
+        });
+        demoContent.appendChild(cards);
+      }
+
+      if (page.panels) {
+        const grid = document.createElement('div');
+        grid.className = 'panel-grid';
+        page.panels.forEach(panel => {
+          const node = document.createElement('div');
+          node.className = 'panel';
+          node.innerHTML = `<h3>${panel.title}</h3><p>${panel.text}</p>`;
+          grid.appendChild(node);
+        });
+        demoContent.appendChild(grid);
+      }
+
+      if (page.table) {
+        const section = document.createElement('div');
+        section.className = 'panel';
+        section.innerHTML = `
+          <h3>Paramètres de couverture</h3>
+          <table class="table"><thead><tr>${page.table.header.map(th => `<th>${th}</th>`).join('')}</tr></thead><tbody>${page.table.rows.map(row => `
+            <tr>${row.map((cell, idx) => idx === 4 ? `<td><span class="status-chip ${cell.toLowerCase()}">${cell}</span></td>` : `<td>${cell}</td>`).join('')}</tr>
+          `).join('')}</tbody></table>`;
+        demoContent.appendChild(section);
+      }
+
+      if (page.map) {
+        const section = document.createElement('div');
+        section.className = 'panel';
+        section.innerHTML = `<h3>Cartographie des sites</h3><p>${page.map}</p><div class="map-card">Carte des sites et filtres de statut</div>`;
+        demoContent.appendChild(section);
+      }
+
+      if (page.bars) {
+        const section = document.createElement('div');
+        section.className = 'panel';
+        section.innerHTML = '<h3>Couverture par activité</h3>';
+        page.bars.forEach(bar => {
+          const barRow = document.createElement('div');
+          barRow.className = 'bar-row';
+          barRow.innerHTML = `<span class="bar-label">${bar.label}</span><div class="bar-track"><div class="bar-fill" style="width:${bar.value}%; background:${bar.color};"></div></div><span>${bar.value}%</span>`;
+          section.appendChild(barRow);
+        });
+        demoContent.appendChild(section);
+      }
+
+      if (page.items) {
+        const section = document.createElement('div');
+        section.className = 'panel';
+        section.innerHTML = `<h3>Modèles de rapport</h3>`;
+        page.items.forEach(item => {
+          const itemNode = document.createElement('div');
+          itemNode.className = 'report-card';
+          itemNode.innerHTML = `<h3>${item.title}</h3><p>${item.description}</p>`;
+          section.appendChild(itemNode);
+        });
+        demoContent.appendChild(section);
+      }
+
+      const note = document.createElement('div');
+      note.className = 'footer-note';
+      note.textContent = 'Démo statique : l’application ressemble au vrai site, mais les données sont factices et aucune requête réseau n’est effectuée.';
+      demoContent.appendChild(note);
+    }
+
+    document.getElementById('demo-login').addEventListener('click', () => {
+      const email = document.getElementById('demo-email').value.trim();
+      const password = document.getElementById('demo-password').value;
+      if (email === 'admin@mems.local' && password === 'MemsAdmin2026') {
+        loginScreen.classList.add('hidden');
+        appScreen.classList.remove('hidden');
+        setPage('home');
+      } else {
+        alert('Identifiants incorrects. Utilisez admin@mems.local / MemsAdmin2026');
+      }
+    });
+
+    document.getElementById('demo-logout').addEventListener('click', () => {
+      appScreen.classList.add('hidden');
+      loginScreen.classList.remove('hidden');
+    });
+  </script>
+</body>
+</html>

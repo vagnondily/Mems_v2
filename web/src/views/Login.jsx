@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Lock, Eye, EyeOff, Target, CalendarRange, Activity, Database } from "lucide-react";
 import { C } from "../lib/constants.js";
 import { clsx } from "../lib/calc.js";
-import { Btn, Field, Input, Logo, inputCls } from "../components/ui.jsx";
+import { Btn, Field, BrandMark, inputCls } from "../components/ui.jsx";
 import { api, setToken } from "../lib/api.js";
 const DEV_ADMIN_INFO = import.meta.env?.DEV ? {
   email: "admin@mems.local",
@@ -28,7 +28,9 @@ export function Login({ onLogin, notify }){
       if(r.user.must_change_pw){ setMustChange(r); setBusy(false); return; }
       await onLogin(r.user, r.token);
     }catch(e){
-      setErr(e.status === 423
+      setErr(e.status === 401
+        ? "identifiants incorrects"
+        : e.status === 423
         ? "Ce compte est temporairement verrouillé après plusieurs tentatives. Réessayez dans quelques minutes."
         : e.status === 429
         ? "Trop de tentatives. Patientez quelques minutes avant de réessayer."
@@ -55,19 +57,24 @@ export function Login({ onLogin, notify }){
       <div className="hidden lg:flex flex-col justify-between w-2/5 p-12 text-white"
         style={{ background:`linear-gradient(160deg, ${C.brandD} 0%, ${C.navy} 55%, #02243a 100%)` }}>
         <div>
-          <div className="mb-8">
-            <div className="text-sm uppercase tracking-[0.35em] opacity-80">Suivi Évaluation Humanitaire</div>
-            <div className="f11 font-light opacity-80">Plateforme terrain MEMS</div>
+          <div className="flex items-center gap-4 mb-8">
+            <div className="w-14 h-14 rounded-3xl bg-white/10 border border-white/15 grid place-items-center">
+              <BrandMark size={40} />
+            </div>
+            <div>
+              <div className="text-sm uppercase tracking-[0.35em] opacity-80">MEMS</div>
+              <div className="f11 font-light opacity-80">Monitoring Evaluation Management System</div>
+            </div>
           </div>
-          <h1 className="text-3xl xl:text-4xl font-semibold leading-tight mb-6">
-            Soutenez vos équipes de terrain avec un suivi structuré et des indicateurs clairs.</h1>
+          <h1 className="text-4xl xl:text-5xl font-semibold leading-tight mb-6">
+            Une plateforme moderne pour piloter le suivi et l’évaluation terrain.</h1>
           <p className="f13 text-slate-100 opacity-85 max-w-lg leading-relaxed mb-8">
-            Planifiez les visites, gérez les sites et visualisez les performances des actions humanitaires dans un espace sécurisé.</p>
+            Planifiez vos visites, suivez les sites et visualisez les performances avec une interface pensée pour les équipes M&E.</p>
           <ul className="space-y-4 f13 opacity-90">
             {[["Indicateurs opérationnels", Target],
               ["Planification des visites", CalendarRange],
-              ["Rapports et analyses", Activity],
-              ["Intégration ODK", Database]].map(([t, I], i) => (
+              ["Tableaux de bord visuels", Activity],
+              ["Connexion aux formulaires ODK", Database]].map(([t, I], i) => (
               <li key={i} className="flex items-start gap-3">
                 <span className="mt-0.5 text-slate-200"><I size={18} /></span>
                 <span>{t}</span>
@@ -75,28 +82,32 @@ export function Login({ onLogin, notify }){
           </ul>
         </div>
         <p className="f11 text-slate-200 opacity-75 leading-relaxed">
-          Accès réservé aux équipes autorisées. Chaque connexion est tracée et sécurisée.</p>
+          Accès réservé aux équipes autorisées. Chaque connexion est tracée et sécurisée pour garantir vos données terrain.</p>
       </div>
 
       <div className="flex-1 flex items-center justify-center p-6">
-        <div className="w-full max-w-lg bg-white border border-slate-200 shadow-[0_30px_90px_rgba(15,23,42,0.08)] rounded-[2rem] p-10">
-          <div className="mb-8 text-center">
-            <div className="mx-auto mb-4 w-full max-w-[260px]"><Logo width="260" height="70" className="mx-auto" /></div>
-            <div className="text-slate-500 f11 leading-relaxed max-w-sm mx-auto">
-              Connectez-vous pour accéder au suivi des opérations, la planification des visites et les tableaux de bord de performance.</div>
+        <div className="w-full max-w-md bg-white border border-slate-200 shadow-[0_25px_75px_rgba(15,23,42,0.08)] rounded-[2rem] p-8">
+          <div className="flex flex-col items-center gap-3 mb-8 text-center">
+            <div className="w-14 h-14 rounded-3xl bg-slate-100 grid place-items-center">
+              <BrandMark size={32} />
+            </div>
+            <div>
+              <div className="text-slate-900 text-2xl font-semibold">MEMS</div>
+              <div className="f12 text-slate-500">Monitoring Evaluation Management System</div>
+            </div>
           </div>
           {!mustChange ? (<>
             <h2 className="text-3xl font-semibold text-slate-900">Connexion</h2>
             <p className="f13 text-slate-500 mt-2 mb-6">Connectez-vous avec vos identifiants pour accéder au tableau de bord MEMS.</p>
             {err && <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-rose-800">{err}</div>}
             <Field label="Adresse électronique">
-              <input type="email" value={email} autoComplete="username" className={inputCls}
+              <input type="email" value={email} autoComplete="username" className={clsx(inputCls, "bg-slate-50 border-slate-200")}
                 onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} /></Field>
             <Field label="Mot de passe">
               <div className="relative">
                 <input type={show?"text":"password"} value={pw} autoComplete="current-password"
                   onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()}
-                  className={clsx(inputCls, "pr-11")} />
+                  className={clsx(inputCls, "pr-11 bg-slate-50 border-slate-200")} />
                 <button type="button" onClick={()=>setShow(s=>!s)}
                   aria-label={show ? "Masquer le mot de passe" : "Afficher le mot de passe"}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700">

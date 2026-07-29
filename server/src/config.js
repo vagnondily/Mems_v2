@@ -26,7 +26,15 @@ export const config = {
   tokenTtl: process.env.TOKEN_TTL || "8h",
   cookieName: "mems_token",
   corsOrigins: (() => {
-    const defaultDev = ["http://localhost:5173", "http://127.0.0.1:5173"];
+    const defaultDev = [
+      "http://localhost:5173",
+      "http://127.0.0.1:5173",
+      "http://10.0.10.147:5173",
+      "http://localhost:4173",
+      "http://127.0.0.1:4173",
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+    ];
     const envOrigins = (process.env.CORS_ORIGINS || "http://localhost:5173")
       .split(",").map(s => s.trim()).filter(Boolean);
     return isProd ? envOrigins : [...new Set([...envOrigins, ...defaultDev])];
