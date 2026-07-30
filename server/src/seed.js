@@ -170,6 +170,7 @@ if(info){
       }
     });
     const { units } = buildUnits(geoRows);
+    /* Le rattachement au pays courant est fait par writeVersion. */
     writeVersion({ label:"Jeu de démonstration", source:"seed.js", units });
 
     const insInd = db.prepare(`INSERT INTO indicators (id,code,name,basket,unit,target,direction,method,frequency)

@@ -5,6 +5,7 @@ import { newId } from "../lib/crypto.js";
 import { requireCap, can } from "../lib/auth.js";
 import { isNational, officeBound, tpmBound } from "../lib/scope.js";
 import { currentVersion } from "../lib/geo.js";
+import { localCurrency } from "../lib/country.js";
 import { contractBalance, lineTotal, modifiable, niveauAttendu, planAmount, planDetail,
          regenerate, suggestZones, TRANSITIONS } from "../lib/tpm.js";
 
@@ -139,7 +140,11 @@ r.delete("/:id", requireCap("admin"), (req, res) => {
 const contractSchema = z.object({
   tpm_id: z.string().min(1).max(64), ref: z.string().trim().min(1).max(60),
   ceiling: z.coerce.number().min(0).max(1e12).default(0),
-  currency: z.string().trim().length(3).default("MGA"),
+  /* Pas de valeur par défaut ici : « MGA » était le vocabulaire de Madagascar
+     inscrit dans le code. La devise locale vient de la configuration du pays, et
+     elle est résolue à l'écriture — un défaut de schéma serait figé au chargement
+     du module, donc avant que le pays courant soit connu. */
+  currency: z.string().trim().length(3).optional(),
   start_date:S(10), end_date:S(10),
   status: z.enum(["projet","actif","suspendu","clos"]).default("actif"),
   note:S(600), rev: z.coerce.number().int().min(1).optional(),
@@ -157,11 +162,12 @@ r.post("/contracts", requireCap("admin"), (req, res) => {
   if(b.start_date && b.end_date && b.end_date < b.start_date)
     return res.status(422).json({ error:"la date de fin précède la date de début" });
   const id = newId("tct");
+  const devise = b.currency || localCurrency();
   db.prepare(`INSERT INTO tpm_contract (id,tpm_id,ref,ceiling,currency,start_date,end_date,
               status,note,updated_at) VALUES (?,?,?,?,?,?,?,?,?,datetime('now'))`)
-    .run(id, b.tpm_id, b.ref, b.ceiling, b.currency, b.start_date, b.end_date, b.status, b.note);
+    .run(id, b.tpm_id, b.ref, b.ceiling, devise, b.start_date, b.end_date, b.status, b.note);
   audit(req, "tpm_contract", id, "create",
-    `Contrat ${b.ref} — plafond ${b.ceiling} ${b.currency}`);
+    `Contrat ${b.ref} — plafond ${b.ceiling} ${devise}`);
   res.status(201).json({ ok:true, id });
 });
 
@@ -179,7 +185,7 @@ r.put("/contracts/:id", requireCap("admin"), (req, res) => {
   /* Le plafond n'est pas dans la mise à jour, volontairement. */
   db.prepare(`UPDATE tpm_contract SET ref=?, currency=?, start_date=?, end_date=?, status=?,
               note=?, rev=rev+1, updated_at=datetime('now') WHERE id=?`)
-    .run(b.ref, b.currency, b.start_date, b.end_date, b.status, b.note, cur.id);
+    .run(b.ref, b.currency || cur.currency, b.start_date, b.end_date, b.status, b.note, cur.id);
   audit(req, "tpm_contract", cur.id, "update", `Contrat ${b.ref} modifié`);
   res.json({ ok:true, avertissement: b.ceiling !== cur.ceiling
     ? "Le plafond ne se modifie pas en place : passez par un avenant."

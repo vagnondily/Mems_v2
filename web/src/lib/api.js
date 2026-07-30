@@ -148,6 +148,14 @@ export const api = {
   deleteTpmExpense:(id)          => call("DELETE", `/tpm/expenses/${encodeURIComponent(id)}`),
   tpmSuggest:     (q="")         => call("GET", `/tpm/suggest${q}`),
 
+  /* Pays et vocabulaire du découpage. Cette première version sert Madagascar ;
+     ces routes existent pour que le pays suivant soit un acte de configuration. */
+  countries:      ()             => call("GET", "/country"),
+  createCountry:  (c)            => call("POST", "/country", c),
+  updateCountry:  (code, c)      => call("PUT", `/country/${encodeURIComponent(code)}`, c),
+  setCountry:     (code)         => call("PUT", `/country/${encodeURIComponent(code)}/current`),
+  deleteCountry:  (code)         => call("DELETE", `/country/${encodeURIComponent(code)}`),
+
   offices:      ()           => call("GET", "/offices"),
   createOffice: (o)          => call("POST", "/offices", o),
   updateOffice: (id, o)      => call("PUT", `/offices/${encodeURIComponent(id)}`, o),
