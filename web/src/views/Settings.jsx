@@ -5,7 +5,7 @@ import { Activity, Building2, CalendarRange, Check, ClipboardList, Download, Fil
 import { Area, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, n, pct, r2, r5, siteRequirement, siteScore, uid } from "../lib/calc.js";
-import { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, DURATIONS, D_FORMULAS, D_SECURITY, D_STATUS, D_URBAN, MONITORING_TYPES, PROG_AREAS, SITE_TYPES, TABS_ALL, siteDerived, sitePriority } from "../lib/constants.js";
+import { ACT_CATEGORIES, C, CALC_VARS, D_ENTITIES, CAT_TO_AREA, DURATIONS, D_FORMULAS, D_SECURITY, D_STATUS, D_URBAN, MONITORING_TYPES, PROG_AREAS, SITE_TYPES, TABS_ALL, siteDerived, sitePriority } from "../lib/constants.js";
 /* `readGeoFile` était APPELÉ sans être importé : l'import de découpage depuis
    l'interface levait « readGeoFile is not defined » dès le choix du fichier. Le
    référentiel de production avait été chargé par le script src/import-geo.js, si
@@ -1302,7 +1302,7 @@ function SetUsers({ db, set, me, notify }){
          effacerait : la validation les traite comme facultatifs et un champ absent
          devient NULL — un compte de prestataire modifié depuis cet écran perdait
          ainsi son rattachement, et un compte de pays y gagnerait la vue de tous. */
-      country_code:u2.country_code || null, tpm_id:u2.tpm_id || null,
+      country_code:u2.country_code || null, tpm_id:u2.tpm_id || null, entity:u2.entity || null,
       tabs:u2.tabs || [], active:u2.active !== false };
     if(u2._pw) payload.password = u2._pw;
     try{
@@ -1321,15 +1321,26 @@ function SetUsers({ db, set, me, notify }){
   };
   return (
     <>
-      <Note tone="warn"><b>Portée de la sécurité.</b> Les mots de passe sont hachés avec un sel propre à chaque compte
-        et ne sont jamais conservés en clair. L'application s'exécutant dans le navigateur, ces rôles gouvernent
-        l'interface et non l'accès aux données : une protection réelle suppose un serveur avec base authentifiée.</Note>
+      {/* Cette note disait le contraire de ce qui est vrai : « ces rôles gouvernent
+          l'interface et non l'accès aux données ». C'était exact quand tout vivait
+          dans le navigateur ; ce ne l'est plus depuis que le serveur applique le
+          cloisonnement en SQL. Laisser un avertissement périmé est pire que ne rien
+          dire — il invite à ajouter une protection ailleurs, ou à se méfier de celle
+          qui existe. */}
+      <Note><b>Trois questions, trois réponses.</b> L'<b>entité</b> dit qui est ce compte,
+        le <b>rôle</b> ce qu'il peut faire, le <b>pays</b> et le <b>bureau</b> où il peut le faire.
+        Seul le rôle accorde des droits.
+        <br /><br />
+        Ces règles sont appliquées <b>par le serveur</b>, en SQL, et pas seulement par l'interface :
+        un compte de terrain qui appellerait l'API directement obtiendrait les mêmes données que
+        celles qu'il voit à l'écran, ni plus. Les mots de passe sont hachés avec un sel propre à
+        chaque compte et ne sont jamais conservés en clair.</Note>
       <Card flush title="Comptes" subtitle={`${db.users.length} comptes · ${db.users.filter(u=>u.active!==false).length} actifs`}
         right={<Btn size="sm" icon={Plus} onClick={()=>setEdit({ role:"viewer", active:true, tabs:db.roles.viewer.tabs })}>Ajouter un utilisateur</Btn>}>
         <TableWrap max="mh440">
           {/* Comme pour les bureaux : la colonne « Pays » ne s'affiche que si
               l'instance en sert plusieurs. */}
-          <thead><tr><Th>Utilisateur</Th><Th>Fonction</Th><Th>Bureau</Th>
+          <thead><tr><Th>Utilisateur</Th><Th>Entité</Th><Th>Fonction</Th><Th>Bureau</Th>
             {(db.countries||[]).length > 1 && <Th>Pays</Th>}<Th>Adresse électronique</Th>
             <Th>Rôle</Th><Th>Onglets</Th><Th>Statut</Th><Th /></tr></thead>
           <tbody>{db.users.map((u2,i)=>(
@@ -1338,6 +1349,9 @@ function SetUsers({ db, set, me, notify }){
                 <span className="w-7 h-7 rounded-full grid place-items-center f10 font-bold c-deep" style={{background:C.aqua}}>
                   {(u2.first_name?.[0]||"")+(u2.last_name?.[0]||"")}</span>
                 <b>{u2.first_name} {u2.last_name}</b></div></Td>
+              <Td>{u2.entity
+                ? <Badge tone="n">{(D_ENTITIES[u2.entity]||{}).label || u2.entity}</Badge>
+                : <span className="text-slate-300 f115">—</span>}</Td>
               <Td className="text-slate-600">{u2.title}</Td><Td>{(db.offices.find(o=>o.id===u2.office_id)||{}).name || "Tous"}</Td>
               {(db.countries||[]).length > 1 && (
                 <Td className="f115 text-slate-600">
@@ -1376,59 +1390,174 @@ function SetUsers({ db, set, me, notify }){
             </tr>))}</tbody>
         </TableWrap>
       </Card>
-      <UserModal open={!!edit} user={edit} db={db} onClose={()=>setEdit(null)} onSave={save} />
+      <UserModal open={!!edit} user={edit} db={db} me={me} onClose={()=>setEdit(null)} onSave={save} />
     </>);
 }
-function UserModal({ open, user, db, onClose, onSave }){
+/* ── Fiche d'un compte ────────────────────────────────────────────────
+   Trois questions, et elles étaient mélangées : QUI est ce compte (son entité), ce
+   qu'il peut FAIRE (son rôle), et OÙ (pays, bureau, prestataire). La fenêtre les
+   présentait à plat, avec douze cases à cocher pour les destinations, et rien ne
+   disait ce que le compte verrait en se connectant.
+
+   Elles sont séparées, et l'écran RÉPOND : un panneau récapitule, avant
+   d'enregistrer, ce que ce compte pourra faire et où. C'était la seule façon de
+   vérifier une décision d'accès autrement qu'en se connectant à la place de
+   quelqu'un.
+
+   L'entité ne donne aucun droit — deux façons de décider d'un accès, c'est une de
+   trop. Elle propose les destinations utiles à ce métier, et reste modifiable. */
+function UserModal({ open, user, db, me, onClose, onSave }){
   const [f,setF] = useState({});
   useEffect(()=>{ setF(user ? { ...user, firstName:user.first_name, lastName:user.last_name,
     tabs:[...(user.tabs || db.roles[user.role]?.tabs || [])] } : { tabs:[], role:"viewer", active:true }); },[user]);
   if(!open) return null;
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
+
+  const role = db.roles[f.role] || {};
+  const bureau = (db.offices||[]).find(o=>o.id===f.office_id);
+  const pays = (db.countries||[]).find(c=>c.code===f.country_code);
+  const ent = D_ENTITIES[f.entity];
+
+  /* Ce que ce compte verra — calculé des mêmes règles que le serveur applique, et
+     énoncé en phrases plutôt qu'en cases. */
+  const portee = [];
+  portee.push(pays ? `Les données de ${pays.name} uniquement`
+    : (db.countries||[]).length > 1 ? "Les données de TOUS les pays de l'instance"
+    : "Les données du pays servi");
+  if(f.tpm_id) portee.push("Uniquement les plans de son prestataire de suivi, quel que soit son rôle");
+  else if(bureau) portee.push(bureau.scope_mode === "national" || bureau.kind === "hq"
+    ? `Rattaché à ${bureau.name}, qui a un périmètre national : il voit tous les sites`
+    : `Uniquement les sites, visites et plans de ${bureau.name}`);
+  else portee.push("Tous les bureaux : aucun cloisonnement géographique");
+
+  const actions = [
+    ["Consulter les écrans autorisés", true],
+    ["Saisir et modifier les données de son périmètre", !!role.edit],
+    ["Valider ce que d'autres ont soumis", !!role.validate],
+    ["Supprimer des enregistrements", !!role.del],
+    ["Administrer la configuration et les comptes", !!role.admin],
+  ];
+
   return (
-    <Modal open onClose={onClose} title={user?.id?"Modifier l'utilisateur":"Nouvel utilisateur"}
-      subtitle="Identité, rattachement, rôle et onglets accessibles"
+    <Modal open onClose={onClose} wide title={user?.id?"Modifier le compte":"Nouveau compte"}
+      subtitle="Qui est ce compte, ce qu'il peut faire, et où"
       footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
         <Btn icon={Save} disabled={!f.firstName||!f.email||(!user?.id&&!f._pw)} onClick={()=>onSave(f)}>Enregistrer</Btn></>}>
-      <div className="grid grid-cols-2 gap-x-4">
-        <Field label="Prénom"><Input value={f.firstName||""} onChange={e=>u("firstName",e.target.value)} /></Field>
-        <Field label="Nom"><Input value={f.lastName||""} onChange={e=>u("lastName",e.target.value)} /></Field>
-        <Field label="Fonction"><Input value={f.title||""} onChange={e=>u("title",e.target.value)} /></Field>
-        <Field label="Bureau de terrain d'appartenance" hint="Restreint la vue aux sites de ce bureau, hors administrateurs">
-          <Select value={f.office_id||""} onChange={e=>u("office_id",e.target.value)} empty="Tous les bureaux"
-            options={(db.offices||[]).map(o=>[o.id,o.name])} /></Field>
-        {/* Le pays borne le compte au-dessus du bureau. « Tous les pays » n'est
-            proposé que par un compte lui-même non borné, et n'apparaît pas autrement :
-            c'est le périmètre d'un bureau régional, pas un champ qu'on laisse vide par
-            distraction. */}
-        {(db?.countries || []).length > 1 && (
-          <Field label="Pays d'appartenance"
-            hint="Au-dessus du bureau : le compte ne voit que les données de ce pays">
-            <Select value={f.country_code||""} onChange={e=>u("country_code",e.target.value)}
-              empty={db?.me?.country_code ? undefined : "Tous les pays (bureau régional)"}
-              options={db.countries.map(c=>[c.code,c.name])} /></Field>)}
-        <Field label="Adresse électronique"><Input type="email" value={f.email||""} onChange={e=>u("email",e.target.value)} /></Field>
-        <Field label={user?.id?"Nouveau mot de passe":"Mot de passe"} hint={user?.id?"Laisser vide pour conserver l'actuel":"Huit caractères au minimum"}>
-          <Input type="password" value={f._pw||""} onChange={e=>u("_pw",e.target.value)} /></Field>
+      <div className="grid gap-4" style={{gridTemplateColumns:"1.6fr 1fr"}}>
+        <div>
+          <div className="grid grid-cols-2 gap-x-4">
+            <Field label="Prénom"><Input value={f.firstName||""} onChange={e=>u("firstName",e.target.value)} /></Field>
+            <Field label="Nom"><Input value={f.lastName||""} onChange={e=>u("lastName",e.target.value)} /></Field>
+            <Field label="Intitulé de poste"><Input value={f.title||""} onChange={e=>u("title",e.target.value)} /></Field>
+            <Field label="Adresse électronique"><Input type="email" value={f.email||""} onChange={e=>u("email",e.target.value)} /></Field>
+          </div>
+
+          <Field label="Entité d'appartenance"
+            hint="Qui est ce compte. N'accorde aucun droit : elle propose les destinations utiles à ce métier.">
+            <div className="grid grid-cols-2 gap-1.5">
+              {Object.entries(D_ENTITIES).map(([k,e])=>(
+                <label key={k} className={clsx("flex items-start gap-2 px-2.5 py-1.5 rounded border cursor-pointer",
+                  f.entity===k ? "bd-brand bg-sky-50" : "border-slate-200 hover:bg-slate-50")}>
+                  <input type="radio" name="entity" className="mt-1" checked={f.entity===k}
+                    onChange={()=>{ u("entity",k);
+                      /* Les destinations suivent l'entité tant que le compte est neuf.
+                         Sur un compte existant, on ne réécrit pas un réglage que
+                         quelqu'un a peut-être affiné à la main. */
+                      if(!user?.id) u("tabs",[...e.tabs]); }} />
+                  <span className="min-w-0">
+                    <span className="f125 font-semibold text-slate-800 block">{e.label}</span>
+                    <span className="f105 text-slate-500">{e.text}</span></span>
+                </label>))}
+            </div></Field>
+
+          <Field label="Rôle" hint="Ce que le compte peut faire. C'est le rôle, et lui seul, qui accorde les droits.">
+            <div className="grid gap-1.5">
+              {Object.entries(db.roles).map(([k,r])=>(
+                <label key={k} className={clsx("flex items-center gap-3 px-3 py-2 rounded border cursor-pointer",
+                  f.role===k?"bd-brand bg-sky-50":"border-slate-200 hover:bg-slate-50")}>
+                  <input type="radio" name="role" checked={f.role===k} onChange={()=>{u("role",k);u("tabs",[...r.tabs]);}} />
+                  <div className="flex-1"><div className="f13 font-semibold text-slate-800">{r.label}</div></div>
+                  <Badge tone={r.admin ? "r" : r.validate ? "b" : r.edit ? "g" : "n"}>
+                    {r.admin ? "administration" : r.validate ? "validation" : r.edit ? "saisie" : "lecture"}</Badge>
+                </label>))}
+            </div></Field>
+
+          <div className="grid grid-cols-2 gap-x-4">
+            <Field label="Bureau d'appartenance" hint="Restreint la vue aux données de ce bureau, hors administrateurs">
+              <Select value={f.office_id||""} onChange={e=>u("office_id",e.target.value)} empty="Tous les bureaux"
+                options={(db.offices||[]).map(o=>[o.id,o.name])} /></Field>
+            {/* Le pays borne le compte au-dessus du bureau. « Tous les pays » n'est
+                proposé que par un compte lui-même non borné : c'est le périmètre d'un
+                bureau régional, pas un champ qu'on laisse vide par distraction. */}
+            {(db?.countries || []).length > 1 && (
+              <Field label="Pays d'appartenance"
+                hint="Au-dessus du bureau : le compte ne voit que les données de ce pays">
+                <Select value={f.country_code||""} onChange={e=>u("country_code",e.target.value)}
+                  empty={me?.country_code ? undefined : "Tous les pays (bureau régional)"}
+                  options={db.countries.map(c=>[c.code,c.name])} /></Field>)}
+            <Field label={user?.id?"Nouveau mot de passe":"Mot de passe"}
+              hint={user?.id?"Laisser vide pour conserver l'actuel":"Douze caractères au minimum"}>
+              <Input type="password" value={f._pw||""} onChange={e=>u("_pw",e.target.value)} /></Field>
+          </div>
+
+          <Field label="Destinations accessibles" hint="Affine ce que le rôle et l'entité proposent">
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              {TABS_ALL.map(([t,l])=>(
+                <label key={t} className="inline-flex items-center gap-1.5 f125">
+                  <input type="checkbox" checked={(f.tabs||[]).includes(t)}
+                    onChange={e=>u("tabs", e.target.checked ? [...new Set([...(f.tabs||[]),t])] : (f.tabs||[]).filter(x=>x!==t))} />
+                  {l}</label>))}
+            </div></Field>
+
+          <Sw label="Compte actif" hint="Un compte inactif ne peut pas se connecter"
+            on={f.active!==false} onChange={v=>u("active",v)} />
+        </div>
+
+        {/* ── Ce que ce compte verra ──────────────────────────────────
+            Le récapitulatif se met à jour à chaque choix. Sans lui, la seule façon de
+            vérifier une décision d'accès était de se connecter à la place de
+            quelqu'un — ce que personne ne fait, et c'est ainsi qu'un compte se
+            retrouve avec plus de droits qu'on ne croyait. */}
+        <div className="bg-slate-50 border border-slate-200 rounded p-3.5 self-start sticky top-2">
+          <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">
+            Ce que ce compte verra</div>
+          <div className="f13 font-semibold text-slate-800">
+            {(f.firstName||"—")} {(f.lastName||"")}</div>
+          <div className="f115 text-slate-500 mb-2">
+            {f.title || "sans intitulé"}{ent ? ` · ${ent.label}` : ""}</div>
+
+          <ul className="space-y-1 mb-3">
+            {portee.map((x,i)=>(
+              <li key={i} className="f115 text-slate-700 flex gap-1.5">
+                <span className="c-bd">•</span><span>{x}</span></li>))}
+          </ul>
+
+          <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-1.5">
+            Ce qu'il pourra faire</div>
+          <ul className="space-y-1 mb-3">
+            {actions.map(([label, ok])=>(
+              <li key={label} className={clsx("f115 flex gap-1.5",
+                ok ? "text-slate-700" : "text-slate-400 line-through")}>
+                <span>{ok ? "✓" : "✕"}</span><span>{label}</span></li>))}
+          </ul>
+
+          <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-1.5">
+            Destinations ouvertes</div>
+          <div className="flex flex-wrap gap-1">
+            {TABS_ALL.filter(([t])=>(f.tabs||[]).includes(t)).map(([t,l])=>(
+              <Badge key={t} tone="b">{l}</Badge>))}
+            {!(f.tabs||[]).length && <span className="f115 text-amber-700">
+              aucune : ce compte ne verrait rien en se connectant</span>}
+          </div>
+
+          {f.role === "super" && (
+            <Note tone="warn">Un super-utilisateur contrôle toute l'instance, y compris les autres
+              pays et la gestion des comptes. Réservez-le à l'administration technique.</Note>)}
+          {f.tpm_id && (f.role === "admin" || f.role === "super") && (
+            <Note tone="err">Un compte rattaché à un prestataire ne peut pas être administrateur :
+              l'enregistrement sera refusé.</Note>)}
+        </div>
       </div>
-      <Field label="Rôle">
-        <div className="grid grid-cols-1 gap-1.5">
-          {Object.entries(db.roles).map(([k,r])=>(
-            <label key={k} className={clsx("flex items-center gap-3 px-3 py-2 rounded border cursor-pointer",
-              f.role===k?"bd-brand bg-sky-50":"border-slate-200 hover:bg-slate-50")}>
-              <input type="radio" name="role" checked={f.role===k} onChange={()=>{u("role",k);u("tabs",[...r.tabs]);}} />
-              <div className="flex-1"><div className="f13 font-semibold text-slate-800">{r.label}</div></div>
-              <Badge tone="n">{r.tabs.length} onglets</Badge></label>))}
-        </div></Field>
-      <Field label="Onglets accessibles à ce compte" hint="Affine les droits du rôle">
-        <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-          {TABS_ALL.map(([t,l])=>(
-            <label key={t} className="inline-flex items-center gap-1.5 f125">
-              <input type="checkbox" checked={(f.tabs||[]).includes(t)}
-                onChange={e=>u("tabs", e.target.checked ? [...new Set([...(f.tabs||[]),t])] : (f.tabs||[]).filter(x=>x!==t))} />
-              {l}</label>))}
-        </div></Field>
-      <Sw label="Compte actif" hint="Un compte inactif ne peut pas se connecter" on={f.active!==false} onChange={v=>u("active",v)} />
     </Modal>);
 }
 

@@ -32,6 +32,10 @@ const flush = async () => { await act(async () => { await sleep(90); }); };
 const all = (sel) => [...document.querySelectorAll(sel)];
 const byText = (sel, t) => all(sel).find(e => (e.textContent || "").trim().includes(t));
 const byExact = (sel, t) => all(sel).find(e => (e.textContent || "").trim() === t);
+/* Les destinations d'une section vivent dans la coquille, sous l'en-tête, et non
+   plus dans une barre d'onglets rendue par chaque vue : la navigation était sur deux
+   niveaux qui se contredisaient. */
+const dest = () => all('div[aria-label^="Destinations"] button');
 const click = async (el, label) => {
   assert.ok(el, `élément introuvable : ${label}`);
   await act(async () => {
@@ -131,10 +135,12 @@ test("accueil : les données viennent du serveur et les indicateurs sont calcul�
   assert.ok(byText("h2", "Accueil"), "la page d'accueil s'affiche");
   const texte = document.body.textContent;
   for(const bloc of ["Exigence minimale de suivi", "Trois derniers mois",
-                     "Tâches urgentes", "Plan et réalisé par catégorie d'activité"])
+                     "À traiter", "Plan et réalisé par catégorie d'activité"])
     assert.ok(texte.includes(bloc), `le bloc « ${bloc} » est présent`);
-  const lignes = all("main tbody tr").length;
-  assert.ok(lignes > 0, "les tâches urgentes sont alimentées");
+  /* L'accueil ne porte plus le tableau des tâches : il en donne l'aperçu, une ligne
+     par nature, et la liste complète a sa destination. On vérifie donc l'aperçu. */
+  const apercu = all("main button").filter(b => /\d/.test(b.textContent || ""));
+  assert.ok(apercu.length > 0, "l'aperçu des éléments à traiter est alimenté");
 });
 
 test("navigation : les cinq onglets s'ouvrent sans erreur", async () => {
@@ -150,7 +156,7 @@ test("navigation : les cinq onglets s'ouvrent sans erreur", async () => {
 test("cartographie : points projetés, filtres actifs, fiche au clic", async () => {
   const nav = (l) => all("header nav button").find(b => b.textContent.trim().startsWith(l));
   await click(nav("Suivi-évaluation"), "Suivi-évaluation"); await flush();
-  const sousOnglet = all("main button").filter(b => b.className.includes("-mb-px"))
+  const sousOnglet = dest()
     .find(b => b.textContent.trim() === "Cartographie");
   await click(sousOnglet, "sous-onglet Cartographie");
   await flush(); await flush();
@@ -188,7 +194,7 @@ test("cartographie : points projetés, filtres actifs, fiche au clic", async () 
 test("écriture : une modification est enregistrée sur le serveur et survit au rechargement", async () => {
   const nav = (l) => all("header nav button").find(b => b.textContent.trim().startsWith(l));
   await click(nav("Suivi-évaluation"), "Suivi-évaluation"); await flush();
-  const onglet = all("main button").filter(b => b.className.includes("-mb-px"))
+  const onglet = dest()
     .find(b => b.textContent.trim() === "Paramètres de couverture");
   await click(onglet, "paramètres de couverture"); await flush();
 
@@ -213,15 +219,18 @@ test("écriture : une modification est enregistrée sur le serveur et survit au 
 test("plan MRE : la destination s'ouvre, le budget est calculé, la bascule fonctionne", async () => {
   const nav = (l) => all("header nav button").find(b => b.textContent.trim().startsWith(l));
   await click(nav("Suivi-évaluation"), "Suivi-évaluation"); await flush();
-  const onglet = all("main button").filter(b => b.className.includes("-mb-px"))
+  const onglet = dest()
     .find(b => b.textContent.trim() === "Plan MRE et budget");
   await click(onglet, "sous-onglet Plan MRE et budget");
   await flush(); await flush(); await flush();
 
-  assert.ok(byText("h3", "Plan MRE"), "le plan de l'année s'affiche");
+  assert.ok(byText("h3", "Budgétisation"), "la budgétisation de l'exercice s'affiche");
   const texte = document.body.textContent;
-  for(const bloc of ["Budget total", "Exécution budgétaire", "Budget par nature d'activité",
-                     "Budget par catégorie de coût", "Charge mensuelle du plan"])
+  /* Les blocs du plan reconstruit : le budget de l'exercice, celui de tout le plan
+     pluriannuel, la charge trimestrielle — et non plus mensuelle, puisque les
+     occurrences sont déclarées par trimestre. */
+  for(const bloc of ["Budget de tout le plan", "Exécution budgétaire",
+                     "Budget par catégorie de coût", "Charge trimestrielle"])
     assert.ok(texte.includes(bloc), `le bloc « ${bloc} » est présent`);
 
   /* Le budget affiché vient du serveur : on vérifie qu'il est chiffré, et que le
@@ -254,7 +263,7 @@ test("bureaux : l'écran de configuration liste les bureaux et leur périmètre"
   await click(menu, "menu du compte"); await flush();
   await click(byText("button", "Paramètres de l'application"), "paramètres");
   await flush(); await flush();
-  const onglet = all("main button").filter(b => b.className.includes("-mb-px"))
+  const onglet = dest()
     .find(b => b.textContent.trim() === "Bureaux");
   await click(onglet, "sous-onglet Bureaux");
   await flush(); await flush(); await flush();

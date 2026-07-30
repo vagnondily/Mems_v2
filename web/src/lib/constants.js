@@ -121,6 +121,32 @@ const D_ROLES = {
   viewer: { label:"Lecteur",           tabs:["home","suivi","programme","reports"],              edit:false,del:false, validate:false,admin:false, sync:false },
 };
 
+/* ── Entités d'appartenance ───────────────────────────────────────────
+   QUI est ce compte, par opposition à ce qu'il peut faire (le rôle) et à l'endroit
+   où il le fait (pays, bureau, périmètre). Un chargé de programme, un logisticien et
+   un agent de suivi-évaluation partagent le rôle « éditeur » et n'ont pas le même
+   travail : sans cette dimension, l'écran des comptes ne disait pas à qui l'on avait
+   affaire, et il fallait cocher douze destinations à la main sans savoir lesquelles.
+
+   L'entité ne donne AUCUN droit. Deux façons de décider d'un accès, c'est une de
+   trop : le rôle décide, l'entité propose des destinations par défaut et se lit. */
+const D_ENTITIES = {
+  se:         { label:"Suivi-évaluation", text:"Planifie les visites, valide les données, tient le plan MRE",
+                tabs:["home","suivi","programme","analytics","reports"] },
+  programme:  { label:"Programme", text:"Distribue, cible, rend compte des réalisations",
+                tabs:["home","programme","suivi","reports"] },
+  logistique: { label:"Logistique", text:"Suit les mouvements et les livraisons",
+                tabs:["home","programme","reports"] },
+  direction:  { label:"Direction du bureau", text:"Lit les tableaux de bord et arbitre",
+                tabs:["home","suivi","programme","analytics","reports"] },
+  tpm:        { label:"Prestataire de suivi", text:"Soumet ses plans mensuels et ses dépenses",
+                tabs:["home","suivi"] },
+  partenaire: { label:"Partenaire d'exécution", text:"Consulte ce qui le concerne et rend compte",
+                tabs:["home","programme"] },
+  externe:    { label:"Observateur externe", text:"Consultation seule, sans saisie",
+                tabs:["home","suivi","programme","reports"] },
+};
+
 const D_WEIGHTS = {
   security:   { label:"Situation sécuritaire",             pts:{0:0,1:2,3:4,99:0} },
   synergies:  { label:"Synergies de programme",            pts:{0:2,1:0} },
@@ -270,4 +296,4 @@ function coverageRows(db, category, scope){
     cumul: { active: Math.max(0,...active), plan: plan.reduce((t,x)=>t+x,0), actual: actual.reduce((t,x)=>t+x,0) } };
 }
 
-export { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, CSS, DURATIONS, D_ADJUST, D_FORMULAS, D_INDICATORS, D_MMR, D_MODALITY, D_OFFICES, D_PARTNERS, D_POI_SUB, D_ROLES, D_SCORING, D_SECURITY, D_STATUS, D_TAGS, D_URBAN, D_WEIGHTS, MODALITY_TYPES, MONITORING_TYPES, MONTHS, MONTHS_L, PROG_AREAS, SERIES, SITE_TYPES, TABS_ALL, caseloadScore, coverageRows, siteDerived, sitePriority };
+export { ACT_CATEGORIES, D_ENTITIES, C, CALC_VARS, CAT_TO_AREA, CSS, DURATIONS, D_ADJUST, D_FORMULAS, D_INDICATORS, D_MMR, D_MODALITY, D_OFFICES, D_PARTNERS, D_POI_SUB, D_ROLES, D_SCORING, D_SECURITY, D_STATUS, D_TAGS, D_URBAN, D_WEIGHTS, MODALITY_TYPES, MONITORING_TYPES, MONTHS, MONTHS_L, PROG_AREAS, SERIES, SITE_TYPES, TABS_ALL, caseloadScore, coverageRows, siteDerived, sitePriority };

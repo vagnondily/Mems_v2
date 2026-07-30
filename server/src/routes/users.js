@@ -9,6 +9,7 @@ import { countryBound } from "../lib/scope.js";
 const r = Router();
 const shape = (u) => ({ id:u.id, email:u.email, first_name:u.first_name, last_name:u.last_name,
   title:u.title, office_id:u.office_id, country_code:u.country_code || null,
+  entity:u.entity || null,
   tpm_id:u.tpm_id || null, role:u.role,
   tabs:JSON.parse(u.tabs||"[]"), active:!!u.active, last_login:u.last_login });
 
@@ -81,9 +82,9 @@ r.post("/", validate(schemas.user), async (req, res) => {
   if(pays.error) return res.status(403).json({ error:pays.error });
   const id = newId("user");
   db.prepare(`INSERT INTO users (id,email,pw_hash,first_name,last_name,title,office_id,country_code,
-              tpm_id,role,tabs,active,must_change_pw) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)`)
+              entity,tpm_id,role,tabs,active,must_change_pw) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1)`)
     .run(id, b.email, await hashPassword(b.password), b.first_name, b.last_name, b.title,
-         b.office_id, pays.code, b.tpm_id, b.role, JSON.stringify(b.tabs), b.active?1:0);
+         b.office_id, pays.code, b.entity, b.tpm_id, b.role, JSON.stringify(b.tabs), b.active?1:0);
   db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'securite','users',?,'create',?)`)
     .run(newId("aud"), req.user.id, req.user.email, id, `Compte créé — ${b.email}`);
@@ -118,10 +119,10 @@ r.put("/:id", validate(schemas.user), async (req, res) => {
     db.prepare("UPDATE sessions SET revoked=1 WHERE user_id=?").run(cur.id);
   }
   db.prepare(`UPDATE users SET email=?, first_name=?, last_name=?, title=?, office_id=?,
-              country_code=?, tpm_id=?, role=?, tabs=?, active=?, updated_at=datetime('now')
+              country_code=?, entity=?, tpm_id=?, role=?, tabs=?, active=?, updated_at=datetime('now')
               ${pwSql} WHERE id=?`)
-    .run(b.email, b.first_name, b.last_name, b.title, b.office_id, pays.code, b.tpm_id, b.role,
-         JSON.stringify(b.tabs), b.active?1:0, ...pwArg, cur.id);
+    .run(b.email, b.first_name, b.last_name, b.title, b.office_id, pays.code, b.entity, b.tpm_id,
+         b.role, JSON.stringify(b.tabs), b.active?1:0, ...pwArg, cur.id);
   db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'securite','users',?,'update',?)`)
     .run(newId("aud"), req.user.id, req.user.email, cur.id, `Compte modifié — ${b.email}`);

@@ -206,7 +206,8 @@ r.get("/state", (req, res) => {
     /* Les comptes suivent le filtre strict de /api/users : un administrateur borné à
        un pays ne voit ni les comptes d'un autre pays ni les comptes non bornés. */
     users: (u.role==="super" || u.role==="admin")
-      ? db.prepare(`SELECT id,email,first_name,last_name,title,office_id,country_code,role,tabs,active
+      ? db.prepare(`SELECT id,email,first_name,last_name,title,office_id,country_code,entity,
+                           tpm_id,role,tabs,active
                     FROM users WHERE (? IS NULL OR country_code = ?) ORDER BY first_name`)
           .all(paysFilter, paysFilter)
           .map(x => ({ ...x, tabs:J(x.tabs,[]), active:!!x.active }))

@@ -125,6 +125,11 @@ export const schemas = {
        soit son rôle. Voir tpmBound dans lib/scope.js. */
     tpm_id: nullableStr(64),
     role: z.enum(["super","admin","validator","editor","viewer"]).default("viewer"),
+    /* L'entité d'appartenance : QUI est ce compte. Elle ne donne aucun droit — le
+       rôle s'en charge — mais elle propose les bonnes destinations et se lit sur
+       l'écran des comptes. Liste fermée : une entité inventée ne consoliderait rien. */
+    entity: z.enum(["se","programme","logistique","direction","tpm","partenaire","externe"])
+      .nullish().transform(v => v ?? null),
     tabs: z.array(z.string().max(40)).max(20).default([]),
     active: z.coerce.boolean().default(true),
   }),
