@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
+import { config } from "../config.js";
 import { currentVersion } from "../lib/geo.js";
 import { countryBound, officeBound, officeClause } from "../lib/scope.js";
 import { allCountries, currentCountry } from "../lib/country.js";
@@ -146,6 +147,13 @@ r.get("/state", (req, res) => {
     labels: J(f.labels, {}), records:f.records, last:f.last_pull||"",
     hasToken: !!f.token_enc, rows: [] }));
 
+  /* Ce que l'exploitant autorise comme fond de carte. Le client ne le devine pas :
+     une URL de tuiles écrite dans l'interface serait chargée même là où la politique
+     de sécurité l'interdit, et l'utilisateur verrait une carte grise sans savoir
+     pourquoi. `hosts` vide signifie « aucun fond distant permis ». */
+  const basemap = { url:config.tileUrl, attribution:config.tileAttribution,
+                    autorise: config.tileHosts.length > 0 };
+
   const settings = Object.fromEntries(
     db.prepare("SELECT key, value FROM settings").all().map(s => [s.key, J(s.value, s.value)]));
 
@@ -153,7 +161,7 @@ r.get("/state", (req, res) => {
     year, me: { id:u.id, role:u.role, office_id:u.office_id,
       country_code:u.country_code || null },
     offices, partners, categories: cats, sites, params, visits, indicators, outcomes,
-    outputs, population, pdd, geoVersion, country, countries, odkForms, settings,
+    outputs, population, pdd, geoVersion, country, countries, odkForms, settings, basemap,
     outcomePlan: Object.fromEntries(
       Object.entries(db.prepare("SELECT * FROM outcome_plan WHERE year=?").all(year)
         .reduce((acc,r2) => { const code = indByKey[r2.indicator_id]; if(!code) return acc;

@@ -1,30 +1,95 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { MapPin, Search, RefreshCw, Download, Users, Target, Activity, AlertTriangle, Layers } from "lucide-react";
 import { C, MONTHS_L, D_SECURITY } from "../lib/constants.js";
-import { fmt, pct, n, r2, clsx } from "../lib/calc.js";
+import { fmt, pct, n, r2, r5, clsx } from "../lib/calc.js";
 import { download, toCSV } from "../components/ui.jsx";
 import { Card, Btn, Select, Stat, StatRow, Empty, Note, Bar2, TableWrap, Th, Td, inputCls } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
 import { useGeoCascade, names } from "../lib/geo.js";
 import { niveau, niveaux } from "../lib/levels.js";
 
-/* Projection équirectangulaire simple, suffisante pour un pays et sans dépendance externe.
-   Aucune tuile n'est appelée : la carte fonctionne hors ligne et ne fuite aucune donnée. */
+/* ── Projection ───────────────────────────────────────────────────────
+   Mercator sphérique (EPSG:3857), la projection des tuiles web.
+
+   C'était une équirectangulaire, corrigée de la convergence des méridiens à la
+   latitude moyenne. Suffisant tant que la carte ne portait que des points et des
+   contours dessinés par nous ; faux dès qu'on pose un fond de carte dessous, car les
+   tuiles sont en Mercator et l'écart se voit — les contours glissent par rapport aux
+   routes, de plus en plus vers les latitudes hautes.
+
+   Le monde Mercator est un carré de côté 1 en unités normalisées ; `scale` est le
+   nombre de pixels de ce carré. Tout le reste — placement des tuiles, échelle,
+   rectangle de zoom — en découle. */
+const MERC = {
+  x: (lon) => (lon + 180) / 360,
+  y: (lat) => {
+    const f = Math.min(85.05112878, Math.max(-85.05112878, lat)) * Math.PI / 180;
+    return (1 - Math.log(Math.tan(f) + 1 / Math.cos(f)) / Math.PI) / 2;
+  },
+  lon: (x) => x * 360 - 180,
+  lat: (y) => {
+    const n2 = Math.PI * (1 - 2 * y);
+    return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n2) - Math.exp(-n2)));
+  },
+};
+
 function makeProjection(bounds, width, height, pad = 26){
   if(!bounds) return null;
-  const latSpan = Math.max(0.02, bounds.maxLat - bounds.minLat);
-  const lonSpan = Math.max(0.02, bounds.maxLon - bounds.minLon);
-  /* Correction de la convergence des méridiens à la latitude moyenne. */
-  const midLat = (bounds.maxLat + bounds.minLat) / 2;
-  const kx = Math.cos(midLat * Math.PI / 180) || 1;
-  const scale = Math.min((width - 2*pad) / (lonSpan * kx), (height - 2*pad) / latSpan);
-  const cx = (bounds.maxLon + bounds.minLon) / 2;
-  const cy = midLat;
+  const x0 = MERC.x(bounds.minLon), x1 = MERC.x(bounds.maxLon);
+  const y0 = MERC.y(bounds.maxLat), y1 = MERC.y(bounds.minLat);   /* y croît vers le sud */
+  const dx = Math.max(1e-6, x1 - x0), dy = Math.max(1e-6, y1 - y0);
+  const scale = Math.min((width - 2*pad) / dx, (height - 2*pad) / dy);
+  const ox = width/2 - (x0 + x1) / 2 * scale;
+  const oy = height/2 - (y0 + y1) / 2 * scale;
   return {
-    x: (lon) => width/2 + (lon - cx) * kx * scale,
-    y: (lat) => height/2 - (lat - cy) * scale,
-    scale,
+    scale, ox, oy,
+    x: (lon) => MERC.x(lon) * scale + ox,
+    y: (lat) => MERC.y(lat) * scale + oy,
+    /* Les inverses servent au rectangle de zoom et au calcul des tuiles visibles. */
+    lonOf: (px) => MERC.lon((px - ox) / scale),
+    latOf: (py) => MERC.lat((py - oy) / scale),
   };
+}
+
+/* ── Tuiles ───────────────────────────────────────────────────────────
+   Le fond de carte distant est la seule ressource externe de l'application, et il
+   est facultatif : sans lui, les contours administratifs restent le fond et tout
+   fonctionne hors ligne. Il ne se charge que si l'exploitant l'a autorisé côté
+   serveur (politique de sécurité du contenu) ET que l'utilisateur l'a demandé.
+
+   Aucune donnée du programme ne part avec : une requête de tuile ne porte que des
+   coordonnées de tuile, les mêmes pour tout le monde.
+
+   Le niveau de tuile est choisi pour que 256 px de tuile fassent à peu près 256 px à
+   l'écran — au-delà, on télécharge des détails invisibles ; en deçà, l'image est
+   floue. Le nombre de tuiles est plafonné : un cadrage mal fichu ne doit pas lancer
+   mille requêtes. */
+const TILE = 256, MAX_TUILES = 240;
+function tuilesVisibles(proj, k, dx, dy, W, H, url){
+  if(!proj || !url) return [];
+  const echelle = proj.scale * k;
+  const z = Math.max(0, Math.min(18, Math.round(Math.log2(echelle / TILE))));
+  const n2 = 2 ** z;
+  const taille = echelle / n2;                       /* côté d'une tuile, en pixels écran */
+  /* Coin haut-gauche du viewport en unités normalisées, en défaisant la translation. */
+  const u0 = (-dx / k - proj.ox) / proj.scale, v0 = (-dy / k - proj.oy) / proj.scale;
+  const u1 = ((W - dx) / k - proj.ox) / proj.scale, v1 = ((H - dy) / k - proj.oy) / proj.scale;
+  const i0 = Math.max(0, Math.floor(u0 * n2)), i1 = Math.min(n2 - 1, Math.ceil(u1 * n2));
+  const j0 = Math.max(0, Math.floor(v0 * n2)), j1 = Math.min(n2 - 1, Math.ceil(v1 * n2));
+  const out = [];
+  for(let j = j0; j <= j1; j++) for(let i = i0; i <= i1; i++){
+    if(out.length >= MAX_TUILES) return out;
+    out.push({
+      key: `${z}/${i}/${j}`,
+      href: url.replace("{z}", z).replace("{x}", i).replace("{y}", j),
+      /* Placées dans le repère non transformé du groupe : le zoom et le
+         déplacement s'appliquent au groupe entier, comme aux contours. */
+      x: (i / n2) * proj.scale + proj.ox,
+      y: (j / n2) * proj.scale + proj.oy,
+      w: proj.scale / n2,
+    });
+  }
+  return out;
 }
 
 const COLOR_MODES = [
@@ -100,6 +165,24 @@ export default function MapView({ db, me, notify, go }){
   const [geoLevel, setGeoLevel] = useState("adm2");
   const [shapes, setShapes] = useState({ features:[], extent:null, tronque:false, loading:false });
   const [selShape, setSelShape] = useState(null);
+  /* Fond de carte distant : proposé seulement si le serveur l'autorise, et retenu
+     dans le navigateur — c'est une préférence d'affichage, pas une configuration
+     partagée : un poste sans connexion l'éteint sans l'éteindre pour les autres. */
+  const fondAutorise = !!db.basemap?.autorise && !!db.basemap?.url;
+  const [fond, setFond] = useState(() => {
+    try{ return localStorage.getItem("mems.fond") ?? "osm"; }catch(e){ return "osm"; }
+  });
+  const setFondPersistant = (v) => { setFond(v); try{ localStorage.setItem("mems.fond", v); }catch(e){} };
+  /* Coordonnées affichées à côté des points : ce qu'on lit sur un GPS de terrain. */
+  const [coords, setCoords] = useState(false);
+  /* Une tuile qui n'arrive pas laisse un trou gris, et l'utilisateur croit à une
+     panne de l'application. Sur un poste sans accès sortant — le cas d'un bureau de
+     terrain — c'est la situation NORMALE, et il faut le dire une fois, calmement. */
+  const [fondMuet, setFondMuet] = useState(false);
+  useEffect(()=>{ setFondMuet(false); }, [fond, view.k]);
+  /* Outil « zoom sur une zone » : on trace un rectangle, la carte s'y cadre. */
+  const [outil, setOutil] = useState("main");
+  const [rect, setRect] = useState(null);
   const GEO_LEVELS = niveaux(db, { from:"adm1", to:"adm4" });
   const W = 900, H = 560;
 
@@ -129,6 +212,12 @@ export default function MapView({ db, me, notify, go }){
              minLon:Math.min(bounds.minLon, g.minLon), maxLon:Math.max(bounds.maxLon, g.maxLon) };
   }, [bounds, shapes.extent]);
   const proj = useMemo(() => makeProjection(cadre, W, H), [cadre]);
+  /* Les tuiles se recalculent au déplacement et au zoom : c'est le prix d'un fond
+     qui reste net, et cela ne coûte que quelques dizaines d'éléments. */
+  const tuiles = useMemo(
+    () => (fondAutorise && fond === "osm")
+      ? tuilesVisibles(proj, view.k, view.dx, view.dy, W, H, db.basemap.url) : [],
+    [proj, view.k, view.dx, view.dy, fond, fondAutorise, db.basemap?.url]);
   const tags = useMemo(() => [...new Set(rows.map(s => s.activity_tag).filter(Boolean))].sort(), [rows]);
   /* Le référentiel vient du serveur, niveau par niveau : le navigateur ne
      charge jamais les 18 000 fokontany pour alimenter deux listes déroulantes. */
@@ -212,19 +301,20 @@ export default function MapView({ db, me, notify, go }){
      être au district. */
   const themeValues = useMemo(() => {
     if(fillMode === "none" || !shapes.features.length) return { par:{}, max:0, absent:0 };
-    /* Chaîne de parenté des contours affichés, pour remonter un site plus fin. */
-    const parentDe = {};
-    shapes.features.forEach(f => { parentDe[f.properties.pcode] = f.properties.parent; });
     const cible = new Set(shapes.features.map(f => f.properties.pcode));
 
+    /* Le rattachement se lit dans le CHEMIN de l'unité du site, qui porte tous ses
+       ancêtres. La version précédente remontait la parenté des contours AFFICHÉS :
+       un site rattaché à son fokontany ne s'y retrouvait pas quand la carte montrait
+       les districts, et l'écran annonçait « 309 sites sans rattachement » alors que
+       les 309 étaient rattachés. */
     const par = {}; let absent = 0;
     for(const st of filtered){
-      let p = st.geo_pcode;
-      /* On remonte jusqu'à une unité du niveau affiché — dix sauts au plus, le
-         référentiel n'en compte que cinq. */
-      let sauts = 0;
-      while(p && !cible.has(p) && sauts++ < 10) p = parentDe[p];
-      if(!p || !cible.has(p)){ absent++; continue; }
+      const chemin = (st.geo_path || st.geo_pcode || "").split("/").filter(Boolean);
+      /* Du plus fin au plus large : on s'arrête au premier ancêtre affiché. */
+      let p = null;
+      for(let i = chemin.length - 1; i >= 0; i--) if(cible.has(chemin[i])){ p = chemin[i]; break; }
+      if(!p){ absent++; continue; }
       const a = par[p] = par[p] || { sites:0, actifs:0, planifies:0, visites:0, benef:0 };
       a.sites++;
       if(st.status === "Active") a.actifs++;
@@ -259,13 +349,74 @@ export default function MapView({ db, me, notify, go }){
     notify("Points exportés","ok");
   };
 
-  const zoom = (factor) => setView(v => ({ ...v, k: Math.max(1, Math.min(12, v.k * factor)) }));
+  const zoom = (factor) => setView(v => ({ ...v, k: Math.max(1, Math.min(64, v.k * factor)) }));
   const drag = useRef(null);
-  const onDown = (e) => { drag.current = { x:e.clientX, y:e.clientY, dx:view.dx, dy:view.dy }; };
-  const onMove = (e) => { if(!drag.current) return;
+  const svgRef = useRef(null);
+
+  /* Coordonnées du pointeur dans le repère du dessin (viewBox), et non en pixels
+     d'écran : la carte est mise à l'échelle par la largeur disponible, et confondre
+     les deux décalait le rectangle de tracé de plusieurs dizaines de pixels. */
+  const pointeur = (e) => {
+    const r = svgRef.current?.getBoundingClientRect();
+    if(!r) return { x:0, y:0 };
+    return { x:(e.clientX - r.left) * W / r.width, y:(e.clientY - r.top) * H / r.height };
+  };
+
+  /* Cadrer la carte sur une emprise géographique : c'est ce que font le rectangle
+     de zoom et le clic sur « cadrer » d'une unité administrative. On calcule le
+     facteur et la translation plutôt que de changer la projection — la projection
+     reste celle du pays, donc revenir en arrière est exact. */
+  const cadrerSur = (b, marge = 0.06) => {
+    if(!proj || !b) return;
+    const px0 = proj.x(b.west), px1 = proj.x(b.east);
+    const py0 = proj.y(b.north), py1 = proj.y(b.south);
+    const largeur = Math.max(1, Math.abs(px1 - px0)), hauteur = Math.max(1, Math.abs(py1 - py0));
+    const k = Math.max(1, Math.min(64, Math.min(W / largeur, H / hauteur) * (1 - marge)));
+    const cx = (px0 + px1) / 2, cy = (py0 + py1) / 2;
+    setView({ k, dx: W/2 - cx * k, dy: H/2 - cy * k });
+  };
+
+  const onDown = (e) => {
+    const p = pointeur(e);
+    if(outil === "zone"){ setRect({ x0:p.x, y0:p.y, x1:p.x, y1:p.y }); return; }
+    drag.current = { x:e.clientX, y:e.clientY, dx:view.dx, dy:view.dy };
+  };
+  const onMove = (e) => {
+    if(rect){ const p = pointeur(e); setRect(r => ({ ...r, x1:p.x, y1:p.y })); return; }
+    if(!drag.current) return;
     setView(v => ({ ...v, dx: drag.current.dx + (e.clientX - drag.current.x),
-                          dy: drag.current.dy + (e.clientY - drag.current.y) })); };
-  const onUp = () => { drag.current = null; };
+                          dy: drag.current.dy + (e.clientY - drag.current.y) }));
+  };
+  const onUp = () => {
+    if(rect){
+      const { x0, y0, x1, y1 } = rect;
+      setRect(null);
+      /* Un rectangle minuscule est un clic manqué, pas une intention de zoom. */
+      if(Math.abs(x1-x0) > 8 && Math.abs(y1-y0) > 8){
+        const inv = (px, py) => ({ lon: proj.lonOf((px - view.dx) / view.k),
+                                   lat: proj.latOf((py - view.dy) / view.k) });
+        const a = inv(Math.min(x0,x1), Math.min(y0,y1));
+        const b = inv(Math.max(x0,x1), Math.max(y0,y1));
+        cadrerSur({ west:a.lon, east:b.lon, north:a.lat, south:b.lat });
+        setOutil("main");
+      }
+      return;
+    }
+    drag.current = null;
+  };
+
+  /* Cadrer sur l'unité administrative choisie : « faire une zone » au sens propre —
+     on désigne un district et la carte s'y installe. */
+  const cadrerUnite = (f2) => {
+    const g = f2?.geometry; if(!g) return;
+    let w = 180, e2 = -180, n2 = 90, s2 = -90;
+    const parcours = (r) => r.forEach(([lon,lat]) => {
+      if(lon < w) w = lon; if(lon > e2) e2 = lon;
+      if(lat < n2) n2 = lat; if(lat > s2) s2 = lat; });
+    if(g.type === "Polygon") g.coordinates.forEach(parcours);
+    if(g.type === "MultiPolygon") g.coordinates.forEach(p => p.forEach(parcours));
+    cadrerSur({ west:w, east:e2, north:s2, south:n2 });
+  };
 
   return (
     <div className="space-y-4">
@@ -313,15 +464,44 @@ export default function MapView({ db, me, notify, go }){
           <label className="flex items-center gap-1.5 f115 text-slate-600">
             <input type="checkbox" checked={sizeByBenef} onChange={e=>setSizeByBenef(e.target.checked)} />
             taille selon les bénéficiaires</label>
+          {/* Fond de carte distant : le choix est offert seulement s'il est permis
+              côté serveur. Quand il ne l'est pas, on le DIT au lieu de laisser
+              croire à une panne. */}
+          {fondAutorise ? (
+            <Select value={fond} onChange={e=>setFondPersistant(e.target.value)}
+              options={[["osm","Fond OpenStreetMap"],["none","Sans fond distant"]]}
+              className="mi-py1 mi-xs mi-wauto" />
+          ) : (
+            <span className="f11 text-slate-400" title="Aucun serveur de tuiles n'est autorisé par la configuration (TILE_HOSTS)">
+              fond distant désactivé</span>)}
+          {/* Au-delà d'une centaine de points, les étiquettes se chevauchent et ne
+              se lisent plus : on le dit plutôt que de laisser croire à une panne. */}
+          <label className="flex items-center gap-1.5 f115 text-slate-600"
+            title={filtered.length > 120
+              ? `Trop de points (${filtered.length}) pour afficher les coordonnées lisiblement : filtrez ou zoomez sur une zone`
+              : "Afficher la latitude et la longitude à côté de chaque point"}>
+            <input type="checkbox" checked={coords} onChange={e=>setCoords(e.target.checked)} />
+            coordonnées
+            {coords && filtered.length > 120 &&
+              <span className="text-amber-700">({filtered.length} points : filtrez pour les voir)</span>}
+          </label>
           <div className="ml-auto flex items-center gap-1">
+            {/* Deux outils, deux gestes : la main déplace, le rectangle cadre. */}
+            <Btn size="sm" kind={outil==="zone" ? "primary" : "sec"}
+              onClick={()=>{ setOutil(o => o==="zone" ? "main" : "zone"); setRect(null); }}>
+              {outil==="zone" ? "Tracez la zone…" : "Zoom sur une zone"}</Btn>
             <Btn size="sm" kind="sec" onClick={()=>zoom(1/1.4)}>−</Btn>
             <span className="f115 text-slate-500 tabular-nums px-1">×{r2(view.k)}</span>
             <Btn size="sm" kind="sec" onClick={()=>zoom(1.4)}>+</Btn>
-            <Btn size="sm" kind="ghost" onClick={()=>setView({ k:1, dx:0, dy:0 })}>Recentrer</Btn>
+            <Btn size="sm" kind="ghost" onClick={()=>{ setView({ k:1, dx:0, dy:0 }); setOutil("main"); }}>Recentrer</Btn>
           </div>
         </div>
 
         {error ? <Note tone="err">{error}</Note> : null}
+        {fondMuet && (
+          <Note tone="warn">Le fond de carte distant n'a pas pu être chargé — poste hors ligne, ou accès
+            au serveur de tuiles filtré. <b>Les contours administratifs et les points restent affichés</b> :
+            la carte fonctionne sans fond. Choisissez « Sans fond distant » pour ne plus le demander.</Note>)}
 
         {/* Un fond de carte sans point reste utile : il montre les unités où le
             programme n'a aucune présence, ce qui est précisément l'information
@@ -333,7 +513,8 @@ export default function MapView({ db, me, notify, go }){
           <div className="flex">
             <div className="flex-1 min-w-0 relative" style={{ background:"#f7fafc" }}
                  onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}>
-              <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ cursor: drag.current ? "grabbing" : "grab" }}
+              <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full"
+                   style={{ cursor: outil==="zone" ? "crosshair" : drag.current ? "grabbing" : "grab" }}
                    onMouseDown={onDown}>
                 <defs>
                   <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
@@ -342,6 +523,19 @@ export default function MapView({ db, me, notify, go }){
                 </defs>
                 <rect width={W} height={H} fill="url(#grid)" />
                 <g transform={`translate(${view.dx},${view.dy}) scale(${view.k})`}>
+                  {/* ── Fond de carte distant ─────────────────────────────
+                      Les tuiles sont dans le même groupe que le reste : elles
+                      subissent le même déplacement et le même zoom, donc rien ne
+                      peut glisser entre le fond et les contours. Une tuile qui
+                      n'arrive pas laisse simplement un trou : la carte reste
+                      lisible, ce qui est le comportement voulu hors ligne.
+                      Le débord d'un demi-pixel efface les liserés blancs entre
+                      tuiles voisines dus à l'arrondi du rendu. */}
+                  {tuiles.map(t => (
+                    <image key={t.key} href={t.href} x={t.x} y={t.y}
+                           width={t.w + 0.5/view.k} height={t.w + 0.5/view.k}
+                           preserveAspectRatio="none" opacity={0.92}
+                           onError={()=>setFondMuet(true)} />))}
                   {/* ── Fond de carte administratif ──────────────────────
                       Les contours passent en premier : tout le reste se dessine
                       par-dessus. Le trait s'affine avec le zoom pour rester d'une
@@ -355,10 +549,15 @@ export default function MapView({ db, me, notify, go }){
                     return (
                       <path key={f.properties.pcode} d={pathOf(f.geometry, proj)}
                         data-unit={f.properties.pcode} fill={fill}
-                        fillOpacity={fillMode === "none" ? 0.55 : 0.9}
-                        stroke={actif ? C.brandD : "#9fb2c0"}
+                        /* Avec un fond de carte dessous, un aplat opaque le
+                           masquerait : les contours se font transparents pour
+                           laisser voir les routes et les localités. */
+                        fillOpacity={fillMode === "none" ? (tuiles.length ? 0.06 : 0.55)
+                                                         : (tuiles.length ? 0.55 : 0.9)}
+                        stroke={actif ? C.brandD : (tuiles.length ? "#4a6a80" : "#9fb2c0")}
                         strokeWidth={(actif ? 2 : 0.7) / view.k}
                         onClick={()=>setSelShape(actif ? null : f.properties.pcode)}
+                        onDoubleClick={()=>cadrerUnite(f)}
                         style={{ cursor:"pointer" }}>
                         <title>{`${f.properties.name}${a ? `\n${a.sites} site(s), ${a.actifs} actif(s)\n${a.visites}/${a.planifies} visites\n${fmt(a.benef)} bénéficiaires` : "\naucun site"}`}</title>
                       </path>);
@@ -378,12 +577,34 @@ export default function MapView({ db, me, notify, go }){
                       <title>{`${s.name}\n${s.adm3 || ""} · ${s.office || ""}\n${fmt(s.beneficiaries)} bénéficiaires\n${s.done}/${s.planned} visites`}</title>
                     </circle>
                   ))}
+                  {/* Les coordonnées à côté du point : c'est ce qu'un agent lit sur
+                      son GPS, et ce qui permet de vérifier qu'un site est là où on
+                      croit. Affichées à la demande et seulement si les points sont
+                      assez peu nombreux pour rester lisibles. */}
+                  {coords && filtered.length <= 120 && filtered.map(s2 => (
+                    <text key={"c"+s2.id} x={proj.x(s2.lon) + 5/view.k} y={proj.y(s2.lat) - 4/view.k}
+                          fontSize={7/view.k} fill="#334155" style={{ paintOrder:"stroke" }}
+                          stroke="#fff" strokeWidth={2/view.k}>
+                      {r5(s2.lat)}, {r5(s2.lon)}</text>))}
                   {sel && (
                     <circle cx={proj.x(sel.lon)} cy={proj.y(sel.lat)} r={(radiusOf(sel)+5)/Math.sqrt(view.k)}
                             fill="none" stroke={C.brandD} strokeWidth={2/view.k} />
                   )}
                 </g>
+                {/* Rectangle de zoom, hors du groupe transformé : il se trace en
+                    pixels d'écran, pas en coordonnées géographiques. */}
+                {rect && (
+                  <rect x={Math.min(rect.x0,rect.x1)} y={Math.min(rect.y0,rect.y1)}
+                        width={Math.abs(rect.x1-rect.x0)} height={Math.abs(rect.y1-rect.y0)}
+                        fill={C.brand} fillOpacity={0.12} stroke={C.brandD} strokeWidth={1.2}
+                        strokeDasharray="4 3" />)}
                 <g>
+                  {/* L'attribution n'est pas décorative : la licence des tuiles
+                      l'exige, et elle dit d'où vient ce qu'on regarde. */}
+                  {!!tuiles.length && (
+                    <text x={W-8} y={H-8} fontSize="9.5" textAnchor="end" fill="#475569"
+                          style={{ paintOrder:"stroke" }} stroke="#fff" strokeWidth="2.5">
+                      {db.basemap?.attribution || "© OpenStreetMap"}</text>)}
                   <rect x={12} y={H-46} width={188} height={34} fill="#fff" fillOpacity={0.92}
                         stroke="#e2e8ec" rx={3} />
                   <text x={22} y={H-30} fontSize="10" fill={C.t2}>Échelle approximative</text>

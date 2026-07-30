@@ -2,6 +2,7 @@ import { Router } from "express";
 import { db } from "../db.js";
 import { z } from "zod";
 import { officeBound as scopeOf, officeClause } from "../lib/scope.js";
+import { currentVersion } from "../lib/geo.js";
 
 const r = Router();
 /* Cloisonnement par bureau puis par pays : voir lib/scope.js — définition unique.
@@ -34,16 +35,25 @@ r.get("/map", (req, res) => {
               sans lui, l'aplat thématique devrait se rattacher par nom de commune,
               ce qui échoue sur les homonymes de deux districts différents. */
            s.geo_pcode,
+           /* Le CHEMIN de l'unité, et pas seulement son p-code. Un site est rattaché
+              à son fokontany ; une carte affichée par district doit pourtant le
+              compter dans le sien. Le client remontait la parenté des seuls contours
+              affichés — un fokontany n'y figure pas — et tous les sites tombaient
+              donc dans « sans rattachement au découpage », y compris quand ils
+              étaient parfaitement rattachés. Le chemin porte les ancêtres, à tout
+              niveau, et le rapprochement devient exact. */
+           gu.path AS geo_path,
            s.activity_tag, s.beneficiaries, s.security, s.last_visit, s.modality,
            o.name AS office, c.name AS category,
            COALESCE(m.planned,0) AS planned, COALESCE(m.done,0) AS done
     FROM sites s
+    LEFT JOIN geo_unit gu ON gu.pcode = s.geo_pcode AND gu.version_id = ?
     LEFT JOIN offices o ON o.id = s.office_id
     LEFT JOIN activity_categories c ON c.id = s.category_id
     LEFT JOIN (SELECT site_id, SUM(planned) planned, SUM(done) done
                FROM site_months WHERE year = ? GROUP BY site_id) m ON m.site_id = s.id
     WHERE ${where.join(" AND ")}
-    ORDER BY s.code LIMIT 6000`).all(f.year, ...args);
+    ORDER BY s.code LIMIT 6000`).all(currentVersion()?.id || "", f.year, ...args);
 
   const bounds = rows.reduce((b,s)=>({
     minLat:Math.min(b.minLat,s.lat), maxLat:Math.max(b.maxLat,s.lat),

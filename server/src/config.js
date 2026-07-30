@@ -39,6 +39,25 @@ export const config = {
       .split(",").map(s => s.trim()).filter(Boolean);
     return isProd ? envOrigins : [...new Set([...envOrigins, ...defaultDev])];
   })(),
+  /* Serveurs de tuiles autorisés par la politique de sécurité du contenu.
+
+     C'est la SEULE ressource externe que l'application accepte de charger, et
+     seulement si l'utilisateur l'a demandée dans les réglages. Le compromis est
+     assumé et il se dit : un fond de carte OpenStreetMap rend la carte lisible pour
+     qui ne connaît pas la zone par cœur, au prix d'une requête sortante par tuile —
+     laquelle ne porte aucune donnée du programme, juste des coordonnées de tuile.
+
+     Un bureau sans connexion sortante, ou qui ne veut aucune fuite, laisse le
+     réglage sur « aucun » : les contours administratifs restent le fond, et la carte
+     fonctionne hors ligne comme avant. Une installation qui héberge ses propres
+     tuiles remplace la liste par son domaine (TILE_HOSTS).                       */
+  tileHosts: (process.env.TILE_HOSTS
+    || "https://tile.openstreetmap.org https://*.tile.openstreetmap.org")
+    .split(/[\s,]+/).map(s => s.trim()).filter(Boolean),
+  /* Le gabarit d'URL des tuiles. Il part au client avec l'état initial : c'est
+     l'exploitant qui décide de la source, pas le code de l'interface. */
+  tileUrl: process.env.TILE_URL || "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+  tileAttribution: process.env.TILE_ATTRIBUTION || "© OpenStreetMap",
   trustProxy: bool(process.env.TRUST_PROXY, false),
   rateLoginMax: int(process.env.RATE_LOGIN_MAX, 10),
   rateApiMax: int(process.env.RATE_API_MAX, 600),

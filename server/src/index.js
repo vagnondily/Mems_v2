@@ -50,7 +50,9 @@ app.use(helmet({
          supprimer, pas à conserver au cas où. */
       styleSrc: ["'self'", "'unsafe-inline'"],
       fontSrc: ["'self'", "data:"],
-      imgSrc: ["'self'", "data:", "blob:"],
+      /* Les tuiles du fond de carte sont la seule origine externe tolérée, et
+         seulement si l'exploitant l'a voulu (TILE_HOSTS, vide pour interdire). */
+      imgSrc: ["'self'", "data:", "blob:", ...config.tileHosts],
       connectSrc: ["'self'", ...config.corsOrigins],
       frameSrc: ["'self'"],
       objectSrc: ["'none'"],
