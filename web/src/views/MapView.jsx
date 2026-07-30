@@ -3,7 +3,7 @@ import { MapPin, Search, RefreshCw, Download, Users, Target, Activity, AlertTria
 import { C, MONTHS_L, D_SECURITY } from "../lib/constants.js";
 import { fmt, pct, n, r2, r5, clsx } from "../lib/calc.js";
 import { download, toCSV } from "../components/ui.jsx";
-import { Card, Btn, Select, Stat, StatRow, Empty, Note, Bar2, TableWrap, Th, Td, inputCls } from "../components/ui.jsx";
+import { Badge, Card, Btn, Select, Stat, StatRow, Empty, Note, Bar2, TableWrap, Th, Td, inputCls } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
 import { useGeoCascade, names } from "../lib/geo.js";
 import { niveau, niveaux } from "../lib/levels.js";
@@ -183,6 +183,8 @@ export default function MapView({ db, me, notify, go }){
   /* Outil « zoom sur une zone » : on trace un rectangle, la carte s'y cadre. */
   const [outil, setOutil] = useState("main");
   const [rect, setRect] = useState(null);
+  /* Panneau de rattachement par les coordonnées, ouvert depuis l'avertissement. */
+  const [rattacher, setRattacher] = useState(false);
   const GEO_LEVELS = niveaux(db, { from:"adm1", to:"adm4" });
   const W = 900, H = 560;
 
@@ -201,16 +203,45 @@ export default function MapView({ db, me, notify, go }){
   const filtered = useMemo(() => !q ? rows : rows.filter(s =>
     [s.code, s.name, s.adm3, s.adm4, s.office].join(" ").toLowerCase().includes(q.toLowerCase())), [rows, q]);
 
-  /* Le cadrage tient compte des contours : sans cela une région dont les sites
-     sont regroupés dans un coin verrait son contour dépasser de l'écran. */
-  const cadre = useMemo(() => {
+  /* ── Cadrage ──────────────────────────────────────────────────────
+     Le cadre par défaut est le PAYS, pas le nuage de points.
+
+     Il était calculé sur l'emprise des sites, éventuellement élargie aux contours.
+     Quand les sites sont regroupés — ce qui est le cas ordinaire d'un programme
+     concentré sur quelques districts — la carte s'ouvrait sur ces quelques districts.
+     Sans fond de carte, cela ne se voyait pas : on regardait des cercles sur du vide.
+     Avec un fond, on tombe sur un fragment de territoire qu'on ne reconnaît pas, et
+     l'on se demande où est passé le pays.
+
+     L'emprise du pays vient, dans l'ordre : des contours administratifs chargés, du
+     centre déclaré dans la configuration du pays à défaut. Un pays sans découpage ni
+     centre retombe sur les points — c'est mieux que rien à afficher. */
+  const paysCadre = useMemo(() => {
     const e = shapes.extent;
-    if(!e) return bounds;
-    const g = { minLat:e.south, maxLat:e.north, minLon:e.west, maxLon:e.east };
-    if(!bounds) return g;
-    return { minLat:Math.min(bounds.minLat, g.minLat), maxLat:Math.max(bounds.maxLat, g.maxLat),
-             minLon:Math.min(bounds.minLon, g.minLon), maxLon:Math.max(bounds.maxLon, g.maxLon) };
-  }, [bounds, shapes.extent]);
+    if(e) return { minLat:e.south, maxLat:e.north, minLon:e.west, maxLon:e.east };
+    const c = db.country;
+    if(c?.lat != null && c?.lon != null){
+      /* Sept degrés de part et d'autre : de quoi tenir un pays de taille moyenne
+         entier à l'écran. C'est une approximation, et elle ne sert qu'au premier
+         affichage — dès qu'un découpage est chargé, l'emprise réelle la remplace. */
+      const d = 7;
+      return { minLat:c.lat - d, maxLat:c.lat + d, minLon:c.lon - d, maxLon:c.lon + d };
+    }
+    return null;
+  }, [shapes.extent, db.country]);
+
+  const pointsCadre = bounds;
+  const cadre = useMemo(() => {
+    if(!paysCadre) return pointsCadre;
+    if(!pointsCadre) return paysCadre;
+    /* L'union des deux : un site hors du découpage — cela arrive, c'est même ce que
+       le rattachement par coordonnées sert à corriger — ne doit pas sortir du cadre
+       sans qu'on le voie. */
+    return { minLat:Math.min(pointsCadre.minLat, paysCadre.minLat),
+             maxLat:Math.max(pointsCadre.maxLat, paysCadre.maxLat),
+             minLon:Math.min(pointsCadre.minLon, paysCadre.minLon),
+             maxLon:Math.max(pointsCadre.maxLon, paysCadre.maxLon) };
+  }, [pointsCadre, paysCadre]);
   const proj = useMemo(() => makeProjection(cadre, W, H), [cadre]);
   /* Les tuiles se recalculent au déplacement et au zoom : c'est le prix d'un fond
      qui reste net, et cela ne coûte que quelques dizaines d'éléments. */
@@ -493,11 +524,21 @@ export default function MapView({ db, me, notify, go }){
             <Btn size="sm" kind="sec" onClick={()=>zoom(1/1.4)}>−</Btn>
             <span className="f115 text-slate-500 tabular-nums px-1">×{r2(view.k)}</span>
             <Btn size="sm" kind="sec" onClick={()=>zoom(1.4)}>+</Btn>
-            <Btn size="sm" kind="ghost" onClick={()=>{ setView({ k:1, dx:0, dy:0 }); setOutil("main"); }}>Recentrer</Btn>
+            {/* Deux cadrages, parce que ce sont deux questions : « où est le pays »
+                et « où sont mes sites ». Le second est utile dès que le programme
+                couvre une petite partie du territoire. */}
+            {!!pointsCadre && <Btn size="sm" kind="ghost"
+              onClick={()=>cadrerSur({ west:pointsCadre.minLon, east:pointsCadre.maxLon,
+                                       north:pointsCadre.maxLat, south:pointsCadre.minLat }, 0.12)}>
+              Cadrer sur les sites</Btn>}
+            <Btn size="sm" kind="ghost" onClick={()=>{ setView({ k:1, dx:0, dy:0 }); setOutil("main"); }}>
+              Voir tout le pays</Btn>
           </div>
         </div>
 
-        {error ? <Note tone="err">{error}</Note> : null}
+        {rattacher && <Rattachement notify={notify} onClose={()=>{ setRattacher(false); load(); }} />}
+
+      {error ? <Note tone="err">{error}</Note> : null}
         {fondMuet && (
           <Note tone="warn">Le fond de carte distant n'a pas pu être chargé — poste hors ligne, ou accès
             au serveur de tuiles filtré. <b>Les contours administratifs et les points restent affichés</b> :
@@ -516,12 +557,12 @@ export default function MapView({ db, me, notify, go }){
               <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full"
                    style={{ cursor: outil==="zone" ? "crosshair" : drag.current ? "grabbing" : "grab" }}
                    onMouseDown={onDown}>
-                <defs>
-                  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-                    <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#e6edf2" strokeWidth="1" />
-                  </pattern>
-                </defs>
-                <rect width={W} height={H} fill="url(#grid)" />
+                {/* Le quadrillage de fond est retiré. Il datait de l'époque sans fond
+                    de carte, où il donnait au vide un air de papier millimétré ; il se
+                    lit comme un repère de coordonnées, ce qu'il n'est pas — ses
+                    carreaux valent 40 pixels, pas un degré ni un kilomètre. Sous des
+                    tuiles, il ajoutait en plus une trame sur le relief. */}
+                <rect width={W} height={H} fill="#f2f6f9" />
                 <g transform={`translate(${view.dx},${view.dy}) scale(${view.k})`}>
                   {/* ── Fond de carte distant ─────────────────────────────
                       Les tuiles sont dans le même groupe que le reste : elles
@@ -609,8 +650,22 @@ export default function MapView({ db, me, notify, go }){
                         stroke="#e2e8ec" rx={3} />
                   <text x={22} y={H-30} fontSize="10" fill={C.t2}>Échelle approximative</text>
                   <line x1={22} y1={H-22} x2={22 + 100} y2={H-22} stroke={C.t1} strokeWidth="2" />
+                  {/* En Mercator, `scale` est la largeur du MONDE en pixels : cent
+                      pixels valent donc 100 × 40 075 × cos(latitude) / échelle
+                      kilomètres. L'ancienne formule — cent degrés de latitude sur
+                      l'échelle, fois 111 — appartenait à l'équirectangulaire et
+                      rendait « 0 km » depuis le changement de projection.
+                      Le cosinus est pris au centre de l'écran : en Mercator, un
+                      pixel ne vaut pas la même distance en haut et en bas. */}
                   <text x={128} y={H-19} fontSize="10" fill={C.t2}>
-                    {Math.round(100 / (proj.scale * view.k) * 111)} km</text>
+                    {(() => {
+                      const latCentre = proj.latOf((H/2 - view.dy) / view.k);
+                      const km = 100 * 40075 * Math.cos(latCentre * Math.PI / 180)
+                                 / (proj.scale * view.k);
+                      return km >= 10 ? `${Math.round(km)} km`
+                           : km >= 1  ? `${Math.round(km * 10) / 10} km`
+                                      : `${Math.round(km * 1000)} m`;
+                    })()}</text>
                 </g>
               </svg>
             </div>
@@ -631,10 +686,17 @@ export default function MapView({ db, me, notify, go }){
                   <div className="flex justify-between f105 text-slate-400 mt-1">
                     <span>aucun</span>
                     <span>{fillMode === "coverage" ? "100 %" : fmt(themeValues.max)}</span></div>
+                  {/* Un site non rattaché est visible ici et compté nulle part. Le
+                      signaler ne suffisait pas : la réponse est dans ses propres
+                      coordonnées, et l'écran propose donc de la chercher. */}
                   {!!themeValues.absent && (
-                    <div className="f105 text-amber-700 mt-1">
-                      {fmt(themeValues.absent)} site(s) sans rattachement au découpage :
-                      visibles en points, comptés dans aucune unité.</div>)}
+                    <div className="mt-1.5">
+                      <div className="f105 text-amber-700">
+                        {fmt(themeValues.absent)} site(s) sans rattachement au découpage :
+                        visibles en points, comptés dans aucune unité.</div>
+                      <Btn size="sm" kind="sec" className="mt-1.5" onClick={()=>setRattacher(true)}>
+                        Rattacher par les coordonnées</Btn>
+                    </div>)}
                   {shapes.tronque && (
                     <div className="f105 text-amber-700 mt-1">
                       Affichage tronqué : filtrez par région ou district pour voir ce niveau en entier.</div>)}
@@ -732,4 +794,113 @@ export default function MapView({ db, me, notify, go }){
       </Card>
     </div>
   );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Rattachement des sites par leurs coordonnées.
+
+   Un site relevé au GPS mais non rattaché au découpage apparaît sur la carte et
+   n'entre dans aucun total : ni la couverture de son district, ni le ciblage de sa
+   commune, ni l'exigence minimale de suivi. C'est le cas ordinaire d'un registre
+   repris d'un tableur, où le nom de commune a été saisi autrement — ou pas du tout.
+
+   La réponse est dans les données : le découpage sait où tombe ce point.
+
+   Deux temps, volontairement. On PROPOSE, puis on applique ce qui a été vu. Écrire
+   trois cents rattachements sans les montrer serait une opération dont personne ne
+   peut vérifier le résultat — et un rattachement faux est plus nuisible qu'une
+   absence de rattachement, parce qu'il se fond dans les totaux au lieu de s'y
+   signaler.
+
+   D'où aussi la distinction, tenue jusqu'à l'écran, entre le point tombé DANS un
+   contour — une certitude géométrique — et celui rattaché au centre le plus proche.
+   Seul le premier s'applique en masse ; le second se coche à la main.
+   ═══════════════════════════════════════════════════════════════════════ */
+function Rattachement({ notify, onClose }){
+  const [data, setData] = useState(null);
+  const [choix, setChoix] = useState(null);      /* identifiants retenus */
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.geoOrphans().then(r => {
+      setData(r);
+      /* Les certitudes sont cochées d'emblée, les proximités non : c'est la
+         proposition raisonnable, et elle reste modifiable. */
+      setChoix(r.rows.filter(x => x.propose?.confiance === "certaine").map(x => x.id));
+    }).catch(e => { notify(e.message, "err"); setData({ rows:[] }); });
+  }, []);
+
+  if(!data) return <Note>Recherche des sites non rattachés…</Note>;
+
+  const proposables = data.rows.filter(x => x.propose);
+  const sansReponse = data.rows.length - proposables.length;
+  const bascule = (id) => setChoix(c => c.includes(id) ? c.filter(x=>x!==id) : [...c, id]);
+
+  const appliquer = async () => {
+    setBusy(true);
+    try{
+      /* Le seuil suit ce qui est coché : dès qu'une proximité est retenue, il faut
+         l'autoriser côté serveur, qui refuse les approximations par défaut. */
+      const min = proposables.some(x => choix.includes(x.id) && x.propose.confiance !== "certaine")
+        ? "incertaine" : "certaine";
+      const r = await api.geoAttach({ ids:choix, minConfiance:min });
+      notify(`${r.rattaches} site(s) rattachés${r.ecartes ? `, ${r.ecartes} écarté(s)` : ""}`, "ok");
+      onClose();
+    }catch(e){ notify(e.message, "err"); }
+    setBusy(false);
+  };
+
+  return (
+    <Card flush title="Rattacher les sites par leurs coordonnées"
+      subtitle={`${data.total} site(s) sans rattachement · ${proposables.length} localisable(s) par leur point GPS`}
+      right={<>
+        <Btn size="sm" kind="sec" onClick={onClose}>Fermer</Btn>
+        <Btn size="sm" disabled={busy || !choix.length} onClick={appliquer}>
+          {busy ? "Rattachement…" : `Rattacher ${choix.length} site(s)`}</Btn>
+      </>}>
+      {!data.contours && (
+        <Note tone="warn">Aucun contour n'est chargé pour ce pays : le rattachement ne peut se faire
+          que par <b>proximité du centre</b> de l'unité, ce qui est une approximation. Chargez les
+          contours administratifs (Paramètres → Pays et découpage) pour obtenir des rattachements
+          certains.</Note>)}
+      {!!data.sansCoordonnees && (
+        <Note>{data.sansCoordonnees} site(s) n'ont ni rattachement ni coordonnées : aucun calcul ne
+          peut les situer, il faut relever leur position sur le terrain.</Note>)}
+      {!!sansReponse && (
+        <Note tone="warn">{sansReponse} site(s) portent des coordonnées qu'aucune unité ne
+          reconnaît : point en mer, hors du pays, ou longitude et latitude inversées.</Note>)}
+
+      {!proposables.length ? (
+        <Empty icon={MapPin} title="Rien à rattacher"
+          text="Tous les sites qui portent des coordonnées sont déjà rattachés au découpage." />
+      ) : (
+        <TableWrap max="mh420">
+          <thead><tr><Th /><Th>Site</Th><Th>Coordonnées</Th><Th>Unité proposée</Th>
+            <Th>Méthode</Th><Th>Saisi dans le registre</Th></tr></thead>
+          <tbody>{proposables.map(x=>{
+            const p = x.propose;
+            const certain = p.confiance === "certaine";
+            return (
+              <tr key={x.id} className={clsx("hover:bg-sky-50", choix.includes(x.id) && "bg-sky-50/60")}>
+                <Td><input type="checkbox" checked={choix.includes(x.id)}
+                  onChange={()=>bascule(x.id)} /></Td>
+                <Td className="font-medium text-slate-800">{x.name}
+                  <div className="f105 text-slate-400">{x.code}</div></Td>
+                <Td className="f11 text-slate-500 tabular-nums">{x.lat}, {x.lon}</Td>
+                <Td className="f115">
+                  <b className="text-slate-800">{p.name}</b>
+                  <div className="f105 text-slate-500">
+                    {[p.adm1, p.adm2, p.adm3].filter(Boolean).join(" · ")}</div></Td>
+                <Td>{certain
+                  ? <Badge tone="g">dans le contour</Badge>
+                  : <Badge tone={p.confiance === "probable" ? "y" : "r"}>
+                      à {p.distance} km du centre</Badge>}</Td>
+                {/* Ce que le registre disait : c'est ce qui permet de repérer une
+                    proposition absurde d'un coup d'œil. */}
+                <Td className="f105 text-slate-500">
+                  {[x.saisi.adm2, x.saisi.adm3].filter(Boolean).join(" · ") || "—"}</Td>
+              </tr>);
+          })}</tbody>
+        </TableWrap>)}
+    </Card>);
 }

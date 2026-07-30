@@ -117,6 +117,11 @@ export const api = {
   geoVersions:  (pays)            => call("GET", `/geo/versions${pays?`?country=${encodeURIComponent(pays)}`:""}`),
   geoCoverage:  (q="")            => call("GET", `/geo/coverage${q}`),
   geoScope:     ()                => call("GET", "/geo/scope"),
+  /* Rattachement par les coordonnées : on demande les propositions, on applique
+     ensuite ce qui a été retenu. */
+  geoLocate:    (lat, lon)        => call("POST", "/geo/locate", { lat, lon }),
+  geoOrphans:   (q="")            => call("GET", `/geo/orphans${q}`),
+  geoAttach:    (body)            => call("POST", "/geo/attach", body),
   setGeoScope:  (officeId, pcodes)=> call("PUT", `/geo/scope/${encodeURIComponent(officeId)}`, { pcodes }),
   caseload:     (q="")            => call("GET", `/caseload${q}`),
   caseloadTags: (year)            => call("GET", `/caseload/tags?year=${year}`),

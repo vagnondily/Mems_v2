@@ -1,13 +1,14 @@
 import { Router } from "express";
 import { z } from "zod";
-import { db } from "../db.js";
+import { db, tx } from "../db.js";
 import { newId } from "../lib/crypto.js";
 import { requireCap } from "../lib/auth.js";
 import { validate, schemas } from "../lib/validate.js";
 import { buildUnits, writeVersion, currentVersion, LEVELS } from "../lib/geo.js";
-import { countryBound, scopeOf, declaredFor, unitsIn, outsideDeclared } from "../lib/scope.js";
+import { countryBound, officeBound, scopeOf, declaredFor, unitsIn, outsideDeclared } from "../lib/scope.js";
 import { ctxCountry } from "../lib/ctx.js";
 import { extent, geomSummary, readGeometries, writeGeometries } from "../lib/geom.js";
+import { locate, sitesALocaliser } from "../lib/locate.js";
 
 const r = Router();
 
@@ -163,6 +164,105 @@ r.get("/coverage", (req, res) => {
       `SELECT COUNT(*) c FROM sites WHERE geo_pcode IS NULL ${scoped ? "AND office_id=?" : ""}`)
       .get(...(scoped ? [req.user.office_id] : [])).c,
     rows, version:{ id:v.id, label:v.label } });
+});
+
+/* ── Rattachement par les coordonnées ────────────────────────────────
+   Un point GPS, une unité administrative. C'est la réponse à la situation la plus
+   courante d'un registre repris d'un tableur : le site a été relevé au GPS, son nom
+   de commune a été saisi autrement — ou pas du tout — et il n'entre donc dans aucun
+   total par district, aucune couverture, aucun ciblage. Il apparaît sur la carte et
+   nulle part ailleurs.
+
+   La réponse est pourtant dans les données : le découpage sait où tombe ce point. */
+r.post("/locate", (req, res) => {
+  const p = z.object({
+    lat: z.coerce.number().min(-90).max(90),
+    lon: z.coerce.number().min(-180).max(180),
+    level: z.enum(LEVELS).optional(),
+  }).safeParse(req.body);
+  if(!p.success) return res.status(422).json({ error:"coordonnées invalides",
+    details:p.error.issues.map(i => ({ champ:i.path.join("."), message:i.message })) });
+  res.json(locate(p.data.lat, p.data.lon, { level:p.data.level }));
+});
+
+/* Les sites sans rattachement, avec ce que les coordonnées permettent de proposer.
+
+   Deux temps, volontairement : on PROPOSE d'abord, on applique ensuite. Écrire
+   trois cents rattachements sans les montrer serait une opération de masse dont
+   personne ne peut vérifier le résultat — et un rattachement faux est plus nuisible
+   qu'une absence de rattachement, parce qu'il se fond dans les totaux. */
+r.get("/orphans", (req, res) => {
+  const q = z.object({ limit: z.coerce.number().int().min(1).max(2000).default(500) })
+    .safeParse(req.query);
+  if(!q.success) return res.status(422).json({ error:"filtres invalides" });
+  const bureau = officeBound(req.user);
+  const sites = sitesALocaliser(bureau).slice(0, q.data.limit);
+  const rows = sites.map(s => {
+    const t = locate(s.lat, s.lon);
+    return { id:s.id, code:s.code, name:s.name, lat:s.lat, lon:s.lon,
+             office_id:s.office_id, saisi:{ adm1:s.adm1, adm2:s.adm2, adm3:s.adm3, adm4:s.adm4 },
+             propose: t.error ? null : t, erreur: t.error || null };
+  });
+  const v = currentVersion();
+  res.json({
+    rows,
+    /* Le compte total, distinct de ce qui est proposé : un site sans coordonnées ne
+       peut pas être aidé ici, et le taire ferait croire le problème résolu. */
+    total: db.prepare(`SELECT COUNT(*) c FROM sites WHERE geo_pcode IS NULL
+                       ${bureau ? "AND office_id = ?" : ""}`).get(...(bureau ? [bureau] : [])).c,
+    sansCoordonnees: db.prepare(`SELECT COUNT(*) c FROM sites WHERE geo_pcode IS NULL
+                       AND (lat IS NULL OR lon IS NULL) ${bureau ? "AND office_id = ?" : ""}`)
+      .get(...(bureau ? [bureau] : [])).c,
+    referentiel: v ? { id:v.id, label:v.label } : null,
+    contours: v ? db.prepare("SELECT COUNT(*) c FROM geo_geom WHERE version_id=?").get(v.id).c : 0,
+  });
+});
+
+/* Application des rattachements proposés. La liste des identifiants est explicite :
+   l'appelant a vu ce qu'il accepte, et peut avoir écarté les propositions douteuses.
+
+   `minConfiance` borne ce qu'on accepte en masse. Par défaut, seules les certitudes
+   géométriques — un point tombé dans un polygone. Accepter par défaut les
+   rattachements « par proximité » ferait entrer des approximations à 20 km dans des
+   totaux présentés ensuite comme des faits. */
+r.post("/attach", requireCap("edit"), (req, res) => {
+  const p = z.object({
+    ids: z.array(z.string().max(64)).max(5000).optional(),
+    minConfiance: z.enum(["certaine","probable","incertaine"]).default("certaine"),
+  }).safeParse(req.body);
+  if(!p.success) return res.status(422).json({ error:"requête invalide" });
+  const rang = { certaine:0, probable:1, incertaine:2 };
+  const seuil = rang[p.data.minConfiance];
+
+  const bureau = officeBound(req.user);
+  const candidats = sitesALocaliser(bureau)
+    .filter(s => !p.data.ids || p.data.ids.includes(s.id));
+
+  const upd = db.prepare(`UPDATE sites SET geo_pcode=?, adm1=COALESCE(?,adm1), adm2=COALESCE(?,adm2),
+                          adm3=COALESCE(?,adm3), adm4=COALESCE(?,adm4),
+                          rev=rev+1, updated_at=datetime('now') WHERE id=?`);
+  let rattaches = 0, ecartes = 0;
+  const detail = [];
+  tx(() => {
+    for(const s of candidats){
+      const t = locate(s.lat, s.lon);
+      if(t.error || rang[t.confiance] > seuil){ ecartes++; continue; }
+      /* Les libellés administratifs suivent le rattachement : c'est la règle du
+         registre — le p-code fait foi, les noms en descendent. */
+      upd.run(t.pcode, t.adm1 ?? null, t.adm2 ?? null, t.adm3 ?? null, t.adm4 ?? null, s.id);
+      rattaches++;
+      if(detail.length < 50) detail.push({ code:s.code, pcode:t.pcode, unite:t.name,
+                                           methode:t.methode, distance:t.distance });
+    }
+  })();
+  if(rattaches)
+    db.prepare(`INSERT INTO audit (id,user_id,user_label,office,kind,entity,action,text)
+                VALUES (?,?,?,?,'plan','sites','link',?)`)
+      .run(newId("aud"), req.user.id, req.user.first_name || req.user.email,
+           req.user.office_id || "",
+           `${rattaches} site(s) rattachés au découpage par leurs coordonnées` +
+           (ecartes ? `, ${ecartes} écarté(s) faute de certitude` : ""));
+  res.json({ rattaches, ecartes, detail });
 });
 
 /* ── Millésimes ────────────────────────────────────────────────────── */

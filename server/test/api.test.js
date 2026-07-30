@@ -2353,3 +2353,119 @@ test("multi-pays : prestataires et plan MRE sont rattachés, et la référence M
     .set("Authorization", `Bearer ${multi.mgToken}`)
     .send({ year:2026, title:"Détourné", kind:"suivi" })).status, 404);
 });
+
+/* ════════════════════════════════════════════════════════════════════════
+   Rattachement par les coordonnées.
+
+   Le cas le plus courant d'un registre repris d'un tableur : le site a été relevé
+   au GPS, son nom de commune saisi autrement — ou pas du tout. Il apparaît sur la
+   carte et n'entre dans aucun total.
+   ════════════════════════════════════════════════════════════════════════ */
+/* Les essais qui précèdent importent des millésimes et effacent des contours : on ne
+   s'appuie donc pas sur ce qu'ils laissent derrière eux. Chaque essai de rattachement
+   pose SON contour, sur le millésime courant, et le retire ensuite. C'est aussi ce
+   qui rend le test indépendant de toute géographie particulière. */
+function poserContour(){
+  const v = db.prepare("SELECT * FROM geo_version WHERE is_current=1").get();
+  const u = db.prepare("SELECT * FROM geo_unit WHERE version_id=? AND level='adm3' LIMIT 1").get(v.id);
+  assert.ok(u, "le millésime courant porte au moins une commune");
+  /* Un carré d'un dixième de degré autour d'un point connu. */
+  const lat = -21.5, lon = 46.5, d = 0.05;
+  const g = JSON.stringify({ type:"Polygon", coordinates:[[
+    [lon-d, lat-d], [lon+d, lat-d], [lon+d, lat+d], [lon-d, lat+d], [lon-d, lat-d]]] });
+  db.prepare(`INSERT OR REPLACE INTO geo_geom
+    (pcode,version_id,level,geometry,simple,min_lon,min_lat,max_lon,max_lat,points,points_simple)
+    VALUES (?,?,?,?,?,?,?,?,?,5,5)`)
+    .run(u.pcode, v.id, "adm3", g, g, lon-d, lat-d, lon+d, lat+d);
+  return { v, u, lat, lon };
+}
+const retirerContour = (v) => db.prepare("DELETE FROM geo_geom WHERE version_id=?").run(v.id);
+
+test("coordonnées : un point dans un contour est rattaché avec certitude", async () => {
+  const { v, u, lat, lon } = poserContour();
+  const r = await request(app).post("/api/geo/locate").set("Authorization", `Bearer ${adminToken}`)
+    .send({ lat, lon });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.methode, "contour", "le point est dans le polygone, pas à côté");
+  assert.equal(r.body.confiance, "certaine");
+  assert.equal(r.body.distance, 0);
+  assert.equal(r.body.pcode, u.pcode);
+  assert.ok(r.body.path.includes(u.pcode), "le chemin porte ses ancêtres");
+
+  /* Juste à l'extérieur du carré : plus de certitude géométrique. Selon la distance
+     aux centres connus, la réponse est une proximité ou rien — dans les deux cas,
+     ce n'est PAS « contour », et c'est tout ce qui compte ici. */
+  const dehors = await request(app).post("/api/geo/locate").set("Authorization", `Bearer ${adminToken}`)
+    .send({ lat: lat + 0.5, lon: lon + 0.5 });
+  assert.notEqual(dehors.body.methode, "contour");
+  retirerContour(v);
+});
+
+test("coordonnées : un point très loin ne se rattache pas au hasard", async () => {
+  /* Plein océan Austral, à des milliers de kilomètres : aucune unité ne doit être
+     proposée. Un outil qui rendrait « commune X » ici ferait entrer n'importe quoi
+     dans les totaux, avec l'assurance d'un calcul. */
+  const r = await request(app).post("/api/geo/locate").set("Authorization", `Bearer ${adminToken}`)
+    .send({ lat: -60, lon: 0 });
+  assert.equal(r.status, 200);
+  assert.ok(r.body.error, "aucune unité n'est proposée");
+  assert.ok(!r.body.pcode);
+
+  /* Et des coordonnées hors plage sont refusées à la porte. */
+  const hors = await request(app).post("/api/geo/locate").set("Authorization", `Bearer ${adminToken}`)
+    .send({ lat: 120, lon: 500 });
+  assert.equal(hors.status, 422);
+});
+
+test("coordonnées : les sites orphelins sont proposés, puis rattachés sur décision", async () => {
+  const { v, u, lat, lon } = poserContour();
+  const office = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
+  const id = "site_orphelin_test";
+  /* Créé directement en base : la route de création rattache désormais toute seule,
+     et c'est justement ce qu'on vérifie dans l'essai suivant. */
+  db.prepare(`INSERT INTO sites (id,code,name,status,office_id,lat,lon,activity_tag)
+              VALUES (?,?,?,'Active',?,?,?,'ACT1')`)
+    .run(id, "ORPH-01", "Site sans rattachement", office.id, lat, lon);
+
+  const prop = await request(app).get("/api/geo/orphans").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(prop.status, 200);
+  const mien = prop.body.rows.find(x => x.id === id);
+  assert.ok(mien, "l'orphelin figure dans les propositions");
+  assert.equal(mien.propose?.methode, "contour");
+  assert.equal(mien.propose?.pcode, u.pcode);
+
+  /* Rien n'a encore été écrit : on propose d'abord, on applique ensuite. Trois cents
+     rattachements écrits sans être montrés seraient invérifiables. */
+  assert.equal(db.prepare("SELECT geo_pcode FROM sites WHERE id=?").get(id).geo_pcode, null);
+
+  const pose = await request(app).post("/api/geo/attach").set("Authorization", `Bearer ${adminToken}`)
+    .send({ ids:[id] });
+  assert.equal(pose.status, 200);
+  assert.equal(pose.body.rattaches, 1);
+  const apres = db.prepare("SELECT geo_pcode, adm3 FROM sites WHERE id=?").get(id);
+  assert.equal(apres.geo_pcode, u.pcode);
+  assert.ok(apres.adm3, "les libellés administratifs descendent du rattachement");
+
+  db.prepare("DELETE FROM sites WHERE id=?").run(id);
+  retirerContour(v);
+});
+
+test("coordonnées : un site créé avec des coordonnées est rattaché sans qu'on le demande", async () => {
+  const { v, u, lat, lon } = poserContour();
+  const r = await request(app).post("/api/sites").set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"AUTO-01", name:"Site relevé au GPS", status:"Active",
+            activity_tag:"ACT1", lat, lon });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.site.geo_pcode, u.pcode, "le rattachement est trouvé à partir du point");
+  assert.ok(r.body.site.adm3, "et les libellés en descendent");
+
+  /* Un site SANS coordonnées reste sans rattachement : aucun calcul ne remplace un
+     relevé de terrain, et inventer une commune serait pire que de ne rien dire. */
+  const sans = await request(app).post("/api/sites").set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"AUTO-02", name:"Site sans coordonnées", status:"Active", activity_tag:"ACT1" });
+  assert.equal(sans.status, 201);
+  assert.equal(sans.body.site.geo_pcode, null);
+
+  db.prepare("DELETE FROM sites WHERE id IN (?,?)").run(r.body.site.id, sans.body.site.id);
+  retirerContour(v);
+});

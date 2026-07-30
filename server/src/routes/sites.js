@@ -2,6 +2,7 @@ import { Router } from "express";
 import { db, tx } from "../db.js";
 import { newId } from "../lib/crypto.js";
 import { labelsFor } from "../lib/geo.js";
+import { locate } from "../lib/locate.js";
 import { requireCap } from "../lib/auth.js";
 import { officeBound as scopeOf, officeClause, officeReach } from "../lib/scope.js";
 import { validate, schemas } from "../lib/validate.js";
@@ -65,8 +66,22 @@ r.get("/:id", (req, res) => {
 
 /* Le rattachement fait foi : quand un site porte un geo_pcode, ses libellés
    administratifs et ses coordonnées en descendent, plutôt que d'être saisis
-   séparément — c'est ce qui les empêche de diverger du référentiel. */
+   séparément — c'est ce qui les empêche de diverger du référentiel.
+
+   Et quand il n'en porte pas, on le CHERCHE à partir des coordonnées. Un site relevé
+   au GPS mais non rattaché apparaît sur la carte et dans aucun total : il ne compte
+   ni dans la couverture de son district, ni dans le ciblage de sa commune. Or le
+   découpage sait où tombe ce point — le demander à l'utilisateur alors que la
+   réponse est dans les données est un travail qu'on lui inflige pour rien.
+
+   Seule une CERTITUDE géométrique est retenue ici : le point est dans le polygone.
+   Un rattachement par proximité, lui, se propose à l'écran et s'accepte à la main —
+   il n'a pas à s'écrire tout seul dans le dos de quelqu'un. */
 function applyGeo(b){
+  if(!b.geo_pcode && b.lat != null && b.lon != null){
+    const t = locate(Number(b.lat), Number(b.lon));
+    if(!t.error && t.methode === "contour") b.geo_pcode = t.pcode;
+  }
   if(!b.geo_pcode) return b;
   const l = labelsFor(b.geo_pcode);
   if(!l.adm1 && !l.adm2 && !l.adm3 && !l.adm4) return b;   /* p-code inconnu : on n'écrase rien */
