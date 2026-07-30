@@ -7,7 +7,7 @@ import { countryBound, countryClause, isNational, officeBound, tpmBound } from "
 import { currentVersion } from "../lib/geo.js";
 import { localCurrency, writeCountry } from "../lib/country.js";
 import { contractBalance, lineTotal, modifiable, niveauAttendu, planAmount, planDetail,
-         regenerate, suggestZones, TRANSITIONS } from "../lib/tpm.js";
+         regenerate, suggestZones, tpmBalance, TRANSITIONS } from "../lib/tpm.js";
 
 /* ═══════════════════════════════════════════════════════════════════════
    Suivi tiers — contrats, affectation, budget, validation, dépenses.
@@ -84,6 +84,34 @@ r.get("/", (req, res) => {
       users: db.prepare("SELECT COUNT(*) c FROM users WHERE tpm_id=?").get(t.id).c,
       contrats };
   }) });
+});
+
+/* Vue d'ensemble : une ligne par prestataire, avec de quoi répondre sans ouvrir
+   quoi que ce soit — plafond, engagé, dépensé, disponible, et la série mensuelle
+   pour la courbe. C'est la première question qu'on pose à un suivi de dépenses, et
+   il fallait jusqu'ici additionner les plans à la main pour y répondre. */
+r.get("/overview", (req, res) => {
+  const q = z.object({ year: z.coerce.number().int().min(2000).max(2100).optional() })
+    .safeParse(req.query);
+  if(!q.success) return res.status(422).json({ error:"filtres invalides" });
+  const v = visibleTpm(req);
+  const rows = db.prepare(`
+    SELECT t.*, o.name office_name FROM tpm t
+    LEFT JOIN offices o ON o.id = t.office_id
+    WHERE 1=1 ${v.sql} ORDER BY t.name`).all(...v.args)
+    .map(t => ({ id:t.id, name:t.name, code:t.code || "", office:t.office_name || "",
+                 active:!!t.active, ...tpmBalance(t.id, q.data.year ?? null) }));
+
+  const somme = (k) => Math.round(rows.reduce((s, x) => s + (x[k] || 0), 0) * 100) / 100;
+  const devises = [...new Set(rows.map(x => x.currency).filter(Boolean))];
+  res.json({ rows, year:q.data.year ?? null,
+    totals: {
+      prestataires: rows.length,
+      plafond: somme("plafond"), engage: somme("engage"),
+      depense: somme("depense"), disponible: somme("disponible"),
+      aValider: rows.reduce((s, x) => s + (x.aValider || 0), 0),
+      currency: devises.length === 1 ? devises[0] : null, devises,
+    } });
 });
 
 const tpmSchema = z.object({

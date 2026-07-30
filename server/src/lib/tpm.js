@@ -188,6 +188,56 @@ export function contractBalance(contractId){
   };
 }
 
+/* ── État d'un prestataire ───────────────────────────────────────────
+   Ce que coûte un prestataire, en une ligne : plafond contractuel avenants
+   compris, engagé, dépensé, disponible, et l'évolution mensuelle de la dépense.
+
+   L'écran des plans mensuels ne répondait pas à la question « où en est-on avec ce
+   prestataire ? » : il fallait ouvrir chaque plan, lire son montant, et faire la
+   somme de tête. Un budget qu'on ne peut pas lire d'un coup d'œil n'est pas suivi.
+
+   La dépense est rattachée au MOIS DU PLAN et non à sa date de saisie : une facture
+   de mai enregistrée en juillet appartient à mai, sinon la courbe raconte le rythme
+   du travail administratif au lieu de celui du terrain. */
+export function tpmBalance(tpmId, year = null){
+  const contrats = db.prepare("SELECT * FROM tpm_contract WHERE tpm_id=?").all(tpmId);
+  const somme = (k) => r2(contrats.reduce((t, c) => t + (contractBalance(c.id)?.[k] || 0), 0));
+
+  /* Une seule devise par prestataire dans les faits ; si ce n'était pas le cas, on
+     le dit plutôt que d'additionner des monnaies différentes. */
+  const devises = [...new Set(contrats.map(c => c.currency))];
+
+  const args = [tpmId];
+  let filtreAnnee = "";
+  if(year != null){ filtreAnnee = " AND p.year = ?"; args.push(year); }
+  const mensuel = Array.from({ length:12 }, (_, m) => ({ month:m, depense:0, budget:0 }));
+  for(const r of db.prepare(`SELECT p.month, COALESCE(SUM(e.amount),0) s
+      FROM tpm_plan p LEFT JOIN tpm_expense e ON e.plan_id = p.id
+      WHERE p.tpm_id = ?${filtreAnnee} GROUP BY p.month`).all(...args))
+    if(r.month != null && mensuel[r.month]) mensuel[r.month].depense = r2(r.s);
+  for(const p of db.prepare(
+      `SELECT id, month FROM tpm_plan WHERE tpm_id = ?${filtreAnnee.replace("p.year","year")}`).all(...args))
+    if(p.month != null && mensuel[p.month]) mensuel[p.month].budget = r2(mensuel[p.month].budget + planAmount(p.id));
+
+  const plans = db.prepare(`SELECT status, COUNT(*) c FROM tpm_plan WHERE tpm_id=?${filtreAnnee.replace("p.year","year")}
+                            GROUP BY status`).all(...args);
+  return {
+    contrats: contrats.length,
+    plafond: somme("plafond"), engage: somme("engage"), enCours: somme("enCours"),
+    depense: somme("depense"), disponible: somme("disponible"),
+    currency: devises.length === 1 ? devises[0] : null, devises,
+    consommation: somme("plafond") ? Math.round((somme("engage") / somme("plafond")) * 1000) / 10 : null,
+    /* Ce qui a été payé rapporté à ce qui a été engagé : au-dessus de 100, le
+       prestataire a dépensé plus que ce qui lui a été validé. */
+    execution: somme("engage") ? Math.round((somme("depense") / somme("engage")) * 1000) / 10 : null,
+    mensuel,
+    plans: Object.fromEntries(plans.map(x => [x.status, x.c])),
+    plansTotal: plans.reduce((t, x) => t + x.c, 0),
+    aValider: plans.filter(x => ["soumis","valide_tpm","valide_bureau"].includes(x.status))
+                   .reduce((t, x) => t + x.c, 0),
+  };
+}
+
 /* ── Zones à proposer ────────────────────────────────────────────────
    L'affectation ne devrait pas partir d'une page blanche. La planification est
    déjà fondée sur le risque — priorité de suivi des sites, exigence minimale de

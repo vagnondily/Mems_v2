@@ -160,6 +160,7 @@ export const api = {
   updateContract: (id, c)        => call("PUT", `/tpm/contracts/${encodeURIComponent(id)}`, c),
   addAmendment:   (id, a)        => call("POST", `/tpm/contracts/${encodeURIComponent(id)}/amendments`, a),
   saveRates:      (id, rates)    => call("PUT", `/tpm/contracts/${encodeURIComponent(id)}/rates`, { rates }),
+  tpmOverview:  (q="")            => call("GET", `/tpm/overview${q}`),
   tpmPlans:       (q="")         => call("GET", `/tpm/plans${q}`),
   tpmPlan:        (id)           => call("GET", `/tpm/plans/${encodeURIComponent(id)}`),
   createTpmPlan:  (p)            => call("POST", "/tpm/plans", p),

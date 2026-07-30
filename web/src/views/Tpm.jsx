@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { Banknote, Building2, CalendarRange, Check, ChevronRight, ClipboardList, Download,
-         FileText, Pencil, Plus, RefreshCw, Save, Send, Target, Trash2, Wallet, X } from "lucide-react";
+import { ArrowLeft, Banknote, Building2, CalendarRange, Check, ChevronRight, ClipboardList, Download,
+         FileText, Pencil, Plus, RefreshCw, Save, Send, Target, Trash2, Users, Wallet, X } from "lucide-react";
+import { Bar, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip,
+         XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow,
          TableWrap, Td, Th, download, inputCls, toCSV } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
@@ -60,45 +62,197 @@ function Circuit({ status }){
     </div>);
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   Suivi tiers — vue d'ensemble, puis fiche par prestataire.
+
+   L'écran s'ouvrait sur la liste des PLANS MENSUELS : quatre lignes pour un
+   prestataire, une par mois, chacune avec son budget et sa dépense. Pour savoir ce
+   qu'un prestataire avait consommé, il fallait additionner ses lignes de tête, et
+   pour savoir s'il approchait de son plafond, ouvrir l'onglet des contrats. La
+   question la plus courante — « où en est-on avec ce prestataire ? » — n'avait pas
+   de réponse à l'écran.
+
+   L'ordre est inversé : d'abord une ligne par PRESTATAIRE, avec plafond, engagé,
+   dépensé, disponible et consommation ; puis, au clic, sa fiche — l'évolution
+   mensuelle de la dépense en tête, ses contrats, ses plans, ses zones.
+
+   Les agrégats sont calculés par le serveur (lib/tpm.js), pas par l'écran : ce sont
+   les mêmes chiffres que ceux du contrôle de plafond au moment de valider, et deux
+   calculs séparés finiraient par donner deux montants.
+   ═══════════════════════════════════════════════════════════════════════ */
 export default function TpmView({ db, me, notify, can }){
-  const [onglet, setOnglet] = useState("plans");
   const [year, setYear]     = useState(new Date().getFullYear());
-  const [month, setMonth]   = useState("");
-  const [tpmId, setTpmId]   = useState("");
-  const [data, setData]     = useState(null);   /* plans */
-  const [tpms, setTpms]     = useState(null);   /* prestataires et contrats */
+  const [fiche, setFiche]   = useState(null);   /* prestataire ouvert, ou null */
+  const [vue, setVue]       = useState(null);   /* vue d'ensemble */
+  const [data, setData]     = useState(null);   /* plans du prestataire ouvert */
+  const [tpms, setTpms]     = useState(null);
   const [ouvert, setOuvert] = useState(null);   /* plan en cours d'examen */
   const [busy, setBusy]     = useState(false);
+  const [onglet, setOnglet] = useState("plans");
 
   const charger = useCallback(async () => {
-    const q = new URLSearchParams({ year:String(year) });
-    if(month !== "") q.set("month", String(month));
-    if(tpmId) q.set("tpm_id", tpmId);
     try{
-      const [p, t] = await Promise.all([api.tpmPlans("?" + q), api.tpm()]);
-      setData(p); setTpms(t.rows || []);
-    }catch(e){ notify(e.message, "err"); setData({ rows:[], totals:{} }); setTpms([]); }
-  }, [year, month, tpmId, notify]);
+      const q = new URLSearchParams({ year:String(year) });
+      const [v, t] = await Promise.all([api.tpmOverview("?" + q), api.tpm()]);
+      setVue(v); setTpms(t.rows || []);
+    }catch(e){ notify(e.message, "err"); setVue({ rows:[], totals:{} }); setTpms([]); }
+  }, [year, notify]);
   useEffect(()=>{ charger(); }, [charger]);
 
+  /* Les plans ne sont chargés que pour le prestataire ouvert : la vue d'ensemble
+     n'en a pas besoin, et les ramener tous ralentissait l'écran d'entrée. */
+  const chargerPlans = useCallback(async () => {
+    if(!fiche) return;
+    const q = new URLSearchParams({ year:String(year), tpm_id:fiche.id });
+    try{ setData(await api.tpmPlans("?" + q)); }
+    catch(e){ notify(e.message, "err"); setData({ rows:[], totals:{} }); }
+  }, [fiche, year, notify]);
+  useEffect(()=>{ chargerPlans(); }, [chargerPlans]);
+
+  /* Un compte de prestataire n'a qu'un prestataire : on lui ouvre directement sa
+     fiche. Lui présenter une liste d'une ligne serait un clic pour rien. */
+  useEffect(()=>{
+    if(me?.tpm_id && vue?.rows?.length && !fiche)
+      setFiche(vue.rows.find(x => x.id === me.tpm_id) || null);
+  }, [me?.tpm_id, vue, fiche]);
+
   const rafraichirPlan = async (id) => {
-    try{ const r = await api.tpmPlan(id); setOuvert(r.plan); await charger(); }
+    try{ const r = await api.tpmPlan(id); setOuvert(r.plan); await chargerPlans(); await charger(); }
     catch(e){ notify(e.message, "err"); }
   };
 
-  if(!data || !tpms) return <Empty icon={ClipboardList} title="Chargement du suivi tiers…" />;
-  const t = data.totals || {};
-  const cur = t.currency;
+  if(!vue || !tpms) return <Empty icon={ClipboardList} title="Chargement du suivi tiers…" />;
   const annees = [...new Set([year, new Date().getFullYear(), new Date().getFullYear()-1,
     new Date().getFullYear()+1])].sort();
+  const selecteurAnnee = (
+    <Select value={year} onChange={e=>setYear(n(e.target.value))}
+      options={annees.map(y=>[y,String(y)])} className="mi-py1 mi-xs mi-wauto" />);
 
-  const items = [["plans","Plans mensuels"],["contracts","Contrats et barèmes"],
-    ["budget","Suivi budgétaire"]];
+  /* ── Vue d'ensemble ─────────────────────────────────────────────── */
+  if(!fiche){
+    const t = vue.totals || {};
+    const cur = t.currency;
+    return (
+      <div className="space-y-4">
+        <StatRow>
+          <Stat label="Prestataires" value={t.prestataires ?? 0} icon={Users}
+            sub={`${t.aValider || 0} plan(s) en attente de validation`} />
+          <Stat label="Plafond contractuel" value={cur ? money(t.plafond, cur) : fmt(Math.round(t.plafond||0))}
+            icon={Wallet} sub="avenants compris" />
+          <Stat label="Engagé" value={cur ? money(t.engage, cur) : fmt(Math.round(t.engage||0))}
+            icon={Check} sub="plans validés au niveau pays" />
+          <Stat label="Dépensé" value={cur ? money(t.depense, cur) : fmt(Math.round(t.depense||0))}
+            icon={Banknote} sub="dépenses constatées" />
+          <Stat label="Disponible" value={cur ? money(t.disponible, cur) : fmt(Math.round(t.disponible||0))}
+            icon={Target} tone={t.disponible <= 0 ? "bad" : "ok"} sub="plafond moins engagé" />
+        </StatRow>
+
+        <Card flush title={`Prestataires de suivi — exercice ${year}`}
+          subtitle="Une ligne par prestataire : ce que le contrat autorise, ce qui est engagé, ce qui est payé"
+          right={<>{selecteurAnnee}
+            <Btn size="sm" kind="sec" icon={RefreshCw} onClick={charger}>Actualiser</Btn></>}>
+          {!vue.rows.length
+            ? <Empty icon={Users} title="Aucun prestataire"
+                text="Un prestataire se déclare dans Paramètres → Listes de référence, puis reçoit un contrat et un barème." />
+            : (<TableWrap>
+                <thead><tr><Th>Prestataire</Th><Th>Bureau</Th><Th num>Contrats</Th><Th num>Plafond</Th>
+                  <Th num>Engagé</Th><Th num>Dépensé</Th><Th num>Disponible</Th>
+                  <Th>Consommation</Th><Th num>Plans</Th><Th /></tr></thead>
+                <tbody>{vue.rows.map(x=>(
+                  <tr key={x.id} className="hover:bg-sky-50 cursor-pointer" onClick={()=>setFiche(x)}>
+                    <Td className="font-medium text-slate-800">{x.name}
+                      {x.code && <div className="f105 text-slate-400">{x.code}</div>}
+                      {!x.active && <Badge>inactif</Badge>}</Td>
+                    <Td className="text-slate-600 f115">{x.office || "tous bureaux"}</Td>
+                    <Td num>{x.contrats || "—"}</Td>
+                    <Td num data-plafond={x.plafond}>{money(x.plafond, x.currency)}</Td>
+                    <Td num className="font-semibold">{money(x.engage, x.currency)}</Td>
+                    <Td num data-depense={x.depense}
+                        className={x.execution > 100 ? "text-rose-700 font-semibold" : ""}>
+                      {x.depense ? money(x.depense, x.currency) : "—"}
+                      {x.execution != null && x.engage > 0 &&
+                        <div className="f105 text-slate-400 font-normal">{x.execution} % de l'engagé</div>}</Td>
+                    <Td num className={x.disponible <= 0 ? "text-rose-700 font-semibold" : ""}>
+                      {money(x.disponible, x.currency)}</Td>
+                    <Td><div className="flex items-center gap-2">
+                      <Bar2 value={x.consommation || 0}
+                        tone={x.consommation > 95 ? "bad" : x.consommation > 80 ? "warn" : "ok"} />
+                      <span className="tabular-nums f115 w-12 text-right">{x.consommation ?? 0} %</span>
+                    </div></Td>
+                    <Td num>{x.plansTotal || "—"}
+                      {!!x.aValider && <div className="f105 text-amber-700">{x.aValider} à valider</div>}</Td>
+                    <Td className="text-right" onClick={e=>e.stopPropagation()}>
+                      <Btn size="sm" kind="sec" onClick={()=>setFiche(x)}>Ouvrir</Btn></Td>
+                  </tr>))}</tbody>
+                <tfoot><tr className="bg-slate-50 font-semibold">
+                  <Td colSpan={3} className="text-slate-600">Total</Td>
+                  <Td num data-plafond-total={t.plafond}>{fmt(Math.round(t.plafond||0))}</Td>
+                  <Td num>{fmt(Math.round(t.engage||0))}</Td>
+                  <Td num data-depense-total={t.depense}>{fmt(Math.round(t.depense||0))}</Td>
+                  <Td num>{fmt(Math.round(t.disponible||0))}</Td>
+                  <Td colSpan={3} /></tr></tfoot>
+              </TableWrap>)}
+        </Card>
+
+        <Note>Le budget d'un plan n'est jamais saisi : il <b>découle</b> des zones affectées et du barème
+          contractuel — quantité × quantité × coût unitaire. Un plan qui circule encore n'engage rien ;
+          seul un plan validé au niveau pays consomme le plafond.</Note>
+      </div>);
+  }
+
+  /* ── Fiche d'un prestataire ─────────────────────────────────────── */
+  const x = vue.rows.find(r2 => r2.id === fiche.id) || fiche;
+  const cur = x.currency;
+  const mensuel = (x.mensuel || []).map(m => ({
+    mois: MONTHS[m.month], Budget: m.budget, Dépensé: m.depense }));
+  const items = [["plans","Plans mensuels"],["contracts","Contrats et barèmes"]];
 
   return (
     <div className="space-y-4">
-      {/* Pas de titre de page ici : la destination Suivi-évaluation porte déjà le sien,
-          et deux titres empilés repousseraient les données sous la ligne de flottaison. */}
+      <div className="flex items-center gap-3 flex-wrap">
+        {/* Un compte de prestataire n'a nulle part où revenir : pas de lien retour. */}
+        {!me?.tpm_id && (
+          <Btn kind="sec" size="sm" icon={ArrowLeft} onClick={()=>{ setFiche(null); setData(null); }}>
+            Tous les prestataires</Btn>)}
+        <div className="f13 font-semibold text-slate-800">{x.name}
+          {x.office && <span className="f115 font-normal text-slate-500 ml-2">{x.office}</span>}</div>
+        {!!x.aValider && <Badge tone="y">{x.aValider} plan(s) à valider</Badge>}
+        <div className="ml-auto">{selecteurAnnee}</div>
+      </div>
+
+      <StatRow>
+        <Stat label="Plafond contractuel" value={money(x.plafond, cur)} icon={Wallet}
+          sub={`${x.contrats} contrat(s), avenants compris`} />
+        <Stat label="Engagé" value={money(x.engage, cur)} icon={Check}
+          sub={x.enCours ? `${money(x.enCours, cur)} encore dans le circuit` : "aucun plan en circulation"} />
+        <Stat label="Dépensé" value={money(x.depense, cur)} icon={Banknote}
+          tone={x.execution > 100 ? "bad" : undefined}
+          sub={x.execution != null ? `${x.execution} % de l'engagé` : "aucune dépense constatée"} />
+        <Stat label="Disponible" value={money(x.disponible, cur)} icon={Target}
+          tone={x.disponible <= 0 ? "bad" : "ok"} sub={`consommation ${x.consommation ?? 0} %`} />
+      </StatRow>
+
+      {/* La courbe demandée : où part l'argent, mois par mois. La dépense est
+          rattachée au MOIS DU PLAN et non à sa date de saisie — sinon la courbe
+          décrit le rythme des factures, pas celui du terrain. */}
+      <Card title="Évolution mensuelle" subtitle={`Budget des plans et dépenses constatées — ${year}`}>
+        <ResponsiveContainer width="100%" height={230}>
+          {/* Marge gauche nulle : avec une marge négative, le premier chiffre de la
+              graduation la plus haute (« 1 200 000 ») était rogné par le bord. */}
+          <ComposedChart data={mensuel} margin={{top:6,right:8,left:4,bottom:0}}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#eef2f5" vertical={false} />
+            <XAxis dataKey="mois" tick={{fontSize:11,fill:C.t2}} axisLine={{stroke:"#e2e8ec"}} tickLine={false} />
+            <YAxis tick={{fontSize:11,fill:C.t2}} axisLine={false} tickLine={false}
+                   tickFormatter={v=>fmt(Math.round(v))} width={64} />
+            <Tooltip contentStyle={{fontSize:12,borderRadius:3,border:"1px solid "+C.line}}
+                     formatter={(v)=>money(v, cur)} />
+            <Legend wrapperStyle={{fontSize:11}} />
+            <Bar dataKey="Budget" fill="#cfe0ea" radius={[2,2,0,0]} barSize={22} />
+            <Line type="monotone" dataKey="Dépensé" stroke={C.ok} strokeWidth={2.5} dot={{r:3}} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </Card>
+
       <Tabs2 items={items} value={onglet} onChange={setOnglet} />
 
       {me?.tpm_id && (
@@ -106,54 +260,27 @@ export default function TpmView({ db, me, notify, can }){
           vos propres plans, et la validation s'arrête pour vous au premier niveau —
           les deux suivants relèvent du bureau et du bureau pays.</Note>)}
 
-      {onglet === "plans" && (<>
-        <StatRow>
-          <Stat label="Plans de l'exercice" value={t.plans ?? 0} icon={CalendarRange}
-            sub={`${t.enAttente || 0} en attente de validation`} />
-          <Stat label="Budget soumis" value={cur ? money(t.budget, cur) : fmt(Math.round(t.budget||0))}
-            icon={Wallet} sub="tous états confondus" />
-          <Stat label="Engagé" value={cur ? money(t.engage, cur) : fmt(Math.round(t.engage||0))}
-            icon={Check} sub="plans validés au niveau pays" />
-          <Stat label="Dépensé" value={cur ? money(t.depense, cur) : fmt(Math.round(t.depense||0))}
-            icon={Banknote} sub="dépenses constatées" />
-        </StatRow>
-
-        {!!data.aValider?.length && (
-          <Note tone="warn"><b>{data.aValider.length} plan(s) attendent votre validation.</b>{" "}
-            Ils portent le bouton « Examiner » ci-dessous.</Note>)}
-
+      {onglet === "plans" && (
         <Card flush title={`Plans mensuels ${year}`}
-          subtitle={`${data.rows.length} plan(s) · le budget est dérivé du barème contractuel, jamais saisi`}
-          right={<>
-            <Select value={year} onChange={e=>setYear(n(e.target.value))}
-              options={annees.map(y=>[y,String(y)])} className="mi-py1 mi-xs mi-wauto" />
-            <Select value={month} onChange={e=>setMonth(e.target.value === "" ? "" : n(e.target.value))}
-              empty="Tous les mois" options={MONTHS_L.map((m,i)=>[i,m])} className="mi-py1 mi-xs mi-wauto" />
-            {!me?.tpm_id && <Select value={tpmId} onChange={e=>setTpmId(e.target.value)}
-              empty="Tous les prestataires" options={tpms.map(x=>[x.id,x.name])}
-              className="mi-py1 mi-xs mi-wauto" />}
-            <Btn size="sm" kind="sec" icon={RefreshCw} onClick={charger}>Actualiser</Btn>
-            {can("edit") && <Btn size="sm" icon={Plus}
-              onClick={()=>setOuvert({ _nouveau:true, year, month: month === "" ? new Date().getMonth() : month })}>
-              Nouveau plan</Btn>}
-          </>}>
-          {!data.rows.length
-            ? <Empty icon={ClipboardList} title="Aucun plan sur cette période"
-                text="Un plan couvre un prestataire et un mois : on y affecte les zones à suivre, et le budget en découle." />
+          subtitle={`${data?.rows?.length || 0} plan(s) · le budget est dérivé du barème contractuel, jamais saisi`}
+          right={can("edit") && <Btn size="sm" icon={Plus}
+            onClick={()=>setOuvert({ _nouveau:true, year, month:new Date().getMonth(), tpm_id:x.id })}>
+            Nouveau plan</Btn>}>
+          {!data ? <Empty icon={ClipboardList} title="Chargement…" />
+            : !data.rows.length
+            ? <Empty icon={ClipboardList} title="Aucun plan sur cet exercice"
+                text="Un plan couvre un mois : on y affecte les zones à suivre, et le budget en découle." />
             : (<TableWrap max="mh480">
-                <thead><tr><Th>Mois</Th><Th>Prestataire</Th><Th>Réf.</Th><Th num>Zones</Th>
+                <thead><tr><Th>Mois</Th><Th>Réf.</Th><Th num>Zones</Th>
                   <Th num>Budget</Th><Th num>Dépensé</Th><Th>Circuit</Th><Th>État</Th><Th /></tr></thead>
                 <tbody>{data.rows.map(p=>(
                   <tr key={p.id} className="hover:bg-sky-50">
                     <Td className="font-medium text-slate-800">{MONTHS[p.month]} {p.year}</Td>
-                    <Td>{p.tpm}
-                      {p.office && <div className="f105 text-slate-400">{p.office}</div>}</Td>
                     <Td className="f115 text-slate-500">{p.ref || "—"}</Td>
                     <Td num>{p.zones.length}</Td>
-                    <Td num data-budget={p.budget} className="font-semibold">
-                      {money(p.budget, cur ? "" : p.currency)}</Td>
+                    <Td num data-budget={p.budget} className="font-semibold">{money(p.budget, p.currency)}</Td>
                     <Td num className={p.execution > 100 ? "text-rose-700 font-semibold" : ""}>
-                      {p.spent == null ? "—" : money(p.spent, cur ? "" : p.currency)}
+                      {p.spent == null ? "—" : money(p.spent, p.currency)}
                       {p.execution != null && <div className="f105 text-slate-400 font-normal">
                         {p.execution} %</div>}</Td>
                     <Td><Circuit status={p.status} /></Td>
@@ -164,21 +291,19 @@ export default function TpmView({ db, me, notify, can }){
                         {p.actions?.valider ? "Examiner" : "Ouvrir"}</Btn></Td>
                   </tr>))}</tbody>
                 <tfoot><tr className="bg-slate-50 font-semibold">
-                  <Td colSpan={4} className="text-slate-600">Total</Td>
-                  <Td num>{fmt(Math.round(t.budget||0))}</Td>
-                  <Td num>{fmt(Math.round(t.depense||0))}</Td>
+                  <Td colSpan={3} className="text-slate-600">Total</Td>
+                  <Td num data-budget-total={data.totals?.budget}>{fmt(Math.round(data.totals?.budget||0))}</Td>
+                  <Td num>{fmt(Math.round(data.totals?.depense||0))}</Td>
                   <Td colSpan={3} /></tr></tfoot>
               </TableWrap>)}
-        </Card>
-      </>)}
+        </Card>)}
 
-      {onglet === "contracts" && <Contracts tpms={tpms} db={db} can={can} notify={notify}
-        onChange={charger} />}
-      {onglet === "budget"    && <Budget tpms={tpms} plans={data.rows} />}
+      {onglet === "contracts" && <Contracts tpms={tpms.filter(t=>t.id===x.id)} db={db} can={can}
+        notify={notify} onChange={charger} />}
 
       <PlanModal open={!!ouvert} plan={ouvert} tpms={tpms} db={db} me={me} can={can}
         busy={busy} setBusy={setBusy} notify={notify}
-        onClose={()=>setOuvert(null)} onSaved={rafraichirPlan} onCreated={charger} />
+        onClose={()=>setOuvert(null)} onSaved={rafraichirPlan} onCreated={()=>{ chargerPlans(); charger(); }} />
     </div>);
 }
 
