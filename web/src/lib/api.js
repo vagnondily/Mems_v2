@@ -110,7 +110,11 @@ export const api = {
 
   geo:          (q="")            => call("GET", `/geo${q}`),
   geoLevels:    (q="")            => call("GET", `/geo/levels${q}`),
-  geoVersions:  ()                => call("GET", "/geo/versions"),
+  /* `pays` place l'appel dans un autre pays que celui où l'on travaille : c'est ce
+     qui permet de configurer le découpage du pays B depuis l'écran de configuration
+     sans quitter le pays A. Le serveur l'ignore pour un compte borné à un pays —
+     la garde est là-bas, pas ici. */
+  geoVersions:  (pays)            => call("GET", `/geo/versions${pays?`?country=${encodeURIComponent(pays)}`:""}`),
   geoCoverage:  (q="")            => call("GET", `/geo/coverage${q}`),
   geoScope:     ()                => call("GET", "/geo/scope"),
   setGeoScope:  (officeId, pcodes)=> call("PUT", `/geo/scope/${encodeURIComponent(officeId)}`, { pcodes }),
@@ -125,15 +129,16 @@ export const api = {
   importBatch:    (id)            => call("GET", `/import/batches/${encodeURIComponent(id)}`),
   importCommit:   (id)            => call("POST", `/import/batches/${encodeURIComponent(id)}/commit`, {}),
   importCancel:   (id)            => call("POST", `/import/batches/${encodeURIComponent(id)}/cancel`, {}),
-  setGeoVersion:(id)              => call("PUT", `/geo/versions/${encodeURIComponent(id)}/current`),
+  setGeoVersion:(id, pays)        => call("PUT", `/geo/versions/${encodeURIComponent(id)}/current${pays?`?country=${encodeURIComponent(pays)}`:""}`),
   /* Un import crée un millésime complet : le serveur reconstruit l'arbre. */
-  importGeo:    (rows, label, source) => call("POST", "/geo/bulk", { rows, label, source }),
+  importGeo:    (rows, label, source, pays) =>
+    call("POST", `/geo/bulk${pays?`?country=${encodeURIComponent(pays)}`:""}`, { rows, label, source }),
 
   /* Contours administratifs. L'import est envoyé par lots — les contours d'un pays
      entier ne passent pas dans un corps de requête — et le premier lot porte
      `reset` : sans lui, deux imports successifs mêleraient leurs géométries. */
   geoGeometry:      (q="")                => call("GET", `/geo/geometry${q}`),
-  importGeometry:   (features, opts = {}) => call("POST", "/geo/geometry",
+  importGeometry:   (features, opts = {}) => call("POST", `/geo/geometry${opts.pays?`?country=${encodeURIComponent(opts.pays)}`:""}`,
                         { features, reset:!!opts.reset, source:opts.source, versionId:opts.versionId }),
   clearGeometry:    ()                    => call("DELETE", "/geo/geometry"),
 

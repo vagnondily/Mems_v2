@@ -4,6 +4,7 @@ import { Toast, Btn } from "./components/ui.jsx";
 import { uid } from "./lib/calc.js";
 import { ACT_CATEGORIES, C, D_MMR, D_SCORING, D_ROLES, D_FORMULAS, D_WEIGHTS } from "./lib/constants.js";
 import { api, setToken, setUnauthorizedHandler, setWorkingCountry, createSyncQueue } from "./lib/api.js";
+import Alerts from "./views/Alerts.jsx";
 import { Analytics } from "./views/Analytics.jsx";
 import { Home } from "./views/Home.jsx";
 import { Login } from "./views/Login.jsx";
@@ -65,6 +66,12 @@ const normalizeMe = (u) => u && ({
    sinon un compte se retrouve avec une navigation vide. */
 const resolveTabs = (u) =>
   (u?.tabs?.length ? u.tabs : D_ROLES[u?.role]?.tabs) || ["home"];
+
+/* Destinations atteignables sans figurer dans la barre de sections : la liste « à
+   traiter », ouverte par la cloche. Elle ne montre que ce que le compte voit déjà
+   ailleurs — la retirer à quelqu'un ne protégerait rien et lui cacherait ses propres
+   échéances. Les paramètres, eux, restent gouvernés par le rôle. */
+const HORS_NAV = ["alerts"];
 
 export default function App(){
   const [db, setDb] = useState(null);
@@ -222,13 +229,14 @@ export default function App(){
   </>);
 
   const allowed = resolveTabs(me);
-  const view = allowed.includes(tab) ? tab : (allowed[0] || "home");
+  const view = (allowed.includes(tab) || HORS_NAV.includes(tab)) ? tab : (allowed[0] || "home");
 
   return (<>
     <Shell db={db} me={me} tab={view} sub={subs[view]} setTab={setTab} allowed={allowed}
            onLogout={onLogout} sync={sync} notify={notify}>
       <Boundary reset={view + "|" + (subs[view] || "")}>
         {view==="home" && <Home db={db} me={me} go={setTab} />}
+        {view==="alerts" && <Alerts db={db} go={setTab} />}
         {view==="suivi" && <Suivi db={db} set={set} me={me} sub={subs.suivi}
           setSub={setSub("suivi")} notify={notify} can={can} go={setTab} />}
         {view==="programme" && <Programme db={db} set={set} me={me} sub={subs.programme}

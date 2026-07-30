@@ -103,12 +103,15 @@ export function buildUnits(rows){
 export function writeVersion({ label, source, units, userId = null, makeCurrent = true,
                               country = null }){
   const id = newId("gv");
-  /* Le millésime appartient à un pays. À défaut de précision, c'est le pays
-     courant : un découpage importé décrit le pays qu'on est en train de servir.
-     La résolution est faite ici et non dans chaque appelant — la route d'import,
-     le script en ligne de commande et le jeu de démonstration passent tous par
-     cette fonction, et trois rattachements séparés finiraient par diverger. */
+  /* Le millésime appartient à un pays. À défaut de précision, c'est le pays de la
+     REQUÊTE — celui dans lequel l'appelant travaille — et seulement à défaut de
+     contexte, le pays par défaut de l'instance (script en ligne de commande, jeu de
+     démonstration). Ce dernier repli était le seul, et c'était un défaut : un
+     administrateur placé au Congo importait un découpage congolais qui se retrouvait
+     rattaché à Madagascar, sans que rien ne le signale, jusqu'à ce que l'écran
+     congolais paraisse vide. */
   const pays = country
+    || ctxCountry()?.code
     || db.prepare("SELECT code FROM country WHERE is_current=1").get()?.code
     || null;
   tx(() => {

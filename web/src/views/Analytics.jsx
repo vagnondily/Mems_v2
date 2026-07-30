@@ -4,15 +4,11 @@ import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieCh
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { RULE_TYPES, applyRules, fmt, n, pct, profileColumn, r1, siteScore, uid } from "../lib/calc.js";
 import { C, MONTHS, SERIES } from "../lib/constants.js";
-import { PageHead } from "./Shell.jsx";
 
 /* ══════════════════ Analyses ══════════════════ */
 function Analytics({ db, set, sub, setSub, notify, can }){
-  const items = [["datasets","Jeux de données"],["scripts","Scripts d'analyse"],["viz","Visualisations"]];
   return (
     <div className="space-y-4">
-      <PageHead title="Analyses" text="Constitution des jeux de données à partir d'ODK Central, apurement, scripts R ou SPSS et visualisations." />
-      <Tabs items={items} value={sub} onChange={setSub} />
       {sub==="datasets" && <Datasets db={db} set={set} notify={notify} can={can} />}
       {sub==="scripts" && <Scripts db={db} set={set} notify={notify} can={can} />}
       {sub==="viz" && <Viz db={db} set={set} notify={notify} can={can} />}

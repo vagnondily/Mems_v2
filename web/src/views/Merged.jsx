@@ -2,7 +2,6 @@ import { useState } from "react";
 import { CalendarRange, Check } from "lucide-react";
 import { Tabs } from "../components/ui.jsx";
 import { clsx } from "../lib/calc.js";
-import { PageHead } from "./Shell.jsx";
 import MapView from "./MapView.jsx";
 import { CoveragePlan, DistributionActual, DistributionPlan, OutcomePlan, Overreaching,
          ProcessPlan } from "./Planning.jsx";
@@ -54,15 +53,11 @@ function useVolet(initial = "plan"){
    couverture, et sur quels paramètres cette couverture est calculée. */
 export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
   const [volet, setVolet] = useVolet();
-  const items = [["summary","Résumé global"],["monitoring","Suivi des sites"],
-    ["mre","Plan MRE et budget"],["tpm","Suivi tiers"],
-    ["coverage","Couverture et MMR"],["map","Cartographie"],
-    ["sites","Registre des sites"],["params","Paramètres de couverture"]];
+  /* Ni liste de destinations ni titre ici : la coquille les tient, à partir de
+     `NAV`. Les avoir en double garantissait qu'un libellé changé d'un côté resterait
+     l'ancien de l'autre. */
   return (
     <div className="space-y-4">
-      <PageHead title="Suivi-évaluation"
-        text="Plan MRE et budget, planification des visites fondée sur le risque, réalisation du suivi de processus et couverture géographique." />
-      <Tabs items={items} value={sub} onChange={setSub} />
 
       {sub==="summary" && <ActualSummary db={db} />}
 
@@ -97,13 +92,8 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
 export function Programme({ db, set, me, sub, setSub, notify, can, go }){
   const [voletD, setVoletD] = useVolet();
   const [voletR, setVoletR] = useVolet();
-  const items = [["distribution","Distributions"],["population","Population et outputs"],
-    ["results","Résultats"],["import","Import Excel"],["sources","Sources de données"]];
   return (
     <div className="space-y-4">
-      <PageHead title="Programme"
-        text="Plan de distribution et réalisations, population ciblée, indicateurs de résultat et sources de données." />
-      <Tabs items={items} value={sub} onChange={setSub} />
 
       {sub==="distribution" && (<>
         <Volet value={voletD} onChange={setVoletD}

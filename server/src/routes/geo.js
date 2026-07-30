@@ -177,6 +177,12 @@ r.get("/versions", (req, res) => {
     FROM geo_version v LEFT JOIN users u ON u.id=v.imported_by
     WHERE (v.country IS ? OR ? IS NULL) ORDER BY v.imported_at DESC`).all(pays, pays).map(x => ({
       id:x.id, label:x.label, source:x.source, units:x.units,
+      /* Le détail par niveau, et pas seulement le total : un écran qui annonce
+         « 52 unités » sans dire combien de régions et combien de communes ne permet
+         pas de vérifier qu'un import s'est bien passé. */
+      counts: Object.fromEntries(db.prepare(
+        `SELECT level, COUNT(*) c FROM geo_unit WHERE version_id=? GROUP BY level`)
+        .all(x.id).map(r2 => [r2.level, r2.c])),
       importedAt:x.imported_at, importedBy:x.by_name || "", current: !!x.is_current,
       /* L'état des contours accompagne le millésime : sans lui l'écran de
          configuration ne saurait pas s'il y a un fond de carte à afficher. */

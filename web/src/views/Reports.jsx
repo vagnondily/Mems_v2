@@ -3,16 +3,12 @@ import { Download, FileText, Filter, Sparkles } from "lucide-react";
 import { Btn, Card, Empty, Field, Input, Note, Select, TableWrap, Tabs, Td, Th, download, toCSV } from "../components/ui.jsx";
 import { LEVELS, computeMMR, fmt, n, pct, siteScore } from "../lib/calc.js";
 import { D_ADJUST } from "../lib/constants.js";
-import { urgentTasks } from "./Home.jsx";
-import { PageHead } from "./Shell.jsx";
+import { alertes } from "../lib/alerts.js";
 
 /* ══════════════════ Rapports ══════════════════ */
 function Reports({ db, set, sub, setSub, notify, can }){
-  const items = [["extract","Extraction ODK"],["build","Générateur de rapport"]];
   return (
     <div className="space-y-4">
-      <PageHead title="Rapports" text="Extraction filtrée des données ODK Central, puis composition d'un rapport infographique à partir des données brutes ou apurées." />
-      <Tabs items={items} value={sub} onChange={setSub} />
       {sub==="extract" && <Extract db={db} notify={notify} />}
       {sub==="build" && <ReportBuilder db={db} set={set} notify={notify} can={can} />}
     </div>);
@@ -122,7 +118,7 @@ function reportData(db, opt){
     sites: sites.map(s => ({ id:s.id, poi:s.poi, office:s.subOffice, adm:[s.adm1,s.adm2,s.adm3].filter(Boolean).join(", "),
       tag:s.activityTag, status:s.status, benef:s.beneficiaries, prio:LEVELS[siteScore(s, db.weights, db).level].label,
       planned:s.plan.filter(p=>p.planned).length, done:s.plan.filter(p=>p.done).length })),
-    tasks: urgentTasks(db).slice(0,15),
+    tasks: alertes(db).slice(0,15),
   };
 }
 function reportHTML(db, tpl, opt){
