@@ -134,7 +134,7 @@ test("accueil : les données viennent du serveur et les indicateurs sont calcul�
 
 test("navigation : les cinq onglets s'ouvrent sans erreur", async () => {
   const nav = (l) => all("header nav button").find(b => b.textContent.trim().startsWith(l));
-  for(const onglet of ["Planning", "Actual Data", "Analyses", "Rapports", "Accueil"]){
+  for(const onglet of ["Suivi-évaluation", "Programme", "Analyses", "Rapports", "Accueil"]){
     await click(nav(onglet), `onglet ${onglet}`);
     await flush();
     assert.ok(all("main h2").length > 0, `${onglet} affiche un titre`);
@@ -144,7 +144,7 @@ test("navigation : les cinq onglets s'ouvrent sans erreur", async () => {
 
 test("cartographie : points projetés, filtres actifs, fiche au clic", async () => {
   const nav = (l) => all("header nav button").find(b => b.textContent.trim().startsWith(l));
-  await click(nav("Actual Data"), "Actual Data"); await flush();
+  await click(nav("Suivi-évaluation"), "Suivi-évaluation"); await flush();
   const sousOnglet = all("main button").filter(b => b.className.includes("-mb-px"))
     .find(b => b.textContent.trim() === "Cartographie");
   await click(sousOnglet, "sous-onglet Cartographie");
@@ -182,7 +182,7 @@ test("cartographie : points projetés, filtres actifs, fiche au clic", async () 
 
 test("écriture : une modification est enregistrée sur le serveur et survit au rechargement", async () => {
   const nav = (l) => all("header nav button").find(b => b.textContent.trim().startsWith(l));
-  await click(nav("Planning"), "Planning"); await flush();
+  await click(nav("Suivi-évaluation"), "Suivi-évaluation"); await flush();
   const onglet = all("main button").filter(b => b.className.includes("-mb-px"))
     .find(b => b.textContent.trim() === "Paramètres de couverture");
   await click(onglet, "paramètres de couverture"); await flush();

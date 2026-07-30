@@ -367,7 +367,7 @@ if(info){
                 VALUES (?,?,?,?,?,?,?, 'super', ?, 1, 1)`)
       .run(uid, config.bootstrapEmail, pwHash, "Administrateur", "MEMS",
            "Responsable suivi et évaluation", null,
-           JSON.stringify(["home","planning","actual","analytics","reports","settings"]));
+           JSON.stringify(["home","suivi","programme","analytics","reports","settings"]));
   })();
 
   const counts = ["offices","activity_categories","sites","site_months","visits","coverage_params",

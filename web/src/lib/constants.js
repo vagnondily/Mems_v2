@@ -101,14 +101,16 @@ const D_INDICATORS = [
   { id:"ADH",  name:"Adhérence — participation à un nombre suffisant de distributions",        unit:"%", target:80, dir:"up",   basket:"Couverture",              method:"Suivi post-distribution", freq:"Trimestriel" },
 ];
 
-const TABS_ALL = [["home","Accueil"],["planning","Planning"],["actual","Actual Data"],
+/* Le prévu et le réalisé ne sont pas deux sujets mais deux vues du même sujet :
+   le premier niveau suit désormais les deux métiers réellement distincts. */
+const TABS_ALL = [["home","Accueil"],["suivi","Suivi-évaluation"],["programme","Programme"],
   ["analytics","Analyses"],["reports","Rapports"],["settings","Paramètres"]];
 const D_ROLES = {
   super:  { label:"Super-utilisateur", tabs:TABS_ALL.map(t=>t[0]), edit:true, del:true, validate:true, admin:true, sync:true },
   admin:  { label:"Administrateur",    tabs:TABS_ALL.map(t=>t[0]), edit:true, del:true, validate:true, admin:true, sync:true },
-  validator:{label:"Validateur",       tabs:["home","planning","actual","analytics","reports"], edit:true, del:false, validate:true, admin:false, sync:true },
-  editor: { label:"Éditeur",           tabs:["home","planning","actual","analytics","reports"], edit:true, del:false, validate:false,admin:false, sync:true },
-  viewer: { label:"Lecteur",           tabs:["home","planning","actual","reports"],              edit:false,del:false, validate:false,admin:false, sync:false },
+  validator:{label:"Validateur",       tabs:["home","suivi","programme","analytics","reports"], edit:true, del:false, validate:true, admin:false, sync:true },
+  editor: { label:"Éditeur",           tabs:["home","suivi","programme","analytics","reports"], edit:true, del:false, validate:false,admin:false, sync:true },
+  viewer: { label:"Lecteur",           tabs:["home","suivi","programme","reports"],              edit:false,del:false, validate:false,admin:false, sync:false },
 };
 
 const D_WEIGHTS = {

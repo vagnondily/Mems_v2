@@ -125,6 +125,11 @@
   pre.code{margin:0;padding:11px 13px;border-radius:3px;background:#0f172a;color:#e2e8f0;
     font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;overflow:auto;line-height:1.65}
   .empty{padding:34px 16px;text-align:center;color:var(--t3);font-size:12.5px}
+  .volet{display:inline-flex;gap:4px;padding:4px;border-radius:4px;background:#f1f5f9;
+    border:1px solid var(--line);margin-bottom:16px}
+  .vbtn{padding:6px 13px;border:0;border-radius:3px;background:none;color:var(--t2);
+    font-size:12.5px;font-weight:600;cursor:pointer}
+  .vbtn.on{background:#fff;color:#1e293b;border:1px solid var(--line);box-shadow:0 1px 2px rgba(3,28,45,.06)}
 
   .mgrid{display:grid;grid-template-columns:repeat(12,1fr);gap:2px}
   .mcell{height:26px;border-radius:2px;display:grid;place-items:center;font-size:9.5px;
@@ -218,11 +223,11 @@ const TAG_LABEL = Object.fromEntries(TAGS);
 
 /* Matrice des rôles — identique à D_ROLES côté application */
 const ROLES = {
-  super:    { label:"Super-utilisateur", tabs:["home","planning","actual","analytics","reports","settings"], edit:1,del:1,validate:1,admin:1 },
-  admin:    { label:"Administrateur",    tabs:["home","planning","actual","analytics","reports","settings"], edit:1,del:1,validate:1,admin:1 },
-  validator:{ label:"Validateur",        tabs:["home","planning","actual","analytics","reports"],            edit:1,del:0,validate:1,admin:0 },
-  editor:   { label:"Éditeur",           tabs:["home","planning","actual","analytics","reports"],            edit:1,del:0,validate:0,admin:0 },
-  viewer:   { label:"Lecteur",           tabs:["home","planning","actual","reports"],                        edit:0,del:0,validate:0,admin:0 },
+  super:    { label:"Super-utilisateur", tabs:["home","suivi","programme","analytics","reports","settings"], edit:1,del:1,validate:1,admin:1 },
+  admin:    { label:"Administrateur",    tabs:["home","suivi","programme","analytics","reports","settings"], edit:1,del:1,validate:1,admin:1 },
+  validator:{ label:"Validateur",        tabs:["home","suivi","programme","analytics","reports"],           edit:1,del:0,validate:1,admin:0 },
+  editor:   { label:"Éditeur",           tabs:["home","suivi","programme","analytics","reports"],           edit:1,del:0,validate:0,admin:0 },
+  viewer:   { label:"Lecteur",           tabs:["home","suivi","programme","reports"],                      edit:0,del:0,validate:0,admin:0 },
 };
 
 const OFFICES = ["Bureau de terrain d'Ambovombe","Bureau de terrain d'Ampanihy",
@@ -503,19 +508,20 @@ const rateTxt = v => v===null ? "—" : (Math.round(v*1000)/10)+" %";
    ═══════════════════════════════════════════════════════════════════════ */
 const NAV = [
   { id:"home",     label:"Accueil",     sub:[] },
-  { id:"planning", label:"Planning",    sub:[["overreaching","Paramètres de couverture"],["process","Plan de suivi des sites"],
-                                             ["coverage","Couverture et MMR"],["distribution","Plan de distribution"],
-                                             ["outcomes","Plan des résultats"]] },
-  { id:"actual",   label:"Actual Data", sub:[["summary","Résumé global"],["process","Suivi de processus"],["sites","Sites"],
-                                             ["map","Cartographie"],["distrib","Distributions"],
-                                             ["output","Outputs et population"],["outcome","Outcomes"],["sources","Sources de données"]] },
+  /* Un sujet par destination : le prévu et le réalisé s'y basculent au lieu de
+     se dupliquer dans deux menus distincts. */
+  { id:"suivi",     label:"Suivi-évaluation", sub:[["summary","Résumé global"],["monitoring","Suivi des sites"],
+                                             ["coverage","Couverture et MMR"],["map","Cartographie"],
+                                             ["sites","Registre des sites"],["params","Paramètres de couverture"]] },
+  { id:"programme", label:"Programme",  sub:[["distribution","Distributions"],["population","Population et outputs"],
+                                             ["results","Résultats"],["sources","Sources de données"]] },
   { id:"analytics",label:"Analyses",    sub:[["datasets","Jeux de données"],["scripts","Scripts d'analyse"],["viz","Visualisations"]] },
   { id:"reports",  label:"Rapports",    sub:[["extract","Extraction ODK"],["build","Générateur de rapport"]] },
   { id:"settings", label:"Paramètres",  sub:[["general","Général"],["sites","Sites"],["locations","Localités"],
                                              ["indicators","Indicateurs"],["calc","Calculs"],["odk","ODK Central"],
                                              ["templates","Modèles de rapport"],["api","API"],["users","Utilisateurs"]] },
 ];
-const state = { me:PROFILES[0], tab:"home", sub:{}, open:null };
+const state = { me:PROFILES[0], tab:"home", sub:{}, open:null, volet:{} };
 
 const can  = c => !!ROLES[state.me.role][c];
 const tabs = () => ROLES[state.me.role].tabs;
@@ -666,7 +672,7 @@ V["home"] = () => {
 };
 
 /* ── Planning ──────────────────────────────────────────────── */
-V["planning:overreaching"] = () => {
+V["suivi:params"] = () => {
   const sites = mySites();
   return head("Paramètres de couverture",
       "Durée d'opération et niveau de risque déterminent l'intervalle minimum entre deux visites. La capacité mensuelle réelle le corrige en intervalle tenable.",
@@ -686,7 +692,7 @@ V["planning:overreaching"] = () => {
               `<span class="badge ${tone}">${c.feasibilityRatio}</span>`, `<b>${c.adjustedInterval} mois</b>`]; })), 1);
 };
 
-V["planning:process"] = () => {
+const PLAN_suivi = () => {
   const sites = mySites();
   return head("Plan de suivi des sites",
       "Grille mensuelle : chaque case porte le mois planifié et le mois réalisé. Une case cochée « réalisé » crée la visite correspondante.",
@@ -710,7 +716,7 @@ V["planning:process"] = () => {
         </tbody></table></div>`, 1);
 };
 
-V["planning:coverage"] = () => {
+V["suivi:coverage"] = () => {
   const sites = mySites(), mmr = computeMMR(sites);
   const rows = myParams().map(p => { const c = computeParam(p, sites);
     const g = sites.filter(s=>s.office===p.office && s.tag===p.tag);
@@ -732,7 +738,7 @@ V["planning:coverage"] = () => {
             `<b>${r.pct} %</b>`, `<div style="min-width:120px">${bar(r.pct, r.pct>=80?"ok":r.pct>=50?"warn":"bad")}</div>`])), 1);
 };
 
-V["planning:distribution"] = () => {
+const PLAN_distrib = () => {
   const pdd = myPdd();
   const byCommune = {};
   pdd.forEach(l=>{ const k=l.adm3;
@@ -759,7 +765,7 @@ V["planning:distribution"] = () => {
             `<span class="badge ${l.status==="done"?"g":"b"}">${l.status==="done"?"réalisé":"planifié"}</span>`]), 380), 1);
 };
 
-V["planning:outcomes"] = () => head("Plan des résultats",
+const PLAN_results = () => head("Plan des résultats",
     "Calendrier de collecte des indicateurs de résultat : à quel mois chaque mesure est attendue, selon sa fréquence.")
   + card("Calendrier annuel de collecte", `${INDICATORS.length} indicateurs · exercice ${YEAR}`,
       `<div class="scroll"><table><thead><tr><th style="min-width:280px">Indicateur</th><th>Fréquence</th>
@@ -773,7 +779,7 @@ V["planning:outcomes"] = () => head("Plan des résultats",
       </tbody></table></div>`, 1);
 
 /* ── Actual Data ───────────────────────────────────────────── */
-V["actual:summary"] = () => {
+V["suivi:summary"] = () => {
   const sites = mySites(), mmr = computeMMR(sites), pdd = myPdd();
   const visits = sites.reduce((t,s)=>t+s.plan.filter(p=>p.d).length,0);
   const benef  = sites.reduce((t,s)=>t+s.benef,0);
@@ -800,7 +806,7 @@ V["actual:summary"] = () => {
       </div>`;
 };
 
-V["actual:process"] = () => {
+const REEL_suivi = () => {
   const sites = mySites(); const visits=[];
   sites.forEach(s=>s.plan.forEach((p,m)=>{ if(p.d) visits.push({
     site:s, month:m, monitor:s.resp,
@@ -827,7 +833,7 @@ V["actual:process"] = () => {
             v.status==="À valider" ? btn("Valider","validate") : "—"]), 420), 1);
 };
 
-V["actual:sites"] = () => {
+V["suivi:sites"] = () => {
   const sites = mySites();
   return head("Sites","Registre des points d'intérêt suivis. Ce même module est accessible depuis Paramètres → Sites.",
       btn("Importer","edit")+btn("Exporter")+btn("Nouveau site","edit",1))
@@ -845,7 +851,7 @@ V["actual:sites"] = () => {
             `<span class="badge ${s.status==="Active"?"g":"r"}">${esc(s.status)}</span>`]), 460), 1);
 };
 
-V["actual:map"] = () => {
+V["suivi:map"] = () => {
   const sites = mySites().filter(s=>s.lat && s.lon);
   const lats=sites.map(s=>s.lat), lons=sites.map(s=>s.lon);
   const minLa=Math.min(...lats)-.4, maxLa=Math.max(...lats)+.4;
@@ -881,7 +887,7 @@ V["actual:map"] = () => {
       <p style="font-size:11.5px;color:var(--t3);margin:10px 0 0">La taille du point est proportionnelle au nombre de bénéficiaires.</p>`);
 };
 
-V["actual:distrib"] = () => {
+const REEL_distrib = () => {
   const pdd = myPdd().filter(l=>l.month<=NOW_M);
   const tot = k => pdd.reduce((t,l)=>t+l[k],0);
   const rBenef=pddRate(tot("benefActual"),tot("benefPlanned"));
@@ -913,7 +919,7 @@ V["actual:distrib"] = () => {
               `<span class="badge ${r>=.9?"g":r>=.6?"y":"r"}">${rateTxt(r)}</span>`]; }), 400), 1);
 };
 
-V["actual:output"] = () => {
+V["programme:population"] = () => {
   const cl = myCaseload();
   const outputs = MONTHS.map((m,i)=>({ m,
     planned: Math.round(cl.reduce((t,c)=>t+c.targeted,0)/12*(0.85+((i*37)%30)/100)),
@@ -932,7 +938,7 @@ V["actual:output"] = () => {
             `<span class="badge ${pct(c.targeted,c.pop)>=30?"y":""}">${pct(c.targeted,c.pop)} %</span>`])), 1);
 };
 
-V["actual:outcome"] = () => head("Outcomes",
+const REEL_results = () => head("Outcomes",
     "Valeurs mesurées des indicateurs de résultat, rapportées à leur cible. Le sens de progression (à la hausse ou à la baisse) dépend de l'indicateur.",
     btn("Saisir une mesure","edit",1))
   + card("Indicateurs de résultat", `${INDICATORS.length} indicateurs · ${INDICATORS.filter(i=>i.dir==="up"?i.value>=i.target:i.value<=i.target).length} cible(s) atteinte(s)`,
@@ -944,7 +950,7 @@ V["actual:outcome"] = () => head("Outcomes",
             `<span class="badge ${okv?"g":"r"}">${okv?"atteinte":"non atteinte"}</span>`,
             `<span style="color:${okv?"var(--ok)":"var(--bad)"}">${ecart>0?"+":""}${ecart}</span>`]; })), 1);
 
-V["actual:sources"] = () => head("Sources de données",
+V["programme:sources"] = () => head("Sources de données",
     "Formulaires ODK Central rattachés à l'application. Le jeton d'accès est chiffré en AES-256-GCM et n'est jamais renvoyé par l'API — seul un booléen indique sa présence.",
     btn("Rattacher un formulaire","admin",1))
   + card("Formulaires rattachés", `${ODK_FORMS.length} formulaire(s)`,
@@ -1078,7 +1084,7 @@ V["settings:general"] = () => head("Paramètres généraux","Identité de l'orga
           .map(p=>`<div style="margin-bottom:6px"><input class="in" value="${esc(p)}"></div>`).join(""))}
     </div>`;
 
-V["settings:sites"] = () => V["actual:sites"]();
+V["settings:sites"] = () => V["suivi:sites"]();
 
 V["settings:locations"] = () => {
   const regions = [...new Set(GEO.map(g=>g.adm1))];
@@ -1215,6 +1221,26 @@ V["settings:users"] = () => head("Utilisateurs",
       chiffre. Stockage bcrypt à 12 tours, jamais renvoyé par l'API. Après 8 échecs, le compte est
       verrouillé 15 minutes ; le message d'erreur reste identique que le compte existe ou non.</div>`);
 
+
+/* ── Volet Prévu / Réalisé ────────────────────────────────────────────
+   La navigation dupliquait chaque sujet : le prévu dans « Planning », le réalisé
+   dans « Actual Data ». Rien n'indiquait lequel des deux ouvrir. Le prévu et le
+   réalisé sont deux vues du même sujet : une destination, une bascule. */
+function volet(sujet, gauche, droite, rendus){
+  const cur = state.volet[sujet] || "plan";
+  const onglet = (id, label) =>
+    `<button data-volet="${sujet}" data-v="${id}" class="vbtn ${cur===id?"on":""}">${esc(label)}</button>`;
+  return `<div class="volet">${onglet("plan", gauche)}${onglet("reel", droite)}</div>`
+    + rendus[cur]();
+}
+
+V["suivi:monitoring"] = () => volet("monitoring", "Plan de suivi", "Visites réalisées",
+  { plan: PLAN_suivi, reel: REEL_suivi });
+V["programme:distribution"] = () => volet("distribution", "Plan de distribution", "Réalisations",
+  { plan: PLAN_distrib, reel: REEL_distrib });
+V["programme:results"] = () => volet("results", "Calendrier de collecte", "Valeurs mesurées",
+  { plan: PLAN_results, reel: REEL_results });
+
 /* ═══════════════════════════════════════════════════════════════════════
    7. COQUILLE — navigation, rôle, rendu
    ═══════════════════════════════════════════════════════════════════════ */
@@ -1272,6 +1298,9 @@ function render(){ renderNav(); renderWho(); renderView(); }
 
 /* ── Événements ────────────────────────────────────────────── */
 document.addEventListener("click", e => {
+  const vb = e.target.closest("[data-volet]");
+  if(vb){ state.volet[vb.dataset.volet] = vb.dataset.v; renderView(); return; }
+
   const go = e.target.closest("[data-go]");
   const prof = e.target.closest("[data-prof]");
   const out = e.target.closest("[data-logout]");

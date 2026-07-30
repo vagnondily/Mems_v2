@@ -955,7 +955,7 @@ function DistributionActual({ db, set, notify, can }){
                 </tr>); })}</tbody>
             </TableWrap>
             {!rows.length && <Empty icon={ClipboardList} title="Aucune ligne"
-              text="Le plan de distribution alimente cette saisie : créez-le dans Planning → Plan de distribution." />}
+              text="Le plan de distribution alimente cette saisie : basculez sur « Plan de distribution » pour le créer." />}
             {rows.length>per && (
               <div className="flex items-center gap-3 px-4 py-2.5 border-t border-slate-100 f125 text-slate-600">
                 <span>{(Math.min(page,pages)-1)*per+1} à {Math.min(page*per,rows.length)} sur {fmt(rows.length)}</span>

@@ -4,12 +4,10 @@ import { Toast, Btn } from "./components/ui.jsx";
 import { uid } from "./lib/calc.js";
 import { ACT_CATEGORIES, C, D_MMR, D_SCORING, D_ROLES, D_FORMULAS, D_WEIGHTS } from "./lib/constants.js";
 import { api, setToken, setUnauthorizedHandler, createSyncQueue } from "./lib/api.js";
-import { ActualData } from "./views/ActualData.jsx";
 import { Analytics } from "./views/Analytics.jsx";
 import { Home } from "./views/Home.jsx";
 import { Login } from "./views/Login.jsx";
-import MapView from "./views/MapView.jsx";
-import { Planning } from "./views/Planning.jsx";
+import { Programme, Suivi } from "./views/Merged.jsx";
 import { Reports } from "./views/Reports.jsx";
 import { SettingsView } from "./views/Settings.jsx";
 import { Shell } from "./views/Shell.jsx";
@@ -72,7 +70,7 @@ export default function App(){
   const [db, setDb] = useState(null);
   const [me, setMe] = useState(null);
   const [tab, setTabState] = useState("home");
-  const [subs, setSubs] = useState({ planning:"overreaching", actual:"summary",
+  const [subs, setSubs] = useState({ suivi:"summary", programme:"distribution",
     analytics:"datasets", reports:"extract", settings:"general" });
   const [toasts, setToasts] = useState([]);
   const [phase, setPhase] = useState("boot");
@@ -227,12 +225,10 @@ export default function App(){
            onLogout={onLogout} sync={sync} notify={notify}>
       <Boundary reset={view + "|" + (subs[view] || "")}>
         {view==="home" && <Home db={db} me={me} go={setTab} />}
-        {view==="planning" && <Planning db={db} set={set} me={me} sub={subs.planning}
-          setSub={setSub("planning")} notify={notify} can={can} />}
-        {view==="actual" && (subs.actual === "map"
-          ? <MapView db={db} me={me} notify={notify} go={setTab} />
-          : <ActualData db={db} set={set} me={me} sub={subs.actual}
-              setSub={setSub("actual")} notify={notify} can={can} go={setTab} />)}
+        {view==="suivi" && <Suivi db={db} set={set} me={me} sub={subs.suivi}
+          setSub={setSub("suivi")} notify={notify} can={can} go={setTab} />}
+        {view==="programme" && <Programme db={db} set={set} me={me} sub={subs.programme}
+          setSub={setSub("programme")} notify={notify} can={can} go={setTab} />}
         {view==="analytics" && <Analytics db={db} set={set} sub={subs.analytics}
           setSub={setSub("analytics")} notify={notify} can={can} />}
         {view==="reports" && <Reports db={db} set={set} sub={subs.reports}

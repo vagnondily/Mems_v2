@@ -644,4 +644,4 @@ function Sources({ db, set, notify, can }){
     </>);
 }
 
-export { ActualData, ActualSummary, OutcomeData, OutcomeModal, OutputData, ProcessData, Sources };
+export { ActualData, ActualSummary, CaseloadView, ImportView, OutcomeData, OutcomeModal, OutputData, ProcessData, Sources };

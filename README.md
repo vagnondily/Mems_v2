@@ -58,6 +58,7 @@ mems/
 │  ├─ migrations/005_import.sql    lots d'import : analyse, diff, confirmation
 │  ├─ migrations/006_revisions.sql révisions de ligne pour l'écriture concurrente
 │  ├─ migrations/007_office_scope.sql périmètre géographique déclaré des bureaux
+│  ├─ migrations/008_nav_merge.sql  fusion des onglets Planning et Actual Data
 │  ├─ src/
 │  │  ├─ index.js              montage Express, sécurité, service du frontend compilé
 │  │  ├─ config.js             lecture et contrôle des variables d'environnement
@@ -82,8 +83,9 @@ mems/
    │  ├─ lib/calc.js           calculs métier (score, couverture, apurement)
    │  ├─ lib/shapefile.js      lecture de shapefile dans le navigateur
    │  ├─ components/           bibliothèque d'interface, frontière d'erreur
-   │  └─ views/                Login, Shell, Home, Planning, ActualData,
-   │                           MapView, Analytics, Reports, Settings
+   │  └─ views/                Login, Shell, Home, Merged (Suivi & Programme),
+   │                           Planning, ActualData, MapView, Analytics,
+   │                           Reports, Settings
    └─ test/e2e.test.js         10 tests pilotant l'interface contre un vrai serveur
 ```
 
@@ -453,6 +455,47 @@ plan rattachés hors du périmètre déclaré de leur bureau.
 > diverger — c'est exactement ce qui était arrivé à la matrice des droits, déjà
 > désynchronisée sur `viewer`/`analytics` quand je l'ai trouvée. Elle vit désormais dans
 > `lib/scope.js`, et nulle part ailleurs.
+
+### Rôles
+
+### Navigation
+
+Le prévu et le réalisé étaient organisés en deux onglets distincts — « Planning » et
+« Actual Data » — ce qui dupliquait chaque sujet :
+
+| Planning | Actual Data |
+|---|---|
+| Plan de suivi des sites | Suivi de processus |
+| Plan de distribution | Distributions |
+| Plan des résultats | Outcomes |
+
+Pour saisir la distribution de mars, il fallait savoir lequel des deux menus ouvrir, et
+rien dans l'interface ne l'expliquait. Le code lui-même en portait la trace : les tâches
+urgentes de l'accueil écrivaient les chemins en toutes lettres (« Actual Data →
+Distributions »), ce qui est le symptôme d'une navigation qu'on ne devine pas.
+
+Le prévu et le réalisé ne sont pas deux sujets : **ce sont deux vues du même sujet.**
+Chacun est donc une destination unique, avec une bascule. Le premier niveau suit désormais
+les deux métiers réellement distincts :
+
+```
+Accueil
+Suivi-évaluation   Résumé · Suivi des sites [Plan | Réalisé] · Couverture et MMR
+                   Cartographie · Registre des sites · Paramètres de couverture
+Programme          Distributions [Plan | Réalisé] · Population et outputs
+                   Résultats [Calendrier | Mesures] · Import Excel · Sources
+Analyses           Jeux de données · Scripts · Visualisations
+Rapports           Extraction ODK · Générateur
+Paramètres         9 sous-onglets de configuration
+```
+
+**14 destinations → 11**, et plus aucun sujet en double. Les tâches urgentes de l'accueil
+sont devenues cliquables : elles mènent à l'écran qui les résout, au lieu d'en décrire le
+chemin.
+
+`users.tabs` stocke des identifiants d'onglets : la migration `008` les reporte. Un compte
+qui avait accès à l'un des deux anciens onglets reçoit les deux nouveaux — leur contenu
+s'est réparti entre eux, restreindre serait retirer un accès.
 
 ### Rôles
 

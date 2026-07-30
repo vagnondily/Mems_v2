@@ -7,13 +7,15 @@ import { C } from "../lib/constants.js";
 /* ══════════════════ Coquille ══════════════════ */
 const NAV = [
   { id:"home", label:"Accueil", icon:LayoutDashboard },
-  { id:"planning", label:"Planning", icon:CalendarRange,
-    sub:[["overreaching","Paramètres de couverture"],["process","Plan de suivi des sites"],
-         ["coverage","Couverture et MMR"],["distribution","Plan de distribution"],["outcomes","Plan des résultats"]] },
-  { id:"actual", label:"Actual Data", icon:Database,
-    sub:[["summary","Résumé global"],["process","Suivi de processus"],["sites","Sites"],["map","Cartographie"],["distrib","Distributions"],
-         ["output","Outputs et population"],["outcome","Outcomes"],
-         ["import","Import Excel"],["sources","Sources de données"]] },
+  /* Un sujet par destination : le prévu et le réalisé s'y basculent, ils ne se
+     dupliquent plus. Le premier niveau suit les deux métiers, non la nature des données. */
+  { id:"suivi", label:"Suivi-évaluation", icon:CalendarRange,
+    sub:[["summary","Résumé global"],["monitoring","Suivi des sites"],
+         ["coverage","Couverture et MMR"],["map","Cartographie"],
+         ["sites","Registre des sites"],["params","Paramètres de couverture"]] },
+  { id:"programme", label:"Programme", icon:Database,
+    sub:[["distribution","Distributions"],["population","Population et outputs"],
+         ["results","Résultats"],["import","Import Excel"],["sources","Sources de données"]] },
   { id:"analytics", label:"Analyses", icon:BarChart3,
     sub:[["datasets","Jeux de données"],["scripts","Scripts d'analyse"],["viz","Visualisations"]] },
   { id:"reports", label:"Rapports", icon:FileText,
