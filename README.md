@@ -28,10 +28,15 @@ npm run seed          # crée le schéma, les données d'exemple et le compte ad
 npm run dev:server    # http://localhost:4000
 npm run dev:web       # http://localhost:5173  (dans un second terminal)
 ```
-
 À la fin de `npm run seed`, la console affiche **une seule fois** l'adresse et le mot de passe
 de l'administrateur initial. Notez-le : il n'est stocké nulle part en clair et n'apparaît
 jamais dans l'application. À la première connexion, l'application impose son remplacement.
+
+ codespace help
+  press o + enter to open in browser
+  press c + enter to clear console
+  press q + enter to quit
+
 
 ### Avec Docker
 
