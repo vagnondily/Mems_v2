@@ -1401,3 +1401,401 @@ test("MRE : une ligne sans mois est répartie sur la durée, pas posée sur janv
   const r2b = await request(app).get(`/api/mre?year=${an}`).set("Authorization", `Bearer ${adminToken}`);
   assert.equal(r2b.body.parMois[6].budget, 100 + 600);
 });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Suivi tiers — TPM.
+
+   Deux choses se vérifient ici, et ce sont les deux raisons d'être du module.
+
+   D'abord que le budget est une conséquence de l'affectation : changer le nombre
+   de jours doit changer le montant, sans que personne ne retape un total. C'est
+   la règle du classeur de référence — qté1 × qté2 × coût unitaire — et si elle
+   se perd, le module redevient un tableur.
+
+   Ensuite que le circuit de validation ne se contourne pas. Trois niveaux dans
+   l'ordre, chacun ouvert à un acteur précis. Un plan validé par le mauvais
+   compte, ou validé au-delà du plafond contractuel, est exactement ce que ce
+   module existe pour empêcher.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+let tpmCtx = {};
+
+test("TPM : prestataire, contrat et barème — le budget dérive de l'affectation", async () => {
+  const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
+  const t = await request(app).post("/api/tpm").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Prestataire d'essai", code:"ESSAI", office_id:office.id, contact:"R. Test" });
+  assert.equal(t.status, 201);
+  tpmCtx.tpm = t.body.id; tpmCtx.office = office;
+
+  const c = await request(app).post("/api/tpm/contracts").set("Authorization", `Bearer ${adminToken}`)
+    .send({ tpm_id:tpmCtx.tpm, ref:"CTR-ESSAI-01", ceiling:10_000_000, currency:"MGA",
+            start_date:"2026-01-01", end_date:"2026-12-31" });
+  assert.equal(c.status, 201);
+  tpmCtx.contract = c.body.id;
+
+  const bareme = await request(app).put(`/api/tpm/contracts/${tpmCtx.contract}/rates`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ rates:[
+      { driver:"superviseur", label:"Indemnité superviseur", unit:"pers-jour", unit_cost:70000 },
+      { driver:"agent",       label:"Indemnité agent",       unit:"pers-jour", unit_cost:60000 },
+      { driver:"vehicule",    label:"Location voiture",      unit:"véhicule-jour", unit_cost:300000 },
+      { driver:"carburant",   label:"Carburant",             unit:"litre", unit_cost:5000 },
+    ] });
+  assert.equal(bareme.status, 200);
+
+  const p = await request(app).post("/api/tpm/plans").set("Authorization", `Bearer ${adminToken}`)
+    .send({ tpm_id:tpmCtx.tpm, contract_id:tpmCtx.contract, year:2026, month:2, ref:"P-ESSAI" });
+  assert.equal(p.status, 201);
+  tpmCtx.plan = p.body.id;
+  assert.equal(p.body.plan.budget, 0, "un plan sans affectation n'a pas de budget");
+
+  /* Une zone : 2 superviseurs, 2 agents, 3 jours + 1 de déplacement, 1 véhicule, 45 litres. */
+  const pcode = db.prepare("SELECT pcode FROM geo_unit WHERE level='adm3' LIMIT 1").get().pcode;
+  const z = await request(app).put(`/api/tpm/plans/${tpmCtx.plan}/zones`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ zones:[{ geo_pcode:pcode, activity_tag:"URT", team_label:"TEAM1",
+      supervisors:2, agents:2, days:3, travel_days:1, vehicles:1, fuel_litres:45, sites:6 }] });
+  assert.equal(z.status, 200);
+
+  /* Le montant attendu, calculé à la main comme le ferait le classeur. */
+  const attendu = 2*4*70000 + 2*4*60000 + 1*4*300000 + 45*1*5000;
+  assert.equal(z.body.plan.budget, attendu, "budget = Σ qté1 × qté2 × coût unitaire");
+  assert.equal(z.body.plan.zones.length, 1);
+  assert.equal(z.body.plan.zones[0].subtotal, attendu, "le sous-total de l'équipe est le même");
+  assert.equal(z.body.plan.zones[0].lines.length, 4, "une ligne par poste du barème");
+  assert.ok(z.body.plan.zones[0].lines.every(l => l.derived), "toutes dérivées du barème");
+  /* Aucune ligne à quantité nulle : le plan ne porte pas « 0 véhicule ». */
+  assert.ok(z.body.plan.zones[0].lines.every(l => l.qty1 > 0));
+
+  /* Changer les jours change le montant, sans qu'aucun total ne soit saisi. */
+  const z2 = await request(app).put(`/api/tpm/plans/${tpmCtx.plan}/zones`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ rev:z.body.plan.rev, zones:[{ geo_pcode:pcode, activity_tag:"URT", team_label:"TEAM1",
+      supervisors:2, agents:2, days:6, travel_days:1, vehicles:1, fuel_litres:45, sites:6 }] });
+  const attendu2 = 2*7*70000 + 2*7*60000 + 1*7*300000 + 45*1*5000;
+  assert.equal(z2.body.plan.budget, attendu2);
+  assert.ok(attendu2 > attendu, "trois jours de plus coûtent plus cher");
+});
+
+test("TPM : une ligne ajustée à la main survit au recalcul de l'affectation", async () => {
+  const avant = (await request(app).get(`/api/tpm/plans/${tpmCtx.plan}`)
+    .set("Authorization", `Bearer ${adminToken}`)).body.plan;
+  const lignes = avant.zones[0].lines.map(l => ({ zone_id:l.zone_id, driver:l.driver,
+    label:l.label, unit:l.unit, qty1:l.qty1, qty2:l.qty2, unit_cost:l.unit_cost, derived:true }));
+  /* Une ligne saisie, sans zone : les frais communs du classeur de référence. */
+  lignes.push({ zone_id:null, driver:"forfait", label:"Groupe électrogène",
+    unit:"groupe", qty1:1, qty2:1, unit_cost:80000, derived:false });
+  const l = await request(app).put(`/api/tpm/plans/${tpmCtx.plan}/lines`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ rev:avant.rev, lines:lignes });
+  assert.equal(l.status, 200);
+  assert.equal(l.body.plan.communes.length, 1, "la ligne sans zone est un frais commun");
+  const avecForfait = l.body.plan.budget;
+
+  /* On rejoue l'affectation : les lignes dérivées sont refaites, la ligne saisie reste. */
+  const pcode = avant.zones[0].geo_pcode;
+  const z = await request(app).put(`/api/tpm/plans/${tpmCtx.plan}/zones`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ rev:l.body.plan.rev, zones:[{ geo_pcode:pcode, activity_tag:"URT",
+      supervisors:2, agents:2, days:6, travel_days:1, vehicles:1, fuel_litres:45, sites:6 }] });
+  assert.equal(z.status, 200);
+  assert.equal(z.body.plan.communes.length, 1, "le frais commun n'a pas été effacé");
+  assert.equal(z.body.plan.budget, avecForfait, "et le montant est inchangé");
+});
+
+test("TPM : le circuit se franchit dans l'ordre et par le bon acteur", async () => {
+  /* Un compte de prestataire, borné à son prestataire. */
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"prestataire@test.local", password:"PrestataireMotDePasse1",
+            first_name:"Presta", role:"editor", tpm_id:tpmCtx.tpm, tabs:["home"], active:true });
+  const tp = (await login("prestataire@test.local", "PrestataireMotDePasse1")).body.token;
+  /* Le deuxième niveau est « le responsable suivi-évaluation du bureau » : un compte
+     du bureau qui a le droit de valider. Un éditeur du même bureau ne l'a pas —
+     c'est bien le rôle qui gouverne ce qu'on peut faire, et le bureau où. */
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"se-bureau@test.local", password:"SeBureauMotDePasse1",
+            first_name:"Valid", role:"validator", office_id:tpmCtx.office.id,
+            tabs:["home"], active:true });
+  const te = (await login("se-bureau@test.local", "SeBureauMotDePasse1")).body.token;
+  const editeur = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  const tana = (await login("tana@test.local", "TanaMotDePasse1")).body.token;
+  tpmCtx.tokens = { tp, te, tana, editeur };
+
+  /* Rien n'est validable avant soumission. */
+  const tot = await request(app).post(`/api/tpm/plans/${tpmCtx.plan}/review`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ decision:"valide" });
+  assert.equal(tot.status, 409);
+  assert.ok(/n'attend aucune validation/.test(tot.body.error), tot.body.error);
+
+  const s = await request(app).post(`/api/tpm/plans/${tpmCtx.plan}/submit`)
+    .set("Authorization", `Bearer ${tp}`);
+  assert.equal(s.status, 200);
+  assert.equal(s.body.plan.status, "soumis");
+
+  /* Une fois soumis, le plan ne se modifie plus : valider un montant puis le
+     laisser changer viderait la validation de son sens. */
+  const fige = await request(app).put(`/api/tpm/plans/${tpmCtx.plan}/zones`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ zones:[] });
+  assert.equal(fige.status, 409);
+  assert.ok(/plus modifiable/.test(fige.body.error), fige.body.error);
+
+  /* Niveau 1 : le prestataire. Le bureau ne peut pas sauter par-dessus — la
+     transition attendue est celle du niveau 1, pas celle du niveau 2. */
+  const p1 = await request(app).post(`/api/tpm/plans/${tpmCtx.plan}/review`)
+    .set("Authorization", `Bearer ${tp}`).send({ decision:"valide" });
+  assert.equal(p1.status, 200);
+  assert.equal(p1.body.plan.status, "valide_tpm");
+  assert.equal(p1.body.plan.reviews.length, 1);
+  assert.equal(p1.body.plan.reviews[0].level, "tpm");
+  assert.ok(p1.body.plan.reviews[0].amount > 0, "le montant validé est consigné");
+
+  /* Niveau 2 : le bureau. Le prestataire n'y a pas accès, quel que soit son rôle —
+     c'est la raison d'être du cloisonnement par prestataire. */
+  const refus = await request(app).post(`/api/tpm/plans/${tpmCtx.plan}/review`)
+    .set("Authorization", `Bearer ${tp}`).send({ decision:"valide" });
+  assert.equal(refus.status, 403);
+  assert.ok(/Suivi-évaluation du bureau/.test(refus.body.error), refus.body.error);
+
+  /* Un éditeur du bureau n'a pas le droit de valider : le niveau reste ouvert. */
+  const sansValidation = await request(app).post(`/api/tpm/plans/${tpmCtx.plan}/review`)
+    .set("Authorization", `Bearer ${editeur}`).send({ decision:"valide" });
+  assert.equal(sansValidation.status, 403);
+
+  const p2 = await request(app).post(`/api/tpm/plans/${tpmCtx.plan}/review`)
+    .set("Authorization", `Bearer ${te}`).send({ decision:"valide" });
+  assert.equal(p2.status, 200, JSON.stringify(p2.body));
+  assert.equal(p2.body.plan.status, "valide_bureau");
+
+  /* Niveau 3 : le bureau pays. Un compte de terrain ne peut pas s'y substituer. */
+  const refus3 = await request(app).post(`/api/tpm/plans/${tpmCtx.plan}/review`)
+    .set("Authorization", `Bearer ${te}`).send({ decision:"valide" });
+  assert.equal(refus3.status, 403);
+  assert.ok(/bureau pays/.test(refus3.body.error), refus3.body.error);
+
+  /* Le compte de Tana est éditeur, pas validateur : il lui manque le droit. */
+  const sansDroit = await request(app).post(`/api/tpm/plans/${tpmCtx.plan}/review`)
+    .set("Authorization", `Bearer ${tana}`).send({ decision:"valide" });
+  assert.equal(sansDroit.status, 403);
+
+  const p3 = await request(app).post(`/api/tpm/plans/${tpmCtx.plan}/review`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ decision:"valide" });
+  assert.equal(p3.status, 200, JSON.stringify(p3.body));
+  assert.equal(p3.body.plan.status, "valide_pays");
+  assert.equal(p3.body.plan.reviews.length, 3, "les trois passages sont tracés");
+  assert.deepEqual(p3.body.plan.reviews.map(r => r.level), ["tpm","bureau","pays"]);
+  assert.ok(p3.body.plan.reviews.every(r => r.by), "chaque validation porte son auteur");
+});
+
+test("TPM : un renvoi doit être motivé et rouvre le plan à la modification", async () => {
+  const office = tpmCtx.office;
+  const p = await request(app).post("/api/tpm/plans").set("Authorization", `Bearer ${adminToken}`)
+    .send({ tpm_id:tpmCtx.tpm, contract_id:tpmCtx.contract, year:2026, month:3 });
+  const id = p.body.id;
+  const pcode = db.prepare("SELECT pcode FROM geo_unit WHERE level='adm3' LIMIT 1").get().pcode;
+  await request(app).put(`/api/tpm/plans/${id}/zones`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ zones:[{ geo_pcode:pcode, supervisors:1, agents:1, days:2, vehicles:1, fuel_litres:20 }] });
+  await request(app).post(`/api/tpm/plans/${id}/submit`).set("Authorization", `Bearer ${adminToken}`);
+
+  const muet = await request(app).post(`/api/tpm/plans/${id}/review`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ decision:"renvoye" });
+  assert.equal(muet.status, 422);
+  assert.ok(/motivé/.test(muet.body.error), muet.body.error);
+
+  const r = await request(app).post(`/api/tpm/plans/${id}/review`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ decision:"renvoye", comment:"Trois véhicules pour deux communes voisines." });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.plan.status, "renvoye");
+  assert.equal(r.body.plan.reviews.at(-1).comment, "Trois véhicules pour deux communes voisines.");
+  /* Rouvert : c'est un retour au prestataire, pas un rejet définitif. */
+  const modif = await request(app).put(`/api/tpm/plans/${id}/zones`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ rev:r.body.plan.rev, zones:[{ geo_pcode:pcode, supervisors:1, agents:1, days:2,
+      vehicles:1, fuel_litres:20 }] });
+  assert.equal(modif.status, 200);
+  tpmCtx.renvoye = id;
+});
+
+test("TPM : le plafond contractuel est vérifié à la validation finale", async () => {
+  /* Un plan volontairement hors de portée du plafond restant. */
+  const pcode = db.prepare("SELECT pcode FROM geo_unit WHERE level='adm3' LIMIT 1").get().pcode;
+  const p = await request(app).post("/api/tpm/plans").set("Authorization", `Bearer ${adminToken}`)
+    .send({ tpm_id:tpmCtx.tpm, contract_id:tpmCtx.contract, year:2026, month:5 });
+  const id = p.body.id;
+  await request(app).put(`/api/tpm/plans/${id}/zones`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ zones:[{ geo_pcode:pcode, supervisors:20, agents:40, days:25, travel_days:4,
+      vehicles:10, fuel_litres:4000 }] });
+
+  /* La soumission avertit sans bloquer : tant que le plan circule il n'engage rien. */
+  const s = await request(app).post(`/api/tpm/plans/${id}/submit`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(s.status, 200);
+  assert.ok(/dépasse le disponible/.test(s.body.avertissement || ""), s.body.avertissement);
+
+  await request(app).post(`/api/tpm/plans/${id}/review`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ decision:"valide" });
+  await request(app).post(`/api/tpm/plans/${id}/review`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ decision:"valide" });
+  /* Le troisième niveau refuse, avec les chiffres. */
+  const bloc = await request(app).post(`/api/tpm/plans/${id}/review`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ decision:"valide" });
+  assert.equal(bloc.status, 409);
+  assert.ok(/disponibles sur le contrat/.test(bloc.body.error), bloc.body.error);
+  assert.ok(bloc.body.requis > 0, "le montant manquant est chiffré");
+  assert.equal(db.prepare("SELECT status FROM tpm_plan WHERE id=?").get(id).status, "valide_bureau",
+    "le plan n'a pas avancé");
+
+  /* Un avenant couvre le manque, et la validation passe. */
+  const av = await request(app).post(`/api/tpm/contracts/${tpmCtx.contract}/amendments`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ ref:"AV-ESSAI", delta: Math.ceil(bloc.body.requis) + 1000,
+            reason:"Extension du périmètre au district voisin", signed_at:"2026-05-20" });
+  assert.equal(av.status, 201);
+  const ok = await request(app).post(`/api/tpm/plans/${id}/review`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ decision:"valide" });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.plan.status, "valide_pays");
+  tpmCtx.engage = id;
+});
+
+test("TPM : un avenant ne peut pas ramener le plafond sous ce qui est engagé", async () => {
+  const solde = (await request(app).get("/api/tpm").set("Authorization", `Bearer ${adminToken}`))
+    .body.rows.find(t => t.id === tpmCtx.tpm).contrats[0].solde;
+  assert.ok(solde.engage > 0, "des plans sont engagés");
+  const r = await request(app).post(`/api/tpm/contracts/${tpmCtx.contract}/amendments`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ delta: -(solde.plafond), reason:"Réduction du contrat" });
+  assert.equal(r.status, 409);
+  assert.ok(/déjà engagés/.test(r.body.error), r.body.error);
+
+  const nul = await request(app).post(`/api/tpm/contracts/${tpmCtx.contract}/amendments`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ delta:0, reason:"Sans effet" });
+  assert.equal(nul.status, 422);
+});
+
+test("TPM : le solde distingue engagé, en cours et dépensé", async () => {
+  const c = (await request(app).get("/api/tpm").set("Authorization", `Bearer ${adminToken}`))
+    .body.rows.find(t => t.id === tpmCtx.tpm).contrats[0];
+  const s = c.solde;
+  assert.equal(s.plafond, Math.round((s.ceiling + s.avenants) * 100) / 100);
+  assert.equal(s.disponible, Math.round((s.plafond - s.engage) * 100) / 100);
+  assert.ok(s.engage > 0, "les plans validés au niveau pays sont engagés");
+  /* Le plan renvoyé n'est ni engagé ni en cours : il est retourné à son auteur. */
+  assert.ok(s.projete <= s.disponible, "le projeté retire ce qui circule encore");
+});
+
+test("TPM : une dépense ne se constate que sur un plan engagé, et le dépassement est signalé", async () => {
+  const enCours = tpmCtx.renvoye;
+  const refus = await request(app).post(`/api/tpm/plans/${enCours}/expenses`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ amount:1000 });
+  assert.equal(refus.status, 409);
+  assert.ok(/validé au niveau pays/.test(refus.body.error), refus.body.error);
+
+  const plan = (await request(app).get(`/api/tpm/plans/${tpmCtx.plan}`)
+    .set("Authorization", `Bearer ${adminToken}`)).body.plan;
+  const ligne = plan.zones[0].lines[0];
+  const d = await request(app).post(`/api/tpm/plans/${tpmCtx.plan}/expenses`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ line_id:ligne.id, amount:ligne.total, spent_on:"2026-03-20", ref:"FAC-1" });
+  assert.equal(d.status, 201);
+  assert.equal(d.body.plan.spent, ligne.total);
+  assert.equal(d.body.plan.zones[0].lines[0].spent, ligne.total,
+    "la dépense se rattache à sa ligne, pas seulement au plan");
+
+  /* Une dépense qui dépasse n'est pas refusée — c'est un fait constaté — mais
+     elle est signalée. L'effacer pour respecter un budget serait falsifier. */
+  const gros = await request(app).post(`/api/tpm/plans/${tpmCtx.plan}/expenses`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ amount: plan.budget, ref:"FAC-2" });
+  assert.equal(gros.status, 201);
+  assert.ok(/dépasse le budget validé/.test(gros.body.avertissement || ""), gros.body.avertissement);
+  assert.ok(gros.body.plan.execution > 100);
+});
+
+test("TPM : un compte de prestataire ne voit que son prestataire et n'administre rien", async () => {
+  const { tp } = tpmCtx.tokens;
+  const l = await request(app).get("/api/tpm").set("Authorization", `Bearer ${tp}`);
+  assert.equal(l.status, 200);
+  assert.equal(l.body.rows.length, 1, "un seul prestataire visible");
+  assert.equal(l.body.rows[0].id, tpmCtx.tpm);
+  assert.ok(db.prepare("SELECT COUNT(*) c FROM tpm").get().c > 1,
+    "la base en contient plusieurs — le test prouve donc quelque chose");
+
+  const plans = await request(app).get("/api/tpm/plans").set("Authorization", `Bearer ${tp}`);
+  assert.ok(plans.body.rows.every(p => p.tpm_id === tpmCtx.tpm));
+  const ailleurs = db.prepare("SELECT id FROM tpm_plan WHERE tpm_id<>? LIMIT 1").get(tpmCtx.tpm);
+  assert.equal((await request(app).get(`/api/tpm/plans/${ailleurs.id}`)
+    .set("Authorization", `Bearer ${tp}`)).status, 403);
+
+  /* Et il ne crée ni prestataire, ni contrat, ni compte. */
+  for(const [m, chemin] of [["post","/api/tpm"], ["post","/api/tpm/contracts"], ["get","/api/users"]]){
+    const r = await request(app)[m](chemin).set("Authorization", `Bearer ${tp}`).send({ name:"X" });
+    assert.equal(r.status, 403, `${m.toUpperCase()} ${chemin}`);
+  }
+});
+
+test("TPM : un compte rattaché à un prestataire ne peut pas être administrateur", async () => {
+  const r = await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"presta-admin@test.local", password:"PrestaAdminMotDePasse1",
+            first_name:"Presta", role:"admin", tpm_id:tpmCtx.tpm, tabs:["home"], active:true });
+  assert.equal(r.status, 422);
+  assert.ok(/ne peut pas être administrateur/.test(r.body.error), r.body.error);
+
+  /* Ni rattaché à la fois à un bureau et à un prestataire : les deux
+     cloisonnements se contrediraient. */
+  const deux = await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"presta-bureau@test.local", password:"PrestaBureauMotDePasse1",
+            first_name:"Presta", role:"editor", tpm_id:tpmCtx.tpm,
+            office_id:tpmCtx.office.id, tabs:["home"], active:true });
+  assert.equal(deux.status, 422);
+});
+
+test("TPM : les zones proposées viennent de la planification fondée sur le risque", async () => {
+  const an = new Date().getFullYear();
+  const r = await request(app).get(`/api/tpm/suggest?year=${an}&month=${new Date().getMonth()}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200);
+  assert.ok(r.body.rows.length > 0, "des zones sont proposées");
+  for(const z of r.body.rows){
+    assert.ok(z.geo_pcode && z.zone, "chaque proposition porte son unité");
+    assert.ok(z.actifs > 0, "seules les zones à sites actifs sont proposées");
+    assert.equal(z.ecart, Math.max(0, z.planifies - z.visites));
+  }
+  /* Le tri met en tête ce qui est prévu et non fait : c'est là qu'il faut aller. */
+  const ecarts = r.body.rows.map(z => z.ecart);
+  assert.deepEqual(ecarts, [...ecarts].sort((a,b)=>b-a),
+    "les zones les moins couvertes viennent en premier");
+
+  /* Un compte de terrain ne reçoit que ses propres zones. */
+  const te = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  const mien = await request(app).get(`/api/tpm/suggest?year=${an}`)
+    .set("Authorization", `Bearer ${te}`);
+  assert.ok(mien.body.rows.length <= r.body.rows.length);
+});
+
+test("TPM : un plan par prestataire et par mois, et un plan engagé ne se supprime pas", async () => {
+  const dup = await request(app).post("/api/tpm/plans").set("Authorization", `Bearer ${adminToken}`)
+    .send({ tpm_id:tpmCtx.tpm, contract_id:tpmCtx.contract, year:2026, month:2 });
+  assert.equal(dup.status, 409);
+  assert.ok(/existe déjà pour ce prestataire et ce mois/.test(dup.body.error), dup.body.error);
+
+  const del = await request(app).delete(`/api/tpm/plans/${tpmCtx.plan}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(del.status, 409);
+  assert.ok(/plan engagé/.test(del.body.error), del.body.error);
+
+  /* Et un prestataire porteur de plans ne se supprime pas davantage. */
+  const dtpm = await request(app).delete(`/api/tpm/${tpmCtx.tpm}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(dtpm.status, 409);
+  assert.ok(dtpm.body.usage.plans > 0);
+});
+
+test("TPM : le plafond ne se modifie pas en place, seulement par avenant", async () => {
+  const avant = db.prepare("SELECT ceiling FROM tpm_contract WHERE id=?").get(tpmCtx.contract).ceiling;
+  const r = await request(app).put(`/api/tpm/contracts/${tpmCtx.contract}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ ref:"CTR-ESSAI-01", ceiling: avant * 10, currency:"MGA", status:"actif" });
+  assert.equal(r.status, 200);
+  assert.ok(/avenant/.test(r.body.avertissement || ""), r.body.avertissement);
+  assert.equal(db.prepare("SELECT ceiling FROM tpm_contract WHERE id=?").get(tpmCtx.contract).ceiling,
+    avant, "le plafond initial est intact");
+});

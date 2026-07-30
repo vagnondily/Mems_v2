@@ -6,6 +6,7 @@ import { config } from "./config.js";
 import { log } from "./lib/logger.js";
 import { newId } from "./lib/crypto.js";
 import { buildUnits, writeVersion, resolveUnit } from "./lib/geo.js";
+import { planAmount, regenerate } from "./lib/tpm.js";
 import { hashPassword } from "./lib/auth.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -100,7 +101,9 @@ if(info){
     for(const t of ["site_months","visits","sites","coverage_params","outputs","outcomes","outcome_plan",
                     "population_values","population","caseload","pdd","datasets","scripts","odk_forms",
                     "report_templates","dashboards","indicators","activity_categories","partners",
-                    "poi_subtypes","mre_cost","mre_activity","offices","users","settings",
+                    "poi_subtypes","mre_cost","mre_activity",
+                    /* tpm efface contrats, plans, zones, lignes et dépenses en cascade */
+                    "tpm","offices","users","settings",
                     /* geo_version efface geo_unit en cascade */
                     "office_scope","geo_version","geo"]) db.prepare(`DELETE FROM ${t}`).run();
 
@@ -468,6 +471,126 @@ if(info){
         insCost.run(newId("mrc"), id, cat, label, unit, qty, cost,
           r2(qty * cost * (0.85 + Math.random()*0.25) * (moisCourant+1)/12), null));
     });
+
+    /* ── Suivi tiers ───────────────────────────────────────────────────
+       Le barème et les quantités reprennent le classeur réel d'un prestataire de
+       suivi : indemnité de superviseur et d'agent à la personne-jour, location et
+       carburant au véhicule-jour, forfait de communication. Le budget des plans
+       n'est pas écrit ici — il est calculé par lib/tpm.js à partir de ce barème et
+       des affectations, comme il le sera en production. */
+    {
+      const gvT = db.prepare("SELECT id FROM geo_version WHERE is_current=1").get();
+      const insTpm = db.prepare(`INSERT INTO tpm (id,name,code,office_id,contact,email,active,updated_at)
+                                 VALUES (?,?,?,?,?,?,1,datetime('now'))`);
+      const insCtr = db.prepare(`INSERT INTO tpm_contract
+        (id,tpm_id,ref,ceiling,currency,start_date,end_date,status,note,updated_at)
+        VALUES (?,?,?,?,'MGA',?,?,'actif',?,datetime('now'))`);
+      const insRate = db.prepare(`INSERT INTO tpm_rate
+        (id,contract_id,driver,label,unit,unit_cost,active,sort) VALUES (?,?,?,?,?,?,1,?)`);
+      const insPlan = db.prepare(`INSERT INTO tpm_plan
+        (id,tpm_id,contract_id,year,month,ref,status,note,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,datetime('now'))`);
+      const insZone = db.prepare(`INSERT INTO tpm_zone (id,plan_id,geo_pcode,activity_tag,
+        team_label,supervisors,agents,days,travel_days,vehicles,fuel_litres,sites,note)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+      const insRev = db.prepare(`INSERT INTO tpm_review
+        (id,plan_id,level,decision,comment,amount,user_id,user_label) VALUES (?,?,?,?,?,?,NULL,?)`);
+      const insExp = db.prepare(`INSERT INTO tpm_expense (id,plan_id,line_id,spent_on,amount,ref)
+                                 VALUES (?,?,?,?,?,?)`);
+
+      /* Barème commun, en ariary — les montants du classeur de référence. */
+      const BAREME = [
+        ["superviseur", "Indemnité des superviseurs", "pers-jour", 70000],
+        ["agent",       "Indemnité des agents",       "pers-jour", 60000],
+        ["vehicule",    "Location voiture",           "véhicule-jour", 300000],
+        ["carburant",   "Carburant voiture",          "litre", 5000],
+        ["forfait",     "Forfait communication",      "forfait", 10000],
+      ];
+      const PRESTATAIRES = [
+        ["Mahavotse Suivi", "MAHAVOTSE", "Bureau de terrain d'Ambovombe",
+         "R. Randriamalala", 240_000_000],
+        ["Fanavotana Monitoring", "FANAVOTANA", "Bureau de terrain d'Ampanihy",
+         "S. Rakotomalala", 120_000_000],
+      ];
+      const contratDe = {};
+      PRESTATAIRES.forEach(([nom, code, bureau, contact, plafond], i) => {
+        const tid = newId("tpm");
+        insTpm.run(tid, nom, code, officeId[bureau] || null, contact,
+          `${code.toLowerCase()}@prestataire.mg`);
+        const cid = newId("tct");
+        insCtr.run(cid, tid, `TPM-${YEAR}-${String(i+1).padStart(2,"0")}`, plafond,
+          `${YEAR}-01-01`, `${YEAR}-12-31`,
+          "Suivi de processus et de distribution des activités du bureau");
+        BAREME.forEach(([driver, label, unit, cost], k) =>
+          insRate.run(newId("trt"), cid, driver, label, unit, cost, k));
+        contratDe[nom] = { tid, cid, bureau, plafond };
+        /* Un avenant sur le premier contrat : le suivi budgétaire n'a d'intérêt
+           que si le plafond a une histoire. */
+        if(i === 0) db.prepare(`INSERT INTO tpm_amendment (id,contract_id,ref,delta,reason,signed_at)
+                                VALUES (?,?,?,?,?,?)`)
+          .run(newId("tam"), cid, "AV-01", 30_000_000,
+               "Extension du périmètre au district de Beloha", `${YEAR}-04-15`);
+      });
+
+      /* Trois mois de plans, à des étapes différentes du circuit : un clôturé, un
+         validé au niveau pays avec ses dépenses, un en cours de validation, et un
+         brouillon. Sans cette variété, l'écran de validation serait toujours vide
+         et le circuit ne se verrait pas. */
+      const mois = new Date().getMonth();
+      const ETAPES = [
+        [Math.max(0, mois - 2), "cloture",       ["tpm","bureau","pays"]],
+        [Math.max(0, mois - 1), "valide_pays",   ["tpm","bureau","pays"]],
+        [mois,                  "valide_tpm",    ["tpm"]],
+        [Math.min(11, mois + 1),"brouillon",     []],
+      ];
+      Object.entries(contratDe).forEach(([nom, c], pi) => {
+        /* Les zones du prestataire : les communes des districts de son bureau. */
+        const idx = ZONES[c.bureau] || [];
+        const communes = idx.map(i => resolveUnit(
+          { adm1:GEO[i][1], adm2:GEO[i][2], adm3:GEO[i][3] }, gvT.id))
+          .filter(m => m.pcode);
+        if(!communes.length) return;
+
+        ETAPES.forEach(([m, statut, niveaux], si) => {
+          const pid = newId("tpp");
+          insPlan.run(pid, c.tid, c.cid, YEAR, m,
+            `${YEAR}-${String(m+1).padStart(2,"0")}-${(pi+1)}`, statut,
+            "Suivi de processus des distributions générales et de la prise en charge nutritionnelle");
+          communes.forEach((cm, zi) => {
+            const jours = 2 + (zi % 3) * 2;
+            insZone.run(newId("tpz"), pid, cm.pcode, ["URT","NTA","SMP"][zi % 3],
+              `TEAM${zi+1}`, 1 + (zi % 2), 1 + (zi % 3), jours, jours > 4 ? 1 : 0,
+              1, 15 * jours, 3 + zi, null);
+          });
+          /* Les lignes dérivent du barème : on appelle la même fonction que la route. */
+          regenerate(pid);
+          /* Les frais communs du mois, hors équipe — comme le groupe électrogène
+             du classeur, qui ne dérive d'aucune quantité d'équipe. */
+          db.prepare(`INSERT INTO tpm_line (id,plan_id,zone_id,driver,label,unit,qty1,qty2,unit_cost,derived,sort)
+                      VALUES (?,?,NULL,'forfait',?,?,?,1,?,0,900)`)
+            .run(newId("tpl"), pid, "Groupe électrogène avec carburant", "groupe", 1, 80000);
+
+          const montant = planAmount(pid);
+          niveaux.forEach(niv => insRev.run(newId("trv"), pid, niv, "valide",
+            niv === "pays" ? "Conforme au périmètre contractuel." : null, montant,
+            niv === "tpm" ? "Responsable prestataire" :
+            niv === "bureau" ? "Suivi-évaluation du bureau" : "Suivi-évaluation pays"));
+
+          /* Dépenses sur les plans engagés seulement : une dépense sur un plan non
+             validé serait incohérente avec ce que la route autorise. */
+          if(["valide_pays","cloture"].includes(statut)){
+            const lignes = db.prepare("SELECT id,qty1,qty2,unit_cost FROM tpm_line WHERE plan_id=?").all(pid);
+            lignes.forEach((l, li) => {
+              if(li % 3 === 2) return;   /* toutes les lignes ne sont pas encore réglées */
+              const prevu = l.qty1 * l.qty2 * l.unit_cost;
+              insExp.run(newId("tex"), pid, l.id,
+                `${YEAR}-${String(m+1).padStart(2,"0")}-${String(10 + (li % 15)).padStart(2,"0")}`,
+                r2(prevu * (0.88 + Math.random() * 0.22)), `FAC-${m+1}-${li+1}`);
+            });
+          }
+        });
+      });
+    }
 
     const uid = newId("user");
     db.prepare(`INSERT INTO users (id,email,pw_hash,first_name,last_name,title,office_id,role,tabs,active,must_change_pw)

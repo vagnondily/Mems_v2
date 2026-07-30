@@ -45,6 +45,18 @@ export function officeBound(user){
   return isNational(user.office_id) ? null : user.office_id;
 }
 
+/* Le prestataire auquel un compte appartient, ou null.
+
+   Troisième forme de cloisonnement, après le rôle et le bureau. Un compte rattaché
+   à un TPM ne voit que les plans de son propre TPM, quel que soit son rôle et quel
+   que soit le mode de périmètre de son bureau : c'est un intervenant externe, pas
+   un membre du bureau. La restriction s'applique donc AVANT celle du bureau, et
+   même à un administrateur — un administrateur rattaché à un prestataire serait
+   une erreur de saisie, et la lecture la plus prudente est de le borner. */
+export function tpmBound(user){
+  return user?.tpm_id || null;
+}
+
 /* Les unités attribuées à un bureau, telles qu'on les a déclarées. */
 export function declaredFor(officeId){
   if(!officeId) return [];

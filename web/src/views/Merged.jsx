@@ -10,6 +10,7 @@ import { ActualSummary, ImportView, OutcomeData, OutputData, ProcessData,
          Sources } from "./ActualData.jsx";
 import { SitesModule } from "./Settings.jsx";
 import MreView from "./Mre.jsx";
+import TpmView from "./Tpm.jsx";
 
 /* ═══════════════════════════════════════════════════════════════════════
    Suivi-évaluation et Programme — deux métiers, un sujet par destination.
@@ -54,7 +55,8 @@ function useVolet(initial = "plan"){
 export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
   const [volet, setVolet] = useVolet();
   const items = [["summary","Résumé global"],["monitoring","Suivi des sites"],
-    ["mre","Plan MRE et budget"],["coverage","Couverture et MMR"],["map","Cartographie"],
+    ["mre","Plan MRE et budget"],["tpm","Suivi tiers"],
+    ["coverage","Couverture et MMR"],["map","Cartographie"],
     ["sites","Registre des sites"],["params","Paramètres de couverture"]];
   return (
     <div className="space-y-4">
@@ -74,6 +76,10 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
 
       {/* Le plan MRE porte sa propre bascule budget prévu / dépense constatée. */}
       {sub==="mre" && <MreView db={db} me={me} notify={notify} can={can} />}
+
+      {/* Le suivi tiers a son propre circuit de validation : il ne se ramène pas à
+          une bascule prévu/réalisé, et porte donc ses propres onglets internes. */}
+      {sub==="tpm" && <TpmView db={db} me={me} notify={notify} can={can} />}
 
       {/* La couverture rapproche par nature le prévu et le réalisé : elle n'a pas
           de volet, les deux colonnes sont côte à côte. */}

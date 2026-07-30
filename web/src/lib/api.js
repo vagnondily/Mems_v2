@@ -116,6 +116,30 @@ export const api = {
      l'unité d'édition est l'activité, pas la ligne de coût. */
   saveMreCosts: (id, rev, lines) => call("PUT", `/mre/${encodeURIComponent(id)}/costs`, { rev, lines }),
 
+  /* Suivi tiers. Les mutations renvoient le plan recalculé : le client n'a pas à
+     redéduire le budget ni l'état du circuit, il le redéduirait autrement. */
+  tpm:            ()             => call("GET", "/tpm"),
+  createTpm:      (t)            => call("POST", "/tpm", t),
+  updateTpm:      (id, t)        => call("PUT", `/tpm/${encodeURIComponent(id)}`, t),
+  deleteTpm:      (id)           => call("DELETE", `/tpm/${encodeURIComponent(id)}`),
+  createContract: (c)            => call("POST", "/tpm/contracts", c),
+  updateContract: (id, c)        => call("PUT", `/tpm/contracts/${encodeURIComponent(id)}`, c),
+  addAmendment:   (id, a)        => call("POST", `/tpm/contracts/${encodeURIComponent(id)}/amendments`, a),
+  saveRates:      (id, rates)    => call("PUT", `/tpm/contracts/${encodeURIComponent(id)}/rates`, { rates }),
+  tpmPlans:       (q="")         => call("GET", `/tpm/plans${q}`),
+  tpmPlan:        (id)           => call("GET", `/tpm/plans/${encodeURIComponent(id)}`),
+  createTpmPlan:  (p)            => call("POST", "/tpm/plans", p),
+  saveTpmZones:   (id, rev, zones) => call("PUT", `/tpm/plans/${encodeURIComponent(id)}/zones`, { rev, zones }),
+  saveTpmLines:   (id, rev, lines) => call("PUT", `/tpm/plans/${encodeURIComponent(id)}/lines`, { rev, lines }),
+  submitTpmPlan:  (id)           => call("POST", `/tpm/plans/${encodeURIComponent(id)}/submit`, {}),
+  reviewTpmPlan:  (id, decision, comment) =>
+                                    call("POST", `/tpm/plans/${encodeURIComponent(id)}/review`, { decision, comment }),
+  closeTpmPlan:   (id)           => call("POST", `/tpm/plans/${encodeURIComponent(id)}/close`, {}),
+  deleteTpmPlan:  (id)           => call("DELETE", `/tpm/plans/${encodeURIComponent(id)}`),
+  addTpmExpense:  (id, e)        => call("POST", `/tpm/plans/${encodeURIComponent(id)}/expenses`, e),
+  deleteTpmExpense:(id)          => call("DELETE", `/tpm/expenses/${encodeURIComponent(id)}`),
+  tpmSuggest:     (q="")         => call("GET", `/tpm/suggest${q}`),
+
   offices:      ()           => call("GET", "/offices"),
   createOffice: (o)          => call("POST", "/offices", o),
   updateOffice: (id, o)      => call("PUT", `/offices/${encodeURIComponent(id)}`, o),

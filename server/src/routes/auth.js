@@ -19,9 +19,16 @@ const officeName = (id) => id
   ? (db.prepare("SELECT name FROM offices WHERE id=?").get(id)?.name || "")
   : "";
 
+const tpmName = (id) => id
+  ? (db.prepare("SELECT name FROM tpm WHERE id=?").get(id)?.name || "")
+  : "";
+
 const publicUser = (u) => ({
   id:u.id, email:u.email, first_name:u.first_name, last_name:u.last_name, title:u.title,
   office_id:u.office_id, office: officeName(u.office_id),
+  /* Un compte de prestataire doit se savoir tel : l'interface lui masque les
+     destinations internes, et le serveur le borne de son côté. */
+  tpm_id:u.tpm_id || null, tpm: tpmName(u.tpm_id),
   role:u.role, tabs: JSON.parse(u.tabs || "[]"),
   active: !!u.active, must_change_pw: !!u.must_change_pw, last_login:u.last_login,
 });

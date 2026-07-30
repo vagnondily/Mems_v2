@@ -312,6 +312,101 @@ mais n'écrit que sur le sien. Lui cacher le plan national lui laisserait croire
 *Suivi-évaluation → Plan MRE et budget*, avec la bascule habituelle **Plan et budget /
 Exécution budgétaire**.
 
+### Suivi tiers — TPM
+
+Le suivi de terrain est en partie confié à des prestataires (*third party monitoring*).
+Le mécanisme réel : on **assigne des zones** à couvrir dans le mois, le prestataire en
+tire un **budget estimatif**, celui-ci est **validé à trois niveaux**, et un **contrat**
+plafonne ce que le prestataire peut engager sur la période.
+
+Le classeur d'un prestataire réel montre exactement d'où vient le budget :
+
+| DESIGNATION | Unité | Qtté 1 (jr) | Qtté 2 (nb) | Coût unitaire | Budget TOT |
+|---|---|---|---|---|---|
+| Indemnité des superviseurs | pers | 2 | 1 | 70 000 | `=E×D×C` |
+| Location voiture | voiture | 2 | 1 | 300 000 | `=E×D×C` |
+| | | | | **SOUS-TOTAL** | `=SUM(...)` |
+
+Aucune cellule de total n'y est tapée. **Le module ne stocke donc aucun total** : il
+stocke des affectations (`tpm_zone` — superviseurs, agents, jours, trajet, véhicules,
+litres), un barème contractuel (`tpm_rate`), des lignes (`tpm_line` — qté1 × qté2 ×
+coût unitaire), et calcule le reste. Même principe que le plan MRE, pour la même
+raison.
+
+Chaque ligne du barème porte son **rôle dans le calcul** (`driver`) : `superviseur`,
+`agent` et `vehicule` se remplissent depuis les quantités de la zone × les jours,
+`carburant` depuis les litres, `forfait` reste saisi. Le classeur comporte précisément
+des lignes de la dernière sorte — « Groupe électrogène avec carburant » ne dérive
+d'aucune quantité d'équipe — et les forcer dans une formule aurait produit des
+quantités fausses. Une ligne modifiée à la main perd son caractère dérivé et n'est plus
+recalculée : sinon l'ajustement serait effacé au prochain changement d'affectation.
+
+**L'affectation ne part pas d'une page blanche.** `GET /tpm/suggest` agrège par commune
+les sites actifs, ce qui était prévu ce mois-ci, ce qui a été visité, et le risque des
+sites — puis trie par écart de couverture décroissant. La planification est déjà fondée
+sur le risque ; l'affectation d'un prestataire doit en partir.
+
+#### Le circuit
+
+```
+brouillon ──soumettre──▶ soumis ──▶ validé prestataire ──▶ validé bureau ──▶ validé pays ──▶ clôturé
+                            │              │                    │
+                            └──────────────┴────────────────────┴──▶ renvoyé (motif obligatoire)
+```
+
+| Niveau | Qui | Sur quel critère |
+|---|---|---|
+| `tpm` | responsable du prestataire | compte rattaché à ce prestataire (`users.tpm_id`) |
+| `bureau` | suivi-évaluation du bureau | droit `validate` **et** bureau du prestataire |
+| `pays` | suivi-évaluation du bureau pays | droit `validate` **et** bureau à périmètre `national` |
+
+Le troisième niveau ne repose sur **aucun rôle nouveau** : « responsable suivi-évaluation
+du bureau pays » est un compte du bureau pays, ce que le `scope_mode` de la migration 009
+rend exprimable. Un sixième rôle aurait dupliqué la matrice des droits pour une seule
+différence, qui n'est pas une différence de droits mais de périmètre.
+
+`tpm_review` conserve **qui, quand, quelle décision, quel motif, et pour quel montant**.
+Le montant est consigné avec la décision : un plan modifié ensuite ne doit pas laisser
+croire que ce montant-là avait été approuvé. Un état booléen « validé » aurait été une
+case cochée, pas une approbation.
+
+Un plan **soumis n'est plus modifiable**. Valider un montant puis le laisser changer
+viderait la validation de son sens. Un renvoi, lui, rouvre le plan — c'est un retour au
+prestataire avec un motif, pas un rejet définitif, et le motif est **obligatoire** :
+sans lui, celui qui doit corriger n'apprend rien.
+
+#### Le plafond
+
+`disponible = plafond + avenants − engagé`, où **engagé** ne compte que les plans validés
+au niveau pays. Trois grandeurs distinctes, et les confondre se paie :
+
+- confondre *engagé* et *en cours* ferait apparaître comme dépassé un plafond qui ne
+  l'est pas encore ;
+- les confondre dans l'autre sens laisserait valider un plan qui le dépasse.
+
+Le contrôle a lieu **au dernier niveau seulement** : tant qu'un plan circule, il n'engage
+rien. La soumission **avertit** sans bloquer — dire dès le départ qu'un plan sera refusé
+évite de le faire circuler pour rien. Le refus final est chiffré : « 12 400 000 demandés
+pour 3 900 000 disponibles », et le montant manquant est renvoyé, parce que « dépassement »
+sans montant n'aide personne à décider s'il faut un avenant ou réduire le plan.
+
+Le **plafond initial ne se modifie jamais en place**. Il évolue par avenants datés et
+motivés, y compris à la baisse — mais jamais sous ce qui est déjà engagé. Corriger le
+plafond en place effacerait la raison du changement.
+
+#### Le compte de prestataire
+
+`users.tpm_id` est la **troisième forme de cloisonnement**, après le rôle et le bureau.
+Un compte qui en porte un ne voit que les plans de son prestataire, et les niveaux
+`bureau` et `pays` lui sont fermés quel que soit son rôle. Deux règles le verrouillent :
+un compte de prestataire ne peut pas être administrateur (le cloisonnement ne couvre pas
+la gestion des comptes et des bureaux), et il n'est pas rattaché à un bureau — les deux
+cloisonnements se contrediraient.
+
+La devise est celle du **contrat** (`MGA` en pratique), jamais convertie : le plan MRE se
+tient en dollars, le prestataire facture en ariary, et additionner les deux produirait un
+chiffre faux.
+
 ### Bureaux
 
 `offices` n'avait que le strict nécessaire — nom, code, nature — et **aucune route
@@ -439,6 +534,16 @@ elles exigent un jeton — en-tête `Authorization: Bearer …` ou cookie `httpO
 | GET | `/mre` | connecté | plan MRE de l'année, avec ses budgets et ses agrégats calculés |
 | POST/PUT/DELETE | `/mre`, `/mre/:id` | `edit` / `del` | activités du plan, avec verrouillage par `rev` |
 | PUT | `/mre/:id/costs` | `edit` | lignes de budget d'une activité, remplacées en bloc |
+| GET/POST/PUT/DELETE | `/tpm`, `/tpm/:id` | lecture / `admin` | prestataires de suivi |
+| POST/PUT | `/tpm/contracts`, `/tpm/contracts/:id` | `admin` | contrats — le plafond n'y est pas modifiable |
+| POST | `/tpm/contracts/:id/amendments` | `admin` | avenant daté et motivé au plafond |
+| PUT | `/tpm/contracts/:id/rates` | `admin` | barème ; les brouillons du contrat sont recalculés |
+| GET | `/tpm/plans`, `/tpm/plans/:id` | connecté | plans mensuels, avec `actions` : ce que l'appelant peut faire |
+| POST/PUT/DELETE | `/tpm/plans`… | `edit` / `del` | plan, affectation (`/zones`), budget (`/lines`) |
+| POST | `/tpm/plans/:id/submit` | `edit` | met le plan dans le circuit ; avertit si le plafond sera dépassé |
+| POST | `/tpm/plans/:id/review` | selon le niveau | valide ou renvoie ; refuse au niveau pays si le plafond est dépassé |
+| POST | `/tpm/plans/:id/expenses` | `edit` | dépense constatée, rattachée à sa ligne |
+| GET | `/tpm/suggest` | connecté | zones à couvrir, triées par écart de couverture et par risque |
 | GET | `/offices` | connecté | bureaux, leur configuration et leur périmètre effectif |
 | POST/PUT/DELETE | `/offices`, `/offices/:id` | `admin` | configuration des bureaux |
 | GET/POST/PUT/DELETE | `/users` | `admin` | gestion des comptes |
@@ -581,6 +686,7 @@ les deux métiers réellement distincts :
 Accueil
 Suivi-évaluation   Résumé · Suivi des sites [Plan | Réalisé]
                    Plan MRE et budget [Plan et budget | Exécution budgétaire]
+                   Suivi tiers [Plans mensuels | Contrats et barèmes | Suivi budgétaire]
                    Couverture et MMR · Cartographie · Registre des sites
                    Paramètres de couverture
 Programme          Distributions [Plan | Réalisé] · Population et outputs
@@ -801,7 +907,7 @@ jamais un fichier déjà appliqué en production.
 ### Tests
 
 ```bash
-npm test              # 69 tests d'API puis 12 tests de bout en bout
+npm test              # 82 tests d'API puis 12 tests de bout en bout
 cd server && npm test # API seule
 cd web && npm test    # interface seule, contre un serveur réellement démarré
 ```

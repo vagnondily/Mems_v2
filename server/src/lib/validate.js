@@ -115,6 +115,10 @@ export const schemas = {
     first_name: z.string().min(1).max(80),
     last_name: nullableStr(80), title: nullableStr(120),
     office_id: nullableStr(64),
+    /* Rattachement à un prestataire de suivi. Un compte qui en porte un est un
+       intervenant externe : il ne voit que les plans de son prestataire, quel que
+       soit son rôle. Voir tpmBound dans lib/scope.js. */
+    tpm_id: nullableStr(64),
     role: z.enum(["super","admin","validator","editor","viewer"]).default("viewer"),
     tabs: z.array(z.string().max(40)).max(20).default([]),
     active: z.coerce.boolean().default(true),

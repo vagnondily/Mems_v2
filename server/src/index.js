@@ -17,6 +17,7 @@ import stateRoutes from "./routes/state.js";
 import siteRoutes from "./routes/sites.js";
 import collectionRoutes from "./routes/collections.js";
 import geoRoutes from "./routes/geo.js";
+import tpmRoutes from "./routes/tpm.js";
 import mreRoutes from "./routes/mre.js";
 import officeRoutes from "./routes/offices.js";
 import userRoutes from "./routes/users.js";
@@ -103,6 +104,7 @@ app.use("/api/analytics", authenticate, analyticsRoutes);
 app.use("/api/caseload", authenticate, caseloadRoutes);
 app.use("/api/import", authenticate, importRoutes);
 app.use("/api/mre", authenticate, mreRoutes);
+app.use("/api/tpm", authenticate, tpmRoutes);
 app.use("/api", authenticate, collectionRoutes);
 
 /* En production le serveur sert aussi le frontend compilé. */

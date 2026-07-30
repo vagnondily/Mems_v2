@@ -11,7 +11,8 @@ const NAV = [
      dupliquent plus. Le premier niveau suit les deux métiers, non la nature des données. */
   { id:"suivi", label:"Suivi-évaluation", icon:CalendarRange,
     sub:[["summary","Résumé global"],["monitoring","Suivi des sites"],
-         ["mre","Plan MRE et budget"],["coverage","Couverture et MMR"],["map","Cartographie"],
+         ["mre","Plan MRE et budget"],["tpm","Suivi tiers"],
+         ["coverage","Couverture et MMR"],["map","Cartographie"],
          ["sites","Registre des sites"],["params","Paramètres de couverture"]] },
   { id:"programme", label:"Programme", icon:Database,
     sub:[["distribution","Distributions"],["population","Population et outputs"],
