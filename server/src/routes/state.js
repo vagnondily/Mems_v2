@@ -71,7 +71,14 @@ r.get("/state", (req, res) => {
 
   const indicators = db.prepare("SELECT * FROM indicators ORDER BY code").all().map(i => ({
     id:i.code, key:i.id, rev:i.rev, name:i.name, basket:i.basket||"", unit:i.unit,
-    target:i.target, dir:i.direction, method:i.method||"", freq:i.frequency||"" }));
+    target:i.target, dir:i.direction, method:i.method||"", freq:i.frequency||"",
+    /* Les moyens de vérification du cadre de suivi-évaluation : sans eux, l'écran du
+       plan MRE ne pourrait dire que ce qu'un indicateur vise, jamais comment on
+       l'obtient. */
+    sdg_target:i.sdg_target||"", outcome:i.outcome||"", outcome_category:i.outcome_category||"",
+    activity_ref:i.activity_ref||"", activity_category:i.activity_category||"",
+    data_source:i.data_source||"", baseline:i.baseline||"", responsible:i.responsible||"",
+    reports:i.reports||"", use_note:i.use_note||"" }));
   const indByKey = Object.fromEntries(indicators.map(i=>[i.key, i.id]));
 
   /* Les résultats n'ont aucune dimension « bureau » dans le schéma : ils sont mesurés par

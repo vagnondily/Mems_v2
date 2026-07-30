@@ -101,7 +101,7 @@ if(info){
     for(const t of ["site_months","visits","sites","coverage_params","outputs","outcomes","outcome_plan",
                     "population_values","population","caseload","pdd","datasets","scripts","odk_forms",
                     "report_templates","dashboards","indicators","activity_categories","partners",
-                    "poi_subtypes","mre_cost","mre_activity",
+                    "poi_subtypes","mre_activity",
                     /* tpm efface contrats, plans, zones, lignes et dépenses en cascade */
                     "tpm","offices","users","settings",
                     /* geo_version efface geo_unit en cascade */
@@ -418,95 +418,99 @@ if(info){
     const hqId = officeId["Bureau central d'Antananarivo"];
     const moisCourant = new Date().getMonth();
     const insMre = db.prepare(`INSERT INTO mre_activity
-      (id,year,ref,title,kind,purpose,method,office_id,activity_tag,responsible,
-       start_month,end_month,sample,status,funding,currency,note,country_code)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'USD',?,?)`);
-    const insCost = db.prepare(`INSERT INTO mre_cost
-      (id,activity_id,category,label,unit,qty,unit_cost,spent,month) VALUES (?,?,?,?,?,?,?,?,?)`);
+      (id,year,ref,title,kind,purpose,method,office_id,activity_tag,responsible,entity,
+       cost_category,high_category,unit_cost,sample,status,funding,currency,note,country_code)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'USD',?,?)`);
+    const insFreq  = db.prepare(`INSERT INTO mre_frequency (id,activity_id,year,quarter,n)
+                                 VALUES (?,?,?,?,?)`);
+    const insSpend = db.prepare(`INSERT INTO mre_spend (id,activity_id,year,amount) VALUES (?,?,?,?)`);
+
+    /* Le plan suit le modèle du classeur de référence : coût UNITAIRE et fréquence
+       par trimestre, sur plusieurs années. Le budget d'une année en découle — il
+       n'est écrit nulle part, ici pas plus qu'en production. */
     const PLAN_MRE = [
       ["MRE-01","Suivi de processus des distributions générales","suivi",
        "Vérifier la conformité des distributions aux procédures et recueillir les plaintes",
-       "Visites de site avec formulaire ODK", null,"URT","Unité suivi-évaluation",0,11,null,
-       "Formulaire de suivi mensuel dans chaque bureau",
-       [["personnel","Agents de suivi de terrain","personne-mois",60,420,"deplacement","Indemnités de déplacement","personne-jour",480,18],
-        ["transport","Location de véhicules","véhicule-jour",240,95],
-        ["communication","Forfaits données pour tablettes","mois",72,9]]],
-      ["MRE-02","Enquête post-distribution — premier semestre","enquete",
+       "Visites de site avec formulaire ODK","interne","Suivi de distribution","dsc_monitoring",
+       "URT","Unité suivi-évaluation",null,7400,
+       { [YEAR]:[3,3,3,3], [YEAR+1]:[3,3,3,3] },
+       "Formulaire de suivi mensuel dans chaque bureau"],
+      ["MRE-02","Enquête post-distribution — transferts non conditionnels","enquete",
        "Mesurer la satisfaction, l'utilisation de l'assistance et les délais de service",
-       "Échantillon aléatoire stratifié par bureau, entretiens ménages", null,"URT",
-       "Unité suivi-évaluation",2,3,1200,"Enquête semestrielle, base de sondage issue des listes de bénéficiaires",
-       [["enqueteurs","Enquêteurs et superviseurs","personne-jour",180,14],
-        ["deplacement","Indemnités enquêteurs","personne-jour",180,12],
-        ["transport","Transport terrain","véhicule-jour",45,95],
-        ["equipement","Tablettes de remplacement","unité",6,220],
-        ["atelier","Atelier de restitution","forfait",1,1800]]],
-      ["MRE-03","Enquête post-distribution — second semestre","enquete",
-       "Reproduire la mesure du premier semestre pour comparer les deux périodes",
-       "Même protocole que MRE-02, pour comparabilité", null,"URT","Unité suivi-évaluation",8,9,1200,
-       "La comparabilité impose de ne pas modifier le questionnaire en cours d'année",
-       [["enqueteurs","Enquêteurs et superviseurs","personne-jour",180,14],
-        ["deplacement","Indemnités enquêteurs","personne-jour",180,12],
-        ["transport","Transport terrain","véhicule-jour",45,95],
-        ["atelier","Atelier de restitution","forfait",1,1800]]],
-      ["MRE-04","Évaluation à mi-parcours du plan stratégique pays","evaluation",
-       "Apprécier la pertinence et l'efficacité des activités à mi-parcours",
-       "Évaluation externe : revue documentaire, entretiens, visites de terrain", null,null,
-       "Bureau pays et unité évaluation",4,7,null,"Cabinet externe, gestion décentralisée",
-       [["consultant","Cabinet d'évaluation","forfait",1,48000],
-        ["transport","Déplacements de l'équipe d'évaluation","véhicule-jour",30,95],
-        ["atelier","Atelier de validation des conclusions","forfait",1,3200],
-        ["impression","Édition du rapport","forfait",1,900]]],
-      ["MRE-05","Revue trimestrielle de la performance","revue",
-       "Rapprocher le plan et le réalisé, décider des réorientations",
-       "Réunion de revue sur données du tableau de bord", null,null,"Unité suivi-évaluation",0,11,null,
-       "Quatre séances par an, une par trimestre",
-       [["atelier","Séances de revue trimestrielle","séance",4,1400],
-        ["impression","Supports de séance","forfait",4,120]]],
-      ["MRE-06","Analyse de la couverture géographique et des écarts de ciblage","etude",
-       "Identifier les communes ciblées non couvertes et l'inverse",
-       "Croisement du référentiel administratif, du ciblage et du plan de distribution", null,null,
-       "Unité suivi-évaluation",1,2,null,"S'appuie sur l'écran de couverture géographique",
-       [["personnel","Analyste de données","personne-mois",2,1900],
-        ["autre","Achat de données de population complémentaires","forfait",1,600]]],
-      ["MRE-07","Renforcement des capacités des partenaires coopérants en suivi","capacite",
-       "Homogénéiser la qualité des rapports des partenaires",
-       "Deux sessions de formation régionales", null,null,"Unité suivi-évaluation",5,6,null,
-       "Une session par pôle géographique",
-       [["atelier","Sessions de formation","session",2,2600],
-        ["deplacement","Indemnités des participants","personne-jour",120,15],
-        ["impression","Manuels de suivi","unité",90,7]]],
+       "Entretiens ménages, échantillon aléatoire","externe","PDM (général)","dsc_assessment",
+       "URT","Cabinet d'enquête",1200,42000,
+       { [YEAR]:[0,1,0,1], [YEAR+1]:[0,1,0,1] },
+       "Deux passages par an, semestriels"],
+      ["MRE-03","Enquête de référence — création d'actifs","enquete",
+       "Établir la référence des indicateurs de résilience avant la nouvelle phase",
+       "Enquête ménages et groupes de discussion","externe","Référence (général)","dsc_assessment",
+       "ACL","Cabinet d'enquête",900,58000,
+       { [YEAR]:[0,0,1,0] },
+       "Une seule fois, au démarrage de la phase"],
+      ["MRE-04","Revue annuelle du programme","revue",
+       "Rapprocher le réalisé du plan et arrêter les corrections de l'exercice suivant",
+       "Atelier de revue avec les partenaires","interne","Revue annuelle","dsc_monitoring",
+       null,"Chef de l'unité suivi-évaluation",null,19000,
+       { [YEAR]:[0,0,0,1], [YEAR+1]:[0,0,0,1] },
+       "Atelier de trois jours, partenaires inclus"],
+      ["MRE-05","Évaluation décentralisée de l'activité de résilience","evaluation",
+       "Apprécier la pertinence, l'efficacité et la durabilité de l'activité",
+       "Évaluation externe conforme aux normes d'évaluation","externe",
+       "Évaluation décentralisée","dsc_evaluation",
+       "ACL","Bureau d'évaluation",null,96000,
+       { [YEAR+1]:[0,1,0,0] },
+       "Prévue l'an prochain, gestion par le bureau régional"],
+      ["MRE-06","Renforcement des capacités de suivi des partenaires","capacite",
+       "Mettre les partenaires coopérants au niveau attendu sur la collecte et la qualité",
+       "Formation et accompagnement sur site","interne","Formation des partenaires","isc_staff",
+       null,"Unité suivi-évaluation",null,11500,
+       { [YEAR]:[1,0,1,0], [YEAR+1]:[1,0,0,0] },
+       "Deux sessions par an, plus l'accompagnement"],
+      ["MRE-07","Mécanisme de retour d'information des bénéficiaires","suivi",
+       "Recueillir et traiter les plaintes et retours, et en rendre compte",
+       "Centre d'appel et registres de site","externe","Mécanisme de retour d'information","equipment",
+       null,"Prestataire de centre d'appel",null,5200,
+       { [YEAR]:[1,1,1,1], [YEAR+1]:[1,1,1,1] },
+       "Coût trimestriel de la licence et du centre d'appel"],
     ];
-    PLAN_MRE.forEach(([ref,title,kind,purpose,method,_o,tag,resp,m0,m1,sample,note,lignes]) => {
+
+    /* Le trimestre courant borne ce qui peut être « réalisé » et ce qui peut porter
+       une dépense : un plan de démonstration où l'avenir serait déjà dépensé
+       n'apprendrait rien à personne. */
+    const trimCourant = Math.floor(moisCourant / 3);
+    PLAN_MRE.forEach(([ref,title,kind,purpose,method,entity,cat,high,tag,resp,sample,unitCost,freq,note]) => {
       const id = newId("mre");
-      insMre.run(id, YEAR, ref, title, kind, purpose, method, hqId, tag, resp, m0, m1, sample,
-        m1 < moisCourant ? "realise" : m0 <= moisCourant ? "en_cours" : "planifie",
+      const annees = Object.keys(freq).map(Number).sort();
+      const passe = annees[0] < YEAR || (annees[0] === YEAR && freq[YEAR] &&
+        freq[YEAR].slice(trimCourant+1).every(x => !x));
+      insMre.run(id, YEAR, ref, title, kind, purpose, method, hqId, tag, resp, entity,
+        cat, high, unitCost, sample,
+        annees[0] > YEAR ? "planifie" : passe ? "realise" : "en_cours",
         "Ressources programme", note, paysSeed);
-      lignes.forEach(([cat,label,unit,qty,cost]) => {
-        /* Une activité longue laisse son mois vide : la route répartit alors la
-           ligne sur toute sa durée, ce qui est le cas réel d'un suivi continu.
-           Une activité courte est imputée à son mois de début. */
-        const mois = (m1 - m0) > 2 ? null : m0;
-        /* Dépense constatée seulement si l'activité a commencé, avec un écart
-           réaliste de part et d'autre du budget. */
-        const engagee = m0 <= moisCourant;
-        insCost.run(newId("mrc"), id, cat, label, unit, qty, cost,
-          engagee ? r2(qty * cost * (0.82 + Math.random()*0.3)) : null, mois);
-      });
+      for(const [an, qs] of Object.entries(freq))
+        qs.forEach((n2, q) => { if(n2 > 0) insFreq.run(newId("mfr"), id, Number(an), q, n2); });
+      /* Dépense constatée sur les trimestres écoulés seulement, avec un écart
+         réaliste de part et d'autre du budget. */
+      const faites = (freq[YEAR] || []).slice(0, trimCourant + 1).reduce((t, x) => t + x, 0);
+      if(faites > 0) insSpend.run(newId("msp"), id, YEAR,
+        r2(faites * unitCost * (0.84 + Math.random()*0.28)));
     });
+
     /* Chaque bureau de terrain porte son propre suivi de proximité : le plan
        n'est pas seulement national, et le cloisonnement doit avoir de la matière. */
     Object.keys(ZONES).forEach((office, i) => {
       const id = newId("mre");
+      const court = office.replace("Bureau de terrain d'","").replace("Bureau de terrain de ","");
       insMre.run(id, YEAR, `MRE-B${String(i+1).padStart(2,"0")}`,
-        `Suivi de proximité — ${office.replace("Bureau de terrain d'","").replace("Bureau de terrain de ","")}`,
+        `Suivi de proximité — ${court}`,
         "suivi", "Couvrir les sites du bureau selon l'exigence minimale de suivi",
         "Visites de site planifiées par le risque", officeId[office], null, "Chef de bureau",
-        0, 11, null, moisCourant > 0 ? "en_cours" : "planifie", "Ressources programme",
+        "interne", "Suivi sur site", "dsc_monitoring", 2600, null,
+        moisCourant > 0 ? "en_cours" : "planifie", "Ressources programme",
         "Décliné du plan national sur la zone du bureau", paysSeed);
-      [["deplacement","Indemnités de déplacement","personne-jour",96,18],
-       ["transport","Carburant et entretien","mois",12,340]].forEach(([cat,label,unit,qty,cost]) =>
-        insCost.run(newId("mrc"), id, cat, label, unit, qty, cost,
-          r2(qty * cost * (0.85 + Math.random()*0.25) * (moisCourant+1)/12), null));
+      [0,1,2,3].forEach(q => insFreq.run(newId("mfr"), id, YEAR, q, 3));
+      const faites = (trimCourant + 1) * 3;
+      insSpend.run(newId("msp"), id, YEAR, r2(faites * 2600 * (0.85 + Math.random()*0.25)));
     });
 
     /* ── Contours administratifs du jeu de démonstration ───────────────

@@ -225,6 +225,37 @@ r.put("/collections/:name", (req, res, next) => {
   res.json({ created, updated, removed });
 });
 
+/* Le plan de suivi d'un indicateur : les moyens de vérification du cadre de
+   suivi-évaluation. Ils vivent sur l'indicateur — c'est une propriété de
+   l'indicateur, pas une entité séparée — mais ils ne passent pas par la
+   synchronisation de collection : celle-ci remplace la ligne entière à partir de ce
+   que l'écran des indicateurs connaît, et effacerait donc ce que l'écran du plan MRE
+   vient d'écrire. Deux écrans, deux champs d'écriture disjoints. */
+r.put("/indicators/:id/plan", requireCap("edit"), (req, res) => {
+  const cur = db.prepare("SELECT * FROM indicators WHERE id=?").get(req.params.id);
+  if(!cur) return res.status(404).json({ error:"indicateur introuvable" });
+  const T = (max) => z.string().trim().max(max).nullish().transform(v => (v ? v : null));
+  const p = z.object({
+    sdg_target:T(160), outcome:T(300), outcome_category:T(200),
+    activity_ref:T(120), activity_category:T(200),
+    data_source:T(300), method:T(300), baseline:T(300), responsible:T(200),
+    freq:T(120), reports:T(300), use_note:T(600),
+  }).safeParse(req.body);
+  if(!p.success) return res.status(422).json({ error:"plan de suivi invalide",
+    details:p.error.issues.slice(0,10).map(i=>({ champ:i.path.join("."), message:i.message })) });
+  const b = p.data;
+  db.prepare(`UPDATE indicators SET sdg_target=?, outcome=?, outcome_category=?, activity_ref=?,
+              activity_category=?, data_source=?, method=?, baseline=?, responsible=?,
+              frequency=?, reports=?, use_note=? WHERE id=?`)
+    .run(b.sdg_target, b.outcome, b.outcome_category, b.activity_ref, b.activity_category,
+         b.data_source, b.method, b.baseline, b.responsible, b.freq, b.reports, b.use_note, cur.id);
+  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+              VALUES (?,?,?,'plan','indicators',?,'update',?)`)
+    .run(newId("aud"), req.user.id, req.user.first_name || req.user.email, cur.id,
+         `Plan de suivi de l'indicateur ${cur.code} mis à jour`);
+  res.json({ ok:true });
+});
+
 /* Réglages : dictionnaire clé-valeur, réservé aux administrateurs. */
 r.put("/settings", requireCap("admin"), (req, res) => {
   const parsed = z.record(z.any()).safeParse(req.body);

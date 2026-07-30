@@ -148,7 +148,14 @@ export const api = {
   deleteMre:    (id)         => call("DELETE", `/mre/${encodeURIComponent(id)}`),
   /* Le budget est enregistré en bloc pour une activité, avec sa révision :
      l'unité d'édition est l'activité, pas la ligne de coût. */
-  saveMreCosts: (id, rev, lines) => call("PUT", `/mre/${encodeURIComponent(id)}/costs`, { rev, lines }),
+  /* Le calendrier trimestriel et la dépense constatée : deux écritures distinctes,
+     parce qu'elles sont faites à des moments différents et souvent par deux
+     personnes — lier les deux ferait qu'un saisisseur de dépense bloquerait un
+     planificateur, et réciproquement. */
+  mreFrequencies: (id, body) => call("PUT", `/mre/${encodeURIComponent(id)}/frequencies`, body),
+  mreSpend:       (id, body) => call("PUT", `/mre/${encodeURIComponent(id)}/spend`, body),
+  updateIndicatorPlan: (id, body) =>
+    call("PUT", `/indicators/${encodeURIComponent(id)}/plan`, body),
 
   /* Suivi tiers. Les mutations renvoient le plan recalculé : le client n'a pas à
      redéduire le budget ni l'état du circuit, il le redéduirait autrement. */

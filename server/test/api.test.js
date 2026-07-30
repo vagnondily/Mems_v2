@@ -1212,77 +1212,93 @@ test("bureaux : mode de périmètre inconnu refusé — une valeur libre élargi
    c'est le total qu'on présente au bailleur.
    ═══════════════════════════════════════════════════════════════════════ */
 
-test("MRE : le plan est lu avec ses agrégats, et le budget est la somme des lignes", async () => {
+test("MRE : le budget est fréquence × coût unitaire, et les agrégats en découlent", async () => {
   const an = new Date().getFullYear();
   const r = await request(app).get(`/api/mre?year=${an}`).set("Authorization", `Bearer ${adminToken}`);
   assert.equal(r.status, 200);
   assert.ok(r.body.rows.length > 0, "le jeu d'essai comporte un plan");
 
-  /* Le total de chaque activité est exactement Σ quantité × coût unitaire. */
+  /* La formule du classeur, à la lettre : ( Σ des quatre trimestres ) × coût unitaire. */
   for(const a of r.body.rows){
-    const attendu = Math.round(a.costs.reduce((t,l)=>t+l.qty*l.unit_cost, 0) * 100) / 100;
-    assert.equal(a.budget, attendu, `budget de ${a.title}`);
+    const qs = a.frequences?.[an];
+    const attendu = Math.round((qs ? qs.reduce((t,x)=>t+x, 0) : 0) * a.unit_cost * 100) / 100;
+    assert.equal(a.budgetParAnnee?.[an]?.montant ?? 0, attendu, `budget ${an} de ${a.title}`);
   }
-  /* Et le total du plan est la somme des activités, pas un nombre indépendant. */
-  const somme = Math.round(r.body.rows.reduce((t,a)=>t+a.budget, 0) * 100) / 100;
-  assert.equal(r.body.totals.budget, somme);
+  const somme = Math.round(r.body.rows.reduce((t,a)=>t+(a.budgetParAnnee?.[an]?.montant||0), 0) * 100) / 100;
+  assert.equal(r.body.totals.budget, somme, "le total de l'année est la somme des activités");
 
-  /* Les répartitions portent sur les mêmes montants. */
-  const parCat = Math.round(r.body.parCategorie.reduce((t,c)=>t+c.budget, 0) * 100) / 100;
-  assert.equal(parCat, somme, "la répartition par catégorie totalise le même budget");
-  const parMois = Math.round(r.body.parMois.reduce((t,m)=>t+m.budget, 0) * 100) / 100;
-  assert.equal(parMois, somme, "la répartition mensuelle totalise le même budget");
-  assert.equal(r.body.parMois.length, 12);
+  /* La répartition trimestrielle n'est plus une convention : elle est déclarée,
+     donc elle DOIT totaliser exactement le budget de l'année. */
+  const parT = Math.round(r.body.parTrimestre.reduce((t,q)=>t+q.budget, 0) * 100) / 100;
+  assert.equal(parT, somme);
+  assert.equal(r.body.parTrimestre.length, 4);
+
+  /* Le plan est pluriannuel : au moins une activité porte une année différente. */
+  assert.ok(r.body.parAnnee.length >= 2, "le plan couvre plusieurs exercices");
+  const totalPlan = Math.round(r.body.parAnnee.reduce((t,y)=>t+y.budget, 0) * 100) / 100;
+  assert.equal(r.body.totals.budgetTotal, totalPlan,
+    "le budget de tout le plan est la somme de ses années");
 });
 
-test("MRE : création d'une activité, puis de son budget ligne par ligne", async () => {
+test("MRE : création d'une activité, puis de son calendrier trimestriel", async () => {
   const an = new Date().getFullYear();
   const c = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
     .send({ year:an, ref:"MRE-T1", title:"Enquête de vérification des listes",
             kind:"enquete", purpose:"Contrôler la qualité des listes de bénéficiaires",
-            start_month:3, end_month:4, sample:400, currency:"USD" });
+            entity:"externe", cost_category:"PDM (général)", high_category:"dsc_assessment",
+            unit_cost:2500, sample:400, currency:"USD" });
   assert.equal(c.status, 201);
   const a = c.body.activity;
-  assert.equal(a.budget, 0, "une activité neuve n'a pas de budget");
+  assert.equal(a.budget, 0, "un coût unitaire sans occurrence ne fait pas un budget");
   assert.equal(a.spent, null, "et pas de dépense — nul, pas zéro");
+  assert.equal(a.entityLabel.length > 0, true, "l'entité est rendue en clair");
 
-  const b = await request(app).put(`/api/mre/${a.id}/costs`).set("Authorization", `Bearer ${adminToken}`)
-    .send({ rev:a.rev, lines:[
-      { category:"enqueteurs", label:"Enquêteurs", unit:"personne-jour", qty:60, unit_cost:14 },
-      { category:"transport",  label:"Véhicules",  unit:"véhicule-jour", qty:15, unit_cost:95, spent:1500 },
-    ] });
-  assert.equal(b.status, 200);
-  assert.equal(b.body.activity.budget, 60*14 + 15*95);
-  assert.equal(b.body.activity.spent, 1500);
-  /* L'exécution ne porte que sur ce qui est engagé : 1500 sur 2265, pas sur 840. */
-  assert.equal(b.body.activity.execution, Math.round((1500/2265)*1000)/10);
-  assert.equal(b.body.activity.rev, a.rev + 1, "modifier le budget fait avancer la révision");
+  const f = await request(app).put(`/api/mre/${a.id}/frequencies`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ rev:a.rev, rows:[{ year:an, q:[0,2,0,1] }, { year:an+1, q:[1,0,0,0] }] });
+  assert.equal(f.status, 200);
+  const x = f.body.activity;
+  assert.equal(x.budgetParAnnee[an].montant, 3 * 2500);
+  assert.equal(x.budgetParAnnee[an+1].montant, 1 * 2500);
+  assert.equal(x.budget, 4 * 2500, "le budget de l'activité couvre toutes ses années");
+  assert.equal(x.occurrences, 4);
+  assert.equal(x.rev, a.rev + 1, "modifier le calendrier fait avancer la révision");
+
+  /* La dépense se saisit par année, séparément du plan. */
+  const d = await request(app).put(`/api/mre/${a.id}/spend`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ rows:[{ year:an, amount:6000 }] });
+  assert.equal(d.status, 200);
+  assert.equal(d.body.activity.spent, 6000);
+  assert.equal(d.body.activity.execution, Math.round((6000/10000)*1000)/10);
 });
 
-test("MRE : le budget remplacé en bloc ne laisse pas d'ancienne ligne derrière lui", async () => {
+test("MRE : le calendrier remplacé en bloc ne laisse pas d'ancien trimestre derrière lui", async () => {
   const a = db.prepare("SELECT * FROM mre_activity WHERE ref='MRE-T1'").get();
-  const r = await request(app).put(`/api/mre/${a.id}/costs`).set("Authorization", `Bearer ${adminToken}`)
-    .send({ rev:a.rev, lines:[{ category:"autre", label:"Forfait unique", qty:1, unit_cost:900 }] });
+  const an = a.year;
+  const r = await request(app).put(`/api/mre/${a.id}/frequencies`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ rev:a.rev, rows:[{ year:an, q:[0,0,0,1] }] });
   assert.equal(r.status, 200);
-  assert.equal(r.body.activity.costs.length, 1);
-  assert.equal(r.body.activity.budget, 900);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM mre_cost WHERE activity_id=?").get(a.id).c, 1);
+  assert.equal(r.body.activity.occurrences, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM mre_frequency WHERE activity_id=?").get(a.id).c, 1,
+    "un seul trimestre non nul est conservé, et l'année suivante a disparu");
+  assert.equal(r.body.activity.budgetParAnnee[an+1], undefined);
 });
 
-test("MRE : révision périmée refusée sur l'activité comme sur son budget", async () => {
+test("MRE : révision périmée refusée sur l'activité comme sur son calendrier", async () => {
   const a = db.prepare("SELECT * FROM mre_activity WHERE ref='MRE-T1'").get();
   const act = await request(app).put(`/api/mre/${a.id}`).set("Authorization", `Bearer ${adminToken}`)
     .send({ year:a.year, title:a.title, rev:1 });
   assert.equal(act.status, 409);
   assert.ok(act.body.courant, "la valeur courante accompagne le refus");
-  const bud = await request(app).put(`/api/mre/${a.id}/costs`).set("Authorization", `Bearer ${adminToken}`)
-    .send({ rev:1, lines:[] });
-  assert.equal(bud.status, 409);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM mre_cost WHERE activity_id=?").get(a.id).c, 1,
-    "le budget n'a pas été vidé au passage");
+  const cal = await request(app).put(`/api/mre/${a.id}/frequencies`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ rev:1, rows:[] });
+  assert.equal(cal.status, 409);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM mre_frequency WHERE activity_id=?").get(a.id).c, 1,
+    "le calendrier n'a pas été vidé au passage");
 });
 
-test("MRE : garde-fous de saisie — référence unique dans l'année, calendrier cohérent", async () => {
+test("MRE : garde-fous de saisie — référence unique dans l'année, listes fermées", async () => {
   const an = new Date().getFullYear();
   const dup = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
     .send({ year:an, ref:"MRE-T1", title:"Doublon de référence" });
@@ -1292,14 +1308,25 @@ test("MRE : garde-fous de saisie — référence unique dans l'année, calendrie
     .send({ year:an+1, ref:"MRE-T1", title:"Même référence, année suivante" });
   assert.equal(autre.status, 201);
 
-  const inverse = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
-    .send({ year:an, title:"Calendrier inversé", start_month:8, end_month:2 });
-  assert.equal(inverse.status, 422);
-  assert.ok(/mois de fin précède/.test(inverse.body.error), inverse.body.error);
-
   const natureInconnue = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
     .send({ year:an, title:"Nature inconnue", kind:"bricolage" });
   assert.equal(natureInconnue.status, 422);
+
+  /* L'entité et la catégorie de haut niveau sont des listes fermées : elles servent
+     à consolider entre bureaux pays, et une valeur inventée casse l'agrégation
+     sans que personne s'en aperçoive avant la consolidation. */
+  const entiteInconnue = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:an, title:"Entité inventée", entity:"sous-traitant-du-cousin" });
+  assert.equal(entiteInconnue.status, 422);
+  const categorieInconnue = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:an, title:"Catégorie inventée", high_category:"divers-et-variés" });
+  assert.equal(categorieInconnue.status, 422);
+
+  /* Un trimestre hors bornes est refusé : la grille en a quatre, pas cinq. */
+  const a = db.prepare("SELECT * FROM mre_activity WHERE ref='MRE-T1' AND year=?").get(an);
+  const cinq = await request(app).put(`/api/mre/${a.id}/frequencies`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ rows:[{ year:an, q:[1,1,1,1,1] }] });
+  assert.equal(cinq.status, 422);
 });
 
 test("MRE : un bureau voit son plan et le plan national, mais ne modifie que le sien", async () => {
@@ -1308,37 +1335,34 @@ test("MRE : un bureau voit son plan et le plan national, mais ne modifie que le 
   const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
   const r = await request(app).get(`/api/mre?year=${an}`).set("Authorization", `Bearer ${t}`);
   assert.equal(r.status, 200);
-  /* Rien d'un autre bureau. */
   assert.ok(r.body.rows.every(a => !a.office_id || a.office_id === office.id),
     "aucune activité d'un autre bureau");
-  /* Mais le plan national reste visible : le lui cacher laisserait croire
-     qu'aucune évaluation ne porte sur sa zone. */
-  const hqId = db.prepare("SELECT id FROM offices WHERE kind='hq'").get().id;
-  assert.ok(db.prepare("SELECT COUNT(*) c FROM mre_activity WHERE office_id NOT IN (?,?)")
-    .get(office.id, hqId).c >= 0);
   assert.ok(r.body.rows.some(a => a.office_id === office.id), "il voit son propre plan");
 
-  /* Une activité d'un autre bureau lui est refusée en écriture. */
   const ailleurs = db.prepare(
     "SELECT id FROM mre_activity WHERE office_id IS NOT NULL AND office_id<>? LIMIT 1").get(office.id);
   const refus = await request(app).put(`/api/mre/${ailleurs.id}`)
     .set("Authorization", `Bearer ${t}`).send({ year:an, title:"Tentative", rev:1 });
   assert.equal(refus.status, 403);
 
-  /* Et créer sans bureau ne le fait pas basculer dans le plan national :
-     le serveur force son propre bureau, quoi que dise le corps. */
-  const créé = await request(app).post("/api/mre").set("Authorization", `Bearer ${t}`)
+  const cree = await request(app).post("/api/mre").set("Authorization", `Bearer ${t}`)
     .send({ year:an, title:"Suivi de proximité complémentaire", office_id:null });
-  assert.equal(créé.status, 201);
-  assert.equal(créé.body.activity.office_id, office.id);
+  assert.equal(cree.status, 201);
+  assert.equal(cree.body.activity.office_id, office.id);
 });
 
 test("MRE : un compte de Tana pilote le plan national", async () => {
   const an = new Date().getFullYear();
   const t = (await login("tana@test.local", "TanaMotDePasse1")).body.token;
   const r = await request(app).get(`/api/mre?year=${an}`).set("Authorization", `Bearer ${t}`);
-  /* Bureau national : il voit tout le plan, comme il voit tous les sites. */
-  const tout = db.prepare("SELECT COUNT(*) c FROM mre_activity WHERE year=?").get(an).c;
+  assert.equal(r.status, 200);
+  /* Bureau national : il voit tout le plan de l'année, comme il voit tous les sites.
+     « Du plan de l'année » veut dire : ce qui porte des occurrences cette année-là,
+     ou ce qui n'en porte aucune et a été déclaré pour elle. */
+  const tout = db.prepare(`SELECT COUNT(*) c FROM mre_activity a WHERE
+      EXISTS (SELECT 1 FROM mre_frequency f WHERE f.activity_id=a.id AND f.year=?)
+      OR (a.year=? AND NOT EXISTS (SELECT 1 FROM mre_frequency f2 WHERE f2.activity_id=a.id))`)
+    .get(an, an).c;
   assert.equal(r.body.rows.length, tout);
   const ailleurs = db.prepare(
     "SELECT id FROM mre_activity WHERE year=? AND office_id IS NOT NULL LIMIT 1").get(an);
@@ -1348,76 +1372,63 @@ test("MRE : un compte de Tana pilote le plan national", async () => {
   assert.equal(maj.status, 200);
 });
 
-test("MRE : suppression réservée au droit de suppression, lignes de coût emportées", async () => {
-  const a = db.prepare("SELECT * FROM mre_activity WHERE ref='MRE-T1'").get();
+test("MRE : suppression réservée au droit de suppression, calendrier emporté", async () => {
+  const a = db.prepare("SELECT * FROM mre_activity WHERE ref='MRE-T1' AND year=?")
+    .get(new Date().getFullYear());
   const te = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
   assert.equal((await request(app).delete(`/api/mre/${a.id}`)
     .set("Authorization", `Bearer ${te}`)).status, 403, "un éditeur ne supprime pas");
 
   const r = await request(app).delete(`/api/mre/${a.id}`).set("Authorization", `Bearer ${adminToken}`);
   assert.equal(r.status, 200);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM mre_cost WHERE activity_id=?").get(a.id).c, 0,
-    "les lignes de coût n'ont pas d'existence propre");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM mre_frequency WHERE activity_id=?").get(a.id).c, 0,
+    "le calendrier n'a pas d'existence propre");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM mre_spend WHERE activity_id=?").get(a.id).c, 0);
 });
 
 test("MRE : plan mélangeant les devises — aucun total général n'est inventé", async () => {
   const an = new Date().getFullYear() + 3;   /* année vierge, pour isoler le cas */
   for(const [titre, devise] of [["Activité en dollars","USD"], ["Activité en ariary","MGA"]]){
     const c = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
-      .send({ year:an, title:titre, currency:devise });
-    await request(app).put(`/api/mre/${c.body.activity.id}/costs`)
+      .send({ year:an, title:titre, currency:devise, unit_cost:1000 });
+    await request(app).put(`/api/mre/${c.body.activity.id}/frequencies`)
       .set("Authorization", `Bearer ${adminToken}`)
-      .send({ rev:c.body.activity.rev, lines:[{ category:"autre", label:"Forfait", qty:1, unit_cost:1000 }] });
+      .send({ rev:c.body.activity.rev, rows:[{ year:an, q:[1,0,0,0] }] });
   }
   const r = await request(app).get(`/api/mre?year=${an}`).set("Authorization", `Bearer ${adminToken}`);
   assert.equal(r.body.totals.currency, null, "pas de devise unique : pas de total présenté comme tel");
   assert.deepEqual(r.body.totals.devises.sort(), ["MGA","USD"]);
 });
 
-test("MRE : une ligne sans mois est répartie sur la durée, pas posée sur janvier", async () => {
-  const an = new Date().getFullYear() + 4;
+test("MRE : une activité pluriannuelle appartient à chacune de ses années", async () => {
+  const an = new Date().getFullYear() + 5;
   const c = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
-    .send({ year:an, title:"Suivi continu sur l'année", start_month:0, end_month:11 });
-  await request(app).put(`/api/mre/${c.body.activity.id}/costs`)
+    .send({ year:an, title:"Suivi continu sur trois exercices", unit_cost:400 });
+  await request(app).put(`/api/mre/${c.body.activity.id}/frequencies`)
     .set("Authorization", `Bearer ${adminToken}`)
-    .send({ rev:c.body.activity.rev,
-            lines:[{ category:"transport", label:"Carburant", qty:12, unit_cost:100 }] });
+    .send({ rev:c.body.activity.rev, rows:[
+      { year:an,   q:[1,1,1,1] }, { year:an+1, q:[1,1,1,1] }, { year:an+2, q:[2,0,0,0] } ] });
 
-  const r = await request(app).get(`/api/mre?year=${an}`).set("Authorization", `Bearer ${adminToken}`);
-  const m = r.body.parMois;
-  assert.ok(m.every(x => x.budget > 0), "les douze mois portent une part du coût");
-  assert.equal(m[0].budget, 100, "et non 1 200 en janvier");
-  /* L'invariant qui compte : la somme des mois est le budget, au centime près. */
-  assert.equal(Math.round(m.reduce((t,x)=>t+x.budget, 0) * 100) / 100, r.body.totals.budget);
+  /* Déclarée en `an`, elle doit apparaître dans le plan de `an+1` : c'est tout
+     l'intérêt du modèle pluriannuel, et un filtre sur l'année de déclaration
+     l'aurait fait disparaître de l'exercice où elle se déroule pourtant. */
+  const suivant = await request(app).get(`/api/mre?year=${an+1}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  const vue = suivant.body.rows.find(x => x.id === c.body.activity.id);
+  assert.ok(vue, "l'activité figure au plan de l'année suivante");
+  assert.equal(vue.budgetParAnnee[an+1].montant, 4 * 400);
+  assert.equal(suivant.body.totals.budget, 4 * 400, "et le total de cette année-là ne compte qu'elle");
 
-  /* Une ligne datée reste imputée à son mois : la répartition n'écrase pas une
-     information plus précise quand elle existe. */
-  const d = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
-    .send({ year:an, title:"Atelier daté", start_month:0, end_month:11 });
-  await request(app).put(`/api/mre/${d.body.activity.id}/costs`)
-    .set("Authorization", `Bearer ${adminToken}`)
-    .send({ rev:d.body.activity.rev,
-            lines:[{ category:"atelier", label:"Atelier", qty:1, unit_cost:600, month:6 }] });
-  const r2b = await request(app).get(`/api/mre?year=${an}`).set("Authorization", `Bearer ${adminToken}`);
-  assert.equal(r2b.body.parMois[6].budget, 100 + 600);
+  /* La troisième année ne porte que deux occurrences, toutes au premier trimestre. */
+  const troisieme = await request(app).get(`/api/mre?year=${an+2}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(troisieme.body.parTrimestre[0].occurrences, 2);
+  assert.equal(troisieme.body.parTrimestre[1].occurrences, 0);
+  assert.equal(troisieme.body.totals.budget, 2 * 400);
 });
 
-/* ═══════════════════════════════════════════════════════════════════════
-   Suivi tiers — TPM.
-
-   Deux choses se vérifient ici, et ce sont les deux raisons d'être du module.
-
-   D'abord que le budget est une conséquence de l'affectation : changer le nombre
-   de jours doit changer le montant, sans que personne ne retape un total. C'est
-   la règle du classeur de référence — qté1 × qté2 × coût unitaire — et si elle
-   se perd, le module redevient un tableur.
-
-   Ensuite que le circuit de validation ne se contourne pas. Trois niveaux dans
-   l'ordre, chacun ouvert à un acteur précis. Un plan validé par le mauvais
-   compte, ou validé au-delà du plafond contractuel, est exactement ce que ce
-   module existe pour empêcher.
-   ═══════════════════════════════════════════════════════════════════════ */
-
+/* Contexte partagé par les essais du suivi tiers : ils se lisent dans l'ordre,
+   chacun s'appuyant sur ce que le précédent a créé. */
 let tpmCtx = {};
 
 test("TPM : prestataire, contrat et barème — le budget dérive de l'affectation", async () => {
