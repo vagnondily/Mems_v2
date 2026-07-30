@@ -25,7 +25,12 @@ r.get("/state", (req, res) => {
                   ORDER BY name`).all(paysFilter)
     : db.prepare("SELECT * FROM offices ORDER BY name").all();
   const officeName = Object.fromEntries(offices.map(o=>[o.id, o.name]));
-  const partners = db.prepare("SELECT * FROM partners ORDER BY name").all();
+  /* Les partenaires suivent le pays, comme les bureaux : ils sont conventionnés
+     dans un pays et n'ont pas à apparaître dans les listes déroulantes d'un autre. */
+  const partners = paysFilter
+    ? db.prepare(`SELECT * FROM partners WHERE country_code=? OR country_code IS NULL
+                  ORDER BY active DESC, name`).all(paysFilter)
+    : db.prepare("SELECT * FROM partners ORDER BY active DESC, name").all();
   const partnerName = Object.fromEntries(partners.map(p=>[p.id, p.name]));
   const cats = db.prepare("SELECT * FROM activity_categories ORDER BY name").all();
   const catName = Object.fromEntries(cats.map(c=>[c.id, c.name]));

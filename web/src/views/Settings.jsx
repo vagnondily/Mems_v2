@@ -12,6 +12,7 @@ import { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, DURATIONS, D_FORMULAS, D_SEC
    bien que ce chemin-là n'avait jamais été emprunté. */
 import { GUESS, guessField, readGeoFile } from "../lib/shapefile.js";
 import { niveau, niveaux } from "../lib/levels.js";
+import Listes from "./Listes.jsx";
 import PaysEtDecoupage from "./Pays.jsx";
 import { Sources } from "./ActualData.jsx";
 import { MonthCellModal, MonthGrid, MonthLegend } from "./Planning.jsx";
@@ -19,7 +20,7 @@ import { BLOCKS } from "./Reports.jsx";
 import { PageHead } from "./Shell.jsx";
 
 /* ══════════════════ Paramètres ══════════════════ */
-function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
+function SettingsView({ db, set, me, sub, setSub, notify, can, reload, go }){
   /* La fusion de `main` avait repris sa propre liste d'onglets, sans « Bureaux » ni
      « Périmètre des bureaux » : les deux écrans existaient toujours dans le fichier
      mais n'étaient plus atteignables, et `reload` ne remontait plus. Les voici
@@ -29,6 +30,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
       {sub==="general" && <SetGeneral db={db} set={set} />}
       {sub==="country" && <PaysEtDecoupage db={db} notify={notify} can={can} reload={reload} />}
       {sub==="offices" && <SetOffices db={db} notify={notify} can={can} reload={reload} />}
+      {sub==="lists" && <Listes db={db} notify={notify} can={can} reload={reload} go={go} />}
       {sub==="about" && <SetAbout db={db} />}
       {sub==="sites" && <SitesModule db={db} set={set} me={me} notify={notify} can={can} context="settings" />}
       {sub==="scope" && <SetScope db={db} notify={notify} can={can} />}
@@ -48,7 +50,12 @@ function SetGeneral({ db, set }){
      chargement et n'était jamais renvoyée au serveur : toute saisie était perdue.
      Un bureau porte de surcroît une nature, un périmètre et des antennes, et il est
      référencé par les sites et les comptes — il a désormais son propre écran. */
-  const LISTS = [["partners","Partenaires coopérants"],["modalities","Types de modalité"]];
+  /* Les partenaires ne figurent plus ici. Ils y étaient présentés comme une liste de
+     noms modifiable, mais cette liste est dérivée de la table `partners` à chaque
+     chargement et n'était jamais renvoyée au serveur : la saisie était perdue au
+     rechargement. Même défaut que les bureaux avant leur écran propre, et même
+     correction — voir Paramètres → Listes de référence. */
+  const LISTS = [["modalities","Types de modalité"]];
   return (
     <div className="grid gap-4" style={{gridTemplateColumns:"repeat(auto-fit,minmax(330px,1fr))"}}>
       <Card title="Identité et affichage">

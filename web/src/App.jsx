@@ -246,7 +246,7 @@ export default function App(){
         {view==="reports" && <Reports db={db} set={set} sub={subs.reports}
           setSub={setSub("reports")} notify={notify} can={can} />}
         {view==="settings" && <SettingsView db={db} set={set} me={me} sub={subs.settings}
-          setSub={setSub("settings")} notify={notify} can={can} reload={loadState} />}
+          setSub={setSub("settings")} notify={notify} can={can} reload={loadState} go={setTab} />}
       </Boundary>
     </Shell>
     <Toast list={toasts} />

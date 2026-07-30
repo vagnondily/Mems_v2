@@ -193,6 +193,10 @@ export const api = {
   setDefaultCountry: (code)      => call("PUT", `/country/${encodeURIComponent(code)}/current`),
   deleteCountry:  (code)         => call("DELETE", `/country/${encodeURIComponent(code)}`),
 
+  partners:      ()        => call("GET", "/partners"),
+  createPartner: (b)       => call("POST", "/partners", b),
+  updatePartner: (id, b)   => call("PUT", `/partners/${encodeURIComponent(id)}`, b),
+  deletePartner: (id)      => call("DELETE", `/partners/${encodeURIComponent(id)}`),
   offices:      ()           => call("GET", "/offices"),
   createOffice: (o)          => call("POST", "/offices", o),
   updateOffice: (id, o)      => call("PUT", `/offices/${encodeURIComponent(id)}`, o),

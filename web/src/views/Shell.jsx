@@ -70,6 +70,7 @@ const NAV = [
     ["offices","Bureaux","Bureaux et antennes : nature, périmètre, responsable."],
     ["scope","Périmètre des bureaux","Quelles unités administratives chaque bureau couvre."],
     ["sites","Sites","Le registre des sites, modifiable en masse."],
+    ["lists","Listes de référence","Partenaires d'exécution et prestataires de suivi : ce que les menus déroulants proposent."],
     ["indicators","Indicateurs","Indicateurs de résultat : cible, sens, méthode, fréquence."],
     ["calc","Calculs","Exigence minimale de suivi, pondérations, formules de priorité."],
     ["odk","ODK Central","Connexion aux formulaires et rattachement aux activités."],
