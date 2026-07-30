@@ -131,19 +131,43 @@ if(info){
     const insPoi = db.prepare("INSERT INTO poi_subtypes (id,label,code) VALUES (?,?,?)");
     POI.forEach(([l,c]) => insPoi.run(newId("poi"), l, c));
 
+    /* Un centre par commune, partagé par tout ce qui porte des coordonnées : la
+       table plate historique, le référentiel arborescent et les sites. Avant, les
+       trois tiraient au hasard dans tout le sud de l'île indépendamment les uns
+       des autres — invisible sur une carte de points, absurde dès qu'on dessine les
+       contours, où chaque commune devenait un rectangle grand comme une région. */
+    const CENTRE = GEO.map((_, gi) => [
+      -25.4 + Math.floor(gi / 4) * 1.9 + (gi % 2) * 0.35,   /* latitude  */
+      43.8 + (gi % 4) * 1.15,                                /* longitude */
+    ]);
+    const autour = (gi, rayon) => {
+      const [la, lo] = CENTRE[gi]; const a = Math.random() * 2 * Math.PI;
+      const d = Math.sqrt(Math.random()) * rayon;
+      return [r5(la + Math.sin(a) * d), r5(lo + Math.cos(a) * d * 1.1)];
+    };
+
     /* Table plate historique — conservée tant que sites.geo_id la référence. */
     const insGeo = db.prepare("INSERT INTO geo (id,adm0,adm1,adm2,adm3,lat,lon) VALUES (?,?,?,?,?,?,?)");
-    GEO.forEach(g => insGeo.run(newId("geo"), g[0], g[1], g[2], g[3],
-      r5(-25+Math.random()*8), r5(43.5+Math.random()*4)));
+    GEO.forEach((g, gi) => insGeo.run(newId("geo"), g[0], g[1], g[2], g[3],
+      CENTRE[gi][0], CENTRE[gi][1]));
 
     /* Référentiel arborescent : c'est lui que l'application interroge désormais.
        Trois fokontany par commune, pour que la cascade ait quatre niveaux réels. */
+    /* Les coordonnées étaient tirées au hasard dans tout le sud de l'île, y compris
+       pour les fokontany d'une même commune. Sur une carte de points cela passait
+       inaperçu ; dès qu'on dessine les contours, chaque commune devient un
+       rectangle grand comme une région et l'emboîtement n'a plus de sens. Les
+       localités sont donc regroupées : une commune occupe une petite zone, ses
+       fokontany se répartissent autour de son centre. */
     const geoRows = [];
-    GEO.forEach(([adm0, adm1, adm2, adm3]) => {
-      for(let k = 1; k <= 3; k++)
+    GEO.forEach(([adm0, adm1, adm2, adm3], gi) => {
+      const [cLat, cLon] = CENTRE[gi];
+      for(let k = 1; k <= 3; k++){
+        const a = (k / 3) * 2 * Math.PI;
         geoRows.push({ adm0, adm1, adm2, adm3,
           adm4: `${adm3} ${["Centre","Nord","Sud"][k-1]}`,
-          lat: r5(-25+Math.random()*8), lon: r5(43.5+Math.random()*4) });
+          lat: r5(cLat + Math.sin(a) * 0.14), lon: r5(cLon + Math.cos(a) * 0.16) });
+      }
     });
     const { units } = buildUnits(geoRows);
     writeVersion({ label:"Jeu de démonstration", source:"seed.js", units });
@@ -177,6 +201,7 @@ if(info){
       for(let k=0;k<count;k++){
         const zone = ZONES[office] || GEO.map((_,i)=>i);
         const g = GEO[zone[n % zone.length]];
+        const pos = autour(zone[n % zone.length], 0.1);
         const label = CAT_SITE[tag] || pick(POI)[0];
         const poi = POI.find(p=>p[0]===label) || POI[1];
         const id = newId("site");
@@ -192,7 +217,11 @@ if(info){
             : label==="Formation sanitaire" ? "Health Center" : "FDP",
           adm1:g[1], adm2:g[2], adm3:g[3], adm4:`Fokontany ${g[3]} ${(n%9)+1}`,
           urban_area: n % 7 === 0 ? "Oui" : "Non",
-          lat: r5(-25+Math.random()*8), lon: r5(43.5+Math.random()*4),
+          /* Le site est dans sa commune, pas ailleurs dans l'île — et d'un seul
+             tirage : deux appels auraient croisé la latitude d'un point avec la
+             longitude d'un autre. Le rayon reste sous celui du cadre de la commune,
+             sinon des sites se retrouveraient hors de leur propre contour. */
+          lat: pos[0], lon: pos[1],
           security: pick([0,0,0,1,1,3]), modality: pick(["Espèces","Coupons","Vivres","Renforcement de capacités","Mixte"]),
           beneficiaries: 60 + Math.floor(Math.random()*7000),
           partner_id: partnerId[partner], responsible, last_visit:null,
@@ -471,6 +500,71 @@ if(info){
         insCost.run(newId("mrc"), id, cat, label, unit, qty, cost,
           r2(qty * cost * (0.85 + Math.random()*0.25) * (moisCourant+1)/12), null));
     });
+
+    /* ── Contours administratifs du jeu de démonstration ───────────────
+       Un fond de carte réel suppose un shapefile officiel, qui ne peut pas vivre
+       dans un dépôt de code. On fabrique donc des contours COHÉRENTS : chaque
+       district est un rectangle autour de ses communes, chaque commune un
+       rectangle autour de ses fokontany, et l'emboîtement est respecté. Ce n'est
+       pas la géographie de Madagascar, et le libellé de la source le dit — mais
+       cela suffit à ce que la carte, les aplats thématiques et le cadrage soient
+       exerçables sans fichier externe. */
+    {
+      const gvG = db.prepare("SELECT id FROM geo_version WHERE is_current=1").get();
+      /* Les unités feuilles portent déjà des coordonnées (posées à la génération) :
+         on remonte les cadres depuis elles. */
+      const unites = db.prepare(
+        `SELECT pcode, parent_pcode, level, lat, lon FROM geo_unit WHERE version_id=?`).all(gvG.id);
+      const enfantsDe = {};
+      unites.forEach(u => { if(u.parent_pcode)
+        (enfantsDe[u.parent_pcode] = enfantsDe[u.parent_pcode] || []).push(u); });
+
+      /* Cadre d'une unité : ses propres coordonnées, élargies par celles de ses
+         descendants. Calculé de bas en haut, une seule fois par unité. */
+      const cadres = {};
+      const cadreDe = (u) => {
+        if(cadres[u.pcode]) return cadres[u.pcode];
+        let box = null;
+        const etendre = (lon, lat, m) => {
+          const b = { w:lon-m, e:lon+m, s:lat-m, n:lat+m };
+          box = box ? { w:Math.min(box.w,b.w), e:Math.max(box.e,b.e),
+                        s:Math.min(box.s,b.s), n:Math.max(box.n,b.n) } : b;
+        };
+        for(const c of (enfantsDe[u.pcode] || [])){
+          const cb = cadreDe(c);
+          if(cb) box = box ? { w:Math.min(box.w,cb.w), e:Math.max(box.e,cb.e),
+                               s:Math.min(box.s,cb.s), n:Math.max(box.n,cb.n) } : { ...cb };
+        }
+        /* Marge propre au niveau : un fokontany est petit, une région large. */
+        const marge = { adm4:0.03, adm3:0.06, adm2:0.12, adm1:0.2, adm0:0.4 }[u.level] || 0.05;
+        if(u.lat != null && u.lon != null) etendre(u.lon, u.lat, marge);
+        if(!box) return (cadres[u.pcode] = null);
+        /* Un cadre plat ne se dessine pas : on l'épaissit du minimum. */
+        if(box.e - box.w < 0.01){ box.w -= 0.01; box.e += 0.01; }
+        if(box.n - box.s < 0.01){ box.s -= 0.01; box.n += 0.01; }
+        return (cadres[u.pcode] = box);
+      };
+
+      const insG = db.prepare(`INSERT INTO geo_geom
+        (pcode,version_id,level,geometry,simple,min_lon,min_lat,max_lon,max_lat,points,points_simple)
+        VALUES (?,?,?,?,?,?,?,?,?,5,5)`);
+      let nG = 0;
+      for(const u of unites){
+        if(u.level === "adm0") continue;   /* le pays n'a pas à être dessiné */
+        const b = cadreDe(u);
+        if(!b) continue;
+        const g = JSON.stringify({ type:"Polygon", coordinates:[[
+          [r5(b.w), r5(b.s)], [r5(b.e), r5(b.s)], [r5(b.e), r5(b.n)],
+          [r5(b.w), r5(b.n)], [r5(b.w), r5(b.s)] ]] });
+        /* Cinq sommets : la simplification n'aurait rien à retirer, les deux
+           résolutions sont donc identiques ici. */
+        insG.run(u.pcode, gvG.id, u.level, g, g, r5(b.w), r5(b.s), r5(b.e), r5(b.n));
+        nG++;
+      }
+      db.prepare(`UPDATE geo_version SET geom_units=?,
+                  geom_source='Contours de démonstration — rectangles emboîtés, non géographiques',
+                  geom_at=datetime('now') WHERE id=?`).run(nG, gvG.id);
+    }
 
     /* ── Suivi tiers ───────────────────────────────────────────────────
        Le barème et les quantités reprennent le classeur réel d'un prestataire de

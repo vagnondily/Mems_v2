@@ -1799,3 +1799,163 @@ test("TPM : le plafond ne se modifie pas en place, seulement par avenant", async
   assert.equal(db.prepare("SELECT ceiling FROM tpm_contract WHERE id=?").get(tpmCtx.contract).ceiling,
     avant, "le plafond initial est intact");
 });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Contours administratifs.
+
+   Le référentiel ne portait que des points ; la carte projetait des cercles sur
+   un fond vide, et une commune sans site n'apparaissait nulle part. Ce que ces
+   tests verrouillent : le rattachement par chemin de noms (les p-codes sont
+   dérivés, un fichier de contours porte rarement les mêmes), la simplification
+   effective, et le refus d'un fichier qui n'est pas en degrés.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Un carré, subdivisible : de quoi fabriquer des contours cohérents sans
+   dépendre d'un fichier externe. */
+const carre = (lon, lat, taille) => ({ type:"Polygon", coordinates:[[
+  [lon, lat], [lon+taille, lat], [lon+taille, lat+taille], [lon, lat+taille], [lon, lat] ]] });
+/* Un contour volontairement dense, pour que la simplification ait de quoi retirer. */
+const dense = (lon, lat, taille, n) => {
+  const pts = [];
+  for(let i = 0; i < n; i++){
+    const a = (i / n) * 2 * Math.PI;
+    /* Un cercle légèrement bruité : sans bruit, Douglas-Peucker garderait tout. */
+    const r = taille * (0.5 + (i % 3) * 0.001);
+    pts.push([lon + r*Math.cos(a), lat + r*Math.sin(a)]);
+  }
+  pts.push(pts[0]);
+  return { type:"Polygon", coordinates:[pts] };
+};
+
+test("contours : rattachement par chemin de noms, pas seulement par p-code", async () => {
+  const u = db.prepare(`SELECT u.pcode, u.name, u.level, p.name parent, g.name grand
+    FROM geo_unit u
+    LEFT JOIN geo_unit p ON p.version_id=u.version_id AND p.pcode=u.parent_pcode
+    LEFT JOIN geo_unit g ON g.version_id=u.version_id AND g.pcode=p.parent_pcode
+    WHERE u.level='adm3' LIMIT 3`).all();
+  assert.ok(u.length >= 2, "le référentiel comporte des communes");
+
+  const r = await request(app).post("/api/geo/geometry").set("Authorization", `Bearer ${adminToken}`)
+    .send({ reset:true, source:"essai.shp", features: u.map((x, i) => ({
+      /* Aucun p-code : uniquement les noms, comme un fichier de contours réel. */
+      names:{ adm1:x.grand, adm2:x.parent, adm3:x.name },
+      geometry: carre(45 + i, -20 - i, 0.5) })) });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.écrites, u.length, "toutes les unités ont été retrouvées par leur chemin");
+  assert.equal(r.body.rejetes, 0);
+
+  const lu = await request(app).get("/api/geo/geometry?level=adm3")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(lu.status, 200);
+  assert.equal(lu.body.type, "FeatureCollection");
+  assert.equal(lu.body.features.length, u.length);
+  assert.ok(lu.body.features.every(f => f.properties.pcode && f.properties.name));
+  /* Le cadre porte sur l'ensemble, et il encadre bien les carrés envoyés. */
+  assert.ok(lu.body.extent.west >= 44.9 && lu.body.extent.east <= 47.6, JSON.stringify(lu.body.extent));
+
+  /* Une unité inconnue est rejetée avec son motif, sans annuler le reste. */
+  const mixte = await request(app).post("/api/geo/geometry").set("Authorization", `Bearer ${adminToken}`)
+    .send({ features:[
+      { names:{ adm3:"Commune Qui N'Existe Pas" }, geometry: carre(45, -20, 0.2) },
+      { names:{ adm1:u[0].grand, adm2:u[0].parent, adm3:u[0].name }, geometry: carre(46, -21, 0.2) },
+    ] });
+  assert.equal(mixte.body.écrites, 1);
+  assert.equal(mixte.body.rejetes, 1);
+  assert.ok(/introuvable/.test(mixte.body.rejets[0].message), mixte.body.rejets[0].message);
+});
+
+test("contours : la simplification allège réellement, et les deux résolutions coexistent", async () => {
+  const u = db.prepare("SELECT u.pcode, u.name, p.name parent FROM geo_unit u LEFT JOIN geo_unit p ON p.pcode=u.parent_pcode AND p.version_id=u.version_id WHERE u.level='adm2' LIMIT 1").get();
+  const r = await request(app).post("/api/geo/geometry").set("Authorization", `Bearer ${adminToken}`)
+    .send({ features:[{ names:{ adm1:u.parent, adm2:u.name }, geometry: dense(46, -22, 1, 900) }] });
+  assert.equal(r.body.écrites, 1);
+
+  const ligne = db.prepare("SELECT * FROM geo_geom WHERE pcode=?").get(u.pcode);
+  assert.equal(ligne.points, 901, "la pleine résolution est conservée telle quelle");
+  assert.ok(ligne.points_simple < ligne.points / 3,
+    `la version simplifiée est nettement plus légère (${ligne.points_simple} sur ${ligne.points})`);
+  assert.ok(ligne.points_simple >= 4, "et reste un polygone valide");
+
+  /* La lecture par défaut sert la version simplifiée ; `detail` sert la fine. */
+  const simple = await request(app).get(`/api/geo/geometry?level=adm2`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  const fin = await request(app).get(`/api/geo/geometry?level=adm2&detail=true`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  const nb = (b) => b.features[0].geometry.coordinates[0].length;
+  assert.ok(nb(simple.body) < nb(fin.body),
+    `la vue d'ensemble est plus légère que le zoom (${nb(simple.body)} vs ${nb(fin.body)})`);
+});
+
+test("contours : un fichier qui n'est pas en degrés est refusé avec son motif", async () => {
+  const u = db.prepare("SELECT u.pcode, u.name, p.name parent FROM geo_unit u LEFT JOIN geo_unit p ON p.pcode=u.parent_pcode AND p.version_id=u.version_id WHERE u.level='adm2' LIMIT 1").get();
+  const r = await request(app).post("/api/geo/geometry").set("Authorization", `Bearer ${adminToken}`)
+    .send({ features:[{ names:{ adm1:u.parent, adm2:u.name },
+      /* Coordonnées en mètres : une projection UTM, pas du WGS 84. */
+      geometry: carre(512340, 7654320, 1000) }] });
+  assert.equal(r.body.écrites, 0);
+  assert.equal(r.body.rejetes, 1);
+  assert.ok(/WGS 84/.test(r.body.rejets[0].message), r.body.rejets[0].message);
+});
+
+test("contours : le millésime dit ce qu'il porte, et /state le sait au démarrage", async () => {
+  const v = await request(app).get("/api/geo/versions").set("Authorization", `Bearer ${adminToken}`);
+  const courant = v.body.rows.find(x => x.current);
+  assert.ok(courant.geom.units > 0, "le millésime compte ses contours");
+  assert.ok(courant.geom.parNiveau.length > 0, "et les détaille par niveau");
+  assert.ok(courant.geom.parNiveau.every(x => x.units > 0 && x.points > 0));
+
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(st.body.geoVersion.geom.units, courant.geom.units,
+    "la cartographie sait dès le premier rendu s'il y a un fond de carte");
+});
+
+test("contours : un contour comble les coordonnées manquantes sans écraser les existantes", async () => {
+  const v = db.prepare("SELECT id FROM geo_version WHERE is_current=1").get();
+  /* Une unité qu'on prive de coordonnées, comme le ferait un découpage sans centroïdes. */
+  const cible = db.prepare(`SELECT u.pcode, u.name, p.name parent FROM geo_unit u
+    LEFT JOIN geo_unit p ON p.pcode=u.parent_pcode AND p.version_id=u.version_id
+    WHERE u.level='adm3' AND u.version_id=? LIMIT 1`).get(v.id);
+  db.prepare("UPDATE geo_unit SET lat=NULL, lon=NULL WHERE pcode=? AND version_id=?")
+    .run(cible.pcode, v.id);
+
+  /* Une autre, dont on fixe les coordonnées : elles doivent survivre. */
+  const gardee = db.prepare(`SELECT u.pcode, u.name, p.name parent FROM geo_unit u
+    LEFT JOIN geo_unit p ON p.pcode=u.parent_pcode AND p.version_id=u.version_id
+    WHERE u.level='adm3' AND u.version_id=? AND u.pcode<>? LIMIT 1`).get(v.id, cible.pcode);
+  db.prepare("UPDATE geo_unit SET lat=-21.5, lon=46.5 WHERE pcode=? AND version_id=?")
+    .run(gardee.pcode, v.id);
+
+  await request(app).post("/api/geo/geometry").set("Authorization", `Bearer ${adminToken}`)
+    .send({ features:[
+      { pcode:cible.pcode,  geometry: carre(43, -25, 0.4) },
+      { pcode:gardee.pcode, geometry: carre(48, -15, 0.4) },
+    ] });
+
+  const a = db.prepare("SELECT lat, lon FROM geo_unit WHERE pcode=? AND version_id=?").get(cible.pcode, v.id);
+  assert.ok(a.lat != null && a.lon != null, "l'unité sans coordonnées en a reçu du contour");
+  assert.ok(a.lon > 43 && a.lon < 43.5 && a.lat < -24.5, JSON.stringify(a));
+  const b = db.prepare("SELECT lat, lon FROM geo_unit WHERE pcode=? AND version_id=?").get(gardee.pcode, v.id);
+  assert.equal(b.lat, -21.5, "les coordonnées existantes ne sont pas écrasées");
+  assert.equal(b.lon, 46.5);
+});
+
+test("contours : import réservé aux administrateurs, lecture ouverte", async () => {
+  const te = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  assert.equal((await request(app).get("/api/geo/geometry?level=adm2")
+    .set("Authorization", `Bearer ${te}`)).status, 200, "la lecture sert la carte de tous");
+  assert.equal((await request(app).post("/api/geo/geometry").set("Authorization", `Bearer ${te}`)
+    .send({ features:[{ pcode:"x", geometry: carre(45,-20,1) }] })).status, 403);
+  assert.equal((await request(app).delete("/api/geo/geometry")
+    .set("Authorization", `Bearer ${te}`)).status, 403);
+});
+
+test("contours : leur retrait est complet et remet le millésime à zéro", async () => {
+  const r = await request(app).delete("/api/geo/geometry").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200);
+  assert.ok(r.body.supprimes > 0);
+  const v = await request(app).get("/api/geo/versions").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(v.body.rows.find(x => x.current).geom.units, 0);
+  const lu = await request(app).get("/api/geo/geometry?level=adm3").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(lu.body.features.length, 0);
+  assert.equal(lu.body.extent, null);
+});

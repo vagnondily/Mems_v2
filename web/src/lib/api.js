@@ -108,6 +108,14 @@ export const api = {
   /* Un import crée un millésime complet : le serveur reconstruit l'arbre. */
   importGeo:    (rows, label, source) => call("POST", "/geo/bulk", { rows, label, source }),
 
+  /* Contours administratifs. L'import est envoyé par lots — les contours d'un pays
+     entier ne passent pas dans un corps de requête — et le premier lot porte
+     `reset` : sans lui, deux imports successifs mêleraient leurs géométries. */
+  geoGeometry:      (q="")                => call("GET", `/geo/geometry${q}`),
+  importGeometry:   (features, opts = {}) => call("POST", "/geo/geometry",
+                        { features, reset:!!opts.reset, source:opts.source, versionId:opts.versionId }),
+  clearGeometry:    ()                    => call("DELETE", "/geo/geometry"),
+
   mre:          (q="")       => call("GET", `/mre${q}`),
   createMre:    (a)          => call("POST", "/mre", a),
   updateMre:    (id, a)      => call("PUT", `/mre/${encodeURIComponent(id)}`, a),

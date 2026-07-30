@@ -114,6 +114,13 @@ r.get("/state", (req, res) => {
     counts: Object.fromEntries(db.prepare(
       `SELECT level, COUNT(*) c FROM geo_unit WHERE version_id=? GROUP BY level`)
       .all(gv.id).map(x => [x.level, x.c])),
+    /* L'état des contours au démarrage : la cartographie doit savoir dès le premier
+       rendu s'il y a un fond de carte, sans un aller-retour supplémentaire dont le
+       résultat arriverait après le premier affichage. */
+    geom: { units: gv.geom_units || 0, source: gv.geom_source || "", at: gv.geom_at || null,
+      parNiveau: gv.geom_units ? db.prepare(
+        `SELECT level, COUNT(*) units, SUM(points) points, SUM(points_simple) points_simple
+         FROM geo_geom WHERE version_id=? GROUP BY level ORDER BY level`).all(gv.id) : [] },
   } : null;
 
   const odkForms = db.prepare("SELECT * FROM odk_forms").all().map(f => ({

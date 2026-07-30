@@ -83,6 +83,37 @@ function readSHP(u8){
   }
   return shapes;
 }
+/* ── Anneaux ESRI vers géométrie GeoJSON ──────────────────────────────
+   Le format shapefile ne distingue pas les contours des trous par un champ : il
+   les distingue par le SENS de parcours. Un anneau parcouru dans le sens horaire
+   est un contour extérieur, un anneau anti-horaire est un trou du contour qui le
+   précède. Sans cette règle, un lac apparaîtrait comme une île.
+
+   L'aire signée donne le sens. En coordonnées géographiques (x = longitude,
+   y = latitude), une aire signée négative correspond au sens horaire. */
+function ringArea(r){
+  let a = 0;
+  for(let i = 0, j = r.length - 1; i < r.length; j = i++)
+    a += r[j][0]*r[i][1] - r[i][0]*r[j][1];
+  return a / 2;
+}
+function ringsToGeometry(rings){
+  if(!rings || !rings.length) return null;
+  const polys = [];
+  for(const r of rings){
+    if(r.length < 4) continue;
+    /* On referme l'anneau si le fichier ne l'a pas fait : GeoJSON l'exige. */
+    const anneau = (r[0][0] === r[r.length-1][0] && r[0][1] === r[r.length-1][1])
+      ? r : [...r, r[0]];
+    if(ringArea(anneau) < 0 || !polys.length) polys.push([anneau]);   /* extérieur */
+    else polys[polys.length - 1].push(anneau);                         /* trou */
+  }
+  if(!polys.length) return null;
+  return polys.length === 1
+    ? { type:"Polygon", coordinates: polys[0] }
+    : { type:"MultiPolygon", coordinates: polys };
+}
+
 function shapeCentroid(sh){
   if(!sh) return null;
   if(sh.pt) return sh.pt;
@@ -93,7 +124,7 @@ function shapeCentroid(sh){
   }
   return null;
 }
-async function readGeoFile(file){
+async function readGeoFile(file, opts = {}){
   const nm = file.name.toLowerCase();
   if(nm.endsWith(".geojson") || nm.endsWith(".json")){
     const j = JSON.parse(await file.text());
@@ -104,7 +135,11 @@ async function readGeoFile(file){
       if(g.type==="Polygon") return ringCentroid(g.coordinates[0]);
       if(g.type==="MultiPolygon") return ringCentroid(g.coordinates[0][0]);
       return null; });
-    return { src:file.name, fields:[...new Set(rows.flatMap(r=>Object.keys(r)))], rows, cent };
+    return { src:file.name, fields:[...new Set(rows.flatMap(r=>Object.keys(r)))], rows, cent,
+      /* Un GeoJSON porte déjà ses géométries : rien à convertir. */
+      geom: opts.withGeometry
+        ? feats.map(f => ["Polygon","MultiPolygon"].includes(f.geometry?.type) ? f.geometry : null)
+        : undefined };
   }
   const ab = await file.arrayBuffer();
   let src = file.name, att = null, shpEntry = null, entries = null;
@@ -120,8 +155,10 @@ async function readGeoFile(file){
   else throw new Error("Format non reconnu : utilisez .zip, .shp, .dbf ou .geojson");
 
   /* Chemin rapide : de nombreux découpages portent déjà les centroïdes en attributs.
-     On évite alors d'ouvrir la géométrie, qui pèse souvent des dizaines de mégaoctets. */
-  if(att){
+     On évite alors d'ouvrir la géométrie, qui pèse souvent des dizaines de mégaoctets.
+     Il ne s'applique pas quand on VEUT les contours : c'est justement la géométrie
+     qu'on vient chercher. */
+  if(att && !opts.withGeometry){
     const fx = att.fields.find(f => /^(x|lon|long|longitude|centroid_x|point_x)$/i.test(f));
     const fy = att.fields.find(f => /^(y|lat|lati|latitude|centroid_y|point_y)$/i.test(f));
     if(fx && fy && att.rows.some(r => Number.isFinite(parseFloat(r[fx])) && Number.isFinite(parseFloat(r[fy])))){
@@ -135,7 +172,8 @@ async function readGeoFile(file){
   const shpBuf = shpEntry.direct ? new Uint8Array(ab) : await zipRead(ab, shpEntry);
   const shapes = readSHP(shpBuf);
   if(!att) att = { fields:[], rows: shapes.map(()=>({})) };
-  return { src, fields: att.fields, rows: att.rows, cent: shapes.map(shapeCentroid) };
+  return { src, fields: att.fields, rows: att.rows, cent: shapes.map(shapeCentroid),
+    geom: opts.withGeometry ? shapes.map(sh => ringsToGeometry(sh.rings)) : undefined };
 }
 const GUESS = {
   adm0:[/^adm0[_ ]?(en|fr|name)?$/i,/^pays$/i,/^country/i],
@@ -148,4 +186,5 @@ const GUESS = {
 };
 const guessField = (fields,pats) => { for(const p of pats){ const f=fields.find(x=>p.test(x)); if(f) return f; } return ""; };
 
-export { GUESS, guessField, readDBF, readSHP, ringCentroid, shapeCentroid, zipIndex };
+export { GUESS, guessField, readDBF, readGeoFile, readSHP, ringCentroid, ringsToGeometry,
+         shapeCentroid, zipIndex };

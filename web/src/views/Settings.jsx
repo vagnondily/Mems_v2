@@ -6,7 +6,11 @@ import { Area, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, Respon
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, n, pct, r2, r5, siteRequirement, siteScore, uid } from "../lib/calc.js";
 import { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, DURATIONS, D_FORMULAS, D_SECURITY, D_STATUS, D_URBAN, MONITORING_TYPES, PROG_AREAS, SITE_TYPES, TABS_ALL, siteDerived, sitePriority } from "../lib/constants.js";
-import { GUESS, guessField } from "../lib/shapefile.js";
+/* `readGeoFile` était APPELÉ sans être importé : l'import de découpage depuis
+   l'interface levait « readGeoFile is not defined » dès le choix du fichier. Le
+   référentiel de production avait été chargé par le script src/import-geo.js, si
+   bien que ce chemin-là n'avait jamais été emprunté. */
+import { GUESS, guessField, readGeoFile } from "../lib/shapefile.js";
 import { Sources } from "./ActualData.jsx";
 import { MonthCellModal, MonthGrid, MonthLegend } from "./Planning.jsx";
 import { BLOCKS } from "./Reports.jsx";
@@ -880,6 +884,12 @@ function SetLocations({ db, notify, can }){
   const [map,setMap] = useState({}); const [label,setLabel] = useState("");
   const [depth,setDepth] = useState("adm4"); const [busy,setBusy] = useState(false);
   const [versions,setVersions] = useState([]);
+  /* Import des contours — indépendant de l'import du découpage : on charge d'abord
+     l'arbre (qui donne les p-codes), les géométries s'y rattachent ensuite. */
+  const [geomDraft,setGeomDraft] = useState(null);
+  const [geomMap,setGeomMap] = useState({});
+  const [geomStat,setGeomStat] = useState(null);
+  const [geomBusy,setGeomBusy] = useState(false);
 
   /* Répertoire : filtres en cascade et pagination, tout vient du serveur. */
   const [sel,setSel] = useState({ adm1:"", adm2:"", adm3:"" });
@@ -985,6 +995,64 @@ function SetLocations({ db, notify, can }){
   const exp = () => download("localites.csv",
     toCSV(dir.rows, ["adm1","adm2","adm3","adm4","pcode","lat","lon"]), "text/csv");
 
+  /* ── Contours ───────────────────────────────────────────────────────
+     La lecture se fait dans le navigateur, comme pour le découpage ; ce qui part
+     au serveur est la géométrie déjà extraite, par lots. Le serveur la simplifie
+     et en garde deux résolutions : la version fine ne s'affiche qu'au zoom, et
+     servir 18 000 contours en pleine résolution arrêterait le navigateur. */
+  const onGeomFile = async (file) => {
+    setGeomStat({ kind:"info", text:"Lecture des contours… cela peut prendre un moment sur un fichier de fokontany." });
+    try{
+      const d = await readGeoFile(file, { withGeometry:true });
+      const avec = (d.geom || []).filter(Boolean).length;
+      if(!avec) throw new Error("Aucun contour trouvé : ce fichier ne contient que des points ou une table attributaire. Il faut le .shp, ou un .geojson de polygones.");
+      setGeomDraft(d);
+      setGeomMap({ adm1:guessField(d.fields,GUESS.adm1), adm2:guessField(d.fields,GUESS.adm2),
+        adm3:guessField(d.fields,GUESS.adm3), adm4:guessField(d.fields,GUESS.adm4),
+        code:guessField(d.fields,GUESS.code) });
+      setGeomStat({ kind:"ok", text:`${fmt(avec)} contour(s) lus sur ${fmt(d.rows.length)} objets · ${d.fields.length} champs attributaires` });
+    }catch(e){ setGeomDraft(null); setGeomStat({ kind:"err", text:e.message }); }
+  };
+
+  const commitGeom = async () => {
+    if(!geomDraft) return;
+    setGeomBusy(true);
+    const LOT = 120;   /* un lot de contours de commune pèse déjà quelques mégaoctets */
+    let envoyes = 0, ecrites = 0, rejetes = 0; const motifs = [];
+    try{
+      const items = geomDraft.rows.map((r, i) => {
+        const g = geomDraft.geom[i];
+        if(!g) return null;
+        const names = {};
+        for(const k of ["adm1","adm2","adm3","adm4"])
+          if(geomMap[k] && r[geomMap[k]]) names[k] = String(r[geomMap[k]]);
+        if(!Object.keys(names).length && !geomMap.code) return null;
+        return { pcode: geomMap.code ? String(r[geomMap.code] ?? "") || undefined : undefined,
+                 names, geometry:g };
+      }).filter(Boolean);
+      if(!items.length) throw new Error("Aucun contour rattachable : indiquez au moins un champ de nom administratif");
+
+      for(let i = 0; i < items.length; i += LOT){
+        const lot = items.slice(i, i + LOT);
+        const r = await api.importGeometry(lot, { reset: i === 0, source: geomDraft.src });
+        envoyes += lot.length; ecrites += r.écrites; rejetes += r.rejetes;
+        if(r.rejets?.length && motifs.length < 8) motifs.push(...r.rejets.slice(0, 3));
+        setGeomStat({ kind:"info",
+          text:`Envoi… ${fmt(envoyes)} / ${fmt(items.length)} — ${fmt(ecrites)} rattaché(s)` });
+        /* On libère au fur et à mesure : garder tous les contours en mémoire pendant
+           l'envoi ferait doubler l'empreinte pour rien. */
+        for(let k = i; k < i + LOT && k < geomDraft.geom.length; k++) geomDraft.geom[k] = null;
+      }
+      await loadVersions();
+      setGeomDraft(null);
+      setGeomStat({ kind: rejetes ? "warn" : "ok",
+        text: `${fmt(ecrites)} contour(s) enregistré(s)` +
+          (rejetes ? ` · ${fmt(rejetes)} non rattaché(s) : ${motifs.map(m=>m.pcode).filter(Boolean).slice(0,3).join(", ")}…` : "") });
+      notify(`Contours administratifs enregistrés — ${fmt(ecrites)} unité(s)`, rejetes ? "warn" : "ok");
+    }catch(e){ setGeomStat({ kind:"err", text:e.message }); notify(e.message, "err"); }
+    setGeomBusy(false);
+  };
+
   const cur = db.geoVersion;
   const pages = Math.ceil(dir.total / PER);
   return (
@@ -1013,6 +1081,72 @@ function SetLocations({ db, notify, can }){
         <Note tone="warn"><b>Aucun référentiel chargé.</b> Les listes administratives resteront vides
           tant qu'un découpage n'aura pas été importé.</Note>
       )}
+
+      {/* ── Contours administratifs ──────────────────────────────────────
+          Le référentiel ne portait que des points, et la carte projetait des cercles
+          sur un fond vide : une commune non couverte n'apparaissait nulle part. Les
+          contours sont ce qui permet de la dessiner — et donc de la voir. */}
+      <Card title="Contours administratifs — fond de carte"
+        subtitle={cur?.geom?.units
+          ? `${fmt(cur.geom.units)} unité(s) avec contour${cur.geom.source ? ` · ${cur.geom.source}` : ""}`
+          : "aucun contour : la cartographie n'a pas de fond"}
+        right={can("admin") && cur?.geom?.units > 0 &&
+          <Btn size="sm" kind="sec" icon={Trash2} disabled={geomBusy}
+            onClick={async ()=>{ if(!confirm("Retirer tous les contours de ce millésime ?")) return;
+              try{ const r = await api.clearGeometry(); await loadVersions();
+                notify(`${fmt(r.supprimes)} contour(s) retiré(s)`, "ok");
+              }catch(e){ notify(e.message, "err"); } }}>Retirer les contours</Btn>}>
+
+        {!cur ? (
+          <Note tone="warn">Chargez d'abord un découpage : les contours se rattachent à
+            l'arbre administratif, ils ne le créent pas.</Note>
+        ) : (<>
+          {!!cur.geom?.parNiveau?.length && (
+            <StatRow>
+              {cur.geom.parNiveau.map(x=>(
+                <Stat key={x.level} label={{ adm0:"Pays", adm1:"Régions", adm2:"Districts",
+                  adm3:"Communes", adm4:"Fokontany" }[x.level] || x.level}
+                  value={fmt(x.units)}
+                  sub={`${fmt(x.points_simple)} sommets affichés sur ${fmt(x.points)}`} />))}
+            </StatRow>)}
+
+          <Note>Chargez le <b>.shp</b> (ou son archive <b>.zip</b>, ou un <b>.geojson</b> de polygones)
+            du niveau voulu. Le fichier est lu <b>dans le navigateur</b> ; seules les géométries
+            extraites partent au serveur, par lots. Le serveur les <b>simplifie</b> et en conserve
+            deux résolutions : la version allégée pour la vue d'ensemble, la version fine pour le zoom —
+            sans quoi un pays de 18 000 fokontany ne s'afficherait pas.
+            <br /><br />
+            Le rattachement se fait par <b>chemin de noms</b> (région, district, commune, fokontany),
+            comme pour les sites : les p-codes du référentiel sont dérivés du chemin, et un fichier de
+            contours porte rarement les mêmes que celui du découpage. Importez un niveau à la fois.</Note>
+
+          <div className="grid grid-cols-2 gap-x-4">
+            <Field label="Fichier de contours">
+              <input type="file" accept=".zip,.shp,.geojson,.json" disabled={!can("admin") || geomBusy}
+                onChange={e=>e.target.files[0]&&onGeomFile(e.target.files[0])}
+                className="w-full f125 border border-dashed border-slate-300 rounded p-2 bg-slate-50 cursor-pointer" /></Field>
+            <div className="self-center">{geomStat && <Note tone={geomStat.kind}>{geomStat.text}</Note>}</div>
+          </div>
+
+          {geomDraft && (<>
+            <div className="grid grid-cols-5 gap-x-3">
+              {[["adm1","Région"],["adm2","District"],["adm3","Commune"],["adm4","Fokontany"],
+                ["code","P-code (optionnel)"]].map(([k,l])=>(
+                <Field key={k} label={l}>
+                  <Select value={geomMap[k]||""} onChange={e=>setGeomMap(m=>({...m,[k]:e.target.value}))}
+                    empty="—" options={geomDraft.fields} className="mi-py1" /></Field>))}
+            </div>
+            <div className="flex items-center gap-3">
+              <Btn icon={Upload} disabled={geomBusy || !can("admin")} onClick={commitGeom}>
+                {geomBusy ? "Envoi en cours…" : "Enregistrer les contours"}</Btn>
+              <Btn kind="sec" disabled={geomBusy} onClick={()=>{ setGeomDraft(null); setGeomStat(null); }}>
+                Annuler</Btn>
+              <span className="f115 text-slate-500">
+                Le niveau est déduit du champ de nom le plus profond que vous désignez.</span>
+            </div>
+          </>)}
+        </>)}
+      </Card>
 
       <Card title="Importer un découpage administratif"
         right={<Btn size="sm" kind="sec" icon={Download} onClick={exp} disabled={!dir.rows.length}>Exporter la page</Btn>}>

@@ -217,6 +217,62 @@ sites partagent la même commune. Quand un site porte un `geo_pcode`, ses libell
 à `adm4` en sont **dérivés côté serveur** et ne peuvent plus diverger du référentiel. Ses
 coordonnées propres priment : une école n'est pas au centroïde de son fokontany.
 
+### Contours administratifs et fond de carte
+
+Le référentiel ne portait que des **points** : chaque unité avait un couple lat/lon, et la
+cartographie projetait des cercles sur un fond vide. On voyait donc où sont les sites,
+mais pas dans quoi — et une commune **sans** site n'apparaissait nulle part. C'est un vide,
+et un vide ne se dessine pas avec des points.
+
+`geo_geom` porte les contours, en GeoJSON texte. Trois décisions :
+
+1. **Pas d'extension spatiale.** L'application n'a aucun besoin de calcul géométrique :
+   elle a besoin de *dessiner*. Stocker le contour prêt à servir évite une dépendance
+   native, et le rendu se fait dans le navigateur, en SVG.
+2. **Deux résolutions.** Les contours des ~18 000 fokontany de Madagascar représentent des
+   millions de sommets ; aucun navigateur ne les affiche utilement à l'échelle du pays. Le
+   serveur simplifie à l'import (Douglas-Peucker, tolérance fonction du niveau — 0,01° pour
+   une région, 0,001° pour un fokontany) et garde les deux versions. La lecture sert la
+   version allégée ; `?detail=true` sert la fine, pour le zoom.
+3. **Le cadre englobant est stocké**, pas recalculé. Cadrer la carte sur une région
+   suppose de connaître son étendue ; la déduire à chaque requête obligerait à parcourir
+   tous les points de tous les contours affichés.
+
+**Le lecteur de shapefile lisait déjà les anneaux** — il les jetait après avoir calculé les
+centroïdes. Il n'y avait donc pas de dépendance à ajouter : le format `.shp` distingue les
+contours des trous par le **sens de parcours** (horaire = extérieur, anti-horaire = trou),
+et c'est cette règle qui manquait. Sans elle un lac apparaîtrait comme une île.
+
+Le fichier est lu **dans le navigateur** ; seules les géométries extraites partent au
+serveur, **par lots** de 120 — les contours d'un pays ne passent pas dans un corps de
+requête, et les charger d'un coup côté serveur ne ferait que déplacer le problème. Le
+premier lot porte `reset` : sans lui, deux imports successifs mêleraient leurs contours.
+
+Le rattachement se fait **par chemin de noms**, pas par p-code. Les p-codes du référentiel
+sont dérivés du chemin normalisé, et un fichier de contours porte rarement les mêmes que
+le fichier de découpage dont l'arbre a été importé ; exiger le p-code aurait fait échouer
+l'import sur un fichier parfaitement valide, sans dire pourquoi. Un contour **comble** au
+passage les coordonnées manquantes de son unité, sans écraser celles qui existent — un
+centroïde officiel vaut mieux qu'un calcul.
+
+Un fichier dont les coordonnées sortent du domaine des degrés est **rejeté avec son motif**
+(« le fichier n'est probablement pas en WGS 84 ») plutôt que dessiné au milieu de
+l'Atlantique.
+
+#### Sur la carte
+
+Quatre modes d'aplat — contours seuls, présence de sites, couverture du suivi,
+bénéficiaires — à n'importe quel niveau administratif. Le blanc est réservé au **zéro** : un
+vide doit se voir comme un vide, pas comme la première classe d'une échelle. Les valeurs
+sont agrégées depuis les sites déjà chargés, **par p-code** et non par nom : deux communes
+homonymes dans deux districts différents existent, et les confondre colorerait la mauvaise.
+Un site sans rattachement reste visible en point et compte dans aucune unité — l'écran le
+dit, plutôt que de le faire disparaître.
+
+Aucune tuile n'est appelée : le fond de carte **est** le découpage administratif, ce qui est
+de toute façon ce qu'utilise une carte opérationnelle humanitaire. La carte fonctionne hors
+ligne et ne fait sortir aucune donnée.
+
 ### Population, ciblage et distribution
 
 `population` était annuelle, clée sur un texte libre sans lien avec le découpage, et
@@ -517,6 +573,9 @@ elles exigent un jeton — en-tête `Authorization: Bearer …` ou cookie `httpO
 | GET | `/geo` | connecté | répertoire paginé, filtré par unité parente ou par recherche |
 | GET | `/geo/levels` | connecté | enfants d'une unité — la cascade se fait un niveau à la fois |
 | GET | `/geo/coverage` | connecté | unités couvertes et non couvertes, à tout niveau |
+| GET | `/geo/geometry` | connecté | contours d'un niveau, version allégée ou `?detail=true` |
+| POST | `/geo/geometry` | `admin` | import par lots ; le premier lot porte `reset` |
+| DELETE | `/geo/geometry` | `admin` | retire les contours du millésime courant |
 | GET | `/caseload` | connecté | population, ciblage et distribution par unité et par période |
 | GET | `/caseload/tags` | connecté | activités pour lesquelles un ciblage est renseigné |
 | PUT | `/caseload` | `edit` | écriture ligne à ligne, sans suppression implicite |
@@ -907,7 +966,7 @@ jamais un fichier déjà appliqué en production.
 ### Tests
 
 ```bash
-npm test              # 82 tests d'API puis 12 tests de bout en bout
+npm test              # 89 tests d'API puis 12 tests de bout en bout
 cd server && npm test # API seule
 cd web && npm test    # interface seule, contre un serveur réellement démarré
 ```

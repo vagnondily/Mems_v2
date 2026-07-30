@@ -1,0 +1,263 @@
+import { db, tx } from "../db.js";
+import { resolveUnit } from "./geo.js";
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Géométries administratives — simplification et service.
+
+   Un fond de carte administratif se heurte à un problème de volume, pas de
+   principe. Le découpage de Madagascar compte près de 18 000 fokontany ; leurs
+   contours en pleine résolution représentent des dizaines de millions de
+   sommets, et un navigateur qui en reçoit ne serait-ce que le dixième ne les
+   affiche pas — il s'arrête.
+
+   Deux réponses, appliquées ensemble :
+
+     on SIMPLIFIE à l'import (Douglas-Peucker), et on garde les deux versions ;
+     on ne SERT jamais un niveau entier au-delà de ce que l'écran peut montrer.
+
+   La tolérance dépend du niveau, parce que l'échelle d'affichage en dépend : une
+   région se regarde à l'échelle du pays, un fokontany à celle de la commune.
+   Simplifier un fokontany aussi grossièrement qu'une région le réduirait à un
+   triangle ; simplifier une région aussi finement qu'un fokontany ne servirait à
+   rien tout en pesant cent fois plus.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Tolérance de simplification, en degrés. 0,01° vaut environ 1,1 km à ces
+   latitudes ; 0,001° environ 110 m. */
+export const TOLERANCE = { adm0:0.02, adm1:0.01, adm2:0.005, adm3:0.002, adm4:0.001 };
+
+/* Douglas-Peucker. La distance est calculée dans le plan des degrés, sans
+   projection : l'erreur d'anisotropie est de l'ordre du cosinus de la latitude
+   (~0,9 à Madagascar) et n'a aucune conséquence sur une simplification dont le
+   but est de retirer des sommets invisibles à l'écran. Projeter d'abord aurait
+   coûté un aller-retour par point pour un gain nul. */
+function simplifyRing(pts, tol){
+  if(pts.length <= 4) return pts;
+  const t2 = tol * tol;
+  const garder = new Uint8Array(pts.length);
+  garder[0] = garder[pts.length - 1] = 1;
+
+  /* Pile explicite plutôt que récursion : un anneau côtier peut compter des
+     dizaines de milliers de points, et la récursion déborderait. */
+  const pile = [[0, pts.length - 1]];
+  while(pile.length){
+    const [a, b] = pile.pop();
+    if(b - a < 2) continue;
+    const [x1, y1] = pts[a], [x2, y2] = pts[b];
+    const dx = x2 - x1, dy = y2 - y1;
+    const norme = dx*dx + dy*dy;
+    let pire = -1, dMax = -1;
+    for(let i = a + 1; i < b; i++){
+      const [x, y] = pts[i];
+      let d;
+      if(norme === 0){ const ex = x - x1, ey = y - y1; d = ex*ex + ey*ey; }
+      else {
+        let u = ((x - x1)*dx + (y - y1)*dy) / norme;
+        u = u < 0 ? 0 : u > 1 ? 1 : u;
+        const px = x1 + u*dx, py = y1 + u*dy;
+        const ex = x - px, ey = y - py; d = ex*ex + ey*ey;
+      }
+      if(d > dMax){ dMax = d; pire = i; }
+    }
+    if(dMax > t2){ garder[pire] = 1; pile.push([a, pire], [pire, b]); }
+  }
+  const out = [];
+  for(let i = 0; i < pts.length; i++) if(garder[i]) out.push(pts[i]);
+  /* Un anneau doit rester fermé et compter au moins un triangle. Sous ce seuil la
+     simplification a détruit la forme : on rend l'original, qui est de toute façon
+     minuscule. */
+  if(out.length < 4) return pts;
+  if(out[0][0] !== out[out.length-1][0] || out[0][1] !== out[out.length-1][1]) out.push(out[0]);
+  return out;
+}
+
+const compte = (g) => {
+  if(!g) return 0;
+  if(g.type === "Polygon") return g.coordinates.reduce((t, r) => t + r.length, 0);
+  if(g.type === "MultiPolygon")
+    return g.coordinates.reduce((t, p) => t + p.reduce((u, r) => u + r.length, 0), 0);
+  return 0;
+};
+
+export function simplify(geometry, tol){
+  if(!geometry) return null;
+  if(geometry.type === "Polygon")
+    return { type:"Polygon",
+      coordinates: geometry.coordinates.map(r => simplifyRing(r, tol)) };
+  if(geometry.type === "MultiPolygon")
+    return { type:"MultiPolygon",
+      /* Un îlot réduit à moins d'un triangle disparaît : à l'échelle où cette
+         version sert, il ne représentait plus rien de visible. */
+      coordinates: geometry.coordinates
+        .map(p => p.map(r => simplifyRing(r, tol)).filter(r => r.length >= 4))
+        .filter(p => p.length) };
+  return geometry;
+}
+
+export function bbox(geometry){
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const balayer = (r) => { for(const [x, y] of r){
+    if(x < x0) x0 = x; if(x > x1) x1 = x;
+    if(y < y0) y0 = y; if(y > y1) y1 = y; } };
+  if(geometry?.type === "Polygon") geometry.coordinates.forEach(balayer);
+  else if(geometry?.type === "MultiPolygon")
+    geometry.coordinates.forEach(p => p.forEach(balayer));
+  if(!Number.isFinite(x0)) return null;
+  return { min_lon:x0, min_lat:y0, max_lon:x1, max_lat:y1 };
+}
+
+/* Centroïde du plus grand anneau extérieur. Sert à replacer une unité dont le
+   référentiel ne portait pas de coordonnées : importer des contours donne donc
+   aussi les points, et l'inverse n'était pas vrai. */
+export function centroid(geometry){
+  const anneaux = geometry?.type === "Polygon" ? [geometry.coordinates[0]]
+    : geometry?.type === "MultiPolygon" ? geometry.coordinates.map(p => p[0]) : [];
+  let best = null, bestA = -1;
+  for(const r of anneaux){
+    if(!r || r.length < 4) continue;
+    let a = 0, cx = 0, cy = 0;
+    for(let i = 0, j = r.length - 1; i < r.length; j = i++){
+      const f = r[j][0]*r[i][1] - r[i][0]*r[j][1];
+      a += f; cx += (r[j][0] + r[i][0]) * f; cy += (r[j][1] + r[i][1]) * f;
+    }
+    a *= 0.5;
+    if(Math.abs(a) < 1e-12) continue;
+    if(Math.abs(a) > bestA){ bestA = Math.abs(a); best = [cx/(6*a), cy/(6*a)]; }
+  }
+  return best;
+}
+
+/* ── Écriture ────────────────────────────────────────────────────────
+   Par lots, parce que l'ensemble ne passe pas dans une requête. Le client envoie
+   le premier lot avec `reset`, et le millésime se souvient de ce qu'il porte. */
+export function writeGeometries({ versionId, features, reset, source }){
+  const unites = Object.fromEntries(db.prepare(
+    "SELECT pcode, level, lat, lon FROM geo_unit WHERE version_id=?").all(versionId)
+    .map(u => [u.pcode, u]));
+
+  /* Rattachement d'un contour à son unité.
+
+     Par p-code quand le fichier en porte un ET qu'il figure dans le millésime.
+     Sinon PAR LE CHEMIN DE NOMS, comme les sites et le plan de distribution :
+     les p-codes du référentiel sont dérivés du chemin normalisé, et un fichier de
+     contours porte rarement les mêmes que le fichier de découpage dont on a
+     importé l'arbre. Exiger le p-code aurait fait échouer l'import sur un fichier
+     parfaitement valide, sans dire pourquoi. */
+  const resoudre = (f) => {
+    if(f.pcode && unites[f.pcode]) return f.pcode;
+    if(f.names){
+      const m = resolveUnit(f.names, versionId);
+      if(m?.pcode) return m.pcode;
+    }
+    return null;
+  };
+
+  const ins = db.prepare(`INSERT INTO geo_geom
+    (pcode,version_id,level,geometry,simple,min_lon,min_lat,max_lon,max_lat,points,points_simple)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(pcode,version_id) DO UPDATE SET
+      level=excluded.level, geometry=excluded.geometry, simple=excluded.simple,
+      min_lon=excluded.min_lon, min_lat=excluded.min_lat,
+      max_lon=excluded.max_lon, max_lat=excluded.max_lat,
+      points=excluded.points, points_simple=excluded.points_simple`);
+  /* Un contour donne un point : on comble les unités sans coordonnées, sans
+     écraser celles qui en ont déjà — le référentiel peut porter des centroïdes
+     officiels, meilleurs qu'un calcul. */
+  const majPoint = db.prepare(
+    "UPDATE geo_unit SET lat=?, lon=? WHERE pcode=? AND version_id=? AND (lat IS NULL OR lon IS NULL)");
+
+  let écrites = 0, points = 0, simples = 0;
+  const rejets = [];
+  tx(() => {
+    if(reset){
+      db.prepare("DELETE FROM geo_geom WHERE version_id=?").run(versionId);
+    }
+    for(const f of features){
+      const pcode = resoudre(f);
+      const u = pcode ? unites[pcode] : null;
+      if(!u){ rejets.push({ pcode: f.pcode || Object.values(f.names || {}).filter(Boolean).join(" / "),
+        message:"unité introuvable dans le millésime — ni par p-code ni par chemin de noms" });
+        continue; }
+      const g = f.geometry;
+      if(!g || !["Polygon","MultiPolygon"].includes(g.type)){
+        rejets.push({ pcode, message:"géométrie ni Polygon ni MultiPolygon" }); continue; }
+      const box = bbox(g);
+      if(!box){ rejets.push({ pcode, message:"géométrie vide" }); continue; }
+      /* Un contour dont les coordonnées sortent du domaine des degrés vient d'un
+         fichier en projection métrique : le rejeter avec son motif vaut mieux que
+         de dessiner l'océan Atlantique. */
+      if(box.min_lon < -180 || box.max_lon > 180 || box.min_lat < -90 || box.max_lat > 90){
+        rejets.push({ pcode,
+          message:"coordonnées hors du domaine géographique — le fichier n'est probablement pas en WGS 84" });
+        continue;
+      }
+      const s = simplify(g, TOLERANCE[u.level] ?? 0.002);
+      const np = compte(g), ns = compte(s);
+      ins.run(pcode, versionId, u.level, JSON.stringify(g), JSON.stringify(s),
+        box.min_lon, box.min_lat, box.max_lon, box.max_lat, np, ns);
+      const c = centroid(s);
+      if(c) majPoint.run(c[1], c[0], pcode, versionId);
+      écrites++; points += np; simples += ns;
+    }
+    const total = db.prepare("SELECT COUNT(*) c FROM geo_geom WHERE version_id=?").get(versionId).c;
+    db.prepare(`UPDATE geo_version SET geom_units=?, geom_source=COALESCE(?,geom_source),
+                geom_at=datetime('now') WHERE id=?`).run(total, source || null, versionId);
+  })();
+  return { écrites, points, simples, rejets: rejets.slice(0, 20), rejetes: rejets.length };
+}
+
+/* ── Lecture ─────────────────────────────────────────────────────────
+   Un niveau, éventuellement sous un parent. `detail` demande la pleine
+   résolution ; par défaut on rend la version simplifiée, qui est celle dont un
+   écran a besoin neuf fois sur dix. */
+export function readGeometries({ versionId, level, parent, detail = false, limit = 2000 }){
+  const where = ["g.version_id = ?"]; const args = [versionId];
+  if(level){ where.push("g.level = ?"); args.push(level); }
+  if(parent){
+    const p = db.prepare("SELECT path FROM geo_unit WHERE version_id=? AND pcode=?")
+      .get(versionId, parent);
+    if(!p) return { features:[], tronque:false };
+    where.push("(u.path = ? OR u.path LIKE ?)"); args.push(p.path, p.path + "/%");
+  }
+  const rows = db.prepare(`
+    SELECT g.pcode, g.level, ${detail ? "g.geometry" : "COALESCE(g.simple, g.geometry)"} geom,
+           g.min_lon, g.min_lat, g.max_lon, g.max_lat, u.name, u.parent_pcode
+    FROM geo_geom g JOIN geo_unit u ON u.pcode = g.pcode AND u.version_id = g.version_id
+    WHERE ${where.join(" AND ")} ORDER BY u.path LIMIT ?`).all(...args, limit + 1);
+
+  const tronque = rows.length > limit;
+  return {
+    tronque,
+    features: rows.slice(0, limit).map(x => ({
+      type:"Feature",
+      properties:{ pcode:x.pcode, level:x.level, name:x.name, parent:x.parent_pcode,
+                   bbox:[x.min_lon, x.min_lat, x.max_lon, x.max_lat] },
+      geometry: JSON.parse(x.geom),
+    })),
+  };
+}
+
+/* Le cadre d'un ensemble d'unités : ce sur quoi la carte doit se caler. Calculé
+   en SQL sur les cadres déjà stockés, jamais en parcourant les contours. */
+export function extent({ versionId, level, parent }){
+  const where = ["g.version_id = ?"]; const args = [versionId];
+  if(level){ where.push("g.level = ?"); args.push(level); }
+  if(parent){
+    const p = db.prepare("SELECT path FROM geo_unit WHERE version_id=? AND pcode=?")
+      .get(versionId, parent);
+    if(p){ where.push("(u.path = ? OR u.path LIKE ?)"); args.push(p.path, p.path + "/%"); }
+  }
+  const b = db.prepare(`SELECT MIN(g.min_lon) w, MIN(g.min_lat) s, MAX(g.max_lon) e,
+    MAX(g.max_lat) n, COUNT(*) c FROM geo_geom g
+    JOIN geo_unit u ON u.pcode=g.pcode AND u.version_id=g.version_id
+    WHERE ${where.join(" AND ")}`).get(...args);
+  return b?.c ? { west:b.w, south:b.s, east:b.e, north:b.n, units:b.c } : null;
+}
+
+/* Ce que le millésime porte, par niveau. L'écran de configuration doit pouvoir
+   dire « les régions et les districts ont leurs contours, les communes non ». */
+export function geomSummary(versionId){
+  return db.prepare(`SELECT level, COUNT(*) units, SUM(points) points,
+    SUM(points_simple) points_simple FROM geo_geom WHERE version_id=?
+    GROUP BY level ORDER BY level`).all(versionId);
+}

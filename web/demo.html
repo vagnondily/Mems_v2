@@ -8,7 +8,7 @@
   Démonstration statique de MEMS.
 
   Elle reprend l'intégralité de la surface de l'application réelle : 6 onglets,
-  29 sous-destinations, la matrice des rôles et le cloisonnement par bureau.
+  30 sous-destinations, la matrice des rôles et le cloisonnement par bureau.
   Aucune requête réseau n'est émise, aucune bibliothèque externe n'est chargée :
   ce fichier s'ouvre seul, depuis un disque ou une clé USB.
 
@@ -393,6 +393,32 @@ const CASELOAD = [
   { adm3:"Ambila",      adm2:"Manakara Atsimo",  pop: 26_800, hh: 5_600, targeted:  7_900, tag:"CAR" },
   { adm3:"Tolagnaro",   adm2:"Taolagnaro",       pop: 88_200, hh:18_400, targeted: 21_500, tag:"NTA" },
 ];
+/* ── Contours administratifs ───────────────────────────────────────────
+   Le référentiel ne portait que des points, et la carte projetait des cercles sur
+   un fond vide : une commune sans site n'apparaissait nulle part. Les contours
+   sont ce qui permet de la dessiner — et donc de voir les vides.
+
+   Ceux-ci sont fabriqués : un rectangle autour des fokontany de chaque commune,
+   un autre autour des communes de chaque district. Ce n'est pas la géographie de
+   Madagascar, et l'écran le dit — mais l'emboîtement est réel, ce qui suffit à
+   montrer ce que le fond de carte apporte. En production ils viennent d'un
+   shapefile officiel, lu dans le navigateur puis simplifié par le serveur. */
+function boiteAutour(pts, marge){
+  const la = pts.map(p=>p.lat), lo = pts.map(p=>p.lon);
+  return { w:Math.min(...lo)-marge, e:Math.max(...lo)+marge,
+           s:Math.min(...la)-marge, n:Math.max(...la)+marge };
+}
+const CONTOURS = (() => {
+  const par = (cle, marge) => {
+    const g = {};
+    GEO.forEach(x => { (g[x[cle]] = g[x[cle]] || []).push(x); });
+    return Object.entries(g).map(([nom, pts]) => ({
+      nom, niveau:cle, adm1:pts[0].adm1, adm2:pts[0].adm2, adm3:pts[0].adm3,
+      boite: boiteAutour(pts, marge) }));
+  };
+  return { adm2: par("adm2", 0.22), adm3: par("adm3", 0.1) };
+})();
+
 const OFFICE_OF_ADM2 = {
   "Ambovombe-Androy":"Bureau de terrain d'Ambovombe", "Tsihombe":"Bureau de terrain d'Ambovombe",
   "Bekily":"Bureau de terrain d'Ambovombe", "Ampanihy Ouest":"Bureau de terrain d'Ampanihy",
@@ -568,6 +594,72 @@ const OFFICE_CFG = OFFICES.map(o => {
     sites:SITES.filter(x=>x.office===o).length, active:true };
 });
 
+/* ── Suivi tiers (TPM) ────────────────────────────────────────────────
+   Le budget d'un prestataire n'est pas négocié puis suivi : il DÉCOULE de
+   l'affectation. On assigne des zones pour le mois, il en découle des équipes, des
+   jours et des véhicules, et le barème contractuel donne le montant —
+   qté1 × qté2 × coût unitaire, comme le classeur réel d'un prestataire.
+   Rien n'est stocké ici de ces totaux : ils sont calculés. */
+const TPM_BAREME = [
+  ["superviseur", "Indemnité des superviseurs", "pers-jour", 70000],
+  ["agent",       "Indemnité des agents",       "pers-jour", 60000],
+  ["vehicule",    "Location voiture",           "véhicule-jour", 300000],
+  ["carburant",   "Carburant voiture",          "litre", 5000],
+];
+const TPM_ETAT = { brouillon:["Brouillon",""], soumis:["Soumis","y"],
+  valide_tpm:["Validé prestataire","b"], valide_bureau:["Validé bureau","b"],
+  valide_pays:["Validé bureau pays","g"], renvoye:["Renvoyé","r"], cloture:["Clôturé",""] };
+const TPM_ETAPES = ["soumis","valide_tpm","valide_bureau","valide_pays"];
+
+const PRESTATAIRES = [
+  { id:"t1", nom:"Mahavotse Suivi", code:"MAHAVOTSE", office:"Bureau de terrain d'Ambovombe",
+    contrat:"TPM-2026-01", plafond:240_000_000, avenants:[["AV-01", 30_000_000,
+      "Extension du périmètre au district de Beloha", `${YEAR}-04-15`]] },
+  { id:"t2", nom:"Fanavotana Monitoring", code:"FANAVOTANA", office:"Bureau de terrain d'Ampanihy",
+    contrat:"TPM-2026-02", plafond:120_000_000, avenants:[] },
+];
+/* Quatre plans par prestataire, à quatre étapes du circuit : sans cette variété
+   l'écran de validation serait toujours vide et le circuit ne se verrait pas. */
+const TPM_PLANS = PRESTATAIRES.flatMap((t, ti) => {
+  const communes = GEO.filter(g => OFFICE_OF_ADM2[g.adm2] === t.office)
+    .map(g => g.adm3).filter((v, i, a) => a.indexOf(v) === i);
+  return [[Math.max(0,NOW_M-2),"cloture"], [Math.max(0,NOW_M-1),"valide_pays"],
+          [NOW_M,"valide_tpm"], [Math.min(11,NOW_M+1),"brouillon"]]
+    .map(([m, etat], pi) => {
+      const zones = communes.map((c, zi) => {
+        const jours = 2 + (zi % 3) * 2, sup = 1 + (zi % 2), ag = 1 + (zi % 3);
+        const trajet = jours > 4 ? 1 : 0, veh = 1, litres = 15 * jours;
+        const lignes = [
+          ["superviseur","Indemnité des superviseurs","pers-jour", jours+trajet, sup, 70000],
+          ["agent","Indemnité des agents","pers-jour", jours+trajet, ag, 60000],
+          ["vehicule","Location voiture","véhicule-jour", jours+trajet, veh, 300000],
+          ["carburant","Carburant voiture","litre", litres, 1, 5000],
+        ];
+        return { zone:c, equipe:`TEAM${zi+1}`, tag:["URT","NTA","SMP"][zi%3],
+          sup, ag, jours, trajet, veh, litres, lignes };
+      });
+      const budget = zones.reduce((tt,z)=>tt+z.lignes.reduce((u,l)=>u+l[3]*l[4]*l[5],0),0) + 80000;
+      const engage = ["valide_pays","cloture"].includes(etat);
+      return { id:`${t.id}-${pi}`, tpm:t, mois:m, ref:`${YEAR}-${String(m+1).padStart(2,"0")}-${ti+1}`,
+        etat, zones, budget,
+        depense: engage ? Math.round(budget * (0.72 + Math.random()*0.24)) : null,
+        avis: TPM_ETAPES.slice(0, TPM_ETAPES.indexOf(etat) + (etat==="cloture"?4:0) || 0) };
+    });
+});
+const monTpm = () => state.me.office
+  ? TPM_PLANS.filter(p => p.tpm.office === state.me.office) : TPM_PLANS;
+const soldeDe = (t) => {
+  const av = t.avenants.reduce((s,a)=>s+a[1], 0);
+  const plans = TPM_PLANS.filter(p => p.tpm.id === t.id);
+  const som = (f) => plans.filter(f).reduce((s,p)=>s+p.budget, 0);
+  const engage = som(p => ["valide_pays","cloture"].includes(p.etat));
+  const enCours = som(p => ["soumis","valide_tpm","valide_bureau"].includes(p.etat));
+  const depense = plans.reduce((s,p)=>s+(p.depense||0), 0);
+  const plafond = t.plafond + av;
+  return { plafond, av, engage, enCours, depense, disponible: plafond - engage,
+    conso: plafond ? Math.round(engage/plafond*1000)/10 : 0 };
+};
+
 const USERS = PROFILES.map(p => ({ ...p, email:`${p.first.toLowerCase()}@mems.mg`, active:true }));
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -621,7 +713,7 @@ const NAV = [
   /* Un sujet par destination : le prévu et le réalisé s'y basculent au lieu de
      se dupliquer dans deux menus distincts. */
   { id:"suivi",     label:"Suivi-évaluation", sub:[["summary","Résumé global"],["monitoring","Suivi des sites"],
-                                             ["mre","Plan MRE et budget"],
+                                             ["mre","Plan MRE et budget"],["tpm","Suivi tiers"],
                                              ["coverage","Couverture et MMR"],["map","Cartographie"],
                                              ["sites","Registre des sites"],["params","Paramètres de couverture"]] },
   { id:"programme", label:"Programme",  sub:[["distribution","Distributions"],["population","Population et outputs"],
@@ -977,12 +1069,45 @@ V["suivi:map"] = () => {
   const py = s => 20+((maxLa-s.lat)/degH)*(H-50);
   const colors = { URT:"var(--brand)", NTA:"var(--ok)", SMP:"var(--warn)", MPA:"var(--orange)",
                    ACL:"var(--aqua)", SAMS:"var(--magenta)", CAR:"var(--navy)" };
+  /* Le fond de carte : contours des communes, teintés selon la présence de sites.
+     Le blanc est réservé au zéro — un vide doit se voir comme un vide, pas comme la
+     première classe d'une échelle. */
+  const niveau = state.geoLevel || "adm3";
+  const contours = CONTOURS[niveau].filter(c =>
+    !state.me.office || OFFICE_OF_ADM2[c.adm2] === state.me.office);
+  const parUnite = {};
+  sites.forEach(st => { const cle = niveau === "adm3" ? st.adm3 : st.adm2;
+    const a = parUnite[cle] = parUnite[cle] || { sites:0, benef:0 };
+    a.sites++; a.benef += st.benef; });
+  const maxSites = Math.max(1, ...Object.values(parUnite).map(a=>a.sites));
+  const RAMP = ["#e8f2f8","#bcdcec","#8ac2dd","#4e9ec7","#0b6d9e"];
+  const aplat = (nom) => { const a = parUnite[nom];
+    if(!a || !a.sites) return "#ffffff";
+    return RAMP[Math.min(4, Math.floor((a.sites/maxSites)*5))]; };
+  const bx = (lon) => 30+((lon-minLo)/((maxLo-minLo)||1))*(W-60);
+  const by = (lat) => 20+((maxLa-lat)/degH)*(H-50);
+  const rect = (c) => `<rect x="${r2(bx(c.boite.w))}" y="${r2(by(c.boite.n))}"
+      width="${r2(bx(c.boite.e)-bx(c.boite.w))}" height="${r2(by(c.boite.s)-by(c.boite.n))}"
+      fill="${aplat(c.nom)}" fill-opacity=".9" stroke="#9fb2c0" stroke-width=".8">
+      <title>${esc(c.nom)} — ${(parUnite[c.nom]||{}).sites||0} site(s)</title></rect>`;
+
   return head("Cartographie",
-      "Projection équirectangulaire corrigée de la latitude, tracée à partir de vos seules coordonnées. Aucun fond de carte n'est appelé : aucune donnée ne sort de l'application.")
-    + card("Sites géolocalisés", `${sites.length} point(s) · correction de latitude ×${r2(kx)}`,
-      `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#f8fafc;border-radius:3px">
+      "Fond de carte administratif et points de site, en projection équirectangulaire corrigée de la latitude. Aucune tuile n'est appelée : la carte fonctionne hors ligne et aucune donnée ne sort de l'application.")
+    + card("Sites géolocalisés", `${sites.length} point(s) · ${contours.length} contour(s) · correction de latitude ×${r2(kx)}`,
+      `<div style="display:flex;gap:8px;margin-bottom:10px">
+        ${[["adm2","Districts"],["adm3","Communes"]].map(([k,l])=>
+          `<button data-geolevel="${k}" class="vbtn ${niveau===k?"on":""}">${l}</button>`).join("")}
+        <span style="margin-left:auto;display:flex;align-items:center;gap:8px;font-size:11px;color:var(--t2)">
+          Présence de sites
+          <span style="display:flex;height:10px;width:110px;border:1px solid var(--line);border-radius:2px;overflow:hidden">
+            <i style="flex:1;background:#fff"></i>${RAMP.map(c=>`<i style="flex:1;background:${c}"></i>`).join("")}
+          </span>
+          <span>aucun → ${maxSites}</span></span>
+      </div>
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#f8fafc;border-radius:3px">
         ${[0,1,2,3,4].map(i=>`<line x1="30" y1="${20+i*(H-50)/4}" x2="${W-30}" y2="${20+i*(H-50)/4}" stroke="#e8edf1"/>`).join("")}
         ${[0,1,2,3,4].map(i=>`<line x1="${30+i*(W-60)/4}" y1="20" x2="${30+i*(W-60)/4}" y2="${H-30}" stroke="#e8edf1"/>`).join("")}
+        ${contours.map(rect).join("")}
         ${sites.map(s=>`<g>
           <circle cx="${px(s)}" cy="${py(s)}" r="${6+Math.sqrt(s.benef)/28}"
             fill="${colors[s.tag]||"var(--t3)"}" fill-opacity=".72" stroke="#fff" stroke-width="1.5"/>
@@ -1463,6 +1588,94 @@ V["suivi:mre"] = () => head("Plan MRE et budget",
     btn("Exporter","")+" "+btn("Ajouter une activité","edit",1))
   + volet("mre", "Plan et budget", "Exécution budgétaire", { plan: PLAN_mre, reel: REEL_mre });
 
+/* ── Suivi tiers ───────────────────────────────────────────────────── */
+const tpmCircuit = (etat) => {
+  const i = etat === "cloture" ? 4 : TPM_ETAPES.indexOf(etat);
+  const renv = etat === "renvoye";
+  return `<span style="display:inline-flex;gap:3px;align-items:center">` +
+    ["Prestataire","Bureau","Bureau pays"].map((l,k)=>{
+      const cls = renv ? "background:#fef2f2;color:#b91c1c"
+        : i > k ? "background:#f7fee7;color:#3f6212"
+        : i === k ? "background:#fffbeb;color:#92400e" : "background:#f8fafc;color:#94a3b8";
+      return `${k?'<span style="color:#cbd5e1">›</span>':""}<span style="${cls};padding:1px 6px;border-radius:3px;font-size:10.5px;font-weight:600">${l}</span>`;
+    }).join("") + `</span>`;
+};
+
+V["suivi:tpm"] = () => {
+  const plans = monTpm();
+  const tot = plans.reduce((s,p)=>s+p.budget,0);
+  const eng = plans.filter(p=>["valide_pays","cloture"].includes(p.etat)).reduce((s,p)=>s+p.budget,0);
+  const dep = plans.reduce((s,p)=>s+(p.depense||0),0);
+  const attente = plans.filter(p=>TPM_ETAPES.includes(p.etat)).length;
+  const presta = PRESTATAIRES.filter(t => !state.me.office || t.office === state.me.office);
+  /* Le plan ouvert : celui du mois courant, qui est en attente de validation. */
+  const ouvert = plans.find(p => p.etat === "valide_tpm") || plans[0];
+
+  return head("Suivi tiers",
+      "Prestataires de suivi : zones affectées par mois, budget estimatif dérivé du barème contractuel, validation à trois niveaux, dépenses et plafond du contrat.")
+    + `<div class="stats">
+        ${stat("Plans de l'exercice", fmt(plans.length), `${attente} en attente de validation`)}
+        ${stat("Budget soumis", fmt(tot)+" MGA", "tous états confondus")}
+        ${stat("Engagé", fmt(eng)+" MGA", "plans validés au niveau pays")}
+        ${stat("Dépensé", fmt(dep)+" MGA", "dépenses constatées")}
+      </div>`
+    + `<div class="note info">Le budget n'est <b>jamais saisi</b> : il découle de l'affectation.
+        On assigne des zones pour le mois, on dit combien de superviseurs, d'agents, de jours
+        et de véhicules ; le barème du contrat fait le reste — <b>qté1 × qté2 × coût unitaire</b>,
+        sous-total par équipe, comme le classeur d'un prestataire réel. Aucun total n'est stocké.</div>`
+    + card("Plans mensuels", `${plans.length} plan(s) · le budget est dérivé du barème contractuel`,
+        table([["Mois"],["Prestataire"],["Réf."],["Zones","n"],["Budget","n"],["Dépensé","n"],
+               ["Circuit"],["État"]],
+          plans.map(p=>[MONTHS_L[p.mois]+" "+YEAR, esc(p.tpm.nom),
+            `<span style="color:var(--t2);font-size:11.5px">${esc(p.ref)}</span>`,
+            p.zones.length, `<b>${fmt(p.budget)}</b>`,
+            p.depense==null ? "—" : `${fmt(p.depense)}<div style="font-size:10.5px;color:var(--t2)">${Math.round(p.depense/p.budget*1000)/10} %</div>`,
+            tpmCircuit(p.etat),
+            `<span class="badge ${TPM_ETAT[p.etat][1]}">${esc(TPM_ETAT[p.etat][0])}</span>`])), 1)
+
+    + (ouvert ? card(`Plan ouvert — ${ouvert.tpm.nom}, ${MONTHS_L[ouvert.mois]} ${YEAR}`,
+        `${TPM_ETAT[ouvert.etat][0]} · ${ouvert.zones.length} zone(s) · budget calculé ${fmt(ouvert.budget)} MGA`,
+        table([["Zone"],["Activité"],["Équipe"],["Sup.","n"],["Agents","n"],["Jours","n"],
+               ["Trajet","n"],["Véhic.","n"],["Litres","n"],["Sous-total","n"]],
+          ouvert.zones.map(z=>[`<b>${esc(z.zone)}</b>`, esc(z.tag), esc(z.equipe),
+            z.sup, z.ag, z.jours, z.trajet, z.veh, z.litres,
+            `<b>${fmt(z.lignes.reduce((s,l)=>s+l[3]*l[4]*l[5],0))}</b>`])
+            .concat([[`<b>Frais communs</b>`,"groupe électrogène","","","","","","","",`<b>${fmt(80000)}</b>`],
+                     [`<b>Total général</b>`,"","","","","","","","",`<b>${fmt(ouvert.budget)}</b>`]])), 1)
+      + card("Détail du budget — première équipe",
+          "Les intitulés du classeur de référence : Qtté 1 (jr), Qtté 2 (nb), coût unitaire, total",
+          table([["Ligne"],["Unité"],["Qté 1 (jr)","n"],["Qté 2 (nb)","n"],["Coût unitaire","n"],["Total","n"]],
+            ouvert.zones[0].lignes.map(l=>[esc(l[1]), esc(l[2]), fmt(l[3]), fmt(l[4]),
+              fmt(l[5]), `<b>${fmt(l[3]*l[4]*l[5])}</b>`])
+              .concat([[`<b>Sous-total ${esc(ouvert.zones[0].equipe)}</b>`,"","","","",
+                `<b>${fmt(ouvert.zones[0].lignes.reduce((s,l)=>s+l[3]*l[4]*l[5],0))}</b>`]])), 1)
+      : "")
+
+    + card("Contrats et plafonds",
+        "Le plafond ne se modifie pas en place : il évolue par avenants datés et motivés",
+        table([["Prestataire"],["Contrat"],["Plafond","n"],["Avenants","n"],["Engagé","n"],
+               ["En cours","n"],["Dépensé","n"],["Disponible","n"],["Consommation"]],
+          presta.map(t=>{ const s2 = soldeDe(t);
+            return [`<b>${esc(t.nom)}</b><div style="font-size:10.5px;color:var(--t2)">${esc(t.office)}</div>`,
+              esc(t.contrat), fmt(t.plafond),
+              s2.av ? `<span style="color:var(--ok);font-weight:600">+${fmt(s2.av)}</span>` : "—",
+              `<b>${fmt(s2.engage)}</b>`, s2.enCours ? fmt(s2.enCours) : "—",
+              fmt(s2.depense), fmt(s2.disponible),
+              `<div style="display:flex;align-items:center;gap:8px">${bar(s2.conso, s2.conso>95?"bad":s2.conso>80?"warn":"ok")}<span style="font-size:11.5px">${s2.conso} %</span></div>`];
+          })), 1)
+    + card("Barème contractuel", "Ce qui transforme une affectation en budget",
+        table([["Poste"],["Unité"],["Coût unitaire","n"],["Rôle dans le calcul"]],
+          TPM_BAREME.map(([d,l,u,c])=>[esc(l), esc(u), fmt(c),
+            `<span style="color:var(--t2);font-size:11px">${{superviseur:"superviseurs × jours",
+              agent:"agents × jours", vehicule:"véhicules × jours", carburant:"litres"}[d]}</span>`])), 1)
+    + card(null, null, `<div class="note warn">
+        <b>Trois niveaux de validation, dans l'ordre.</b> Le responsable du prestataire, puis le
+        suivi-évaluation du bureau, puis celui du bureau pays. Chaque passage consigne qui, quand,
+        quelle décision, quel motif — et <b>pour quel montant</b> : un plan modifié ensuite ne doit pas
+        laisser croire que ce montant-là avait été approuvé. Le <b>plafond</b> est vérifié au dernier
+        niveau seulement : tant qu'un plan circule, il n'engage rien.</div>`);
+};
+
 /* ── Bureaux ───────────────────────────────────────────────────────── */
 V["settings:offices"] = () => head("Bureaux",
     "Un bureau porte les sites, les comptes, les paramètres de couverture et le plan de distribution. Son mode de périmètre décide de ce que ses comptes non administrateurs peuvent voir.",
@@ -1567,6 +1780,8 @@ function render(){ renderNav(); renderWho(); renderView(); }
 document.addEventListener("click", e => {
   const vb = e.target.closest("[data-volet]");
   if(vb){ state.volet[vb.dataset.volet] = vb.dataset.v; renderView(); return; }
+  const gl = e.target.closest("[data-geolevel]");
+  if(gl){ state.geoLevel = gl.dataset.geolevel; renderView(); return; }
 
   const go = e.target.closest("[data-go]");
   const prof = e.target.closest("[data-prof]");

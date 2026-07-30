@@ -33,6 +33,53 @@ const COLOR_MODES = [
   ["status", "Statut du site"],
 ];
 
+/* Aplats du fond de carte. « Aucun » laisse les contours en simple trait : c'est
+   ce qu'il faut quand on regarde les points. Les trois autres répondent à des
+   questions que le module de ciblage posait déjà en tableau, et qu'un tableau ne
+   sait pas montrer — où sont les vides. */
+const FILL_MODES = [
+  ["none",     "Contours seuls"],
+  ["presence", "Présence de sites"],
+  ["coverage", "Couverture du suivi"],
+  ["benef",    "Bénéficiaires"],
+];
+const GEO_LEVELS = [["adm1","Régions"],["adm2","Districts"],["adm3","Communes"],["adm4","Fokontany"]];
+
+/* Une géométrie GeoJSON vers un chemin SVG, projeté.
+
+   L'arrondi à 0,1 pixel n'est pas une coquetterie : un contour de commune compte
+   des centaines de sommets, et écrire « 412.7382910384 » plutôt que « 412.7 »
+   multiplie par trois la taille du DOM pour une différence invisible. Sur un
+   millier de contours, cela se voit à l'affichage. */
+function pathOf(geometry, proj){
+  if(!geometry || !proj) return "";
+  const r1 = (v) => Math.round(v * 10) / 10;
+  const anneau = (r) => {
+    let d = "";
+    for(let i = 0; i < r.length; i++){
+      const x = r1(proj.x(r[i][0])), y = r1(proj.y(r[i][1]));
+      d += (i ? "L" : "M") + x + " " + y;
+    }
+    return d + "Z";
+  };
+  if(geometry.type === "Polygon") return geometry.coordinates.map(anneau).join("");
+  if(geometry.type === "MultiPolygon")
+    return geometry.coordinates.map(p => p.map(anneau).join("")).join("");
+  return "";
+}
+
+/* Échelle d'aplat séquentielle, du plus clair au plus foncé de la teinte de
+   marque. Cinq classes : au-delà, l'œil ne distingue plus, et en dessous on perd
+   l'information. Le blanc est réservé au zéro — un vide doit se voir comme un vide,
+   pas comme la première classe. */
+const RAMP = ["#e8f2f8", "#bcdcec", "#8ac2dd", "#4e9ec7", "#0b6d9e"];
+function classify(v, max){
+  if(v == null || max <= 0) return null;
+  if(v <= 0) return null;
+  const k = Math.min(RAMP.length - 1, Math.floor((v / max) * RAMP.length));
+  return RAMP[k];
+}
+
 export default function MapView({ db, me, notify, go }){
   const [rows, setRows] = useState([]);
   const [bounds, setBounds] = useState(null);
@@ -44,6 +91,11 @@ export default function MapView({ db, me, notify, go }){
   const [sizeByBenef, setSizeByBenef] = useState(true);
   const [f, setF] = useState({ office_id:"", adm1:"", adm2:"", activity_tag:"", status:"Active" });
   const [view, setView] = useState({ k:1, dx:0, dy:0 });
+  /* Fond de carte : contours administratifs et mode d'aplat. */
+  const [fillMode, setFillMode] = useState("presence");
+  const [geoLevel, setGeoLevel] = useState("adm2");
+  const [shapes, setShapes] = useState({ features:[], extent:null, tronque:false, loading:false });
+  const [selShape, setSelShape] = useState(null);
   const W = 900, H = 560;
 
   const load = async () => {
@@ -61,17 +113,30 @@ export default function MapView({ db, me, notify, go }){
   const filtered = useMemo(() => !q ? rows : rows.filter(s =>
     [s.code, s.name, s.adm3, s.adm4, s.office].join(" ").toLowerCase().includes(q.toLowerCase())), [rows, q]);
 
-  const proj = useMemo(() => makeProjection(bounds, W, H), [bounds]);
+  /* Le cadrage tient compte des contours : sans cela une région dont les sites
+     sont regroupés dans un coin verrait son contour dépasser de l'écran. */
+  const cadre = useMemo(() => {
+    const e = shapes.extent;
+    if(!e) return bounds;
+    const g = { minLat:e.south, maxLat:e.north, minLon:e.west, maxLon:e.east };
+    if(!bounds) return g;
+    return { minLat:Math.min(bounds.minLat, g.minLat), maxLat:Math.max(bounds.maxLat, g.maxLat),
+             minLon:Math.min(bounds.minLon, g.minLon), maxLon:Math.max(bounds.maxLon, g.maxLon) };
+  }, [bounds, shapes.extent]);
+  const proj = useMemo(() => makeProjection(cadre, W, H), [cadre]);
   const tags = useMemo(() => [...new Set(rows.map(s => s.activity_tag).filter(Boolean))].sort(), [rows]);
   /* Le référentiel vient du serveur, niveau par niveau : le navigateur ne
      charge jamais les 18 000 fokontany pour alimenter deux listes déroulantes. */
   const geo = useGeoCascade({ adm1: f.adm1 });
-  /* Repères de fond : centroïdes des communes du périmètre affiché. Bornés à 1 200
-     points — au-delà, ils forment une tache grise sans rien apprendre. */
+  /* Repères de fond : centroïdes des communes du périmètre affiché. Bornés à 1 000,
+     qui est la limite du serveur — on demandait 1 200, la requête repartait en 422,
+     et le `catch` du client vidait la liste sans rien dire : ces repères ne se sont
+     jamais affichés. Au-delà de ce nombre ils forment de toute façon une tache
+     grise sans rien apprendre. */
   const [geoMarks, setGeoMarks] = useState([]);
   useEffect(() => {
     let alive = true;
-    const qs = new URLSearchParams({ level:"adm3", limit:"1200" });
+    const qs = new URLSearchParams({ level:"adm3", limit:"1000" });
     if(geo.codes.adm2) qs.set("parent", geo.codes.adm2);
     else if(geo.codes.adm1) qs.set("parent", geo.codes.adm1);
     api.geo("?"+qs)
@@ -79,6 +144,26 @@ export default function MapView({ db, me, notify, go }){
       .catch(() => { if(alive) setGeoMarks([]); });
     return () => { alive = false; };
   }, [geo.codes.adm1, geo.codes.adm2]);
+
+  /* ── Contours administratifs ───────────────────────────────────────
+     Chargés par niveau et bornés au parent affiché. La version servie est la
+     version simplifiée : c'est celle dont un écran de 900 pixels a besoin, et
+     demander la pleine résolution d'un pays entier n'afficherait rien de plus
+     tout en pesant cent fois plus lourd. */
+  useEffect(() => {
+    let alive = true;
+    if(!db.geoVersion?.geom?.units){ setShapes({ features:[], extent:null, tronque:false, loading:false }); return; }
+    setShapes(s => ({ ...s, loading:true }));
+    const qs = new URLSearchParams({ level:geoLevel, limit:"1500" });
+    const parent = geo.codes.adm2 || geo.codes.adm1;
+    if(parent) qs.set("parent", parent);
+    api.geoGeometry("?"+qs)
+      .then(r => { if(alive) setShapes({ features:r.features||[], extent:r.extent,
+        tronque:!!r.tronque, loading:false }); })
+      .catch(() => { if(alive) setShapes({ features:[], extent:null, tronque:false, loading:false }); });
+    return () => { alive = false; };
+  }, [geoLevel, geo.codes.adm1, geo.codes.adm2, db.geoVersion?.geom?.units]);
+
   const adm1s = useMemo(() => names(geo.adm1), [geo.adm1]);
   const adm2s = useMemo(() => names(geo.adm2), [geo.adm2]);
 
@@ -109,6 +194,44 @@ export default function MapView({ db, me, notify, go }){
       never: never.length, benef: filtered.reduce((t,s) => t + n(s.beneficiaries), 0),
       coverage: pct(visited.length, active.length) };
   }, [filtered]);
+
+  /* ── Valeurs thématiques par unité ─────────────────────────────────
+     Agrégées depuis les sites déjà chargés, par p-code. Le rattachement se fait
+     par code et non par nom : deux communes homonymes dans deux districts
+     différents existent, et les confondre colorerait la mauvaise. Un site dont le
+     p-code manque ne compte pour aucune unité — il est visible en point, ce qui
+     est la bonne façon de signaler qu'il n'est pas rattaché.
+
+     Les valeurs remontent d'un niveau à l'autre par la propriété `parent` que le
+     serveur joint à chaque contour : les sites sont à la commune, la carte peut
+     être au district. */
+  const themeValues = useMemo(() => {
+    if(fillMode === "none" || !shapes.features.length) return { par:{}, max:0, absent:0 };
+    /* Chaîne de parenté des contours affichés, pour remonter un site plus fin. */
+    const parentDe = {};
+    shapes.features.forEach(f => { parentDe[f.properties.pcode] = f.properties.parent; });
+    const cible = new Set(shapes.features.map(f => f.properties.pcode));
+
+    const par = {}; let absent = 0;
+    for(const st of filtered){
+      let p = st.geo_pcode;
+      /* On remonte jusqu'à une unité du niveau affiché — dix sauts au plus, le
+         référentiel n'en compte que cinq. */
+      let sauts = 0;
+      while(p && !cible.has(p) && sauts++ < 10) p = parentDe[p];
+      if(!p || !cible.has(p)){ absent++; continue; }
+      const a = par[p] = par[p] || { sites:0, actifs:0, planifies:0, visites:0, benef:0 };
+      a.sites++;
+      if(st.status === "Active") a.actifs++;
+      a.planifies += n(st.planned); a.visites += n(st.done); a.benef += n(st.beneficiaries);
+    }
+    const val = (a) => fillMode === "presence" ? a.sites
+      : fillMode === "benef" ? a.benef
+      : (a.planifies ? Math.round((a.visites / a.planifies) * 100) : (a.visites ? 100 : 0));
+    const max = fillMode === "coverage" ? 100
+      : Math.max(0, ...Object.values(par).map(val));
+    return { par, val, max, absent };
+  }, [fillMode, shapes.features, filtered]);
 
   const byRegion = useMemo(() => {
     const m = {};
@@ -173,6 +296,13 @@ export default function MapView({ db, me, notify, go }){
           <Select value={f.status} onChange={e=>setF(x=>({...x, status:e.target.value}))}
             empty="Tous les statuts" options={[["Active","Actifs"],["Inactive","Inactifs"]]} className="mi-py1 mi-xs mi-wauto" />
           <span className="w-px h-6 bg-slate-300 mx-1" />
+          {db.geoVersion?.geom?.units > 0 && (<>
+            <Select value={geoLevel} onChange={e=>setGeoLevel(e.target.value)}
+              options={GEO_LEVELS} className="mi-py1 mi-xs mi-wauto" />
+            <Select value={fillMode} onChange={e=>setFillMode(e.target.value)}
+              options={FILL_MODES} className="mi-py1 mi-xs mi-wauto" />
+            <span className="w-px h-6 bg-slate-300 mx-1" />
+          </>)}
           <Select value={colorMode} onChange={e=>setColorMode(e.target.value)}
             options={COLOR_MODES} className="mi-py1 mi-xs mi-wauto" />
           <label className="flex items-center gap-1.5 f115 text-slate-600">
@@ -188,7 +318,10 @@ export default function MapView({ db, me, notify, go }){
 
         {error ? <Note tone="err">{error}</Note> : null}
 
-        {!proj || !filtered.length ? (
+        {/* Un fond de carte sans point reste utile : il montre les unités où le
+            programme n'a aucune présence, ce qui est précisément l'information
+            qu'une carte de points ne peut pas donner. */}
+        {!proj || (!filtered.length && !shapes.features.length) ? (
           <Empty icon={MapPin} title={busy ? "Chargement…" : "Aucun site à afficher"}
             text={busy ? "" : "Aucun site ne porte de coordonnées pour ces filtres. Renseignez la latitude et la longitude dans le registre des sites."} />
         ) : (
@@ -204,8 +337,31 @@ export default function MapView({ db, me, notify, go }){
                 </defs>
                 <rect width={W} height={H} fill="url(#grid)" />
                 <g transform={`translate(${view.dx},${view.dy}) scale(${view.k})`}>
-                  {/* Repères de communes : centroïdes du référentiel, chargés à la demande */}
-                  {geoMarks.map((g,i) => (
+                  {/* ── Fond de carte administratif ──────────────────────
+                      Les contours passent en premier : tout le reste se dessine
+                      par-dessus. Le trait s'affine avec le zoom pour rester d'une
+                      épaisseur constante à l'écran — sans quoi un zoom ×8
+                      transformerait les frontières en gros traits opaques. */}
+                  {shapes.features.map(f => {
+                    const a = themeValues.par?.[f.properties.pcode];
+                    const fill = fillMode === "none" || !a ? "#ffffff"
+                      : classify(themeValues.val(a), themeValues.max) || "#ffffff";
+                    const actif = selShape === f.properties.pcode;
+                    return (
+                      <path key={f.properties.pcode} d={pathOf(f.geometry, proj)}
+                        data-unit={f.properties.pcode} fill={fill}
+                        fillOpacity={fillMode === "none" ? 0.55 : 0.9}
+                        stroke={actif ? C.brandD : "#9fb2c0"}
+                        strokeWidth={(actif ? 2 : 0.7) / view.k}
+                        onClick={()=>setSelShape(actif ? null : f.properties.pcode)}
+                        style={{ cursor:"pointer" }}>
+                        <title>{`${f.properties.name}${a ? `\n${a.sites} site(s), ${a.actifs} actif(s)\n${a.visites}/${a.planifies} visites\n${fmt(a.benef)} bénéficiaires` : "\naucun site"}`}</title>
+                      </path>);
+                  })}
+                  {/* Repères de communes : centroïdes du référentiel, chargés à la demande.
+                      Inutiles dès que les contours sont là — ils disaient « il y a une
+                      commune ici », ce que le contour dit mieux. */}
+                  {!shapes.features.length && geoMarks.map((g,i) => (
                     <circle key={"g"+i} data-geo="1" cx={proj.x(+g.lon)} cy={proj.y(+g.lat)} r={1.2/view.k}
                             fill="#b9c6d1" opacity={0.7} />
                   ))}
@@ -234,7 +390,61 @@ export default function MapView({ db, me, notify, go }){
             </div>
 
             <aside className="w-72 shrink-0 border-l border-slate-200 p-4 mh68 overflow-auto">
-              <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">Légende</div>
+              {/* L'échelle d'aplat en premier : c'est ce qui couvre la surface de la
+                  carte, donc ce que l'œil interroge en premier. */}
+              {fillMode !== "none" && !!shapes.features.length && (
+                <div className="mb-4">
+                  <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">
+                    {(FILL_MODES.find(m=>m[0]===fillMode)||[])[1]}
+                    <span className="font-normal normal-case tracking-normal text-slate-400">
+                      {" "}· {(GEO_LEVELS.find(g=>g[0]===geoLevel)||[])[1].toLowerCase()}</span></div>
+                  <div className="flex h-3 rounded overflow-hidden border border-slate-200">
+                    <i className="flex-1" style={{ background:"#ffffff" }} title="aucun" />
+                    {RAMP.map(c => <i key={c} className="flex-1" style={{ background:c }} />)}
+                  </div>
+                  <div className="flex justify-between f105 text-slate-400 mt-1">
+                    <span>aucun</span>
+                    <span>{fillMode === "coverage" ? "100 %" : fmt(themeValues.max)}</span></div>
+                  {!!themeValues.absent && (
+                    <div className="f105 text-amber-700 mt-1">
+                      {fmt(themeValues.absent)} site(s) sans rattachement au découpage :
+                      visibles en points, comptés dans aucune unité.</div>)}
+                  {shapes.tronque && (
+                    <div className="f105 text-amber-700 mt-1">
+                      Affichage tronqué : filtrez par région ou district pour voir ce niveau en entier.</div>)}
+                </div>)}
+
+              {!db.geoVersion?.geom?.units && (
+                <Note tone="warn">Aucun contour chargé : la carte n'a pas de fond, et une
+                  unité sans site reste invisible. Paramètres → Localités → Contours
+                  administratifs.</Note>)}
+
+              {selShape && (() => {
+                const f = shapes.features.find(x => x.properties.pcode === selShape);
+                const a = themeValues.par?.[selShape];
+                return f && (
+                  <div className="mb-4">
+                    <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">
+                      Unité sélectionnée</div>
+                    <div className="border border-slate-200 rounded p-3">
+                      <div className="f13 font-semibold text-slate-800">{f.properties.name}</div>
+                      <div className="f11 text-slate-500 mb-2">{f.properties.level} · {selShape}</div>
+                      <dl className="space-y-1 f115">
+                        {[["Sites", a ? fmt(a.sites) : "0"],
+                          ["dont actifs", a ? fmt(a.actifs) : "0"],
+                          ["Visites", a ? `${fmt(a.visites)} / ${fmt(a.planifies)}` : "—"],
+                          ["Bénéficiaires", a ? fmt(a.benef) : "—"]].map(([k,v])=>(
+                          <div key={k} className="flex justify-between gap-2">
+                            <dt className="text-slate-500">{k}</dt>
+                            <dd className="font-medium tabular-nums">{v}</dd></div>))}
+                      </dl>
+                      {!a && <div className="f105 text-amber-700 mt-2">
+                        Aucune présence enregistrée dans cette unité.</div>}
+                    </div>
+                  </div>);
+              })()}
+
+              <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">Légende des points</div>
               <ul className="space-y-1.5 mb-4">
                 {legend.map(([col,label]) => (
                   <li key={label} className="flex items-center gap-2 f115 text-slate-600">

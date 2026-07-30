@@ -6,6 +6,7 @@ import { requireCap } from "../lib/auth.js";
 import { validate, schemas } from "../lib/validate.js";
 import { buildUnits, writeVersion, currentVersion, LEVELS } from "../lib/geo.js";
 import { scopeOf, declaredFor, unitsIn, outsideDeclared } from "../lib/scope.js";
+import { extent, geomSummary, readGeometries, writeGeometries } from "../lib/geom.js";
 
 const r = Router();
 
@@ -169,7 +170,11 @@ r.get("/versions", (req, res) => {
     FROM geo_version v LEFT JOIN users u ON u.id=v.imported_by
     ORDER BY v.imported_at DESC`).all().map(x => ({
       id:x.id, label:x.label, source:x.source, units:x.units,
-      importedAt:x.imported_at, importedBy:x.by_name || "", current: !!x.is_current })) });
+      importedAt:x.imported_at, importedBy:x.by_name || "", current: !!x.is_current,
+      /* L'état des contours accompagne le millésime : sans lui l'écran de
+         configuration ne saurait pas s'il y a un fond de carte à afficher. */
+      geom: { units:x.geom_units || 0, source:x.geom_source || "", at:x.geom_at || null,
+              parNiveau: x.geom_units ? geomSummary(x.id) : [] } })) });
 });
 
 r.put("/versions/:id/current", requireCap("admin"), (req, res) => {
@@ -207,6 +212,96 @@ r.post("/bulk", requireCap("admin"), validate(schemas.geoBulk), (req, res) => {
 
   res.json({ versionId:id, imported:units.length, counts,
     rejected: rejected.length, rejectedSample: rejected.slice(0,10) });
+});
+
+
+/* ── Géométries administratives ──────────────────────────────────────
+   Le référentiel ne portait que des points ; la carte projetait des cercles sur
+   un fond vide. Une commune non couverte était donc invisible — c'est un vide, et
+   un vide ne se dessine pas avec des points.
+
+   L'import se fait par LOTS. Les contours d'un pays entier ne passent pas dans un
+   corps de requête, et les charger d'un coup en mémoire serveur reviendrait à
+   déplacer le problème. Le client découpe, envoie, et le premier lot porte
+   `reset` : sans lui, deux imports successifs mêleraient leurs contours. */
+r.post("/geometry", requireCap("admin"), (req, res) => {
+  const p = z.object({
+    versionId: z.string().max(64).optional(),
+    reset: z.boolean().default(false),
+    source: z.string().max(200).optional(),
+    features: z.array(z.object({
+      /* L'un ou l'autre : le p-code s'il figure dans le millésime, sinon le chemin
+         de noms, que le serveur résout comme il résout celui d'un site. */
+      pcode: z.string().max(64).optional(),
+      names: z.object({ adm0:z.string().max(120).optional(), adm1:z.string().max(120).optional(),
+        adm2:z.string().max(120).optional(), adm3:z.string().max(120).optional(),
+        adm4:z.string().max(120).optional() }).optional(),
+      geometry: z.object({
+        type: z.enum(["Polygon", "MultiPolygon"]),
+        /* La géométrie n'est pas validée sommet par sommet : un contour de commune
+           compte des milliers de points, et Zod y passerait plus de temps que la
+           simplification elle-même. La validation utile — domaine des degrés,
+           anneaux fermés — est faite par lib/geom.js, une fois. */
+        coordinates: z.any(),
+      }),
+    })).min(1).max(400),
+  }).safeParse(req.body);
+  if(!p.success) return res.status(422).json({ error:"lot de géométries invalide",
+    details:p.error.issues.slice(0,10).map(i => ({ champ:i.path.join("."), message:i.message })) });
+
+  const v = p.data.versionId
+    ? db.prepare("SELECT * FROM geo_version WHERE id=?").get(p.data.versionId)
+    : version();
+  if(!v) return res.status(409).json({ error:"aucun millésime : chargez d'abord un découpage" });
+
+  const bilan = writeGeometries({ versionId:v.id, features:p.data.features,
+    reset:p.data.reset, source:p.data.source });
+
+  /* Une seule entrée au journal par import, posée au premier lot : une ligne par
+     lot noierait le journal sous cent entrées pour un seul geste. */
+  if(p.data.reset)
+    db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+                VALUES (?,?,?,'plan','geo_geom',?,'import',?)`)
+      .run(newId("aud"), req.user.id, req.user.first_name, v.id,
+           `Import de contours administratifs${p.data.source ? ` — ${p.data.source}` : ""}`);
+  res.json(bilan);
+});
+
+r.get("/geometry", (req, res) => {
+  const q = z.object({
+    level: z.enum(LEVELS).optional(),
+    parent: z.string().max(64).optional(),
+    /* Pas de z.coerce.boolean : Boolean("false") vaut true, et « detail=false »
+       aurait donc demandé la pleine résolution — exactement l'inverse. */
+    detail: z.enum(["true","false","1","0"]).optional()
+      .transform(v => v === "true" || v === "1"),
+    limit: z.coerce.number().int().min(1).max(4000).default(1200),
+  }).safeParse(req.query);
+  if(!q.success) return res.status(422).json({ error:"filtres invalides" });
+  const v = version();
+  if(!v) return res.json({ type:"FeatureCollection", features:[], extent:null, version:null });
+
+  const { features, tronque } = readGeometries({ versionId:v.id, ...q.data });
+  res.json({
+    type:"FeatureCollection", features,
+    /* Le cadre porte sur l'ENSEMBLE demandé, pas sur ce qui a été renvoyé : caler
+       la carte sur un extrait tronqué la ferait sauter à chaque changement de
+       filtre. */
+    extent: extent({ versionId:v.id, level:q.data.level, parent:q.data.parent }),
+    tronque, version:{ id:v.id, label:v.label },
+  });
+});
+
+r.delete("/geometry", requireCap("admin"), (req, res) => {
+  const v = version();
+  if(!v) return res.status(409).json({ error:"aucun millésime courant" });
+  const n = db.prepare("DELETE FROM geo_geom WHERE version_id=?").run(v.id).changes;
+  db.prepare("UPDATE geo_version SET geom_units=0, geom_source=NULL, geom_at=NULL WHERE id=?").run(v.id);
+  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+              VALUES (?,?,?,'plan','geo_geom',?,'delete',?)`)
+    .run(newId("aud"), req.user.id, req.user.first_name, v.id,
+         `Contours administratifs retirés — ${n} unité(s)`);
+  res.json({ ok:true, supprimes:n });
 });
 
 /* ── Périmètre géographique des bureaux ──────────────────────────────
