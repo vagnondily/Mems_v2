@@ -57,13 +57,13 @@ export function Login({ onLogin, notify }){
       <div className="hidden lg:flex flex-col justify-between w-2/5 p-12 text-white"
         style={{ background:`linear-gradient(160deg, ${C.brandD} 0%, ${C.navy} 55%, #02243a 100%)` }}>
         <div>
-          <div className="flex items-center gap-4 mb-8">
-            <div className="w-14 h-14 rounded-3xl bg-white/10 border border-white/15 grid place-items-center">
-              <BrandMark size={40} />
-            </div>
-            <div>
-              <div className="text-sm uppercase tracking-[0.35em] opacity-80">MEMS</div>
-              <div className="f11 font-light opacity-80">Monitoring Evaluation Management System</div>
+          {/* Même parti que dans l'en-tête : le signe posé sur le fond, sans
+              cadre translucide qui l'aurait réduit à une pastille grise. */}
+          <div className="flex items-center gap-3 mb-10">
+            <BrandMark size={36} tone="light" />
+            <div className="leading-tight">
+              <div className="f15 font-bold tr14">MEMS</div>
+              <div className="f11 opacity-70">Monitoring and Evaluation Management System</div>
             </div>
           </div>
           <h1 className="text-4xl xl:text-5xl font-semibold leading-tight mb-6">
@@ -87,13 +87,11 @@ export function Login({ onLogin, notify }){
 
       <div className="flex-1 flex items-center justify-center p-6">
         <div className="w-full max-w-md bg-white border border-slate-200 shadow-[0_25px_75px_rgba(15,23,42,0.08)] rounded-[2rem] p-8">
-          <div className="flex flex-col items-center gap-3 mb-8 text-center">
-            <div className="w-14 h-14 rounded-3xl bg-slate-100 grid place-items-center">
-              <BrandMark size={32} />
-            </div>
+          <div className="flex flex-col items-center gap-2 mb-8 text-center">
+            <BrandMark size={40} />
             <div>
-              <div className="text-slate-900 text-2xl font-semibold">MEMS</div>
-              <div className="f12 text-slate-500">Monitoring Evaluation Management System</div>
+              <div className="text-slate-900 f19 font-bold tr14">MEMS</div>
+              <div className="f115 text-slate-500 mt-0.5">Monitoring and Evaluation Management System</div>
             </div>
           </div>
           {!mustChange ? (<>

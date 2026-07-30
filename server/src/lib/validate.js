@@ -34,6 +34,9 @@ export const schemas = {
     poi_subtype: nullableStr(120), poi_subtype_code: nullableStr(20),
     site_type: nullableStr(120), monitoring_type: nullableStr(120), duration: nullableStr(40),
     geo_id: nullableStr(64),
+    /* Rattachement au référentiel. Quand il est fourni, adm1…adm4 en sont dérivés
+       côté serveur : les libellés ne peuvent plus diverger de l'arbre. */
+    geo_pcode: nullableStr(64),
     adm1: nullableStr(120), adm2: nullableStr(120), adm3: nullableStr(120), adm4: nullableStr(120),
     urban_area: z.enum(["Oui","Non"]).default("Non"),
     lat: z.coerce.number().min(-90).max(90).nullish(),
@@ -49,6 +52,8 @@ export const schemas = {
     issue_report: z.coerce.number().int().min(0).max(2).default(0),
     issue_cfm: z.coerce.number().int().min(0).max(2).default(0),
     fraud: z.coerce.number().int().min(0).max(2).default(0),
+    /* Révision lue par le client, pour détecter l'écriture concurrente. */
+    rev: z.coerce.number().int().min(1).optional(),
   }),
   siteMonth: z.object({
     month: z.coerce.number().int().min(0).max(11),
@@ -110,15 +115,25 @@ export const schemas = {
     first_name: z.string().min(1).max(80),
     last_name: nullableStr(80), title: nullableStr(120),
     office_id: nullableStr(64),
+    /* Rattachement à un prestataire de suivi. Un compte qui en porte un est un
+       intervenant externe : il ne voit que les plans de son prestataire, quel que
+       soit son rôle. Voir tpmBound dans lib/scope.js. */
+    tpm_id: nullableStr(64),
     role: z.enum(["super","admin","validator","editor","viewer"]).default("viewer"),
     tabs: z.array(z.string().max(40)).max(20).default([]),
     active: z.coerce.boolean().default(true),
   }),
+  /* Un import crée un millésime complet : il n'y a plus de « mode ». Remplacer ou
+     fusionner n'aurait pas de sens sur un référentiel dont l'arbre doit être cohérent. */
   geoBulk: z.object({
-    mode: z.enum(["replace","merge"]).default("replace"),
+    label:  z.string().min(1).max(160).optional(),
+    source: z.string().max(300).optional(),
     rows: z.array(z.object({
       adm0: nullableStr(120), adm1: nullableStr(120), adm2: nullableStr(120),
-      adm3: nullableStr(120), adm4: nullableStr(120), pcode: nullableStr(40),
+      adm3: nullableStr(120), adm4: nullableStr(120),
+      pcode:  nullableStr(40),
+      pcode0: nullableStr(40), pcode1: nullableStr(40), pcode2: nullableStr(40),
+      pcode3: nullableStr(40), pcode4: nullableStr(40),
       lat: z.coerce.number().min(-90).max(90).nullish(),
       lon: z.coerce.number().min(-180).max(180).nullish(),
     })).max(60000),

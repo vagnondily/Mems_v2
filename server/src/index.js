@@ -10,17 +10,27 @@ import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import { db, migrate, integrity } from "./db.js";
 import { log } from "./lib/logger.js";
+import { backfillFromLegacy } from "./lib/geo.js";
 import { authenticate } from "./lib/auth.js";
 import authRoutes from "./routes/auth.js";
 import stateRoutes from "./routes/state.js";
 import siteRoutes from "./routes/sites.js";
 import collectionRoutes from "./routes/collections.js";
 import geoRoutes from "./routes/geo.js";
+import tpmRoutes from "./routes/tpm.js";
+import mreRoutes from "./routes/mre.js";
+import officeRoutes from "./routes/offices.js";
 import userRoutes from "./routes/users.js";
 import analyticsRoutes from "./routes/analytics.js";
+import caseloadRoutes from "./routes/caseload.js";
+import importRoutes from "./routes/import.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 migrate(path.join(here, "..", "migrations"));
+/* Une base créée avant la migration 002 a son découpage dans l'ancienne table plate :
+   on le reprend une seule fois vers l'arbre, sinon le référentiel apparaîtrait vide. */
+const _geoBackfill = backfillFromLegacy();
+if(_geoBackfill) log.info("référentiel repris depuis l'ancienne table", _geoBackfill);
 
 export const app = express();
 app.disable("x-powered-by");
@@ -31,8 +41,12 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-      fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
+      /* Plus aucune fonte distante : le client utilise la fonte système. Les deux
+         autorisations vers Google ont donc été retirées — une exception de
+         politique de sécurité que rien ne justifie plus est une exception à
+         supprimer, pas à conserver au cas où. */
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      fontSrc: ["'self'", "data:"],
       imgSrc: ["'self'", "data:", "blob:"],
       connectSrc: ["'self'", ...config.corsOrigins],
       frameSrc: ["'self'"],
@@ -85,7 +99,12 @@ app.use("/api", authenticate, stateRoutes);
 app.use("/api/sites", authenticate, siteRoutes);
 app.use("/api/geo", authenticate, geoRoutes);
 app.use("/api/users", authenticate, userRoutes);
+app.use("/api/offices", authenticate, officeRoutes);
 app.use("/api/analytics", authenticate, analyticsRoutes);
+app.use("/api/caseload", authenticate, caseloadRoutes);
+app.use("/api/import", authenticate, importRoutes);
+app.use("/api/mre", authenticate, mreRoutes);
+app.use("/api/tpm", authenticate, tpmRoutes);
 app.use("/api", authenticate, collectionRoutes);
 
 /* En production le serveur sert aussi le frontend compilé. */

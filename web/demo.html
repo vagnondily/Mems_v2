@@ -1,101 +1,194 @@
 <!doctype html>
 <html lang="fr">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MEMS Demo Offline</title>
-  <style>
-    :root {
-      color-scheme: light;
-      font-family: "Inter", "Segoe UI", Roboto, Arial, sans-serif;
-      background: #f8fafc;
-      color: #0f172a;
-    }
-    * { box-sizing: border-box; }
-    body { margin:0; min-height:100vh; background:#f8fafc; }
-    button, input { font: inherit; }
-    .page { max-width:1240px; margin:0 auto; padding:24px; }
-    .hidden { display:none; }
-    .header { display:flex; flex-wrap:wrap; gap:16px; align-items:center; padding:20px 24px; background:#0f172a; color:#fff; border-radius:24px; margin-bottom:20px; }
-    .brand { display:flex; align-items:center; gap:14px; }
-    .brand-mark { width:52px; height:52px; border-radius:18px; background:rgba(255,255,255,.12); display:grid; place-items:center; }
-    .brand-mark span { width:30px; height:30px; border-radius:14px; background:#38bdf8; color:#0f172a; font-weight:800; display:grid; place-items:center; }
-    .brand-title h1 { margin:0; font-size:1.5rem; }
-    .brand-title p { margin:4px 0 0; color:rgba(255,255,255,.75); }
-    .status-pill { margin-left:auto; background:#ffffff10; color:#fff; border-radius:999px; padding:10px 16px; font-weight:700; }
-    .page-title { display:flex; flex-wrap:wrap; align-items:flex-end; justify-content:space-between; gap:24px; margin-bottom:20px; }
-    .page-title h2 { margin:0; font-size:2rem; color:#0f172a; }
-    .page-title small { color:#64748b; }
-    .nav { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin-bottom:24px; }
-    .nav button { border:none; background:#e2e8f0; color:#334155; padding:12px 16px; border-radius:999px; cursor:pointer; transition:.2s; }
-    .nav button.active { background:#2563eb; color:#fff; }
-    .cards { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; margin-bottom:24px; }
-    .small-card { background:#fff; border:1px solid #e2e8f0; border-radius:24px; padding:22px; }
-    .small-card h3 { margin:0 0 10px; font-size:1rem; color:#334155; }
-    .small-card .value { font-size:2rem; font-weight:800; color:#2563eb; }
-    .panel-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
-    .panel { background:#fff; border:1px solid #e2e8f0; border-radius:24px; padding:24px; }
-    .panel h3 { margin-top:0; font-size:1.1rem; color:#0f172a; }
-    .panel p { color:#475569; line-height:1.75; }
-    .table { width:100%; border-collapse:collapse; background:#fff; border:1px solid #e2e8f0; border-radius:20px; overflow:hidden; }
-    .table th, .table td { padding:14px 16px; border-bottom:1px solid #e2e8f0; text-align:left; }
-    .table th { background:#f8fafc; color:#334155; }
-    .table tr:last-child td { border-bottom:none; }
-    .status-chip { display:inline-flex; align-items:center; justify-content:center; padding:8px 12px; border-radius:999px; font-weight:700; font-size:.88rem; }
-    .status-chip.active { background:#d1fae5; color:#166534; }
-    .status-chip.inactive { background:#fee2e2; color:#b91c1c; }
-    .graph { display:grid; gap:14px; }
-    .bar-row { display:flex; align-items:center; gap:12px; }
-    .bar-label { width:80px; font-size:.95rem; color:#334155; }
-    .bar-track { flex:1; height:16px; background:#e2e8f0; border-radius:999px; overflow:hidden; }
-    .bar-fill { height:100%; border-radius:999px; }
-    .map-card { border-radius:24px; height:240px; background:linear-gradient(135deg,#2563eb,#38bdf8); color:#fff; display:grid; place-items:center; text-align:center; padding:24px; }
-    .report-card { background:#fff; border:1px solid #e2e8f0; border-radius:24px; padding:20px; }
-    .report-card h3 { margin:0 0 10px; font-size:1rem; }
-    .report-card p { margin:0; color:#475569; line-height:1.7; }
-    .footer-note { margin-top:28px; color:#64748b; font-size:.95rem; }
-    .login-shell { width:100%; min-height:100vh; display:grid; place-items:center; padding:24px; }
-    .login-card { width:100%; max-width:420px; background:#fff; border:1px solid #e2e8f0; border-radius:28px; padding:32px; box-shadow:0 24px 60px rgba(15,23,42,.08); }
-    .login-card h2 { margin:0 0 14px; font-size:2rem; }
-    .field { margin-bottom:18px; }
-    .field label { display:block; margin-bottom:8px; font-weight:700; color:#334155; }
-    .field input { width:100%; border:1px solid #cbd5e1; border-radius:14px; padding:14px 16px; background:#f8fafc; }
-    .button { width:100%; border:none; border-radius:14px; background:#2563eb; color:#fff; padding:14px; font-weight:700; cursor:pointer; transition:.2s; }
-    .button:hover { background:#1d4ed8; }
-    .note-box { margin-top:18px; padding:16px; background:#f8fafc; border:1px solid #cbd5e1; border-radius:16px; color:#475569; }
-    @media (max-width:1024px) { .cards, .panel-grid { grid-template-columns:1fr; } }
-    @media (max-width:720px) { .nav { grid-template-columns:repeat(2,minmax(0,1fr)); } .header { flex-direction:column; align-items:flex-start; } }
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MEMS — démonstration hors ligne</title>
+<!--
+  Démonstration statique de MEMS.
+
+  Elle reprend l'intégralité de la surface de l'application réelle : 6 onglets,
+  30 sous-destinations, la matrice des rôles et le cloisonnement par bureau.
+  Aucune requête réseau n'est émise, aucune bibliothèque externe n'est chargée :
+  ce fichier s'ouvre seul, depuis un disque ou une clé USB.
+
+  Les données sont fictives mais réalistes (géographie et bureaux de Madagascar).
+  Les calculs de couverture et d'exigence minimale de suivi appliquent les
+  formules réelles de web/src/lib/calc.js.
+-->
+<style>
+  /* Palette reprise de web/src/lib/constants.js (objet C) */
+  :root{
+    --brand:#007DBC; --brandD:#085387; --brandL:#4792c7; --navy:#19486a; --aqua:#26bde2;
+    --ok:#689e18; --warn:#F7B825; --bad:#c5192d; --orange:#fd6925; --magenta:#dd1367;
+    --t1:#031c2d; --t2:#5a6872; --t3:#8c9ba5; --line:#e2e8ec; --bg:#f2f5f7;
+    color-scheme:light;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%}
+  /* Fonte système : 'Open Sans' était nommée sans être chargée — ce fichier
+     n'émet aucune requête — donc c'était déjà la fonte système qui s'affichait. */
+  body,input,select,textarea,button,pre{
+    font-family:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif}
+  body{background:var(--bg);color:var(--t1);-webkit-font-smoothing:antialiased}
+  button,select,input{font:inherit;color:inherit}
+  .hidden{display:none !important}
+  table{border-collapse:collapse;width:100%}
+
+  /* ── Coquille ─────────────────────────────────────────────── */
+  .app{min-height:100vh;display:flex;flex-direction:column}
+  header.top{display:flex;align-items:center;gap:16px;padding:0 20px;height:56px;
+    background:var(--brandD);color:#fff;position:sticky;top:0;z-index:40}
+  /* Le bloc de marque était un cadre translucide de 44 px contenant un carré de
+     22 px, surmonté de deux lignes dont la seconde à 9 px : le cadre réduisait le
+     signe à une pastille, la ligne de 9 px se lisait comme une salissure, et le
+     bloc occupait deux lignes dans une barre où tout le reste tient sur une seule.
+     Le signe est posé à même la barre, le nom complet a rejoint le pied de page. */
+  .brand{display:flex;align-items:center;gap:10px;flex-shrink:0;height:32px;
+    padding-right:16px;margin-right:8px;border-right:1px solid rgba(255,255,255,.2)}
+  .brand svg{display:block}
+  .brand b{font-size:15px;font-weight:700;letter-spacing:.14em}
+  nav.tabs{display:flex;gap:2px;overflow-x:auto}
+  nav.tabs>.tab{position:relative}
+  nav.tabs button.t{display:flex;align-items:center;gap:6px;padding:0 13px;height:56px;
+    font-size:12.5px;font-weight:600;white-space:nowrap;background:none;border:0;
+    border-bottom:2px solid transparent;color:rgba(255,255,255,.65);cursor:pointer}
+  nav.tabs button.t:hover{color:#fff}
+  /* Un seul signal pour l'onglet courant : le filet. Le fond teinté et le texte
+     blanc en plus faisaient trois marques pour une seule idée. */
+  nav.tabs button.t.on{color:#fff;border-bottom-color:#fff}
+  .menu{position:absolute;left:0;top:56px;background:#fff;min-width:262px;padding:4px 0;
+    border:1px solid var(--line);border-radius:0 0 4px 4px;box-shadow:0 12px 32px rgba(3,28,45,.18);z-index:50}
+  .menu button{display:block;width:100%;text-align:left;padding:9px 16px;font-size:13px;
+    background:none;border:0;color:#334155;cursor:pointer}
+  .menu button:hover{background:#f8fafc}
+  .menu button.on{color:var(--brand);font-weight:600;background:#eff6ff}
+  .right{margin-left:auto;display:flex;align-items:center;gap:12px;flex-shrink:0}
+  .sync{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;
+    font-size:11px;font-weight:600;background:rgba(255,255,255,.1);color:rgba(255,255,255,.85)}
+  .sync i{width:6px;height:6px;border-radius:50%;background:#bef264;display:block}
+  .who{display:flex;align-items:center;gap:8px;padding:4px 12px 4px 4px;border-radius:999px;
+    background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);font-size:12px;
+    color:#fff;cursor:pointer}
+  .who .av{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;
+    font-size:10px;font-weight:700;background:var(--aqua);color:var(--t1)}
+  .card-menu{position:absolute;right:20px;top:52px;width:288px;background:#fff;z-index:50;
+    border:1px solid var(--line);border-radius:4px;box-shadow:0 12px 32px rgba(3,28,45,.18);overflow:hidden}
+  main{flex:1;width:100%;max-width:1520px;margin:0 auto;padding:22px 20px}
+  footer.bot{border-top:1px solid var(--line);background:#fff;padding:11px 20px;
+    display:flex;gap:12px;align-items:center;font-size:11px;color:var(--t2)}
+
+  /* ── Blocs ────────────────────────────────────────────────── */
+  /* 23 px en gras au-dessus de cartes titrées à 14 px : l'écart était tel que le
+     titre écrasait le contenu. Ramené à 19 px, phrase en 12,5 px, marge resserrée. */
+  .head{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:16px}
+  .head h2{margin:0;font-size:19px;font-weight:600;color:#0f172a;line-height:1.25}
+  .head p{margin:4px 0 0;font-size:12.5px;color:var(--t2);max-width:820px;line-height:1.6}
+  .head .act{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .card{background:#fff;border:1px solid var(--line);border-radius:4px;margin-bottom:16px}
+  .card>h3{margin:0;padding:13px 16px 0;font-size:14px;font-weight:600;color:#1e293b}
+  .card>h3+.sub{margin:2px 0 0;padding:0 16px;font-size:11.5px;color:var(--t2)}
+  .card>.body{padding:16px}
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
+  .g3{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+  .stats{display:grid;gap:1px;background:var(--line);border-bottom:1px solid var(--line);
+    grid-template-columns:repeat(auto-fit,minmax(176px,1fr))}
+  .stat{background:#fff;padding:14px 16px}
+  .stat .lb{font-size:11px;color:var(--t2);margin-bottom:5px}
+  .stat .vl{font-size:23px;font-weight:300;font-variant-numeric:tabular-nums;color:#1e293b}
+  .stat .sb{font-size:11px;color:var(--t3);margin-top:2px}
+  .stat.ok .vl{color:var(--ok)} .stat.warn .vl{color:#b5820b} .stat.bad .vl{color:var(--bad)}
+
+  th,td{padding:8px 12px;font-size:12.5px;text-align:left;border-bottom:1px solid #eef2f5}
+  th{background:#f8fafc;font-size:11px;font-weight:700;text-transform:uppercase;
+    letter-spacing:.04em;color:var(--t2);position:sticky;top:0;z-index:1}
+  tbody tr:hover{background:#f0f9ff}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  .scroll{overflow:auto;max-height:430px;border-top:1px solid var(--line)}
+
+  .badge{display:inline-block;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600;
+    background:#f1f5f9;color:#475569;border:1px solid #e2e8f0}
+  .badge.g{background:#f0fdf4;color:#15803d;border-color:#bbf7d0}
+  .badge.y{background:#fefce8;color:#a16207;border-color:#fef08a}
+  .badge.r{background:#fef2f2;color:#b91c1c;border-color:#fecaca}
+  .badge.b{background:#eff6ff;color:#1d4ed8;border-color:#bfdbfe}
+  .bar{height:7px;border-radius:999px;background:#e8edf1;overflow:hidden}
+  .bar>i{display:block;height:100%;border-radius:999px}
+
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 13px;border-radius:3px;
+    font-size:12.5px;font-weight:600;border:1px solid var(--brand);background:var(--brand);
+    color:#fff;cursor:pointer}
+  .btn.sec{background:#fff;color:#334155;border-color:#cbd5e1}
+  .btn:disabled{opacity:.42;cursor:not-allowed}
+  .btn.sm{padding:3px 9px;font-size:11.5px}
+  .in{width:100%;padding:6px 9px;border:1px solid #cbd5e1;border-radius:3px;font-size:12.5px;background:#fff}
+  .fld{margin-bottom:11px}
+  .fld>label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;
+    letter-spacing:.04em;color:var(--t2);margin-bottom:4px}
+  .fld>.hint{font-size:11px;color:var(--t3);margin-top:3px;line-height:1.5}
+  .note{border-radius:3px;padding:10px 13px;font-size:12px;line-height:1.65}
+  .note.warn{background:#fffbeb;border:1px solid #fde68a;color:#78350f}
+  .note.info{background:#eff6ff;border:1px solid #bfdbfe;color:#1e3a5f}
+  .note.ok{background:#f0fdf4;border:1px solid #bbf7d0;color:#14532d}
+  pre.code{margin:0;padding:11px 13px;border-radius:3px;background:#0f172a;color:#e2e8f0;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;overflow:auto;line-height:1.65}
+  .empty{padding:34px 16px;text-align:center;color:var(--t3);font-size:12.5px}
+  .volet{display:inline-flex;gap:4px;padding:4px;border-radius:4px;background:#f1f5f9;
+    border:1px solid var(--line);margin-bottom:16px}
+  .vbtn{padding:6px 13px;border:0;border-radius:3px;background:none;color:var(--t2);
+    font-size:12.5px;font-weight:600;cursor:pointer}
+  .vbtn.on{background:#fff;color:#1e293b;border:1px solid var(--line);box-shadow:0 1px 2px rgba(3,28,45,.06)}
+
+  .mgrid{display:grid;grid-template-columns:repeat(12,1fr);gap:2px}
+  .mcell{height:26px;border-radius:2px;display:grid;place-items:center;font-size:9.5px;
+    font-weight:700;background:#f1f5f9;color:#94a3b8;cursor:default}
+  .mcell.p{background:#dbeafe;color:#1d4ed8}
+  .mcell.d{background:#dcfce7;color:#15803d}
+  .mcell.off{background:#f8fafc;color:#e2e8f0}
+  .mhdr{font-size:9.5px;color:var(--t3);text-align:center;font-weight:700}
+
+  /* ── Écran de connexion ───────────────────────────────────── */
+  .login{min-height:100vh;display:grid;place-items:center;padding:24px;
+    background:linear-gradient(150deg,var(--brandD),var(--navy) 55%,#0b3a5c)}
+  .login-card{width:100%;max-width:420px;background:#fff;border-radius:6px;padding:30px;
+    box-shadow:0 24px 60px rgba(3,28,45,.34)}
+  .login-card h2{margin:0 0 4px;font-size:24px;font-weight:600}
+  .login-card>p.s{margin:0 0 22px;font-size:13px;color:var(--t2)}
+  .role-pick{display:grid;gap:6px;margin:14px 0 18px}
+  .role-pick button{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:3px;
+    border:1px solid #cbd5e1;background:#fff;cursor:pointer;text-align:left;font-size:12.5px}
+  .role-pick button.on{border-color:var(--brand);background:#eff6ff;box-shadow:0 0 0 1px var(--brand)}
+  .role-pick b{font-size:12.5px} .role-pick small{display:block;color:var(--t2);font-size:11px;margin-top:1px}
+
+  @media(max-width:900px){
+    .head .act{margin-left:0;width:100%}
+    main{padding:16px 12px}
+    header.top{gap:8px;padding:0 12px}
+  }
+</style>
 </head>
 <body>
-  <div id="login-screen" class="login-shell">
-    <div class="login-card">
-      <h2>Connexion</h2>
-      <p style="color:#64748b; margin-bottom:24px;">Version de démonstration hors ligne. Utilisez les identifiants ci-dessous.</p>
-      <div class="field"><label>Email</label><input id="demo-email" type="email" value="admin@mems.local" /></div>
-      <div class="field"><label>Mot de passe</label><input id="demo-password" type="password" value="MemsAdmin2026" /></div>
-      <button class="button" id="demo-login">Se connecter</button>
-      <div class="note-box">Identifiants : <strong>admin@mems.local</strong> / <strong>MemsAdmin2026</strong></div>
-    </div>
-  </div>
 
-  <div id="app-screen" class="page hidden">
-    <header class="header">
-      <div class="brand">
-        <div class="brand-mark"><span>M</span></div>
-        <div class="brand-title"><h1>MEMS</h1><p>Monitoring Evaluation Management System</p></div>
-      </div>
-      <div class="status-pill">Mode démo</div>
-    </header>
+<!-- ══════════════ Connexion ══════════════ -->
+<div class="login" id="login">
+  <div class="login-card">
+    <h2>MEMS</h2>
+    <p class="s">Monitoring &amp; Evaluation Management System — démonstration hors ligne</p>
 
-    <div class="page-title">
-      <div><h2 id="page-title">Accueil</h2><small id="page-subtitle">Vue synthétique des indicateurs et du suivi terrain.</small></div>
-      <button class="button" id="demo-logout" style="background:#e2e8f0;color:#0f172a;">Se déconnecter</button>
+    <div class="note info" style="margin-bottom:18px">
+      Aucun mot de passe n'est demandé : cette démonstration ne contient que des données
+      fictives et n'émet aucune requête. Choisissez un profil pour voir comment l'application
+      s'adapte au rôle et au bureau de rattachement.
     </div>
 
-    <div class="nav" id="demo-nav"></div>
-    <div id="demo-content"></div>
+    <div class="fld"><label>Profil de démonstration</label></div>
+    <div class="role-pick" id="rolePick"></div>
+    <button class="btn" style="width:100%;justify-content:center;padding:9px" id="go">
+      Ouvrir la démonstration
+    </button>
   </div>
+</div>
 
   <script>
     const pages = {
@@ -322,23 +415,1384 @@
       note.textContent = 'Démo statique : l’application ressemble au vrai site, mais les données sont factices et aucune requête réseau n’est effectuée.';
       demoContent.appendChild(note);
     }
+  }
+  return out;
+})();
 
-    document.getElementById('demo-login').addEventListener('click', () => {
-      const email = document.getElementById('demo-email').value.trim();
-      const password = document.getElementById('demo-password').value;
-      if (email === 'admin@mems.local' && password === 'MemsAdmin2026') {
-        loginScreen.classList.add('hidden');
-        appScreen.classList.remove('hidden');
-        setPage('home');
-      } else {
-        alert('Identifiants incorrects. Utilisez admin@mems.local / MemsAdmin2026');
-      }
-    });
+/* Indicateurs de résultat et mesures */
+const INDICATORS = [
+  { id:"FCS",  name:"Score de consommation alimentaire — ménages en consommation acceptable", unit:"%", target:80, dir:"up",   basket:"Consommation alimentaire", method:"Enquête ménage", freq:"Semestriel", value:71.4 },
+  { id:"rCSI", name:"Indice réduit des stratégies d'adaptation", unit:"idx", target:12, dir:"down", basket:"Stratégies d'adaptation", method:"Enquête ménage", freq:"Semestriel", value:15.8 },
+  { id:"LCSI", name:"Stratégies d'adaptation des moyens d'existence — aucune stratégie", unit:"%", target:60, dir:"up", basket:"Stratégies d'adaptation", method:"Enquête ménage", freq:"Annuel", value:52.3 },
+  { id:"FES",  name:"Part des dépenses consacrées à l'alimentation", unit:"%", target:65, dir:"down", basket:"Économie du ménage", method:"Enquête ménage", freq:"Annuel", value:68.9 },
+  { id:"MAD",  name:"Régime alimentaire minimum acceptable — enfants 6 à 23 mois", unit:"%", target:35, dir:"up", basket:"Nutrition", method:"Enquête ménage", freq:"Annuel", value:31.2 },
+  { id:"MAMR", name:"Taux de guérison du traitement de la malnutrition aiguë modérée", unit:"%", target:75, dir:"up", basket:"Nutrition", method:"Registres des sites", freq:"Mensuel", value:82.6 },
+  { id:"MAMD", name:"Taux d'abandon du traitement de la malnutrition aiguë modérée", unit:"%", target:15, dir:"down", basket:"Nutrition", method:"Registres des sites", freq:"Mensuel", value:9.4 },
+  { id:"RET",  name:"Taux de rétention scolaire", unit:"%", target:90, dir:"up", basket:"Éducation", method:"Registres scolaires", freq:"Annuel", value:93.1 },
+  { id:"COV",  name:"Couverture du programme de prévention", unit:"%", target:70, dir:"up", basket:"Couverture", method:"Enquête de couverture", freq:"Annuel", value:64.8 },
+  { id:"ADH",  name:"Adhérence — participation à un nombre suffisant de distributions", unit:"%", target:80, dir:"up", basket:"Couverture", method:"Suivi post-distribution", freq:"Trimestriel", value:77.5 },
+];
 
-    document.getElementById('demo-logout').addEventListener('click', () => {
-      appScreen.classList.add('hidden');
-      loginScreen.classList.remove('hidden');
+const ODK_FORMS = [
+  { name:"Suivi de processus — distributions", formId:"mems_process_v4", project:"MEMS", kind:"process", tag:"URT", records:1284, last:"2026-07-21 06:40", token:true },
+  { name:"Suivi post-distribution",            formId:"mems_pdm_v2",     project:"MEMS", kind:"outcome", tag:"URT", records:  742, last:"2026-07-18 11:12", token:true },
+  { name:"Registre nutritionnel mensuel",      formId:"mems_nut_v3",     project:"MEMS", kind:"output",  tag:"NTA", records:2109, last:"2026-07-20 15:03", token:true },
+  { name:"Recensement des sites",              formId:"mems_sites_v1",   project:"MEMS", kind:"sites",   tag:"",    records:  318, last:"2026-05-30 09:22", token:false },
+];
+const DATASETS = [
+  { name:"PDM T2 2026 — Androy",     form:"mems_pdm_v2",     rows:742,  rules:6, created:"2026-07-19" },
+  { name:"Processus S1 2026",        form:"mems_process_v4", rows:1284, rules:4, created:"2026-07-21" },
+  { name:"Nutrition — juin 2026",    form:"mems_nut_v3",     rows:389,  rules:8, created:"2026-07-05" },
+];
+const SCRIPTS = [
+  { name:"Apurement PDM — valeurs aberrantes", lang:"R",    stage:"cleaning", dataset:"PDM T2 2026 — Androy", runs:4,
+    code:"library(dplyr)\n\npdm <- read.csv(\"pdm_t2_2026.csv\")\n\n# Bornes plausibles sur la taille du ménage\npdm <- pdm %>%\n  filter(hh_size > 0, hh_size <= 20) %>%\n  mutate(fcs = rowSums(across(starts_with(\"fcs_\")), na.rm = TRUE))\n\nsummary(pdm$fcs)" },
+  { name:"Score de consommation alimentaire",  lang:"R",    stage:"analysis", dataset:"PDM T2 2026 — Androy", runs:7,
+    code:"# Seuils standard : pauvre < 21, limite 21–35, acceptable > 35\npdm$fcs_cat <- cut(pdm$fcs,\n  breaks = c(-Inf, 21, 35, Inf),\n  labels = c(\"Pauvre\", \"Limite\", \"Acceptable\"))\n\nprop.table(table(pdm$fcs_cat)) * 100" },
+  { name:"Tableaux croisés par district",      lang:"SPSS", stage:"analysis", dataset:"Processus S1 2026", runs:2,
+    code:"CROSSTABS\n  /TABLES=district BY fcs_cat\n  /FORMAT=AVALUE TABLES\n  /CELLS=COUNT ROW\n  /COUNT ROUND CELL." },
+];
+const TEMPLATES = [
+  { name:"Rapport mensuel de suivi", blocks:["Exigence minimale de suivi","Couverture par activité","Distributions","Tâches en retard"], intro:"Synthèse mensuelle du suivi de processus et de la réalisation du plan de distribution." },
+  { name:"Note de couverture trimestrielle", blocks:["Couverture et MMR","Résultats par indicateur","Carte des sites"], intro:"Point trimestriel sur la couverture géographique et l'atteinte des cibles." },
+];
+const AUDIT = [
+  { at:"2026-07-22 08:14", user:"Hanta",  office:"Bureau central d'Antananarivo", kind:"plan", text:"pdd : 0 créé(s), 18 modifié(s), 0 supprimé(s)" },
+  { at:"2026-07-21 16:47", user:"Tiana",  office:"Bureau de terrain d'Ampanihy",  kind:"odk",  text:"Visite validé — 2026-07-19" },
+  { at:"2026-07-21 14:02", user:"Naina",  office:"Bureau de terrain d'Ambovombe", kind:"plan", text:"Fiche mensuelle enregistrée — AMB-002, juillet" },
+  { at:"2026-07-20 09:35", user:"Hanta",  office:"Bureau central d'Antananarivo", kind:"plan", text:"params : 1 créé(s), 8 modifié(s), 0 supprimé(s)" },
+  { at:"2026-07-19 17:20", user:"Tiana",  office:"Bureau de terrain d'Ampanihy",  kind:"odk",  text:"Visite validé — 2026-07-17" },
+  { at:"2026-07-18 11:08", user:"Naina",  office:"Bureau de terrain d'Ambovombe", kind:"plan", text:"Site créé — TSI-002" },
+];
+/* ── Plan MRE et budget ───────────────────────────────────────────────
+   MRE : Monitoring, Review and Evaluation — le plan annuel d'activités de suivi,
+   de revue et d'évaluation, avec son coût. Le budget n'est jamais un montant
+   saisi : c'est la somme de ses lignes (quantité × coût unitaire), comme dans
+   l'application. Un total qu'on ne peut pas décomposer ne se défend pas. */
+const MRE_KINDS = {
+  suivi:"Suivi de processus et de distribution", revue:"Revue de programme",
+  evaluation:"Évaluation", enquete:"Enquête (post-distribution, base, finale)",
+  etude:"Étude ou analyse", capacite:"Renforcement de capacités en suivi-évaluation",
+};
+const MRE_KIND_TONE = { suivi:"#007DBC", revue:"#7C3AED", evaluation:"#D97706",
+  enquete:"#0891B2", etude:"#059669", capacite:"#DB2777" };
+const MRE_CATS = {
+  personnel:"Personnel de suivi", enqueteurs:"Enquêteurs et superviseurs",
+  deplacement:"Indemnités de déplacement", transport:"Transport et carburant",
+  atelier:"Atelier et restitution", consultant:"Consultant ou cabinet",
+  equipement:"Équipement et tablettes", impression:"Impression et fournitures",
+  communication:"Communication et connectivité", autre:"Autre",
+};
+const MRE = [
+  { ref:"MRE-01", title:"Suivi de processus des distributions générales", kind:"suivi",
+    purpose:"Vérifier la conformité des distributions aux procédures et recueillir les plaintes",
+    office:"", resp:"Unité suivi-évaluation", m0:0, m1:11, sample:null, statut:"en_cours",
+    costs:[["personnel","Agents de suivi de terrain","personne-mois",60,420,24700],
+           ["deplacement","Indemnités de déplacement","personne-jour",480,18,7900],
+           ["transport","Location de véhicules","véhicule-jour",240,95,20400],
+           ["communication","Forfaits données pour tablettes","mois",72,9,610]] },
+  { ref:"MRE-02", title:"Enquête post-distribution — premier semestre", kind:"enquete",
+    purpose:"Mesurer la satisfaction, l'utilisation de l'assistance et les délais de service",
+    office:"", resp:"Unité suivi-évaluation", m0:2, m1:3, sample:1200, statut:"realise",
+    costs:[["enqueteurs","Enquêteurs et superviseurs","personne-jour",180,14,2380],
+           ["deplacement","Indemnités enquêteurs","personne-jour",180,12,2200],
+           ["transport","Transport terrain","véhicule-jour",45,95,4400],
+           ["equipement","Tablettes de remplacement","unité",6,220,1346],
+           ["atelier","Atelier de restitution","forfait",1,1800,1750]] },
+  { ref:"MRE-03", title:"Enquête post-distribution — second semestre", kind:"enquete",
+    purpose:"Reproduire la mesure du premier semestre pour comparer les deux périodes",
+    office:"", resp:"Unité suivi-évaluation", m0:8, m1:9, sample:1200, statut:"planifie",
+    costs:[["enqueteurs","Enquêteurs et superviseurs","personne-jour",180,14,null],
+           ["deplacement","Indemnités enquêteurs","personne-jour",180,12,null],
+           ["transport","Transport terrain","véhicule-jour",45,95,null],
+           ["atelier","Atelier de restitution","forfait",1,1800,null]] },
+  { ref:"MRE-04", title:"Évaluation à mi-parcours du plan stratégique pays", kind:"evaluation",
+    purpose:"Apprécier la pertinence et l'efficacité des activités à mi-parcours",
+    office:"", resp:"Bureau pays et unité évaluation", m0:4, m1:7, sample:null, statut:"en_cours",
+    costs:[["consultant","Cabinet d'évaluation","forfait",1,48000,41290],
+           ["transport","Déplacements de l'équipe","véhicule-jour",30,95,2600],
+           ["atelier","Atelier de validation des conclusions","forfait",1,3200,3350],
+           ["impression","Édition du rapport","forfait",1,900,960]] },
+  { ref:"MRE-05", title:"Revue trimestrielle de la performance", kind:"revue",
+    purpose:"Rapprocher le plan et le réalisé, décider des réorientations",
+    office:"", resp:"Unité suivi-évaluation", m0:0, m1:11, sample:null, statut:"en_cours",
+    costs:[["atelier","Séances de revue trimestrielle","séance",4,1400,5200],
+           ["impression","Supports de séance","forfait",4,120,484]] },
+  { ref:"MRE-06", title:"Analyse de la couverture géographique et des écarts de ciblage", kind:"etude",
+    purpose:"Identifier les communes ciblées non couvertes et l'inverse",
+    office:"", resp:"Unité suivi-évaluation", m0:1, m1:2, sample:null, statut:"realise",
+    costs:[["personnel","Analyste de données","personne-mois",2,1900,4100],
+           ["autre","Données de population complémentaires","forfait",1,600,597]] },
+  { ref:"MRE-07", title:"Renforcement des capacités des partenaires coopérants en suivi", kind:"capacite",
+    purpose:"Homogénéiser la qualité des rapports des partenaires",
+    office:"", resp:"Unité suivi-évaluation", m0:5, m1:6, sample:null, statut:"en_cours",
+    costs:[["atelier","Sessions de formation","session",2,2600,5400],
+           ["deplacement","Indemnités des participants","personne-jour",120,15,1690],
+           ["impression","Manuels de suivi","unité",90,7,640]] },
+  ...OFFICES.filter(o => o !== "Bureau central d'Antananarivo").map((o, i) => ({
+    ref:`MRE-B0${i+1}`,
+    title:`Suivi de proximité — ${o.replace("Bureau de terrain d'","").replace("Bureau de terrain de ","")}`,
+    kind:"suivi", purpose:"Couvrir les sites du bureau selon l'exigence minimale de suivi",
+    office:o, resp:"Chef de bureau", m0:0, m1:11, sample:null, statut:"en_cours",
+    costs:[["deplacement","Indemnités de déplacement","personne-jour",96,18,900+i*90],
+           ["transport","Carburant et entretien","mois",12,340,2400+i*140]] })),
+];
+/* Le budget d'une activité, et sa dépense : calculés, jamais stockés. */
+const mreBudget = a => Math.round(a.costs.reduce((t,c)=>t+c[3]*c[4], 0)*100)/100;
+const mreSpent  = a => a.costs.some(c=>c[5]!=null)
+  ? Math.round(a.costs.reduce((t,c)=>t+(c[5]||0), 0)*100)/100 : null;
+/* Un bureau voit son plan et le plan national ; il n'écrit que sur le sien. */
+const myMre = () => state.me.office
+  ? MRE.filter(a => !a.office || a.office === state.me.office) : MRE;
+
+/* Configuration des bureaux. `mode` est le point qui manquait : le bureau pays
+   est national, ses comptes voient tous les sites sans être administrateurs. */
+const OFFICE_CFG = OFFICES.map(o => {
+  const hq = o === "Bureau central d'Antananarivo";
+  return { name:o, code:hq ? "HQ" : o.replace(/^Bureau de terrain d[e']/,"").trim().toUpperCase(),
+    kind:hq ? "hq" : "field", mode:hq ? "national" : "geo",
+    antennes:hq ? [] : [o.replace(/^Bureau de terrain d[e']/,"").trim()],
+    manager:hq ? "Chef de l'unité suivi-évaluation" : "Chef de bureau",
+    sites:SITES.filter(x=>x.office===o).length, active:true };
+});
+
+/* ── Suivi tiers (TPM) ────────────────────────────────────────────────
+   Le budget d'un prestataire n'est pas négocié puis suivi : il DÉCOULE de
+   l'affectation. On assigne des zones pour le mois, il en découle des équipes, des
+   jours et des véhicules, et le barème contractuel donne le montant —
+   qté1 × qté2 × coût unitaire, comme le classeur réel d'un prestataire.
+   Rien n'est stocké ici de ces totaux : ils sont calculés. */
+const TPM_BAREME = [
+  ["superviseur", "Indemnité des superviseurs", "pers-jour", 70000],
+  ["agent",       "Indemnité des agents",       "pers-jour", 60000],
+  ["vehicule",    "Location voiture",           "véhicule-jour", 300000],
+  ["carburant",   "Carburant voiture",          "litre", 5000],
+];
+const TPM_ETAT = { brouillon:["Brouillon",""], soumis:["Soumis","y"],
+  valide_tpm:["Validé prestataire","b"], valide_bureau:["Validé bureau","b"],
+  valide_pays:["Validé bureau pays","g"], renvoye:["Renvoyé","r"], cloture:["Clôturé",""] };
+const TPM_ETAPES = ["soumis","valide_tpm","valide_bureau","valide_pays"];
+
+const PRESTATAIRES = [
+  { id:"t1", nom:"Mahavotse Suivi", code:"MAHAVOTSE", office:"Bureau de terrain d'Ambovombe",
+    contrat:"TPM-2026-01", plafond:240_000_000, avenants:[["AV-01", 30_000_000,
+      "Extension du périmètre au district de Beloha", `${YEAR}-04-15`]] },
+  { id:"t2", nom:"Fanavotana Monitoring", code:"FANAVOTANA", office:"Bureau de terrain d'Ampanihy",
+    contrat:"TPM-2026-02", plafond:120_000_000, avenants:[] },
+];
+/* Quatre plans par prestataire, à quatre étapes du circuit : sans cette variété
+   l'écran de validation serait toujours vide et le circuit ne se verrait pas. */
+const TPM_PLANS = PRESTATAIRES.flatMap((t, ti) => {
+  const communes = GEO.filter(g => OFFICE_OF_ADM2[g.adm2] === t.office)
+    .map(g => g.adm3).filter((v, i, a) => a.indexOf(v) === i);
+  return [[Math.max(0,NOW_M-2),"cloture"], [Math.max(0,NOW_M-1),"valide_pays"],
+          [NOW_M,"valide_tpm"], [Math.min(11,NOW_M+1),"brouillon"]]
+    .map(([m, etat], pi) => {
+      const zones = communes.map((c, zi) => {
+        const jours = 2 + (zi % 3) * 2, sup = 1 + (zi % 2), ag = 1 + (zi % 3);
+        const trajet = jours > 4 ? 1 : 0, veh = 1, litres = 15 * jours;
+        const lignes = [
+          ["superviseur","Indemnité des superviseurs","pers-jour", jours+trajet, sup, 70000],
+          ["agent","Indemnité des agents","pers-jour", jours+trajet, ag, 60000],
+          ["vehicule","Location voiture","véhicule-jour", jours+trajet, veh, 300000],
+          ["carburant","Carburant voiture","litre", litres, 1, 5000],
+        ];
+        return { zone:c, equipe:`TEAM${zi+1}`, tag:["URT","NTA","SMP"][zi%3],
+          sup, ag, jours, trajet, veh, litres, lignes };
+      });
+      const budget = zones.reduce((tt,z)=>tt+z.lignes.reduce((u,l)=>u+l[3]*l[4]*l[5],0),0) + 80000;
+      const engage = ["valide_pays","cloture"].includes(etat);
+      return { id:`${t.id}-${pi}`, tpm:t, mois:m, ref:`${YEAR}-${String(m+1).padStart(2,"0")}-${ti+1}`,
+        etat, zones, budget,
+        depense: engage ? Math.round(budget * (0.72 + Math.random()*0.24)) : null,
+        avis: TPM_ETAPES.slice(0, TPM_ETAPES.indexOf(etat) + (etat==="cloture"?4:0) || 0) };
     });
-  </script>
+});
+const monTpm = () => state.me.office
+  ? TPM_PLANS.filter(p => p.tpm.office === state.me.office) : TPM_PLANS;
+const soldeDe = (t) => {
+  const av = t.avenants.reduce((s,a)=>s+a[1], 0);
+  const plans = TPM_PLANS.filter(p => p.tpm.id === t.id);
+  const som = (f) => plans.filter(f).reduce((s,p)=>s+p.budget, 0);
+  const engage = som(p => ["valide_pays","cloture"].includes(p.etat));
+  const enCours = som(p => ["soumis","valide_tpm","valide_bureau"].includes(p.etat));
+  const depense = plans.reduce((s,p)=>s+(p.depense||0), 0);
+  const plafond = t.plafond + av;
+  return { plafond, av, engage, enCours, depense, disponible: plafond - engage,
+    conso: plafond ? Math.round(engage/plafond*1000)/10 : 0 };
+};
+
+const USERS = PROFILES.map(p => ({ ...p, email:`${p.first.toLowerCase()}@mems.mg`, active:true }));
+
+/* ═══════════════════════════════════════════════════════════════════════
+   3. CALCULS — formules réelles de web/src/lib/calc.js
+   ═══════════════════════════════════════════════════════════════════════ */
+const n   = v => Number.isFinite(+v) ? +v : 0;
+const r1  = v => Math.round(v*10)/10;
+const r2  = v => Math.round(v*100)/100;
+const pct = (a,b) => b ? Math.round((a/b)*1000)/10 : 0;
+const fmt = v => n(v).toLocaleString("fr-FR");
+const esc = s => String(s??"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+/* « Bureau de terrain d'Ambovombe » → « Ambovombe » pour les colonnes étroites */
+const shortOffice = o => String(o||"").replace(/^Bureau (de terrain|central) d['’ ]?/,"");
+
+/* Chaîne de couverture : intervalle minimum → fréquence → faisabilité → intervalle ajusté */
+function computeParam(p, sites){
+  const nbSites = sites.filter(s => s.office===p.office && s.tag===p.tag && s.status!=="Inactive").length;
+  const minInterval  = p.risk ? p.duration/p.risk : 0;
+  const minFreq      = minInterval ? p.duration/minInterval : 0;
+  const targetPerMonth = minInterval ? nbSites/minInterval : 0;
+  const feasibilityRatio = targetPerMonth ? p.feasible/targetPerMonth : 0;
+  const adjustedFreq = minFreq*feasibilityRatio;
+  const adjustedInterval = adjustedFreq ? Math.max(1, p.duration/adjustedFreq) : 0;
+  return { nbSites, minInterval:r2(minInterval), minFreq:r2(minFreq),
+    targetPerMonth:r2(targetPerMonth), feasibilityRatio:r2(feasibilityRatio),
+    adjustedFreq:r2(adjustedFreq), adjustedInterval:r1(adjustedInterval) };
+}
+/* Exigence minimale de suivi, au prorata des mois écoulés */
+function computeMMR(sites){
+  const elapsed = NOW_M+1;
+  let required=0, done=0, visitedSites=0;
+  const active = sites.filter(s => s.status!=="Inactive");
+  for(const s of active){
+    const req = s.plan.filter(x=>x.p).length * (elapsed/12);
+    required += req;
+    const d = s.plan.filter(x=>x.d).length;
+    done += d; if(d) visitedSites++;
+  }
+  required = Math.round(required);
+  return { elapsed, required, done, visitedSites, activeSites:active.length,
+    pct: pct(done, required), coverage: pct(visitedSites, active.length) };
+}
+const pddRate = (a,b) => b ? a/b : null;
+const rateTxt = v => v===null ? "—" : (Math.round(v*1000)/10)+" %";
+
+/* ═══════════════════════════════════════════════════════════════════════
+   4. ÉTAT — le rôle et le bureau filtrent réellement les données
+   ═══════════════════════════════════════════════════════════════════════ */
+const NAV = [
+  { id:"home",     label:"Accueil",     sub:[] },
+  /* Un sujet par destination : le prévu et le réalisé s'y basculent au lieu de
+     se dupliquer dans deux menus distincts. */
+  { id:"suivi",     label:"Suivi-évaluation", sub:[["summary","Résumé global"],["monitoring","Suivi des sites"],
+                                             ["mre","Plan MRE et budget"],["tpm","Suivi tiers"],
+                                             ["coverage","Couverture et MMR"],["map","Cartographie"],
+                                             ["sites","Registre des sites"],["params","Paramètres de couverture"]] },
+  { id:"programme", label:"Programme",  sub:[["distribution","Distributions"],["population","Population et outputs"],
+                                             ["results","Résultats"],["sources","Sources de données"]] },
+  { id:"analytics",label:"Analyses",    sub:[["datasets","Jeux de données"],["scripts","Scripts d'analyse"],["viz","Visualisations"]] },
+  { id:"reports",  label:"Rapports",    sub:[["extract","Extraction ODK"],["build","Générateur de rapport"]] },
+  { id:"settings", label:"Paramètres",  sub:[["general","Général"],["offices","Bureaux"],["sites","Sites"],["locations","Localités"],
+                                             ["indicators","Indicateurs"],["calc","Calculs"],["odk","ODK Central"],
+                                             ["templates","Modèles de rapport"],["api","API"],["users","Utilisateurs"]] },
+];
+const state = { me:PROFILES[0], tab:"home", sub:{}, open:null, volet:{} };
+
+const can  = c => !!ROLES[state.me.role][c];
+const tabs = () => ROLES[state.me.role].tabs;
+/* Cloisonnement : un compte rattaché à un bureau ne voit que son bureau.
+   Dans l'application réelle ce filtre est appliqué en SQL, pas dans l'interface. */
+const scope = rows => state.me.office ? rows.filter(r => r.office===state.me.office) : rows;
+const mySites    = () => scope(SITES);
+const myParams   = () => scope(PARAMS);
+const myPdd      = () => scope(PDD);
+const myCaseload = () => state.me.office
+  ? CASELOAD.filter(c => OFFICE_OF_ADM2[c.adm2]===state.me.office) : CASELOAD;
+const myAudit    = () => state.me.office ? AUDIT.filter(a => a.office===state.me.office) : AUDIT;
+
+/* ═══════════════════════════════════════════════════════════════════════
+   5. BRIQUES DE RENDU
+   ═══════════════════════════════════════════════════════════════════════ */
+const head = (title, text, actions="") =>
+  `<div class="head"><div><h2>${esc(title)}</h2>${text?`<p>${esc(text)}</p>`:""}</div>
+   ${actions?`<div class="act">${actions}</div>`:""}</div>`;
+
+const card = (title, sub, body, flush) =>
+  `<div class="card">${title?`<h3>${esc(title)}</h3>`:""}${sub?`<p class="sub">${esc(sub)}</p>`:""}
+   ${flush?body:`<div class="body">${body}</div>`}</div>`;
+
+const stat = (lb, vl, sb, tone) =>
+  `<div class="stat ${tone||""}"><div class="lb">${esc(lb)}</div><div class="vl">${vl}</div>
+   ${sb?`<div class="sb">${esc(sb)}</div>`:""}</div>`;
+
+const table = (cols, rows, maxh) => rows.length
+  ? `<div class="scroll" ${maxh?`style="max-height:${maxh}px"`:""}><table>
+     <thead><tr>${cols.map(c=>`<th class="${c[1]==="n"?"num":""}">${esc(c[0])}</th>`).join("")}</tr></thead>
+     <tbody>${rows.map(r=>`<tr>${r.map((c,i)=>
+       `<td class="${cols[i]&&cols[i][1]==="n"?"num":""}">${c}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`
+  : `<div class="empty">Aucune donnée sur ce périmètre</div>`;
+
+const bar = (v, tone) => `<div class="bar"><i style="width:${Math.min(100,Math.max(0,v))}%;
+  background:${tone==="ok"?"var(--ok)":tone==="warn"?"var(--warn)":tone==="bad"?"var(--bad)":"var(--brand)"}"></i></div>`;
+
+const btn = (label, cap, primary) => {
+  const ok = !cap || can(cap);
+  return `<button class="btn ${primary?"":"sec"} ${ok?"":""}" ${ok?"":"disabled"} ${
+    ok?"":`title="Droit « ${cap} » requis — votre rôle est ${ROLES[state.me.role].label}"`}>${esc(label)}</button>`;
+};
+
+/* Histogramme SVG — aucune bibliothèque externe */
+function svgBars(series, w, h){
+  const max = Math.max(1, ...series.flatMap(s=>s.values));
+  const n0 = series[0].values.length, gw = w/n0, bw = Math.min(16, gw/(series.length+1));
+  let out = `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px">`;
+  for(let g=1;g<=4;g++){ const y=h-24-(h-40)*g/4;
+    out += `<line x1="34" y1="${y}" x2="${w}" y2="${y}" stroke="#eef2f5"/>`; }
+  series.forEach((s,si)=> s.values.forEach((v,i)=>{
+    const bh=(h-40)*(v/max), x=34+i*gw+(gw-bw*series.length)/2+si*bw, y=h-24-bh;
+    out += `<rect x="${x}" y="${y}" width="${bw-2}" height="${Math.max(0,bh)}" fill="${s.color}" rx="2"/>`;
+  }));
+  series[0].labels.forEach((l,i)=>{
+    out += `<text x="${34+i*gw+gw/2}" y="${h-8}" font-size="10" fill="#8c9ba5" text-anchor="middle">${esc(l)}</text>`; });
+  out += `<text x="0" y="14" font-size="10" fill="#8c9ba5">${max}</text></svg>`;
+  return out + `<div style="display:flex;gap:14px;margin-top:6px;font-size:11px;color:var(--t2)">${
+    series.map(s=>`<span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${s.color};margin-right:5px"></i>${esc(s.name)}</span>`).join("")}</div>`;
+}
+/* Jauge semi-circulaire */
+function svgGauge(p, w=190){
+  const col = p>=80?"var(--ok)":p>=50?"#b5820b":"var(--bad)";
+  const R=68, cx=w/2, cy=82, a=Math.PI*(1-Math.min(100,p)/100);
+  const x=cx+R*Math.cos(a), y=cy-R*Math.sin(a);
+  return `<svg viewBox="0 0 ${w} 100" style="width:100%;max-width:${w}px;height:100px">
+    <path d="M ${cx-R} ${cy} A ${R} ${R} 0 0 1 ${cx+R} ${cy}" fill="none" stroke="#e8edf1" stroke-width="15" stroke-linecap="round"/>
+    <path d="M ${cx-R} ${cy} A ${R} ${R} 0 0 1 ${x} ${y}" fill="none" stroke="${col}" stroke-width="15" stroke-linecap="round"/>
+    <text x="${cx}" y="${cy-4}" text-anchor="middle" font-size="30" font-weight="300" fill="${col}">${p} %</text></svg>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   6. LES 28 DESTINATIONS
+   ═══════════════════════════════════════════════════════════════════════ */
+const V = {};
+
+/* ── Accueil ───────────────────────────────────────────────── */
+V["home"] = () => {
+  const sites = mySites(), mmr = computeMMR(sites);
+  const tasks = [];
+  sites.filter(s=>s.status!=="Inactive").forEach(s=>{
+    const missed = s.plan.filter((p,i)=>p.p && !p.d && i<NOW_M).length;
+    if(missed) tasks.push(["haute","Visite en retard",
+      `${s.poi} — ${missed} échéance(s) de visite non honorée(s)`, `${shortOffice(s.office)} · ${s.adm3}`]);
+    if(!s.last) tasks.push(["haute","Jamais visité",
+      `${s.poi} — aucune visite enregistrée`, `${s.adm2} · ${s.adm3}`]);
+  });
+  myPdd().filter(l=>l.month<NOW_M && !l.distributed).forEach(l=>tasks.push(["moyenne","Distribution non renseignée",
+    `${l.adm3} — ${MONTHS_L[l.month]}, ${l.actType} ${l.modality} : aucune quantité distribuée saisie`, "Actual Data → Distributions"]));
+  INDICATORS.filter(i=>i.dir==="up" ? i.value<i.target : i.value>i.target).slice(0,3)
+    .forEach(i=>tasks.push(["basse","Cible non atteinte", `${i.name.slice(0,58)}… — ${i.value} ${i.unit} pour une cible de ${i.target}`, "Actual Data → Outcomes"]));
+  const ord={haute:0,moyenne:1,basse:2}; tasks.sort((a,b)=>ord[a[0]]-ord[b[0]]);
+
+  const last3 = [];
+  for(let k=2;k>=0;k--){ const m=NOW_M-k; if(m<0) continue;
+    last3.push({ m:MONTHS[m],
+      plan: sites.reduce((t,s)=>t+(s.plan[m]?.p?1:0),0),
+      done: sites.reduce((t,s)=>t+(s.plan[m]?.d?1:0),0) }); }
+
+  const byTag={};
+  sites.forEach(s=>{ byTag[s.tag]=byTag[s.tag]||{plan:0,done:0};
+    s.plan.forEach(p=>{ if(p.p) byTag[s.tag].plan++; if(p.d) byTag[s.tag].done++; }); });
+
+  const pdd = myPdd();
+  const dBenef = pddRate(pdd.reduce((t,l)=>t+l.benefActual,0), pdd.reduce((t,l)=>t+l.benefPlanned,0));
+  const dDist  = pddRate(pdd.reduce((t,l)=>t+l.distributed,0), pdd.reduce((t,l)=>t+l.benefPlanned,0));
+
+  return head("Accueil", `Bonjour ${state.me.first}. Situation consolidée du suivi au ${new Date().toLocaleDateString("fr-FR")}.`,
+      btn("Plan de suivi")+btn("Générer un rapport","",1))
+    + `<div class="grid g2">
+        ${card("Exigence minimale de suivi", `Réalisé rapporté au requis, au prorata de ${mmr.elapsed} mois`,
+          `<div style="text-align:center">${svgGauge(mmr.pct)}</div>
+           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;padding-top:12px;
+                border-top:1px solid #eef2f5;text-align:center">
+             <div><div style="font-size:20px;font-weight:300">${fmt(mmr.done)}</div><div class="sb" style="font-size:11px;color:var(--t2)">visites réalisées</div></div>
+             <div><div style="font-size:20px;font-weight:300">${fmt(mmr.required)}</div><div style="font-size:11px;color:var(--t2)">visites requises</div></div>
+           </div>
+           <div style="display:flex;justify-content:space-between;margin-top:10px;padding-top:10px;
+                border-top:1px solid #eef2f5;font-size:12px;color:var(--t2)">
+             <span>Sites couverts au moins une fois</span><b>${mmr.visitedSites}/${mmr.activeSites} · ${mmr.coverage} %</b></div>`)}
+        ${card("Trois derniers mois","Visites planifiées et réalisées",
+          svgBars([{name:"Planifiées",color:"var(--brandL)",values:last3.map(x=>x.plan),labels:last3.map(x=>x.m)},
+                   {name:"Réalisées", color:"var(--ok)",    values:last3.map(x=>x.done),labels:last3.map(x=>x.m)}], 420, 210))}
+      </div>`
+    + card("Tâches urgentes et actions à mener",
+        `${tasks.filter(t=>t[0]==="haute").length} priorité haute · ${tasks.filter(t=>t[0]==="moyenne").length} moyenne · ${tasks.filter(t=>t[0]==="basse").length} basse`,
+        table([["Priorité"],["Nature"],["Détail"],["Contexte"]],
+          tasks.slice(0,40).map(t=>[`<span class="badge ${t[0]==="haute"?"r":t[0]==="moyenne"?"y":""}">${t[0]}</span>`,
+            `<b>${esc(t[1])}</b>`, esc(t[2]), `<span style="color:var(--t2)">${esc(t[3])}</span>`]), 300), 1)
+    + `<div class="grid g2">
+        ${card("Plan et réalisé par catégorie d'activité","Sur l'ensemble de l'exercice",
+          svgBars([{name:"Planifié",color:"var(--brandL)",values:Object.values(byTag).map(v=>v.plan),labels:Object.keys(byTag)},
+                   {name:"Réalisé", color:"var(--ok)",    values:Object.values(byTag).map(v=>v.done),labels:Object.keys(byTag)}], 420, 220))}
+        ${card("État des distributions","Réalisation du plan de distribution",
+          `<div style="display:grid;gap:11px">
+            <div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+              <span>Taux de bénéficiaires</span><b>${rateTxt(dBenef)}</b></div>${bar((dBenef||0)*100, dBenef>=.9?"ok":dBenef>=.6?"warn":"bad")}</div>
+            <div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+              <span>Taux de distributions</span><b>${rateTxt(dDist)}</b></div>${bar((dDist||0)*100, dDist>=.9?"ok":dDist>=.6?"warn":"bad")}</div>
+            <div style="font-size:12px;color:var(--t2);margin-top:4px">
+              ${pdd.length} ligne(s) de plan de distribution · ${pdd.filter(l=>!l.distributed).length} sans réalisation saisie</div>
+          </div>`)}
+      </div>`
+    + card("Activité récente","Interventions des bureaux de terrain",
+        table([["Date"],["Utilisateur"],["Bureau"],["Action"]],
+          myAudit().map(a=>[esc(a.at), esc(a.user), `<span style="color:var(--t2)">${esc(a.office)}</span>`, esc(a.text)])), 1);
+};
+
+/* ── Planning ──────────────────────────────────────────────── */
+V["suivi:params"] = () => {
+  const sites = mySites();
+  return head("Paramètres de couverture",
+      "Durée d'opération et niveau de risque déterminent l'intervalle minimum entre deux visites. La capacité mensuelle réelle le corrige en intervalle tenable.",
+      btn("Importer","edit")+btn("Ajouter un paramètre","edit",1))
+    + card(null,null, `<div class="note info">
+        <b>Chaîne de calcul.</b> intervalle minimum = durée ÷ risque · fréquence minimale = durée ÷ intervalle ·
+        cible mensuelle = sites ÷ intervalle · ratio de faisabilité = capacité ÷ cible ·
+        intervalle ajusté = durée ÷ (fréquence × ratio), plancher à un mois.</div>`)
+    + card("Paramètres et colonnes calculées", `${myParams().length} couple(s) bureau × activité — unicité garantie par la base`,
+        table([["Bureau"],["Activité"],["Catégorie"],["Durée","n"],["Risque","n"],["Sites","n"],
+               ["Interv. min","n"],["Cible/mois","n"],["Capacité","n"],["Ratio","n"],["Interv. ajusté","n"]],
+          myParams().map(p=>{ const c=computeParam(p,sites);
+            const tone = c.feasibilityRatio>=1?"g":c.feasibilityRatio>=.6?"y":"r";
+            return [esc(shortOffice(p.office)),
+              `<span class="badge b">${esc(p.tag)}</span>`, esc(p.cat), p.duration, p.risk, c.nbSites,
+              c.minInterval, c.targetPerMonth, p.feasible,
+              `<span class="badge ${tone}">${c.feasibilityRatio}</span>`, `<b>${c.adjustedInterval} mois</b>`]; })), 1);
+};
+
+const PLAN_suivi = () => {
+  const sites = mySites();
+  return head("Plan de suivi des sites",
+      "Grille mensuelle : chaque case porte le mois planifié et le mois réalisé. Une case cochée « réalisé » crée la visite correspondante.",
+      btn("Exporter")+btn("Planification automatique","edit",1))
+    + card("Légende",null, `<div style="display:flex;gap:18px;flex-wrap:wrap;font-size:12px;align-items:center">
+        <span><i style="display:inline-block;width:16px;height:16px;border-radius:2px;background:#dbeafe;vertical-align:-3px;margin-right:6px"></i>Planifié</span>
+        <span><i style="display:inline-block;width:16px;height:16px;border-radius:2px;background:#dcfce7;vertical-align:-3px;margin-right:6px"></i>Réalisé</span>
+        <span><i style="display:inline-block;width:16px;height:16px;border-radius:2px;background:#f1f5f9;vertical-align:-3px;margin-right:6px"></i>Ni l'un ni l'autre</span>
+        ${can("edit")?"":'<span class="badge y">Lecture seule — votre rôle ne permet pas la modification</span>'}</div>`)
+    + card("Grille annuelle", `${sites.length} site(s) · exercice ${YEAR}`,
+        `<div class="scroll" style="max-height:520px"><table><thead><tr>
+          <th style="min-width:210px">Site</th><th>Activité</th>
+          ${MONTHS.map(m=>`<th style="text-align:center;padding:8px 4px">${m}</th>`).join("")}
+          <th class="num">Réal.</th></tr></thead><tbody>
+          ${sites.map(s=>`<tr>
+            <td><b>${esc(s.poi)}</b><div style="font-size:11px;color:var(--t2)">${esc(s.code)} · ${esc(s.adm3)}</div></td>
+            <td><span class="badge b">${esc(s.tag)}</span></td>
+            ${s.plan.map(p=>`<td style="padding:4px 2px"><div class="mcell ${
+              s.status==="Inactive"?"off":p.d?"d":p.p?"p":""}">${p.d?"✓":p.p?"●":""}</div></td>`).join("")}
+            <td class="num"><b>${s.plan.filter(p=>p.d).length}</b>/${s.plan.filter(p=>p.p).length}</td></tr>`).join("")}
+        </tbody></table></div>`, 1);
+};
+
+V["suivi:coverage"] = () => {
+  const sites = mySites(), mmr = computeMMR(sites);
+  const rows = myParams().map(p => { const c = computeParam(p, sites);
+    const g = sites.filter(s=>s.office===p.office && s.tag===p.tag);
+    const planned = g.reduce((t,s)=>t+s.plan.filter(x=>x.p).length,0);
+    const done    = g.reduce((t,s)=>t+s.plan.filter(x=>x.d).length,0);
+    return { p, c, planned, done, pct: pct(done, planned) }; });
+  return head("Couverture et MMR",
+      "Exigence minimale de suivi : nombre de visites requis par la codification, rapporté aux visites réellement réalisées.")
+    + card(null,null,`<div class="stats">
+        ${stat("Taux de réalisation", mmr.pct+" %", `${fmt(mmr.done)} sur ${fmt(mmr.required)} requises`, mmr.pct>=80?"ok":mmr.pct>=50?"warn":"bad")}
+        ${stat("Sites actifs", fmt(mmr.activeSites), "hors sites inactifs")}
+        ${stat("Sites couverts", `${mmr.visitedSites}/${mmr.activeSites}`, mmr.coverage+" % au moins une fois", mmr.coverage>=80?"ok":"warn")}
+        ${stat("Mois écoulés", mmr.elapsed, "prorata appliqué au requis")}
+      </div>`, 1)
+    + card("Couverture par bureau et activité", null,
+        table([["Bureau"],["Activité"],["Sites","n"],["Planifiées","n"],["Réalisées","n"],["Taux","n"],["Progression"]],
+          rows.map(r=>[esc(shortOffice(r.p.office)),
+            `<span class="badge b">${esc(r.p.tag)}</span>`, r.c.nbSites, r.planned, r.done,
+            `<b>${r.pct} %</b>`, `<div style="min-width:120px">${bar(r.pct, r.pct>=80?"ok":r.pct>=50?"warn":"bad")}</div>`])), 1);
+};
+
+const PLAN_distrib = () => {
+  const pdd = myPdd();
+  const byCommune = {};
+  pdd.forEach(l=>{ const k=l.adm3;
+    byCommune[k] = byCommune[k] || { adm3:l.adm3, adm2:l.adm2, planned:0, tonnage:0, amount:0, lines:0 };
+    byCommune[k].planned += l.benefPlanned; byCommune[k].tonnage += l.tonnage;
+    byCommune[k].amount += l.amount; byCommune[k].lines++; });
+  const cl = Object.fromEntries(myCaseload().map(c=>[c.adm3,c]));
+  return head("Plan de distribution",
+      "Côté planifié : bénéficiaires prévus, tonnage et montants par commune et par période. Le taux de couverture rapporte le planifié aux personnes ciblées.",
+      btn("Importer un fichier Excel","edit")+btn("Ajouter une ligne","edit",1))
+    + card("Par commune", `${Object.keys(byCommune).length} commune(s) · ${pdd.length} ligne(s) de plan`,
+        table([["Commune"],["District"],["Lignes","n"],["Population","n"],["Ciblés","n"],
+               ["Bénéf. planifiés","n"],["Couverture du ciblage","n"],["Tonnage (t)","n"],["Montant (MGA)","n"]],
+          Object.values(byCommune).map(c=>{
+            const cc = cl[c.adm3], cov = cc ? pct(c.planned, cc.targeted) : 0;
+            return [`<b>${esc(c.adm3)}</b>`, esc(c.adm2), c.lines,
+              cc?fmt(cc.pop):"—", cc?fmt(cc.targeted):"—", fmt(c.planned),
+              cc?`<span class="badge ${cov>=90?"g":cov>=60?"y":"r"}">${cov} %</span>`:"—",
+              c.tonnage?r1(c.tonnage):"—", c.amount?fmt(c.amount):"—"]; })), 1)
+    + card("Détail mensuel", "Une ligne par commune, mois et type d'activité",
+        table([["Mois"],["Commune"],["Type"],["Modalité"],["Produit"],["Bénéf. planifiés","n"],["Statut"]],
+          pdd.map(l=>[MONTHS_L[l.month], esc(l.adm3), `<span class="badge">${esc(l.actType)}</span>`,
+            esc(l.modality), esc(l.commodity), fmt(l.benefPlanned),
+            `<span class="badge ${l.status==="done"?"g":"b"}">${l.status==="done"?"réalisé":"planifié"}</span>`]), 380), 1);
+};
+
+const PLAN_results = () => head("Plan des résultats",
+    "Calendrier de collecte des indicateurs de résultat : à quel mois chaque mesure est attendue, selon sa fréquence.")
+  + card("Calendrier annuel de collecte", `${INDICATORS.length} indicateurs · exercice ${YEAR}`,
+      `<div class="scroll"><table><thead><tr><th style="min-width:280px">Indicateur</th><th>Fréquence</th>
+        ${MONTHS.map(m=>`<th style="text-align:center;padding:8px 4px">${m}</th>`).join("")}</tr></thead><tbody>
+        ${INDICATORS.map((ind,ii)=>{
+          const step = ind.freq==="Mensuel"?1:ind.freq==="Trimestriel"?3:ind.freq==="Semestriel"?6:12;
+          return `<tr><td><b>${esc(ind.id)}</b><div style="font-size:11px;color:var(--t2)">${esc(ind.name.slice(0,66))}…</div></td>
+            <td><span class="badge">${esc(ind.freq)}</span></td>
+            ${MONTHS.map((_,m)=>`<td style="padding:4px 2px"><div class="mcell ${
+              (m+ii)%step===0?"p":""}">${(m+ii)%step===0?"●":""}</div></td>`).join("")}</tr>`; }).join("")}
+      </tbody></table></div>`, 1);
+
+/* ── Actual Data ───────────────────────────────────────────── */
+V["suivi:summary"] = () => {
+  const sites = mySites(), mmr = computeMMR(sites), pdd = myPdd();
+  const visits = sites.reduce((t,s)=>t+s.plan.filter(p=>p.d).length,0);
+  const benef  = sites.reduce((t,s)=>t+s.benef,0);
+  const dist   = pddRate(pdd.reduce((t,l)=>t+l.distributed,0), pdd.reduce((t,l)=>t+l.benefPlanned,0));
+  const cl = myCaseload();
+  return head("Résumé global","Vue consolidée des données réelles collectées sur le terrain.")
+    + card(null,null,`<div class="stats">
+        ${stat("Sites suivis", fmt(sites.length), `${sites.filter(s=>s.status==="Active").length} actifs`)}
+        ${stat("Visites réalisées", fmt(visits), `sur ${fmt(mmr.required)} requises`, mmr.pct>=80?"ok":"warn")}
+        ${stat("Réalisation MMR", mmr.pct+" %", "au prorata des mois écoulés", mmr.pct>=80?"ok":mmr.pct>=50?"warn":"bad")}
+        ${stat("Bénéficiaires", fmt(benef), "enregistrés sur les sites")}
+        ${stat("Taux de distributions", rateTxt(dist), `${pdd.length} lignes de PDD`, dist>=.9?"ok":dist>=.6?"warn":"bad")}
+        ${stat("Communes couvertes", fmt(cl.length), `${fmt(cl.reduce((t,c)=>t+c.targeted,0))} personnes ciblées`)}
+      </div>`, 1)
+    + `<div class="grid g2">
+        ${card("Population, ciblage et distribution par commune","Les trois taux qui intéressent le programme",
+          table([["Commune"],["Population","n"],["Ciblés","n"],["Taux de ciblage","n"]],
+            cl.map(c=>[esc(c.adm3), fmt(c.pop), fmt(c.targeted),
+              `<span class="badge ${pct(c.targeted,c.pop)>=30?"y":""}">${pct(c.targeted,c.pop)} %</span>`]), 300), 1)}
+        ${card("Répartition par activité",null,
+          svgBars([{name:"Sites", color:"var(--brand)",
+            values:[...new Set(sites.map(s=>s.tag))].map(t=>sites.filter(s=>s.tag===t).length),
+            labels:[...new Set(sites.map(s=>s.tag))]}], 420, 220))}
+      </div>`;
+};
+
+const REEL_suivi = () => {
+  const sites = mySites(); const visits=[];
+  sites.forEach(s=>s.plan.forEach((p,m)=>{ if(p.d) visits.push({
+    site:s, month:m, monitor:s.resp,
+    status: m<NOW_M-1 ? "Validé" : (m%3===0 ? "Erreur" : "À valider") }); }));
+  visits.sort((a,b)=>b.month-a.month);
+  const pend = visits.filter(v=>v.status==="À valider").length;
+  return head("Suivi de processus",
+      "Soumissions de visite remontées depuis ODK Central. La validation est une action métier distincte, tracée et réservée.",
+      btn("Extraire depuis ODK","edit")+btn(`Valider tout (${pend})`,"validate",1))
+    + (can("validate") ? "" : `<div class="note warn" style="margin-bottom:16px">
+        Votre rôle est <b>${ROLES[state.me.role].label}</b> : la validation des visites vous est refusée.
+        Le bouton reste visible mais désactivé — et le serveur refuserait la requête même s'il était forcé.</div>`)
+    + card(null,null,`<div class="stats">
+        ${stat("Soumissions", fmt(visits.length), "sur l'exercice")}
+        ${stat("Validées", fmt(visits.filter(v=>v.status==="Validé").length), "", "ok")}
+        ${stat("À valider", fmt(pend), "en attente", pend?"warn":"")}
+        ${stat("En erreur", fmt(visits.filter(v=>v.status==="Erreur").length), "à corriger", "bad")}
+      </div>`, 1)
+    + card("Soumissions", null,
+        table([["Mois"],["Site"],["Activité"],["Moniteur"],["Statut"],["Action"]],
+          visits.map(v=>[MONTHS_L[v.month], `<b>${esc(v.site.poi)}</b>`,
+            `<span class="badge b">${esc(v.site.tag)}</span>`, esc(v.monitor),
+            `<span class="badge ${v.status==="Validé"?"g":v.status==="Erreur"?"r":"y"}">${esc(v.status)}</span>`,
+            v.status==="À valider" ? btn("Valider","validate") : "—"]), 420), 1);
+};
+
+V["suivi:sites"] = () => {
+  const sites = mySites();
+  return head("Sites","Registre des points d'intérêt suivis. Ce même module est accessible depuis Paramètres → Sites.",
+      btn("Importer","edit")+btn("Exporter")+btn("Nouveau site","edit",1))
+    + (state.me.office ? `<div class="note info" style="margin-bottom:16px">
+        Vous êtes rattaché au <b>${esc(state.me.office)}</b> : seuls ses ${sites.length} site(s) vous sont
+        renvoyés. Le filtrage est appliqué en SQL par le serveur, pas dans l'interface.</div>` : "")
+    + card("Registre", `${sites.length} site(s) · ${sites.filter(s=>s.status==="Active").length} actif(s)`,
+        table([["Code"],["Point d'intérêt"],["Bureau"],["Activité"],["Commune"],["Fokontany"],
+               ["Bénéf.","n"],["Sécurité"],["Dernière visite"],["Statut"]],
+          sites.map(s=>[`<b>${esc(s.code)}</b>`, esc(s.poi),
+            esc(shortOffice(s.office)),
+            `<span class="badge b">${esc(s.tag)}</span>`, esc(s.adm3), esc(s.adm4), fmt(s.benef),
+            `<span class="badge ${s.sec===0?"g":s.sec===1?"y":"r"}">${s.sec}</span>`,
+            s.last || '<span style="color:var(--bad)">jamais</span>',
+            `<span class="badge ${s.status==="Active"?"g":"r"}">${esc(s.status)}</span>`]), 460), 1);
+};
+
+V["suivi:map"] = () => {
+  const sites = mySites().filter(s=>s.lat && s.lon);
+  const lats=sites.map(s=>s.lat), lons=sites.map(s=>s.lon);
+  const minLa=Math.min(...lats)-.4, maxLa=Math.max(...lats)+.4;
+  const minLo=Math.min(...lons)-.4, maxLo=Math.max(...lons)+.4;
+  /* Projection équirectangulaire : un degré de longitude vaut cos(latitude) degré de
+     latitude en distance réelle. La correction s'applique au rapport largeur/hauteur,
+     sinon la carte est étirée horizontalement. */
+  const midLa=(minLa+maxLa)/2, kx=Math.cos(midLa*Math.PI/180);
+  const degW=(maxLo-minLo)*kx || 1, degH=(maxLa-minLa) || 1;
+  const W=760, H=Math.round(Math.min(560, Math.max(260, (W-60)*(degH/degW)+50)));
+  const px = s => 30+((s.lon-minLo)/((maxLo-minLo)||1))*(W-60);
+  const py = s => 20+((maxLa-s.lat)/degH)*(H-50);
+  const colors = { URT:"var(--brand)", NTA:"var(--ok)", SMP:"var(--warn)", MPA:"var(--orange)",
+                   ACL:"var(--aqua)", SAMS:"var(--magenta)", CAR:"var(--navy)" };
+  /* Le fond de carte : contours des communes, teintés selon la présence de sites.
+     Le blanc est réservé au zéro — un vide doit se voir comme un vide, pas comme la
+     première classe d'une échelle. */
+  const niveau = state.geoLevel || "adm3";
+  const contours = CONTOURS[niveau].filter(c =>
+    !state.me.office || OFFICE_OF_ADM2[c.adm2] === state.me.office);
+  const parUnite = {};
+  sites.forEach(st => { const cle = niveau === "adm3" ? st.adm3 : st.adm2;
+    const a = parUnite[cle] = parUnite[cle] || { sites:0, benef:0 };
+    a.sites++; a.benef += st.benef; });
+  const maxSites = Math.max(1, ...Object.values(parUnite).map(a=>a.sites));
+  const RAMP = ["#e8f2f8","#bcdcec","#8ac2dd","#4e9ec7","#0b6d9e"];
+  const aplat = (nom) => { const a = parUnite[nom];
+    if(!a || !a.sites) return "#ffffff";
+    return RAMP[Math.min(4, Math.floor((a.sites/maxSites)*5))]; };
+  const bx = (lon) => 30+((lon-minLo)/((maxLo-minLo)||1))*(W-60);
+  const by = (lat) => 20+((maxLa-lat)/degH)*(H-50);
+  const rect = (c) => `<rect x="${r2(bx(c.boite.w))}" y="${r2(by(c.boite.n))}"
+      width="${r2(bx(c.boite.e)-bx(c.boite.w))}" height="${r2(by(c.boite.s)-by(c.boite.n))}"
+      fill="${aplat(c.nom)}" fill-opacity=".9" stroke="#9fb2c0" stroke-width=".8">
+      <title>${esc(c.nom)} — ${(parUnite[c.nom]||{}).sites||0} site(s)</title></rect>`;
+
+  return head("Cartographie",
+      "Fond de carte administratif et points de site, en projection équirectangulaire corrigée de la latitude. Aucune tuile n'est appelée : la carte fonctionne hors ligne et aucune donnée ne sort de l'application.")
+    + card("Sites géolocalisés", `${sites.length} point(s) · ${contours.length} contour(s) · correction de latitude ×${r2(kx)}`,
+      `<div style="display:flex;gap:8px;margin-bottom:10px">
+        ${[["adm2","Districts"],["adm3","Communes"]].map(([k,l])=>
+          `<button data-geolevel="${k}" class="vbtn ${niveau===k?"on":""}">${l}</button>`).join("")}
+        <span style="margin-left:auto;display:flex;align-items:center;gap:8px;font-size:11px;color:var(--t2)">
+          Présence de sites
+          <span style="display:flex;height:10px;width:110px;border:1px solid var(--line);border-radius:2px;overflow:hidden">
+            <i style="flex:1;background:#fff"></i>${RAMP.map(c=>`<i style="flex:1;background:${c}"></i>`).join("")}
+          </span>
+          <span>aucun → ${maxSites}</span></span>
+      </div>
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#f8fafc;border-radius:3px">
+        ${[0,1,2,3,4].map(i=>`<line x1="30" y1="${20+i*(H-50)/4}" x2="${W-30}" y2="${20+i*(H-50)/4}" stroke="#e8edf1"/>`).join("")}
+        ${[0,1,2,3,4].map(i=>`<line x1="${30+i*(W-60)/4}" y1="20" x2="${30+i*(W-60)/4}" y2="${H-30}" stroke="#e8edf1"/>`).join("")}
+        ${contours.map(rect).join("")}
+        ${sites.map(s=>`<g>
+          <circle cx="${px(s)}" cy="${py(s)}" r="${6+Math.sqrt(s.benef)/28}"
+            fill="${colors[s.tag]||"var(--t3)"}" fill-opacity=".72" stroke="#fff" stroke-width="1.5"/>
+          <text x="${px(s)}" y="${py(s)-11}" font-size="9.5" fill="var(--t2)" text-anchor="middle">${esc(s.code)}</text>
+        </g>`).join("")}
+        <text x="30" y="${H-8}" font-size="10" fill="var(--t3)">${r2(minLo)}° E</text>
+        <text x="${W-30}" y="${H-8}" font-size="10" fill="var(--t3)" text-anchor="end">${r2(maxLo)}° E</text>
+      </svg>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:11.5px;color:var(--t2)">
+        ${[...new Set(sites.map(s=>s.tag))].map(t=>
+          `<span><i style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${colors[t]||"var(--t3)"};margin-right:5px"></i>${esc(t)} — ${esc(TAG_LABEL[t]||t)}</span>`).join("")}
+      </div>
+      <p style="font-size:11.5px;color:var(--t3);margin:10px 0 0">La taille du point est proportionnelle au nombre de bénéficiaires.</p>`);
+};
+
+const REEL_distrib = () => {
+  const pdd = myPdd().filter(l=>l.month<=NOW_M);
+  const tot = k => pdd.reduce((t,l)=>t+l[k],0);
+  const rBenef=pddRate(tot("benefActual"),tot("benefPlanned"));
+  const rRecep=pddRate(tot("received"),tot("benefPlanned"));
+  const rDist =pddRate(tot("distributed"),tot("benefPlanned"));
+  return head("Distributions",
+      "Côté réalisé : bénéficiaires servis, quantités reçues et distribuées. Les trois taux se calculent par rapport au planifié.",
+      btn("Importer un fichier Excel","edit")+btn("Exporter"))
+    + card(null,null,`<div class="stats">
+        ${stat("Bénéficiaires servis", fmt(tot("benefActual")), `sur ${fmt(tot("benefPlanned"))} planifiés`)}
+        ${stat("Taux bénéficiaires", rateTxt(rBenef), "", rBenef>=.9?"ok":rBenef>=.6?"warn":"bad")}
+        ${stat("Taux de réception", rateTxt(rRecep), "", rRecep>=.9?"ok":rRecep>=.6?"warn":"bad")}
+        ${stat("Taux de distributions", rateTxt(rDist), "", rDist>=.9?"ok":rDist>=.6?"warn":"bad")}
+        ${stat("Lignes de PDD", fmt(pdd.length), `${pdd.filter(l=>!l.distributed).length} sans réalisation`)}
+      </div>`, 1)
+    + card("Réalisation par mois", null,
+        svgBars([{name:"Planifié", color:"var(--brandL)",
+                  values:MONTHS.slice(0,NOW_M+1).map((_,m)=>pdd.filter(l=>l.month===m).reduce((t,l)=>t+l.benefPlanned,0)),
+                  labels:MONTHS.slice(0,NOW_M+1)},
+                 {name:"Servi",    color:"var(--ok)",
+                  values:MONTHS.slice(0,NOW_M+1).map((_,m)=>pdd.filter(l=>l.month===m).reduce((t,l)=>t+l.benefActual,0)),
+                  labels:MONTHS.slice(0,NOW_M+1)}], 900, 240))
+    + card("Détail des réalisations", null,
+        table([["Mois"],["Commune"],["Type"],["Modalité"],["Planifiés","n"],["Servis","n"],
+               ["Reçu","n"],["Distribué","n"],["Taux distrib.","n"]],
+          pdd.map(l=>{ const r=pddRate(l.distributed,l.benefPlanned);
+            return [MONTHS_L[l.month], esc(l.adm3), `<span class="badge">${esc(l.actType)}</span>`, esc(l.modality),
+              fmt(l.benefPlanned), fmt(l.benefActual), fmt(l.received), fmt(l.distributed),
+              `<span class="badge ${r>=.9?"g":r>=.6?"y":"r"}">${rateTxt(r)}</span>`]; }), 400), 1);
+};
+
+V["programme:population"] = () => {
+  const cl = myCaseload();
+  const outputs = MONTHS.map((m,i)=>({ m,
+    planned: Math.round(cl.reduce((t,c)=>t+c.targeted,0)/12*(0.85+((i*37)%30)/100)),
+    actual: i<=NOW_M ? Math.round(cl.reduce((t,c)=>t+c.targeted,0)/12*(0.62+((i*53)%36)/100)) : 0 }));
+  return head("Outputs et population",
+      "Bénéficiaires planifiés et atteints par mois, et données de population par commune servant au calcul du ciblage.",
+      btn("Importer un fichier Excel","edit"))
+    + card("Bénéficiaires planifiés et atteints", `Exercice ${YEAR}`,
+        svgBars([{name:"Planifiés", color:"var(--brandL)", values:outputs.map(o=>o.planned), labels:MONTHS},
+                 {name:"Atteints",  color:"var(--ok)",     values:outputs.map(o=>o.actual),  labels:MONTHS}], 900, 250))
+    + card("Population et ciblage par commune", `${cl.length} commune(s) — base RGPH-3 (INSTAT 2018), projetée`,
+        table([["Commune"],["District"],["Activité"],["Population","n"],["Ménages","n"],
+               ["Personnes ciblées","n"],["Taux de ciblage","n"]],
+          cl.map(c=>[`<b>${esc(c.adm3)}</b>`, esc(c.adm2), `<span class="badge b">${esc(c.tag)}</span>`,
+            fmt(c.pop), fmt(c.hh), fmt(c.targeted),
+            `<span class="badge ${pct(c.targeted,c.pop)>=30?"y":""}">${pct(c.targeted,c.pop)} %</span>`])), 1);
+};
+
+const REEL_results = () => head("Outcomes",
+    "Valeurs mesurées des indicateurs de résultat, rapportées à leur cible. Le sens de progression (à la hausse ou à la baisse) dépend de l'indicateur.",
+    btn("Saisir une mesure","edit",1))
+  + card("Indicateurs de résultat", `${INDICATORS.length} indicateurs · ${INDICATORS.filter(i=>i.dir==="up"?i.value>=i.target:i.value<=i.target).length} cible(s) atteinte(s)`,
+      table([["Code"],["Indicateur"],["Panier"],["Unité"],["Cible","n"],["Mesure","n"],["Sens"],["Atteinte"],["Écart"]],
+        INDICATORS.map(i=>{ const okv = i.dir==="up" ? i.value>=i.target : i.value<=i.target;
+          const ecart = r1(i.dir==="up" ? i.value-i.target : i.target-i.value);
+          return [`<b>${esc(i.id)}</b>`, esc(i.name), `<span class="badge">${esc(i.basket)}</span>`, esc(i.unit),
+            i.target, `<b>${i.value}</b>`, i.dir==="up"?"↑ à la hausse":"↓ à la baisse",
+            `<span class="badge ${okv?"g":"r"}">${okv?"atteinte":"non atteinte"}</span>`,
+            `<span style="color:${okv?"var(--ok)":"var(--bad)"}">${ecart>0?"+":""}${ecart}</span>`]; })), 1);
+
+V["programme:sources"] = () => head("Sources de données",
+    "Formulaires ODK Central rattachés à l'application. Le jeton d'accès est chiffré en AES-256-GCM et n'est jamais renvoyé par l'API — seul un booléen indique sa présence.",
+    btn("Rattacher un formulaire","admin",1))
+  + card("Formulaires rattachés", `${ODK_FORMS.length} formulaire(s)`,
+      table([["Formulaire"],["Identifiant ODK"],["Projet"],["Type"],["Activité"],["Soumissions","n"],["Dernière extraction"],["Jeton"]],
+        ODK_FORMS.map(f=>[`<b>${esc(f.name)}</b>`, `<code style="font-size:11.5px">${esc(f.formId)}</code>`,
+          esc(f.project), `<span class="badge">${esc(f.kind)}</span>`,
+          f.tag?`<span class="badge b">${esc(f.tag)}</span>`:"—", fmt(f.records), esc(f.last),
+          f.token?'<span class="badge g">chiffré</span>':'<span class="badge r">absent</span>'])), 1)
+  + card(null,null,`<div class="note warn">
+      <b>Limite connue.</b> Les appels vers ODK Central partent du navigateur. Si le serveur ODK
+      n'autorise pas l'origine de la page, l'extraction échoue. Le passage par un relais côté
+      serveur est la suite logique — le jeton est déjà stocké chiffré pour cela.</div>`);
+
+/* ── Analyses ──────────────────────────────────────────────── */
+V["analytics:datasets"] = () => head("Jeux de données",
+    "Extractions figées d'un formulaire, sur lesquelles s'appliquent les règles d'apurement. Ces règles, elles, s'exécutent réellement dans le navigateur.",
+    btn("Nouveau jeu de données","edit",1))
+  + card("Jeux de données", `${DATASETS.length} jeu(x)`,
+      table([["Nom"],["Formulaire source"],["Lignes","n"],["Règles d'apurement","n"],["Créé le"],["Actions"]],
+        DATASETS.map(d=>[`<b>${esc(d.name)}</b>`, `<code style="font-size:11.5px">${esc(d.form)}</code>`,
+          fmt(d.rows), d.rules, esc(d.created), btn("Apurer","edit")+" "+btn("Exporter")])), 1)
+  + card("Règles d'apurement — exemple","Appliquées dans le navigateur, résultat immédiat",
+      table([["Champ"],["Règle"],["Seuil"],["Lignes écartées","n"]],
+        [["hh_size","bornes plausibles","1 – 20","14"],
+         ["fcs","valeur manquante","obligatoire","3"],
+         ["gps_lat","hors emprise pays","-25,7 – -11,9","1"],
+         ["date_visite","postérieure à aujourd'hui","refusée","0"],
+         ["benef_id","doublon","unicité","7"],
+         ["montant","valeur aberrante","> 3 écarts-types","2"]].map(r=>[`<code>${esc(r[0])}</code>`,esc(r[1]),esc(r[2]),r[3]])));
+
+V["analytics:scripts"] = () => head("Scripts d'analyse",
+    "Scripts R et SPSS versionnés avec leur jeu de données. Ils ne s'exécutent pas dans l'application : ils s'exportent, s'exécutent dans R ou SPSS, et les résultats se réimportent.",
+    btn("Nouveau script","edit",1))
+  + card(null,null,`<div class="note warn"><b>À savoir.</b> Les scripts R et SPSS ne s'exécutent pas ici.
+      Ils sont rédigés, versionnés et exportés avec leur jeu de données ; l'exécution se fait dans
+      R ou SPSS. Seules les règles d'apurement s'exécutent réellement, dans le navigateur.</div>`)
+  + SCRIPTS.map(s => card(s.name, `${s.lang} · ${s.stage==="cleaning"?"apurement":"analyse"} · ${s.dataset} · ${s.runs} exécution(s) enregistrée(s)`,
+      `<pre class="code">${esc(s.code)}</pre>
+       <div style="margin-top:10px;display:flex;gap:8px">${btn("Exporter le script")}${btn("Exporter avec les données")}${btn("Modifier","edit")}</div>`)).join("");
+
+V["analytics:viz"] = () => {
+  const sites = mySites();
+  const tags = [...new Set(sites.map(s=>s.tag))];
+  return head("Visualisations","Graphiques composés à partir des collections synchronisées. Les tableaux de bord sont enregistrés et partagés.",
+      btn("Nouveau tableau de bord","edit",1))
+    + `<div class="grid g2">
+        ${card("Sites par activité",null, svgBars([{name:"Sites",color:"var(--brand)",
+          values:tags.map(t=>sites.filter(s=>s.tag===t).length), labels:tags}], 420, 230))}
+        ${card("Bénéficiaires par activité",null, svgBars([{name:"Bénéficiaires",color:"var(--aqua)",
+          values:tags.map(t=>sites.filter(s=>s.tag===t).reduce((a,s)=>a+s.benef,0)), labels:tags}], 420, 230))}
+      </div>`
+    + card("Atteinte des cibles par indicateur",null,
+        `<div style="display:grid;gap:11px">${INDICATORS.map(i=>{
+          const a = i.dir==="up" ? pct(i.value,i.target) : pct(i.target,i.value);
+          return `<div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+            <span><b>${esc(i.id)}</b> <span style="color:var(--t2)">${esc(i.name.slice(0,52))}…</span></span>
+            <b>${Math.min(999,a)} %</b></div>${bar(a, a>=100?"ok":a>=75?"warn":"bad")}</div>`; }).join("")}</div>`);
+};
+
+/* ── Rapports ──────────────────────────────────────────────── */
+V["reports:extract"] = () => head("Extraction ODK",
+    "Sélection d'un formulaire, choix des colonnes et export. Les libellés proviennent du XLSForm joint au formulaire.",
+    btn("Exporter en CSV")+btn("Exporter en JSON"))
+  + `<div class="grid g2">
+      ${card("Paramètres d'extraction",null,
+        `<div class="fld"><label>Formulaire</label>
+          <select class="in">${ODK_FORMS.map(f=>`<option>${esc(f.name)}</option>`).join("")}</select></div>
+         <div class="fld"><label>Période</label>
+          <select class="in"><option>Exercice ${YEAR}</option><option>Semestre en cours</option><option>Mois en cours</option></select></div>
+         <div class="fld"><label>Colonnes</label>
+          <div class="hint">18 colonnes disponibles, 12 sélectionnées par défaut. Les libellés du XLSForm remplacent les noms techniques.</div></div>
+         <div class="fld"><label>Bureau</label>
+          <select class="in" ${state.me.office?"disabled":""}>${
+            state.me.office ? `<option>${esc(state.me.office)}</option>`
+            : `<option>Tous les bureaux</option>${OFFICES.map(o=>`<option>${esc(o)}</option>`).join("")}`}</select>
+          ${state.me.office?`<div class="hint">Verrouillé sur votre bureau de rattachement.</div>`:""}</div>`)}
+      ${card("Aperçu", "12 premières lignes",
+        table([["submission_id"],["site"],["date"],["moniteur"],["statut"]],
+          mySites().slice(0,12).map((s,i)=>[`<code style="font-size:11px">uuid:${(1e7+i*7919).toString(16)}</code>`,
+            esc(s.poi), `2026-0${(i%7)+1}-${10+i}`, esc(s.resp),
+            `<span class="badge ${i%3?"g":"y"}">${i%3?"Validé":"À valider"}</span>`])), 1)}
+    </div>`;
+
+V["reports:build"] = () => head("Générateur de rapport",
+    "Assemblage de blocs figés à partir des données courantes, puis export HTML. Le rapport reflète votre périmètre.",
+    btn("Nouveau modèle","edit")+btn("Générer",""  ,1))
+  + `<div class="grid g2">
+      ${card("Modèles enregistrés", `${TEMPLATES.length} modèle(s)`,
+        TEMPLATES.map(t=>`<div style="border:1px solid var(--line);border-radius:3px;padding:12px;margin-bottom:10px">
+          <b style="font-size:13px">${esc(t.name)}</b>
+          <p style="margin:5px 0 8px;font-size:12px;color:var(--t2);line-height:1.6">${esc(t.intro)}</p>
+          <div style="display:flex;gap:5px;flex-wrap:wrap">${t.blocks.map(b=>`<span class="badge b">${esc(b)}</span>`).join("")}</div>
+        </div>`).join(""))}
+      ${card("Blocs disponibles","Cochez les sections à inclure",
+        `<div style="display:grid;gap:7px">${
+          ["Exigence minimale de suivi","Couverture par activité","Plan et réalisé par site","Distributions",
+           "Population et ciblage","Résultats par indicateur","Carte des sites","Tâches en retard","Journal d'audit"]
+          .map((b,i)=>`<label style="display:flex;gap:9px;align-items:center;font-size:12.5px;cursor:pointer">
+            <input type="checkbox" ${i<4?"checked":""}> ${esc(b)}</label>`).join("")}</div>`)}
+    </div>`
+  + card("Aperçu du rapport",null,
+      `<div style="border:1px solid var(--line);border-radius:3px;padding:22px;background:#fff">
+        <h3 style="margin:0 0 3px;font-size:17px">Rapport mensuel de suivi — ${MONTHS_L[NOW_M]} ${YEAR}</h3>
+        <p style="margin:0 0 16px;font-size:12px;color:var(--t2)">
+          ${esc(state.me.office || "Tous les bureaux")} · généré le ${new Date().toLocaleDateString("fr-FR")}</p>
+        <div class="stats" style="border:1px solid var(--line)">
+          ${(()=>{ const m=computeMMR(mySites()); return stat("Réalisation MMR", m.pct+" %","",m.pct>=80?"ok":"warn")
+            + stat("Sites suivis", fmt(mySites().length))
+            + stat("Communes", fmt(myCaseload().length)); })()}
+        </div>
+      </div>`);
+
+/* ── Paramètres ────────────────────────────────────────────── */
+V["settings:general"] = () => head("Paramètres généraux","Identité de l'organisation, référentiels et listes de codification.")
+  + `<div class="grid g2">
+      ${card("Identité et affichage",null,
+        `<div class="fld"><label>Nom de l'organisation</label><input class="in" value="Bureau pays Madagascar"></div>
+         <div class="fld"><label>Unité responsable</label><input class="in" value="Unité suivi et évaluation"></div>
+         <div class="fld"><label>Logo du pied de page</label><input class="in" placeholder="/logo.png">
+           <div class="hint">Chemin servi par l'application ou image en data: — les adresses externes sont
+             bloquées par la politique de sécurité du contenu.</div></div>
+         <div class="fld"><label>Éléments par page</label><input class="in" type="number" value="25">
+           <div class="hint">Pagination des tableaux de planification.</div></div>`)}
+      ${card("Bureaux et antennes", `${OFFICES.length} entrées`,
+        OFFICES.map(o=>`<div style="display:flex;gap:6px;margin-bottom:6px"><input class="in" value="${esc(o)}"></div>`).join("")
+        + btn("Ajouter","edit"))}
+      ${card("Activity tags", `${TAGS.length} entrées`,
+        table([["Code"],["Intitulé"]], TAGS.map(t=>[`<span class="badge b">${esc(t[0])}</span>`, esc(t[1])])), 1)}
+      ${card("Partenaires coopérants","5 entrées",
+        ["Partenaire A","Partenaire B","Partenaire C","Partenaire D","Partenaire E"]
+          .map(p=>`<div style="margin-bottom:6px"><input class="in" value="${esc(p)}"></div>`).join(""))}
+    </div>`;
+
+V["settings:sites"] = () => V["suivi:sites"]();
+
+V["settings:locations"] = () => {
+  const regions = [...new Set(GEO.map(g=>g.adm1))];
+  return head("Localités",
+      "Découpage administratif jusqu'au fokontany. Ce référentiel est la clé de voûte : sites, population et distributions s'y raccrochent.",
+      btn("Importer un shapefile","admin")+btn("Importer un fichier Excel","admin",1))
+    + card(null,null,`<div class="note info">
+        <b>Référentiel de Madagascar.</b> Le découpage officiel compte 23 régions, 119 districts,
+        environ 1 695 communes et près de 18 000 fokontany. L'échantillon ci-dessous en présente
+        ${GEO.length} lignes. L'import complet se fait par fichier, en une transaction.</div>`)
+    + `<div class="grid g3">
+        ${card("Régions", `${regions.length} sur 23`, regions.map(r=>`<div style="padding:5px 0;border-bottom:1px solid #eef2f5;font-size:12.5px">${esc(r)}</div>`).join(""))}
+        ${card("Districts", `${[...new Set(GEO.map(g=>g.adm2))].length} sur 119`, [...new Set(GEO.map(g=>g.adm2))].map(r=>`<div style="padding:5px 0;border-bottom:1px solid #eef2f5;font-size:12.5px">${esc(r)}</div>`).join(""))}
+        ${card("Communes", `${[...new Set(GEO.map(g=>g.adm3))].length} sur ~1 695`, [...new Set(GEO.map(g=>g.adm3))].map(r=>`<div style="padding:5px 0;border-bottom:1px solid #eef2f5;font-size:12.5px">${esc(r)}</div>`).join(""))}
+      </div>`
+    + card("Fokontany", `${GEO.length} ligne(s) de l'échantillon · le référentiel complet en compte près de 18 000`,
+        table([["Région"],["District"],["Commune"],["Fokontany"],["P-code"],["Latitude","n"],["Longitude","n"],["Site rattaché"]],
+          GEO.map(g=>{ const s = SITES.find(x=>x.adm4===g.adm4);
+            return [esc(g.adm1), esc(g.adm2), esc(g.adm3), `<b>${esc(g.adm4)}</b>`,
+              `<code style="font-size:11px">${esc(g.pcode)}</code>`, g.lat, g.lon,
+              s ? `<span class="badge g">${esc(s.code)}</span>` : '<span class="badge">non couvert</span>']; }), 430), 1);
+};
+
+V["settings:indicators"] = () => head("Indicateurs",
+    "Masterlist des indicateurs de résultat. Cible, unité et sens de progression conditionnent l'appréciation de l'atteinte.",
+    btn("Importer","edit")+btn("Nouvel indicateur","edit",1))
+  + card("Masterlist", `${INDICATORS.length} indicateurs · ${[...new Set(INDICATORS.map(i=>i.basket))].length} paniers`,
+      table([["Code"],["Intitulé"],["Panier"],["Unité"],["Cible","n"],["Sens"],["Méthode"],["Fréquence"],["Actions"]],
+        INDICATORS.map(i=>[`<b>${esc(i.id)}</b>`, esc(i.name), `<span class="badge">${esc(i.basket)}</span>`,
+          esc(i.unit), i.target, i.dir==="up"?"↑":"↓", esc(i.method),
+          `<span class="badge b">${esc(i.freq)}</span>`, btn("Modifier","edit")+" "+btn("Supprimer","del")]), 440), 1);
+
+V["settings:calc"] = () => {
+  const F = [
+    ["minInterval","Intervalle minimum requis (mois)","duration / riskLevel","Durée d'opération divisée par le niveau de risque"],
+    ["minFreq","Fréquence minimale requise","duration / minInterval","Nombre de visites attendues sur la durée"],
+    ["targetPerMonth","Sites ciblés par mois","nbSites / minInterval","Charge mensuelle théorique"],
+    ["feasibilityRatio","Ratio de faisabilité","feasiblePerMonth / targetPerMonth","Capacité rapportée à la cible"],
+    ["adjustedFreq","Fréquence ajustée","minFreq * feasibilityRatio","Fréquence corrigée par la capacité réelle"],
+    ["adjustedInterval","Intervalle ajusté (mois)","max(1, duration / adjustedFreq)","Intervalle réellement tenable, plancher à un mois"],
+  ];
+  const W = [["Situation sécuritaire","0 / 2 / 4"],["Synergies de programme","2 / 0"],["Nouveau partenaire","0 / 3"],
+    ["Expérience du partenaire","0 / 2 / 4"],["Problèmes du suivi interne","0 / 2 / 4"],
+    ["Problèmes des rapports partenaire","0 / 2 / 4"],["Problèmes du mécanisme de plainte","0 / 2 / 4"],
+    ["Fraude et corruption","0 / 3 / 6"],["Nombre de bénéficiaires","0 à 3"],["Ancienneté de la dernière visite","0 à 5"]];
+  return head("Calculs","Formules de couverture et pondérations du score de risque. Les formules sont modifiables ; les variables disponibles sont listées dans l'éditeur.")
+    + card("Formules de couverture","Appliquées dans l'ordre : chacune consomme le résultat de la précédente",
+        table([["Identifiant"],["Libellé"],["Expression"],["Explication"]],
+          F.map(f=>[`<code>${esc(f[0])}</code>`, `<b>${esc(f[1])}</b>`,
+            `<code style="background:#f1f5f9;padding:2px 5px;border-radius:2px">${esc(f[2])}</code>`,
+            `<span style="color:var(--t2)">${esc(f[3])}</span>`])), 1)
+    + card("Pondérations du score de risque","Le score oriente la priorisation des visites",
+        table([["Critère"],["Points possibles"]], W.map(w=>[esc(w[0]), `<span class="badge">${esc(w[1])}</span>`])), 1);
+};
+
+V["settings:odk"] = () => head("ODK Central",
+    "Rattachement des formulaires et gestion des jetons d'accès. Le jeton est chiffré en AES-256-GCM avec DATA_KEY et n'est jamais renvoyé en clair par l'API.",
+    btn("Rattacher un formulaire","admin",1))
+  + `<div class="grid g2">
+      ${card("Connexion au serveur",null,
+        `<div class="fld"><label>Adresse du serveur ODK Central</label><input class="in" value="https://odk-central.example.org"></div>
+         <div class="fld"><label>Projet</label><input class="in" value="MEMS"></div>
+         <div class="fld"><label>Jeton d'accès</label><input class="in" type="password" value="................" ${can("admin")?"":"disabled"}>
+           <div class="hint">Chiffré au repos. L'API ne renvoie qu'un booléen indiquant sa présence.
+             Changer DATA_KEY rend illisibles les jetons déjà chiffrés : il faut alors les ressaisir.</div></div>
+         ${can("admin")?btn("Tester la connexion","admin"):'<div class="note warn">Réservé aux administrateurs.</div>'}`)}
+      ${card("Correspondance des champs","Comment relier une soumission à un site",
+        `<div class="fld"><label>Champ identifiant le site</label><input class="in" value="site_code"></div>
+         <div class="fld"><label>Champ portant la date de visite</label><input class="in" value="date_visite"></div>
+         <div class="fld"><label>XLSForm joint</label>
+           <div class="hint">Le XLSForm fournit les libellés lisibles. Sans lui, les colonnes
+             apparaissent sous leur nom technique.</div></div>`)}
+    </div>`
+  + card("Formulaires rattachés",null,
+      table([["Formulaire"],["Identifiant"],["Type"],["Soumissions","n"],["Dernière extraction"],["Jeton"],["Actions"]],
+        ODK_FORMS.map(f=>[`<b>${esc(f.name)}</b>`, `<code style="font-size:11.5px">${esc(f.formId)}</code>`,
+          `<span class="badge">${esc(f.kind)}</span>`, fmt(f.records), esc(f.last),
+          f.token?'<span class="badge g">chiffré</span>':'<span class="badge r">absent</span>',
+          btn("Extraire","edit")+" "+btn("Supprimer","del")])), 1);
+
+V["settings:templates"] = () => head("Modèles de rapport","Composition des rapports : blocs inclus et texte d'introduction.",
+    btn("Nouveau modèle","edit",1))
+  + TEMPLATES.map(t=>card(t.name, `${t.blocks.length} bloc(s)`,
+      `<div class="fld"><label>Introduction</label><textarea class="in" rows="2">${esc(t.intro)}</textarea></div>
+       <div class="fld"><label>Blocs inclus</label>
+         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:5px">${t.blocks.map(b=>`<span class="badge b">${esc(b)}</span>`).join("")}</div></div>
+       <div style="display:flex;gap:8px;margin-top:10px">${btn("Modifier","edit")}${btn("Dupliquer","edit")}${btn("Supprimer","del")}</div>`)).join("");
+
+V["settings:api"] = () => head("API","Accès en lecture pour les outils décisionnels.")
+  + `<div class="grid g2">
+      ${card("Accès applicatif",null,
+        `<div class="note warn"><b>Non disponible.</b> L'accès en lecture par jeton n'est pas encore
+          servi par l'application : les points d'entrée ci-contre décrivent la structure prévue,
+          aucun n'est actif. En attendant, utilisez l'instantané JSON.</div>
+         <div style="margin-top:14px;padding-top:14px;border-top:1px solid #eef2f5">
+           ${btn("Télécharger un instantané JSON","",1)}
+           <p style="font-size:11.5px;color:var(--t2);margin:8px 0 0;line-height:1.65">
+             Cet instantané se charge directement dans un outil décisionnel par
+             « Obtenir les données → JSON ». Il reflète votre périmètre au moment du téléchargement.</p></div>`)}
+      ${card("Points d'entrée","Structure prévue — aucun n'est actif à ce jour",
+        table([["Point d'entrée"],["Contenu"],["Méthode"]],
+          [["/api/v1/sites","Registre des sites avec score et couverture"],
+           ["/api/v1/plan","Plan de suivi mensuel, planifié et réalisé"],
+           ["/api/v1/params","Paramètres de couverture et colonnes calculées"],
+           ["/api/v1/outputs","Bénéficiaires planifiés et atteints"],
+           ["/api/v1/outcomes","Valeurs des indicateurs de résultat"],
+           ["/api/v1/mmr","Exigence minimale de suivi consolidée"]]
+          .map(e=>[`<code style="color:var(--brand)">${esc(e[0])}</code>`, esc(e[1]), '<span class="badge b">GET</span>']))
+        + `<div style="padding:14px;border-top:1px solid var(--line)">
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--t2);margin-bottom:7px">Forme prévue de l'appel</div>
+            <pre class="code">GET https://mems.example.org/api/v1/sites?year=${YEAR}
+Authorization: Token &lt;jeton à émettre&gt;
+Accept: application/json</pre></div>`, 1)}
+    </div>`;
+
+V["settings:users"] = () => head("Utilisateurs",
+    "Comptes, rôles et rattachement à un bureau. Le rôle détermine ce qu'on peut faire, le bureau détermine où.",
+    btn("Nouveau compte","admin",1))
+  + card("Matrice des rôles","Une seule source, appliquée par le serveur — l'interface ne fait que masquer ce qu'il refuserait",
+      table([["Rôle"],["Onglets"],["Modifier"],["Supprimer"],["Valider"],["Administrer"]],
+        Object.entries(ROLES).map(([k,r])=>[
+          `<b>${esc(r.label)}</b> <code style="font-size:11px;color:var(--t2)">${esc(k)}</code>`,
+          r.tabs.length===6 ? '<span class="badge g">tous</span>' : `<span class="badge">${r.tabs.length} sur 6</span>`,
+          r.edit?"✅":"❌", r.del?"✅":"❌", r.validate?"✅":"❌", r.admin?"✅":"❌"])), 1)
+  + card("Comptes", `${USERS.length} compte(s)`,
+      table([["Nom"],["Adresse"],["Fonction"],["Rôle"],["Bureau"],["État"],["Actions"]],
+        USERS.map(u=>[`<b>${esc(u.first)} ${esc(u.last)}</b>${u.id===state.me.id?' <span class="badge b">vous</span>':""}`,
+          esc(u.email), `<span style="color:var(--t2)">${esc(u.title)}</span>`,
+          `<span class="badge">${esc(ROLES[u.role].label)}</span>`,
+          u.office ? esc(u.office) : '<span class="badge b">tous les bureaux</span>',
+          '<span class="badge g">actif</span>', btn("Modifier","admin")+" "+btn("Supprimer","del")]), 1))
+  + card(null,null,`<div class="note info">
+      <b>Politique de mot de passe.</b> 12 caractères au minimum, avec majuscule, minuscule et
+      chiffre. Stockage bcrypt à 12 tours, jamais renvoyé par l'API. Après 8 échecs, le compte est
+      verrouillé 15 minutes ; le message d'erreur reste identique que le compte existe ou non.</div>`);
+
+
+/* ── Plan MRE et budget ────────────────────────────────────────────── */
+const mreCal = (a) => `<div style="display:flex;gap:1px">` + MONTHS.map((m,i)=>
+  `<span title="${esc(m)}" style="width:10px;height:14px;border-radius:2px;background:${
+    i>=a.m0 && i<=a.m1 ? MRE_KIND_TONE[a.kind] : "#f1f5f9"}"></span>`).join("") + `</div>`;
+
+const MRE_STATUT = { planifie:["Planifiée",""], en_cours:["En cours","b"],
+  realise:["Réalisée","g"], reporte:["Reportée","y"], annule:["Annulée","r"] };
+
+function PLAN_mre(){
+  const rows = myMre();
+  const budget = rows.reduce((t,a)=>t+mreBudget(a), 0);
+  /* Par nature, puis par catégorie de coût : la question posée en arbitrage. */
+  const parNature = Object.keys(MRE_KINDS).map(k => {
+    const g = rows.filter(a=>a.kind===k);
+    return { k, label:MRE_KINDS[k], n:g.length, b:g.reduce((t,a)=>t+mreBudget(a),0) };
+  }).filter(x=>x.n).sort((a,b)=>b.b-a.b);
+  const parCat = Object.keys(MRE_CATS).map(c => {
+    const l = rows.flatMap(a=>a.costs).filter(x=>x[0]===c);
+    return { c, label:MRE_CATS[c], b:l.reduce((t,x)=>t+x[3]*x[4],0) };
+  }).filter(x=>x.b).sort((a,b)=>b.b-a.b);
+  /* Une ligne sans mois propre est répartie sur la durée de son activité : la
+     poser sur le mois de début mettrait toute l'année en janvier. */
+  const mois = MONTHS.map(()=>0);
+  rows.forEach(a => a.costs.forEach(c => {
+    const span = a.m1 - a.m0 + 1;
+    for(let m=a.m0; m<=a.m1; m++) mois[m] += (c[3]*c[4])/span; }));
+  const maxMois = Math.max(...mois, 1);
+
+  return `<div class="stats">
+      ${stat("Activités planifiées", fmt(rows.length),
+        `${rows.filter(a=>a.statut==="en_cours").length} en cours · ${rows.filter(a=>a.statut==="realise").length} réalisée(s)`)}
+      ${stat("Budget total", fmt(Math.round(budget))+" USD", `${rows.length} activité(s) chiffrée(s)`)}
+      ${stat("Sans budget", fmt(rows.filter(a=>!mreBudget(a)).length), "à chiffrer avant arbitrage",
+        rows.some(a=>!mreBudget(a))?"warn":"ok")}
+      ${(()=>{ const eng = rows.filter(a=>mreSpent(a)!=null);
+        const b = eng.reduce((t,a)=>t+mreBudget(a),0), d = eng.reduce((t,a)=>t+mreSpent(a),0);
+        const ex = b ? Math.round(d/b*1000)/10 : null;
+        return stat("Exécution budgétaire", ex===null?"—":ex+" %",
+          "dépense / budget des activités engagées", ex===null?"":ex>110?"bad":ex>95?"warn":"ok"); })()}
+    </div>`
+  + card(`Plan MRE ${YEAR}`, `${rows.length} activité(s) · suivi, revue, évaluation, enquête et étude`,
+      table([["Réf."],["Activité"],["Calendrier"],["Budget","n"],["Statut"],["Actions"]],
+        rows.map(a=>[
+          `<span style="color:var(--t2);font-size:11.5px">${esc(a.ref)}</span>`,
+          `<div><b>${esc(a.title)}</b>
+            <div style="font-size:11px;color:var(--t2)">${esc(a.purpose)}</div>
+            <div style="font-size:10.5px;color:var(--t2);margin-top:3px">
+              <span style="display:inline-block;width:6px;height:6px;border-radius:50%;
+                background:${MRE_KIND_TONE[a.kind]};margin-right:4px"></span>${esc(MRE_KINDS[a.kind])}
+              · ${esc(a.office || "Plan national")} · ${esc(a.resp)}${
+                a.sample ? " · échantillon "+fmt(a.sample) : ""}</div></div>`,
+          mreCal(a),
+          `<b>${fmt(Math.round(mreBudget(a)))}</b>
+            <div style="font-size:10.5px;color:var(--t2);font-weight:400">${a.costs.length} ligne(s)</div>`,
+          `<span class="badge ${MRE_STATUT[a.statut][1]}">${esc(MRE_STATUT[a.statut][0])}</span>`,
+          btn("Modifier","edit")]).concat([[
+            `<b>Total du plan</b>`,"","",`<b>${fmt(Math.round(budget))} USD</b>`,"",""]])), 1)
+  + `<div class="grid g2">
+      ${card("Budget par nature d'activité","Ce que le plan consacre au suivi, à la revue, à l'évaluation",
+        parNature.map(x=>`<div style="margin-bottom:10px">
+          <div style="display:flex;align-items:baseline;gap:8px;font-size:12.5px">
+            <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${MRE_KIND_TONE[x.k]}"></span>
+            <span>${esc(x.label)}</span>
+            <b style="margin-left:auto">${fmt(Math.round(x.b))}</b>
+            <span style="color:var(--t3);font-size:11px;width:38px;text-align:right">${Math.round(x.b/budget*100)} %</span></div>
+          <div style="height:6px;background:#f1f5f9;border-radius:99px;margin-top:4px;overflow:hidden">
+            <i style="display:block;height:100%;width:${x.b/budget*100}%;background:${MRE_KIND_TONE[x.k]}"></i></div>
+          <div style="font-size:10.5px;color:var(--t3);margin-top:2px">${x.n} activité(s)</div></div>`).join(""))}
+      ${card("Budget par catégorie de coût","La question posée en arbitrage : où part l'argent",
+        parCat.map(x=>`<div style="margin-bottom:8px">
+          <div style="display:flex;gap:8px;font-size:12.5px"><span>${esc(x.label)}</span>
+            <b style="margin-left:auto">${fmt(Math.round(x.b))}</b></div>
+          <div style="height:6px;background:#f1f5f9;border-radius:99px;margin-top:3px;overflow:hidden">
+            <i style="display:block;height:100%;width:${x.b/parCat[0].b*100}%;background:var(--brand)"></i></div>
+        </div>`).join(""))}
+    </div>`
+  + card("Charge mensuelle du plan",
+      "Une ligne datée est imputée à son mois ; une ligne sans date est répartie sur la durée de son activité — convention explicite, pas une mesure",
+      `<div style="display:flex;align-items:flex-end;gap:6px;height:160px">
+        ${mois.map((v,i)=>`<div style="flex:1;text-align:center">
+          <div title="${fmt(Math.round(v))} USD" style="height:${Math.round(v/maxMois*130)}px;
+            background:var(--brand);border-radius:3px 3px 0 0;min-height:2px"></div>
+          <div style="font-size:10px;color:var(--t2);margin-top:4px">${esc(MONTHS[i])}</div></div>`).join("")}
+      </div>`);
+}
+
+function REEL_mre(){
+  const eng = myMre().filter(a=>mreSpent(a)!=null);
+  const b = eng.reduce((t,a)=>t+mreBudget(a),0), d = eng.reduce((t,a)=>t+mreSpent(a),0);
+  const parCat = Object.keys(MRE_CATS).map(c => {
+    const l = myMre().flatMap(a=>a.costs).filter(x=>x[0]===c);
+    return { label:MRE_CATS[c], b:l.reduce((t,x)=>t+x[3]*x[4],0),
+             d:l.reduce((t,x)=>t+(x[5]||0),0) };
+  }).filter(x=>x.b);
+  const tone = e => e===null?"":e>110?"bad":e>95?"warn":"ok";
+  return `<div class="note info">La dépense est saisie <b>ligne de budget par ligne de budget</b>.
+      Une ligne sans dépense n'est pas une dépense nulle : elle est <b>non engagée</b> et reste
+      hors du calcul d'exécution — sinon toute l'année à venir afficherait une sous-consommation.</div>`
+    + `<div class="stats">
+      ${stat("Activités engagées", fmt(eng.length)+" / "+fmt(myMre().length))}
+      ${stat("Budget engagé", fmt(Math.round(b))+" USD")}
+      ${stat("Dépense constatée", fmt(Math.round(d))+" USD")}
+      ${stat("Exécution budgétaire", (b?Math.round(d/b*1000)/10:0)+" %","",tone(b?Math.round(d/b*1000)/10:null))}
+    </div>`
+    + card(`Exécution budgétaire ${YEAR}`, `${eng.length} activité(s) engagée(s)`,
+        table([["Réf."],["Activité"],["Bureau"],["Budget","n"],["Dépensé","n"],["Écart","n"],["Exécution"],["Statut"]],
+          eng.map(a=>{ const bu=mreBudget(a), sp=mreSpent(a), ex=Math.round(sp/bu*1000)/10;
+            return [`<span style="color:var(--t2);font-size:11.5px">${esc(a.ref)}</span>`,
+              `<b>${esc(a.title)}</b>`, esc(a.office || "Plan national"),
+              fmt(Math.round(bu)), `<b>${fmt(Math.round(sp))}</b>`,
+              `<span style="${bu-sp<0?"color:var(--bad);font-weight:600":""}">${fmt(Math.round(bu-sp))}</span>`,
+              `<div style="display:flex;align-items:center;gap:8px">${bar(ex, tone(ex))}
+                <span style="font-size:11.5px">${ex} %</span></div>`,
+              `<span class="badge ${MRE_STATUT[a.statut][1]}">${esc(MRE_STATUT[a.statut][0])}</span>`]; })
+            .concat([[`<b>Total engagé</b>`,"","",`<b>${fmt(Math.round(b))}</b>`,
+              `<b>${fmt(Math.round(d))}</b>`,`<b>${fmt(Math.round(b-d))}</b>`,"",""]])), 1)
+    + card("Écart par catégorie de coût","Où le plan dérape, et de combien",
+        table([["Catégorie"],["Budget","n"],["Dépensé","n"],["Écart","n"],["Exécution"]],
+          parCat.map(x=>{ const ex = x.b ? Math.round(x.d/x.b*1000)/10 : null;
+            return [esc(x.label), fmt(Math.round(x.b)), x.d?fmt(Math.round(x.d)):"—",
+              `<span style="${x.b-x.d<0?"color:var(--bad);font-weight:600":""}">${fmt(Math.round(x.b-x.d))}</span>`,
+              `<div style="display:flex;align-items:center;gap:8px">${bar(ex||0, tone(ex))}
+                <span style="font-size:11.5px">${ex===null?"—":ex+" %"}</span></div>`]; })), 1);
+}
+
+V["suivi:mre"] = () => head("Plan MRE et budget",
+    "Monitoring, Review and Evaluation : ce que l'unité entreprend dans l'année, et ce que cela coûte. Le budget est toujours la somme de ses lignes — jamais un montant saisi.",
+    btn("Exporter","")+" "+btn("Ajouter une activité","edit",1))
+  + volet("mre", "Plan et budget", "Exécution budgétaire", { plan: PLAN_mre, reel: REEL_mre });
+
+/* ── Suivi tiers ───────────────────────────────────────────────────── */
+const tpmCircuit = (etat) => {
+  const i = etat === "cloture" ? 4 : TPM_ETAPES.indexOf(etat);
+  const renv = etat === "renvoye";
+  return `<span style="display:inline-flex;gap:3px;align-items:center">` +
+    ["Prestataire","Bureau","Bureau pays"].map((l,k)=>{
+      const cls = renv ? "background:#fef2f2;color:#b91c1c"
+        : i > k ? "background:#f7fee7;color:#3f6212"
+        : i === k ? "background:#fffbeb;color:#92400e" : "background:#f8fafc;color:#94a3b8";
+      return `${k?'<span style="color:#cbd5e1">›</span>':""}<span style="${cls};padding:1px 6px;border-radius:3px;font-size:10.5px;font-weight:600">${l}</span>`;
+    }).join("") + `</span>`;
+};
+
+V["suivi:tpm"] = () => {
+  const plans = monTpm();
+  const tot = plans.reduce((s,p)=>s+p.budget,0);
+  const eng = plans.filter(p=>["valide_pays","cloture"].includes(p.etat)).reduce((s,p)=>s+p.budget,0);
+  const dep = plans.reduce((s,p)=>s+(p.depense||0),0);
+  const attente = plans.filter(p=>TPM_ETAPES.includes(p.etat)).length;
+  const presta = PRESTATAIRES.filter(t => !state.me.office || t.office === state.me.office);
+  /* Le plan ouvert : celui du mois courant, qui est en attente de validation. */
+  const ouvert = plans.find(p => p.etat === "valide_tpm") || plans[0];
+
+  return head("Suivi tiers",
+      "Prestataires de suivi : zones affectées par mois, budget estimatif dérivé du barème contractuel, validation à trois niveaux, dépenses et plafond du contrat.")
+    + `<div class="stats">
+        ${stat("Plans de l'exercice", fmt(plans.length), `${attente} en attente de validation`)}
+        ${stat("Budget soumis", fmt(tot)+" MGA", "tous états confondus")}
+        ${stat("Engagé", fmt(eng)+" MGA", "plans validés au niveau pays")}
+        ${stat("Dépensé", fmt(dep)+" MGA", "dépenses constatées")}
+      </div>`
+    + `<div class="note info">Le budget n'est <b>jamais saisi</b> : il découle de l'affectation.
+        On assigne des zones pour le mois, on dit combien de superviseurs, d'agents, de jours
+        et de véhicules ; le barème du contrat fait le reste — <b>qté1 × qté2 × coût unitaire</b>,
+        sous-total par équipe, comme le classeur d'un prestataire réel. Aucun total n'est stocké.</div>`
+    + card("Plans mensuels", `${plans.length} plan(s) · le budget est dérivé du barème contractuel`,
+        table([["Mois"],["Prestataire"],["Réf."],["Zones","n"],["Budget","n"],["Dépensé","n"],
+               ["Circuit"],["État"]],
+          plans.map(p=>[MONTHS_L[p.mois]+" "+YEAR, esc(p.tpm.nom),
+            `<span style="color:var(--t2);font-size:11.5px">${esc(p.ref)}</span>`,
+            p.zones.length, `<b>${fmt(p.budget)}</b>`,
+            p.depense==null ? "—" : `${fmt(p.depense)}<div style="font-size:10.5px;color:var(--t2)">${Math.round(p.depense/p.budget*1000)/10} %</div>`,
+            tpmCircuit(p.etat),
+            `<span class="badge ${TPM_ETAT[p.etat][1]}">${esc(TPM_ETAT[p.etat][0])}</span>`])), 1)
+
+    + (ouvert ? card(`Plan ouvert — ${ouvert.tpm.nom}, ${MONTHS_L[ouvert.mois]} ${YEAR}`,
+        `${TPM_ETAT[ouvert.etat][0]} · ${ouvert.zones.length} zone(s) · budget calculé ${fmt(ouvert.budget)} MGA`,
+        table([["Zone"],["Activité"],["Équipe"],["Sup.","n"],["Agents","n"],["Jours","n"],
+               ["Trajet","n"],["Véhic.","n"],["Litres","n"],["Sous-total","n"]],
+          ouvert.zones.map(z=>[`<b>${esc(z.zone)}</b>`, esc(z.tag), esc(z.equipe),
+            z.sup, z.ag, z.jours, z.trajet, z.veh, z.litres,
+            `<b>${fmt(z.lignes.reduce((s,l)=>s+l[3]*l[4]*l[5],0))}</b>`])
+            .concat([[`<b>Frais communs</b>`,"groupe électrogène","","","","","","","",`<b>${fmt(80000)}</b>`],
+                     [`<b>Total général</b>`,"","","","","","","","",`<b>${fmt(ouvert.budget)}</b>`]])), 1)
+      + card("Détail du budget — première équipe",
+          "Les intitulés du classeur de référence : Qtté 1 (jr), Qtté 2 (nb), coût unitaire, total",
+          table([["Ligne"],["Unité"],["Qté 1 (jr)","n"],["Qté 2 (nb)","n"],["Coût unitaire","n"],["Total","n"]],
+            ouvert.zones[0].lignes.map(l=>[esc(l[1]), esc(l[2]), fmt(l[3]), fmt(l[4]),
+              fmt(l[5]), `<b>${fmt(l[3]*l[4]*l[5])}</b>`])
+              .concat([[`<b>Sous-total ${esc(ouvert.zones[0].equipe)}</b>`,"","","","",
+                `<b>${fmt(ouvert.zones[0].lignes.reduce((s,l)=>s+l[3]*l[4]*l[5],0))}</b>`]])), 1)
+      : "")
+
+    + card("Contrats et plafonds",
+        "Le plafond ne se modifie pas en place : il évolue par avenants datés et motivés",
+        table([["Prestataire"],["Contrat"],["Plafond","n"],["Avenants","n"],["Engagé","n"],
+               ["En cours","n"],["Dépensé","n"],["Disponible","n"],["Consommation"]],
+          presta.map(t=>{ const s2 = soldeDe(t);
+            return [`<b>${esc(t.nom)}</b><div style="font-size:10.5px;color:var(--t2)">${esc(t.office)}</div>`,
+              esc(t.contrat), fmt(t.plafond),
+              s2.av ? `<span style="color:var(--ok);font-weight:600">+${fmt(s2.av)}</span>` : "—",
+              `<b>${fmt(s2.engage)}</b>`, s2.enCours ? fmt(s2.enCours) : "—",
+              fmt(s2.depense), fmt(s2.disponible),
+              `<div style="display:flex;align-items:center;gap:8px">${bar(s2.conso, s2.conso>95?"bad":s2.conso>80?"warn":"ok")}<span style="font-size:11.5px">${s2.conso} %</span></div>`];
+          })), 1)
+    + card("Barème contractuel", "Ce qui transforme une affectation en budget",
+        table([["Poste"],["Unité"],["Coût unitaire","n"],["Rôle dans le calcul"]],
+          TPM_BAREME.map(([d,l,u,c])=>[esc(l), esc(u), fmt(c),
+            `<span style="color:var(--t2);font-size:11px">${{superviseur:"superviseurs × jours",
+              agent:"agents × jours", vehicule:"véhicules × jours", carburant:"litres"}[d]}</span>`])), 1)
+    + card(null, null, `<div class="note warn">
+        <b>Trois niveaux de validation, dans l'ordre.</b> Le responsable du prestataire, puis le
+        suivi-évaluation du bureau, puis celui du bureau pays. Chaque passage consigne qui, quand,
+        quelle décision, quel motif — et <b>pour quel montant</b> : un plan modifié ensuite ne doit pas
+        laisser croire que ce montant-là avait été approuvé. Le <b>plafond</b> est vérifié au dernier
+        niveau seulement : tant qu'un plan circule, il n'engage rien.</div>`);
+};
+
+/* ── Bureaux ───────────────────────────────────────────────────────── */
+V["settings:offices"] = () => head("Bureaux",
+    "Un bureau porte les sites, les comptes, les paramètres de couverture et le plan de distribution. Son mode de périmètre décide de ce que ses comptes non administrateurs peuvent voir.",
+    btn("Ajouter un bureau","admin",1))
+  + `<div class="note info">Le <b>bureau pays</b> est déclaré à périmètre <b>national</b> : ses
+      staffs voient tous les sites <i>sans</i> droit d'administration. Le rôle dit ce qu'un compte
+      peut faire, le périmètre dit où — les passer administrateurs pour régler la visibilité leur
+      aurait donné au passage la gestion des comptes.</div>`
+  + card("Bureaux et antennes",
+      `${OFFICE_CFG.length} bureau(x) · ${OFFICE_CFG.filter(o=>o.active).length} actifs · ${OFFICE_CFG.filter(o=>o.mode==="national").length} à périmètre national`,
+      table([["Bureau"],["Code"],["Nature"],["Périmètre"],["Antennes"],["Responsable"],["Sites","n"],["État"],["Actions"]],
+        OFFICE_CFG.map(o=>[
+          `<b>${esc(o.name)}</b>`,
+          `<span style="color:var(--t2);font-size:11.5px">${esc(o.code)}</span>`,
+          o.kind==="hq" ? '<span class="badge b">bureau pays</span>' : '<span class="badge">terrain</span>',
+          o.mode==="national" ? '<span class="badge b">national — tous les sites</span>'
+            : `<span class="badge g">périmètre déclaré</span>`,
+          o.antennes.join(", ") || "—", esc(o.manager), o.sites || "—",
+          '<span class="badge g">actif</span>',
+          btn("Modifier","admin")+" "+btn("Supprimer","del")])), 1)
+  + card(null,null,`<div class="note warn">
+      <b>La liste des bureaux n'était pas persistée.</b> L'écran de configuration proposait de
+      modifier une liste de noms dérivée de la table à chaque chargement et jamais renvoyée au
+      serveur : la saisie était perdue au rechargement. Un bureau référencé ne peut plus être
+      supprimé — le schéma détacherait les sites en silence — seulement désactivé.</div>`);
+
+/* ── Volet Prévu / Réalisé ────────────────────────────────────────────
+   La navigation dupliquait chaque sujet : le prévu dans « Planning », le réalisé
+   dans « Actual Data ». Rien n'indiquait lequel des deux ouvrir. Le prévu et le
+   réalisé sont deux vues du même sujet : une destination, une bascule. */
+function volet(sujet, gauche, droite, rendus){
+  const cur = state.volet[sujet] || "plan";
+  const onglet = (id, label) =>
+    `<button data-volet="${sujet}" data-v="${id}" class="vbtn ${cur===id?"on":""}">${esc(label)}</button>`;
+  return `<div class="volet">${onglet("plan", gauche)}${onglet("reel", droite)}</div>`
+    + rendus[cur]();
+}
+
+V["suivi:monitoring"] = () => volet("monitoring", "Plan de suivi", "Visites réalisées",
+  { plan: PLAN_suivi, reel: REEL_suivi });
+V["programme:distribution"] = () => volet("distribution", "Plan de distribution", "Réalisations",
+  { plan: PLAN_distrib, reel: REEL_distrib });
+V["programme:results"] = () => volet("results", "Calendrier de collecte", "Valeurs mesurées",
+  { plan: PLAN_results, reel: REEL_results });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   7. COQUILLE — navigation, rôle, rendu
+   ═══════════════════════════════════════════════════════════════════════ */
+const $ = id => document.getElementById(id);
+
+function renderNav(){
+  const allowed = tabs();
+  $("nav").innerHTML = NAV.filter(x=>allowed.includes(x.id)).map(x=>`
+    <div class="tab" data-tab="${x.id}">
+      <button class="t ${state.tab===x.id?"on":""}" data-go="${x.id}">
+        ${esc(x.label)}${x.sub.length?" ▾":""}</button>
+      ${x.sub.length && state.open===x.id ? `<div class="menu">${x.sub.map(([sid,slab])=>
+        `<button data-go="${x.id}" data-sub="${sid}" class="${
+          state.tab===x.id && (state.sub[x.id]||x.sub[0][0])===sid?"on":""}">${esc(slab)}</button>`).join("")}</div>`:""}
+    </div>`).join("");
+}
+
+function renderView(){
+  const tab = state.tab;
+  const def = NAV.find(x=>x.id===tab);
+  const sub = def.sub.length ? (state.sub[tab] || def.sub[0][0]) : null;
+  const key = sub ? `${tab}:${sub}` : tab;
+  $("view").innerHTML = (V[key] || (()=>`<div class="empty">Vue « ${esc(key)} » — non prévue</div>`))();
+  window.scrollTo(0,0);
+}
+
+function renderWho(){
+  const r = ROLES[state.me.role];
+  $("avat").textContent = (state.me.first[0]||"")+(state.me.last[0]||"");
+  $("whoName").textContent = state.me.first;
+  $("whoMenu").innerHTML = `
+    <div style="padding:12px 16px;border-bottom:1px solid #eef2f5">
+      <div style="font-weight:600;font-size:13px">${esc(state.me.first)} ${esc(state.me.last)}</div>
+      <div style="font-size:11.5px;color:var(--t2)">${esc(state.me.title)}</div>
+      <div style="margin-top:7px;display:flex;gap:5px;flex-wrap:wrap">
+        <span class="badge b">${esc(r.label)}</span>
+        <span class="badge">${esc(state.me.office || "Tous les bureaux")}</span></div>
+    </div>
+    <div style="padding:10px 16px;border-bottom:1px solid #eef2f5">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--t2);margin-bottom:7px">
+        Changer de profil</div>
+      ${PROFILES.map(p=>`<button data-prof="${p.id}" style="display:block;width:100%;text-align:left;
+        padding:6px 8px;border:0;background:${p.id===state.me.id?"#eff6ff":"none"};border-radius:3px;
+        cursor:pointer;font-size:12px;margin-bottom:2px">
+        <b>${esc(ROLES[p.role].label)}</b><br><span style="color:var(--t2);font-size:11px">${esc(p.office||"Tous les bureaux")}</span>
+      </button>`).join("")}
+    </div>
+    <button data-logout="1" style="display:block;width:100%;text-align:left;padding:10px 16px;
+      border:0;background:none;cursor:pointer;font-size:13px">Se déconnecter</button>`;
+  $("footOrg").textContent = `Bureau pays Madagascar — Unité suivi et évaluation`;
+  $("footYear").textContent = `démonstration · exercice ${YEAR}`;
+}
+
+function render(){ renderNav(); renderWho(); renderView(); }
+
+/* ── Événements ────────────────────────────────────────────── */
+document.addEventListener("click", e => {
+  const vb = e.target.closest("[data-volet]");
+  if(vb){ state.volet[vb.dataset.volet] = vb.dataset.v; renderView(); return; }
+  const gl = e.target.closest("[data-geolevel]");
+  if(gl){ state.geoLevel = gl.dataset.geolevel; renderView(); return; }
+
+  const go = e.target.closest("[data-go]");
+  const prof = e.target.closest("[data-prof]");
+  const out = e.target.closest("[data-logout]");
+
+  if(prof){
+    state.me = PROFILES.find(p=>p.id===prof.dataset.prof);
+    if(!tabs().includes(state.tab)) state.tab = tabs()[0];
+    $("whoMenu").classList.add("hidden"); state.open=null; render(); return;
+  }
+  if(out){ $("app").classList.add("hidden"); $("login").classList.remove("hidden");
+    $("whoMenu").classList.add("hidden"); return; }
+  if(e.target.closest("#whoBtn")){
+    $("whoMenu").classList.toggle("hidden"); state.open=null; renderNav(); return; }
+
+  if(go){
+    const tab = go.dataset.go, sub = go.dataset.sub;
+    const def = NAV.find(x=>x.id===tab);
+    if(sub){ state.sub[tab]=sub; state.tab=tab; state.open=null; }
+    else { if(state.tab===tab && def.sub.length) state.open = state.open===tab?null:tab;
+           else { state.tab=tab; state.open=def.sub.length?tab:null; } }
+    $("whoMenu").classList.add("hidden");
+    render(); return;
+  }
+  /* Clic ailleurs : on referme les menus */
+  if(state.open!==null || !$("whoMenu").classList.contains("hidden")){
+    state.open=null; $("whoMenu").classList.add("hidden"); renderNav();
+  }
+});
+
+/* ── Écran de connexion ────────────────────────────────────── */
+$("rolePick").innerHTML = PROFILES.map((p,i)=>`
+  <button data-pick="${p.id}" class="${i===0?"on":""}">
+    <span style="width:30px;height:30px;border-radius:50%;background:var(--aqua);color:var(--t1);
+      display:grid;place-items:center;font-weight:700;font-size:11px;flex-shrink:0">${esc(p.first[0]+p.last[0])}</span>
+    <span><b>${esc(ROLES[p.role].label)}</b> — ${esc(p.first)} ${esc(p.last)}
+      <small>${esc(p.desc)}</small></span></button>`).join("");
+
+let picked = PROFILES[0];
+$("rolePick").addEventListener("click", e => {
+  const b = e.target.closest("[data-pick]"); if(!b) return;
+  picked = PROFILES.find(p=>p.id===b.dataset.pick);
+  [...$("rolePick").children].forEach(c=>c.classList.toggle("on", c===b));
+});
+$("go").addEventListener("click", () => {
+  state.me = picked; state.tab = tabs()[0]; state.sub = {}; state.open = null;
+  $("login").classList.add("hidden"); $("app").classList.remove("hidden");
+  render();
+});
+</script>
 </body>
 </html>

@@ -6,6 +6,10 @@ import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat,
 import { clsx, computeParam, fmt, n, pct, r1, r2, siteScore, uid } from "../lib/calc.js";
 import { ACT_CATEGORIES, C, DURATIONS, D_PARTNERS, MONITORING_TYPES, MONTHS, MONTHS_L, SITE_TYPES, coverageRows, siteDerived } from "../lib/constants.js";
 import { PageHead } from "./Shell.jsx";
+import { useGeoCascade } from "../lib/geo.js";
+
+/* Conserve la valeur déjà enregistrée dans la liste, même absente du référentiel courant. */
+const withCurrent = (list, v) => (v && !list.includes(v)) ? [v, ...list] : list;
 
 /* ══════════════════ Grille mensuelle ══════════════════ */
 function MonthGrid({ rows, labelOf, subOf, cellOf, onCell, footerOf }){
@@ -148,6 +152,121 @@ function ParamModal({ open, row, db, onClose, onSave }){
 
 
 /* ══════════════════ Couverture du suivi et exigences minimales ══════════════════ */
+/* Couverture géographique : quelles unités administratives ne portent aucun site.
+   C'est la question que le modèle plat ne savait pas poser — il n'y avait pas de
+   ligne « commune » à laquelle rapporter quoi que ce soit. */
+function GeoCoverage({ db, notify }){
+  const [level,setLevel] = useState("adm3");
+  const [sel,setSel] = useState({ adm1:"", adm2:"" });
+  const [only,setOnly] = useState("");            /* "" | "vides" | "couverts" */
+  const geo = useGeoCascade(sel);
+  const [cov,setCov] = useState({ rows:[], total:0, covered:0, sitesUnlinked:0, loading:true });
+
+  const parent = geo.codes.adm2 || geo.codes.adm1 || "";
+  useEffect(() => {
+    let alive = true;
+    setCov(c => ({ ...c, loading:true }));
+    const qs = new URLSearchParams({ level, limit:"2000" });
+    if(parent) qs.set("parent", parent);
+    api.geoCoverage("?"+qs)
+      .then(r => { if(alive) setCov({ ...r, loading:false }); })
+      .catch(e => { if(alive) setCov({ rows:[], total:0, covered:0, sitesUnlinked:0,
+        loading:false, error:e.message }); });
+    return () => { alive = false; };
+  }, [level, parent]);
+
+  const rows = cov.rows.filter(r =>
+    only === "vides" ? r.sites === 0 : only === "couverts" ? r.sites > 0 : true);
+  const LABEL = { adm1:"régions", adm2:"districts", adm3:"communes", adm4:"fokontany" };
+  const taux = pct(cov.covered, cov.total);
+
+  const exporter = () => {
+    download(`couverture_${level}.csv`,
+      toCSV(cov.rows.map(r => ({ Région:r.adm1||"", District:r.adm2||"", Commune:r.adm3||"",
+        Unité:r.name, "P-code":r.pcode, Sites:r.sites, Actifs:r.active, Inactifs:r.inactive,
+        "Dernière visite":r.lastVisit||"", Statut: r.sites ? "Couvert" : "Non couvert" })),
+        ["Région","District","Commune","Unité","P-code","Sites","Actifs","Inactifs","Dernière visite","Statut"]),
+      "text/csv");
+    notify("Couverture géographique exportée","ok");
+  };
+
+  if(!db.geoVersion) return (
+    <Note tone="warn"><b>Aucun référentiel chargé.</b> La couverture géographique se calcule
+      à partir du découpage administratif. Chargez-le depuis Paramètres → Localités.</Note>);
+
+  return (
+    <>
+      <Note>Croisement du référentiel administratif et du registre des sites : chaque unité
+        porte le nombre de sites qui lui sont rattachés, directement ou par un niveau inférieur.
+        Une unité à zéro est un <b>trou de couverture</b> — une zone où le programme n'a aucune
+        présence enregistrée.</Note>
+
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <Select value={level} onChange={e=>setLevel(e.target.value)} className="mi-py1 mi-xs mi-wauto"
+          options={[["adm1","Par région"],["adm2","Par district"],["adm3","Par commune"],["adm4","Par fokontany"]]} />
+        <Select value={sel.adm1} onChange={e=>setSel({ adm1:e.target.value, adm2:"" })}
+          empty="Toutes les régions" options={geo.adm1.map(x=>x.name)} className="mi-py1 mi-xs mi-wauto" />
+        <Select value={sel.adm2} onChange={e=>setSel(s=>({ ...s, adm2:e.target.value }))}
+          empty="Tous les districts" options={geo.adm2.map(x=>x.name)} className="mi-py1 mi-xs mi-wauto"
+          disabled={!sel.adm1} />
+        <Select value={only} onChange={e=>setOnly(e.target.value)} empty="Tout afficher"
+          options={[["vides","Non couverts seulement"],["couverts","Couverts seulement"]]}
+          className="mi-py1 mi-xs mi-wauto" />
+        <Btn size="sm" kind="sec" icon={Download} onClick={exporter}
+          disabled={!cov.rows.length}>Exporter</Btn>
+      </div>
+
+      <StatRow>
+        <Stat label={`${LABEL[level].replace(/^./,c=>c.toUpperCase())} couvertes`}
+          value={`${fmt(cov.covered)}/${fmt(cov.total)}`}
+          sub={`${taux} % du découpage`} tone={taux>=80?"ok":taux>=40?"warn":"bad"} />
+        <Stat label="Trous de couverture" value={fmt(cov.total - cov.covered)}
+          sub={`${LABEL[level]} sans aucun site`} tone={cov.total-cov.covered?"warn":"ok"} />
+        <Stat label="Sites rattachés" value={fmt(cov.sitesLinked || 0)} sub="au référentiel" />
+        <Stat label="Sites non rattachés" value={fmt(cov.sitesUnlinked || 0)}
+          sub={cov.sitesUnlinked ? "à rapprocher — voir README §3" : "aucun"}
+          tone={cov.sitesUnlinked ? "bad" : "ok"} />
+      </StatRow>
+
+      {cov.sitesUnlinked > 0 && (
+        <Note tone="warn"><b>{fmt(cov.sitesUnlinked)} site(s) ne sont rattachés à aucune unité</b> et
+          ne comptent donc dans aucune ligne ci-dessous. Le rapprochement se lance en une commande :
+          <code className="bg-white px-1 rounded mx-1">node src/link-geo.js --write</code>
+          — il compare les libellés existants au référentiel en descendant l'arbre.</Note>)}
+
+      <Card flush title={`Couverture par ${LABEL[level].replace(/s$/,"")}`}
+        subtitle={cov.loading ? "Chargement…" : `${fmt(rows.length)} ligne(s) affichée(s) sur ${fmt(cov.total)}`}>
+        <TableWrap max="mh520">
+          <thead><tr>
+            {level!=="adm1" && <Th>Région</Th>}
+            {(level==="adm3"||level==="adm4") && <Th>District</Th>}
+            {level==="adm4" && <Th>Commune</Th>}
+            <Th>{LABEL[level].replace(/s$/,"").replace(/^./,c=>c.toUpperCase())}</Th>
+            <Th>P-code</Th><Th num>Sites</Th><Th num>Actifs</Th><Th num>Inactifs</Th>
+            <Th>Dernière visite</Th><Th>Statut</Th></tr></thead>
+          <tbody>{rows.map(r=>(
+            <tr key={r.pcode} className={clsx("hover:bg-sky-50", !r.sites && "bg-amber-50/40")}>
+              {level!=="adm1" && <Td className="text-slate-500">{r.adm1||"—"}</Td>}
+              {(level==="adm3"||level==="adm4") && <Td className="text-slate-500">{r.adm2||"—"}</Td>}
+              {level==="adm4" && <Td className="text-slate-500">{r.adm3||"—"}</Td>}
+              <Td className="font-medium text-slate-800">{r.name}</Td>
+              <Td className="f115 c-bd">{r.pcode}</Td>
+              <Td num><b>{r.sites||""}</b></Td>
+              <Td num className="text-slate-600">{r.active||""}</Td>
+              <Td num className="text-slate-400">{r.inactive||""}</Td>
+              <Td className="f115 text-slate-500">{r.lastVisit||"—"}</Td>
+              <Td>{r.sites
+                ? <Badge tone="g">Couvert</Badge>
+                : <Badge tone="y">Non couvert</Badge>}</Td>
+            </tr>))}</tbody>
+        </TableWrap>
+        {!cov.loading && !rows.length && (
+          <div className="px-4 py-8 text-center f125 text-slate-500">
+            {cov.error ? cov.error : "Aucune unité dans cette sélection."}</div>)}
+      </Card>
+    </>);
+}
+
 function CoveragePlan({ db, set, me, notify, can }){
   const [scope,setScope] = useState(""); const [tab,setTab] = useState("plan");
   const cats = db.actCategories || ACT_CATEGORIES;
@@ -185,13 +304,14 @@ function CoveragePlan({ db, set, me, notify, can }){
         et couverture réelle. La seconde vue rapproche ces réalisations de la guidance d'exigence minimale.</Note>
       <div className="flex items-center gap-2 mb-4">
         <Tabs className="flex-1" value={tab} onChange={setTab}
-          items={[["plan","Monitoring Coverage Plan"],["recap","Site Coverage Recap et guidance MMR"]]} />
+          items={[["plan","Monitoring Coverage Plan"],["recap","Site Coverage Recap et guidance MMR"],
+                  ["geo","Couverture géographique"]]} />
         <Select value={scope} onChange={e=>setScope(e.target.value)} empty="Tous les bureaux"
           options={db.lists.offices} className="mi-py1 mi-xs mi-wauto" />
         <Btn size="sm" kind="sec" icon={Download} onClick={exportCov}>Exporter</Btn>
       </div>
 
-      {tab==="plan" ? (
+      {tab==="geo" ? <GeoCoverage db={db} notify={notify} /> : tab==="plan" ? (
         <>
           <StatRow>
             <Stat label="Sites actifs" value={fmt(Math.max(0,...total.active))} icon={MapPin} />
@@ -645,15 +765,17 @@ function PddBulkBar({ sel, rows, fields, onSelectAll, onClear, onApply }){
 }
 function PddModal({ open, line, db, onClose, onSave }){
   const [f,setF] = useState({});
+  /* Avant tout retour anticipé : un hook ne peut pas être conditionnel. */
+  const geo = useGeoCascade({ adm1:f.region, adm2:f.district, adm3:f.commune });
   useEffect(()=>{ setF(line||{}); },[line]);
   if(!open) return null;
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
   const r = pddRates(f); const pl = pddPlanned(f);
-  const regions = [...new Set(db.geo.map(g=>g.adm1).filter(Boolean))];
+  const regions = geo.adm1.map(x=>x.name);
   return (
     <Modal open wide onClose={onClose} title={line?.id?`PDD — ${f.commune}`:"Nouvelle ligne de plan"}
       subtitle="Planification, puis saisie des réalisations"
-      footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn><Btn icon={Save} onClick={()=>onSave(f)}>Enregistrer</Btn></>}>
+      footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn><Btn icon={Save} onClick={()=>onSave({ ...f, geo_pcode: geo.pcode })}>Enregistrer</Btn></>}>
       <div className="grid grid-cols-4 gap-x-4">
         <Field label="PDD mois de"><Select value={f.month??0} onChange={e=>u("month",n(e.target.value))}
           options={MONTHS_L.map((m,i)=>[i,m])} /></Field>
@@ -664,9 +786,17 @@ function PddModal({ open, line, db, onClose, onSave }){
         <Field label="Activity tag"><Input value={f.tag||""} onChange={e=>u("tag",e.target.value)} /></Field>
         <Field label="Activité principale" className="col-span-3"><Input value={f.actMain||""} onChange={e=>u("actMain",e.target.value)} /></Field>
         <Field label="Bureau de terrain"><Input value={f.bureau||""} onChange={e=>u("bureau",e.target.value)} /></Field>
-        <Field label="Région"><Select value={f.region||""} onChange={e=>u("region",e.target.value)} empty="—" options={regions} /></Field>
-        <Field label="District"><Input value={f.district||""} onChange={e=>u("district",e.target.value)} /></Field>
-        <Field label="Commune"><Input value={f.commune||""} onChange={e=>u("commune",e.target.value)} /></Field>
+        <Field label="Région"><Select value={f.region||""} empty="—" options={withCurrent(regions, f.region)}
+          onChange={e=>{ u("region",e.target.value); u("district",""); u("commune",""); }} /></Field>
+        {/* District et commune viennent du référentiel plutôt que d'une saisie libre :
+            c'est ce qui rend l'agrégation « par commune » fiable. La valeur déjà
+            enregistrée reste proposée même si elle n'y figure pas, pour ne rien effacer. */}
+        <Field label="District"><Select value={f.district||""} empty="—" disabled={!f.region}
+          onChange={e=>{ u("district",e.target.value); u("commune",""); }}
+          options={withCurrent(geo.adm2.map(x=>x.name), f.district)} /></Field>
+        <Field label="Commune"><Select value={f.commune||""} empty="—" disabled={!f.district}
+          onChange={e=>u("commune",e.target.value)}
+          options={withCurrent(geo.adm3.map(x=>x.name), f.commune)} /></Field>
         <Field label="Modalité"><Select value={f.modality||"Food"} onChange={e=>u("modality",e.target.value)} options={PDD_MODALITIES} /></Field>
         <Field label="Type de denrée"><Select value={f.commodity||""} onChange={e=>u("commodity",e.target.value)}
           empty="—" options={PDD_COMMODITIES} /></Field>
@@ -825,7 +955,7 @@ function DistributionActual({ db, set, notify, can }){
                 </tr>); })}</tbody>
             </TableWrap>
             {!rows.length && <Empty icon={ClipboardList} title="Aucune ligne"
-              text="Le plan de distribution alimente cette saisie : créez-le dans Planning → Plan de distribution." />}
+              text="Le plan de distribution alimente cette saisie : basculez sur « Plan de distribution » pour le créer." />}
             {rows.length>per && (
               <div className="flex items-center gap-3 px-4 py-2.5 border-t border-slate-100 f125 text-slate-600">
                 <span>{(Math.min(page,pages)-1)*per+1} à {Math.min(page*per,rows.length)} sur {fmt(rows.length)}</span>

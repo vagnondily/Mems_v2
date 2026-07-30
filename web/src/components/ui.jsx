@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useEffect, useId } from "react";
 import { Layers, X } from "lucide-react";
 import { clsx, n } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
@@ -46,8 +46,17 @@ const Logo = ({ width="100%", height="100%", className }) => {
     </svg>
   );
 };
-const BrandMark = ({ size = 40, className }) => {
+/* Le signe, avec sa version inversée.
+   Le dégradé bleu-vert d'origine est fait pour un fond clair ; posé sur le bleu
+   sombre de l'en-tête, il s'y confondait et le signe disparaissait à moitié.
+   Un logotype a besoin d'une version pour fond sombre — ici l'arc et les
+   silhouettes en blanc, la cible ambre conservée comme unique accent. */
+const BrandMark = ({ size = 40, className, tone = "dark" }) => {
   const id = useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  const clair = tone === "light";
+  const arc  = clair ? "#FFFFFF" : `url(#humGrad${id})`;
+  const g1   = clair ? "rgba(255,255,255,.92)" : "#0284C7";
+  const g2   = clair ? "rgba(255,255,255,.8)" : "#059669";
   return (
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140" width={size} height={size} className={className}>
       <defs>
@@ -61,12 +70,12 @@ const BrandMark = ({ size = 40, className }) => {
           <stop offset="100%" stopColor="#D97706" />
         </linearGradient>
       </defs>
-      <path d="M 20 80 A 40 40 0 1 1 100 80" fill="none" stroke={`url(#humGrad${id})`} strokeWidth="10" strokeLinecap="round" />
-      <path d="M 40 75 Q 40 50 50 40 Q 50 65 40 75 Z" fill="#0284C7" />
-      <path d="M 76 75 Q 76 40 66 30 Q 66 60 76 75 Z" fill="#059669" />
-      <rect x="55" y="25" width="6" height="40" rx="3" fill={`url(#humGrad${id})`} />
-      <circle cx="63" cy="15" r="8" fill={`url(#targetGrad${id})`} />
-      <circle cx="63" cy="15" r="3" fill="#FFFFFF" />
+      <path d="M 20 80 A 40 40 0 1 1 100 80" fill="none" stroke={arc} strokeWidth="10" strokeLinecap="round" />
+      <path d="M 40 75 Q 40 50 50 40 Q 50 65 40 75 Z" fill={g1} />
+      <path d="M 76 75 Q 76 40 66 30 Q 66 60 76 75 Z" fill={g2} />
+      <rect x="55" y="25" width="6" height="40" rx="3" fill={arc} />
+      <circle cx="63" cy="15" r="8" fill={clair ? "#FBBF24" : `url(#targetGrad${id})`} />
+      <circle cx="63" cy="15" r="3" fill={clair ? "#0B4F72" : "#FFFFFF"} />
     </svg>
   );
 };
@@ -125,6 +134,15 @@ const Tabs = ({ items, value, onChange, className }) => (
           value===v ? "c-bd bd-brand" : "text-slate-500 border-transparent hover:text-slate-800")}>{l}</button>))}
   </div>);
 const Modal = ({ open, title, subtitle, onClose, children, footer, wide }) => {
+  /* La touche d'échappement ferme la fiche. Elle ne le faisait pas : il fallait
+     viser la croix ou le fond, ce que personne ne fait après avoir rempli un
+     formulaire au clavier. Le raccourci est attendu de tout dialogue. */
+  useEffect(() => {
+    if(!open) return;
+    const h = (e) => { if(e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [open, onClose]);
   if(!open) return null;
   return (
     <div className="fixed inset-0 z60 flex items-start justify-center overflow-auto py-8 px-4"
@@ -135,7 +153,10 @@ const Modal = ({ open, title, subtitle, onClose, children, footer, wide }) => {
             {subtitle && <p className="f115 text-slate-500 mt-0.5">{subtitle}</p>}</div>
           <button onClick={onClose} className="ml-auto text-slate-400 hover:text-slate-700 p-1"><X size={18} /></button>
         </header>
-        <div className="px-5 py-4 mh68 overflow-auto">{children}</div>
+        {/* Une fiche large sert à éditer du tableau : la limiter à 68 % de la hauteur
+            laissait le tableau sous la ligne de pliure, alors qu'il est la raison
+            d'ouvrir la fiche. Les fiches étroites gardent leur hauteur. */}
+        <div className={clsx("px-5 py-4 overflow-auto", wide ? "mh78" : "mh68")}>{children}</div>
         {footer && <footer className="flex justify-end gap-2 px-5 py-3 border-t border-slate-200 bg-slate-50">{footer}</footer>}
       </div>
     </div>);

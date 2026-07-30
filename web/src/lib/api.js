@@ -38,6 +38,30 @@ async function call(method, path, body, opts = {}){
   return payload;
 }
 
+/* Le modèle Excel est un binaire : il ne passe pas par `call`, qui attend du JSON. */
+async function fetchBlob(path){
+  const headers = {};
+  if(token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(BASE + path, { headers, credentials:"include" });
+  if(!res.ok){
+    let msg = `erreur ${res.status}`;
+    try{ const j = await res.json(); msg = j.error || msg; }catch(e){}
+    throw new ApiError(res.status, msg);
+  }
+  return res.blob();
+}
+/* Téléversement multipart : le Content-Type est posé par le navigateur, avec sa frontière. */
+async function postFile(path, file, field = "file"){
+  const headers = {};
+  if(token) headers["Authorization"] = `Bearer ${token}`;
+  const body = new FormData(); body.append(field, file, file.name);
+  const res = await fetch(BASE + path, { method:"POST", headers, credentials:"include", body });
+  let payload = null;
+  try{ payload = await res.json(); }catch(e){}
+  if(!res.ok) throw new ApiError(res.status, payload?.error || `erreur ${res.status}`, payload?.details);
+  return payload;
+}
+
 export const api = {
   get:  (p, o)    => call("GET", p, undefined, o),
   post: (p, b, o) => call("POST", p, b ?? {}, o),
@@ -57,13 +81,77 @@ export const api = {
   saveMonth:   (id, m)       => call("PUT", `/sites/${encodeURIComponent(id)}/months`, m),
   bulkSites:   (ids, field, value) => call("POST", "/sites/bulk", { ids, field, value }),
 
-  syncCollection: (name, rows) => call("PUT", `/collections/${encodeURIComponent(name)}`, { rows }),
+  /* Les suppressions sont explicites : le serveur ne déduit plus ce qui manque. */
+  syncCollection: (name, rows, deletes = []) =>
+    call("PUT", `/collections/${encodeURIComponent(name)}`, { rows, deletes }),
   saveSettings:   (obj)        => call("PUT", "/settings", obj),
   setVisitStatus: (id, status) => call("PUT", `/visits/${encodeURIComponent(id)}/status`, { status }),
 
-  geo:        (q="")         => call("GET", `/geo${q}`),
-  geoLevels:  (q="")         => call("GET", `/geo/levels${q}`),
-  importGeo:  (mode, rows)   => call("POST", "/geo/bulk", { mode, rows }),
+  geo:          (q="")            => call("GET", `/geo${q}`),
+  geoLevels:    (q="")            => call("GET", `/geo/levels${q}`),
+  geoVersions:  ()                => call("GET", "/geo/versions"),
+  geoCoverage:  (q="")            => call("GET", `/geo/coverage${q}`),
+  geoScope:     ()                => call("GET", "/geo/scope"),
+  setGeoScope:  (officeId, pcodes)=> call("PUT", `/geo/scope/${encodeURIComponent(officeId)}`, { pcodes }),
+  caseload:     (q="")            => call("GET", `/caseload${q}`),
+  caseloadTags: (year)            => call("GET", `/caseload/tags?year=${year}`),
+  saveCaseload: (rows)            => call("PUT", "/caseload", { rows }),
+
+  importKinds:    ()              => call("GET", "/import/kinds"),
+  importTemplate: (kind, year)    => fetchBlob(`/import/${encodeURIComponent(kind)}/template?year=${year}`),
+  importUpload:   (kind, file)    => postFile(`/import/${encodeURIComponent(kind)}`, file),
+  importBatches:  ()              => call("GET", "/import/batches"),
+  importBatch:    (id)            => call("GET", `/import/batches/${encodeURIComponent(id)}`),
+  importCommit:   (id)            => call("POST", `/import/batches/${encodeURIComponent(id)}/commit`, {}),
+  importCancel:   (id)            => call("POST", `/import/batches/${encodeURIComponent(id)}/cancel`, {}),
+  setGeoVersion:(id)              => call("PUT", `/geo/versions/${encodeURIComponent(id)}/current`),
+  /* Un import crée un millésime complet : le serveur reconstruit l'arbre. */
+  importGeo:    (rows, label, source) => call("POST", "/geo/bulk", { rows, label, source }),
+
+  /* Contours administratifs. L'import est envoyé par lots — les contours d'un pays
+     entier ne passent pas dans un corps de requête — et le premier lot porte
+     `reset` : sans lui, deux imports successifs mêleraient leurs géométries. */
+  geoGeometry:      (q="")                => call("GET", `/geo/geometry${q}`),
+  importGeometry:   (features, opts = {}) => call("POST", "/geo/geometry",
+                        { features, reset:!!opts.reset, source:opts.source, versionId:opts.versionId }),
+  clearGeometry:    ()                    => call("DELETE", "/geo/geometry"),
+
+  mre:          (q="")       => call("GET", `/mre${q}`),
+  createMre:    (a)          => call("POST", "/mre", a),
+  updateMre:    (id, a)      => call("PUT", `/mre/${encodeURIComponent(id)}`, a),
+  deleteMre:    (id)         => call("DELETE", `/mre/${encodeURIComponent(id)}`),
+  /* Le budget est enregistré en bloc pour une activité, avec sa révision :
+     l'unité d'édition est l'activité, pas la ligne de coût. */
+  saveMreCosts: (id, rev, lines) => call("PUT", `/mre/${encodeURIComponent(id)}/costs`, { rev, lines }),
+
+  /* Suivi tiers. Les mutations renvoient le plan recalculé : le client n'a pas à
+     redéduire le budget ni l'état du circuit, il le redéduirait autrement. */
+  tpm:            ()             => call("GET", "/tpm"),
+  createTpm:      (t)            => call("POST", "/tpm", t),
+  updateTpm:      (id, t)        => call("PUT", `/tpm/${encodeURIComponent(id)}`, t),
+  deleteTpm:      (id)           => call("DELETE", `/tpm/${encodeURIComponent(id)}`),
+  createContract: (c)            => call("POST", "/tpm/contracts", c),
+  updateContract: (id, c)        => call("PUT", `/tpm/contracts/${encodeURIComponent(id)}`, c),
+  addAmendment:   (id, a)        => call("POST", `/tpm/contracts/${encodeURIComponent(id)}/amendments`, a),
+  saveRates:      (id, rates)    => call("PUT", `/tpm/contracts/${encodeURIComponent(id)}/rates`, { rates }),
+  tpmPlans:       (q="")         => call("GET", `/tpm/plans${q}`),
+  tpmPlan:        (id)           => call("GET", `/tpm/plans/${encodeURIComponent(id)}`),
+  createTpmPlan:  (p)            => call("POST", "/tpm/plans", p),
+  saveTpmZones:   (id, rev, zones) => call("PUT", `/tpm/plans/${encodeURIComponent(id)}/zones`, { rev, zones }),
+  saveTpmLines:   (id, rev, lines) => call("PUT", `/tpm/plans/${encodeURIComponent(id)}/lines`, { rev, lines }),
+  submitTpmPlan:  (id)           => call("POST", `/tpm/plans/${encodeURIComponent(id)}/submit`, {}),
+  reviewTpmPlan:  (id, decision, comment) =>
+                                    call("POST", `/tpm/plans/${encodeURIComponent(id)}/review`, { decision, comment }),
+  closeTpmPlan:   (id)           => call("POST", `/tpm/plans/${encodeURIComponent(id)}/close`, {}),
+  deleteTpmPlan:  (id)           => call("DELETE", `/tpm/plans/${encodeURIComponent(id)}`),
+  addTpmExpense:  (id, e)        => call("POST", `/tpm/plans/${encodeURIComponent(id)}/expenses`, e),
+  deleteTpmExpense:(id)          => call("DELETE", `/tpm/expenses/${encodeURIComponent(id)}`),
+  tpmSuggest:     (q="")         => call("GET", `/tpm/suggest${q}`),
+
+  offices:      ()           => call("GET", "/offices"),
+  createOffice: (o)          => call("POST", "/offices", o),
+  updateOffice: (id, o)      => call("PUT", `/offices/${encodeURIComponent(id)}`, o),
+  deleteOffice: (id)         => call("DELETE", `/offices/${encodeURIComponent(id)}`),
 
   users:      ()             => call("GET", "/users"),
   createUser: (u)            => call("POST", "/users", u),
@@ -78,26 +166,34 @@ export const api = {
 
 /* File d'écriture : les collections modifiées sont poussées par lot, avec réessai.
    Une seule requête par collection est en vol à la fois : le serveur reste l'arbitre. */
-export function createSyncQueue({ onStatus = () => {}, delay = 900 } = {}){
-  const pending = new Map();          /* collection -> dernières lignes connues */
+export function createSyncQueue({ onStatus = () => {}, onConflict = null, delay = 900 } = {}){
+  const pending = new Map();          /* collection -> { rows, deletes } */
   const timers = new Map();
   let inflight = 0, failures = 0;
 
   async function flushOne(name){
-    const rows = pending.get(name);
-    if(rows === undefined) return;
+    const job = pending.get(name);
+    if(job === undefined) return;
     pending.delete(name);
     inflight++; onStatus({ state:"saving", inflight, failures });
     try{
-      if(name === "settings") await api.saveSettings(rows);
-      else await api.syncCollection(name, rows);
+      if(name === "settings") await api.saveSettings(job.rows);
+      else await api.syncCollection(name, job.rows, job.deletes);
       failures = 0;
     }catch(e){
+      /* 409 : quelqu'un d'autre a modifié la même ligne. Réessayer écraserait son
+         travail — on remonte le conflit pour que l'appelant recharge, et on n'insiste pas. */
+      if(e.status === 409){
+        inflight--;
+        onStatus({ state: inflight ? "saving" : "saved", inflight, failures:0 });
+        if(onConflict) onConflict(name, e.message, e.details);
+        return;
+      }
       failures++;
       onStatus({ state:"error", inflight, failures, message:e.message, collection:name });
       if(e.status >= 500 || e.status === 0){
         /* Erreur transitoire : on remet en file avec un délai croissant, plafonné. */
-        if(!pending.has(name)) pending.set(name, rows);
+        if(!pending.has(name)) pending.set(name, job);
         setTimeout(() => flushOne(name), Math.min(30000, 1500 * 2 ** Math.min(failures, 4)));
       }
       inflight--; return;
@@ -107,8 +203,12 @@ export function createSyncQueue({ onStatus = () => {}, delay = 900 } = {}){
   }
 
   return {
-    push(name, rows){
-      pending.set(name, rows);
+    push(name, rows, deletes = []){
+      /* Une écriture chassée par une autre avant son envoi ne doit pas perdre les
+         suppressions déjà demandées : on les cumule. */
+      const prev = pending.get(name);
+      const cumul = prev ? [...new Set([...prev.deletes, ...deletes])] : deletes;
+      pending.set(name, { rows, deletes: cumul });
       clearTimeout(timers.get(name));
       timers.set(name, setTimeout(() => flushOne(name), delay));
       onStatus({ state:"dirty", inflight, failures });

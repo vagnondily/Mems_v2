@@ -5,6 +5,8 @@ import { db, migrate, tx } from "./db.js";
 import { config } from "./config.js";
 import { log } from "./lib/logger.js";
 import { newId } from "./lib/crypto.js";
+import { buildUnits, writeVersion, resolveUnit } from "./lib/geo.js";
+import { planAmount, regenerate } from "./lib/tpm.js";
 import { hashPassword } from "./lib/auth.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -65,6 +67,16 @@ const PLAN = [
   ["Bureau de terrain de Toliara",  [["SMP",31,9,2,14],["NTA",30,12,2,9],["CAR",12,6,1,5],["MPA",8,6,1,4],["URT",7,6,2,3],["SAMS",3,3,1,2]]],
 ];
 const CAT_SITE = { SMP:"École", NTA:"Formation sanitaire", MPA:"Point de distribution", URT:"Point de distribution" };
+/* Un bureau de terrain couvre des districts précis, pas tout le pays. Sans ce
+   découpage, chaque bureau se retrouvait présent dans les dix communes et le
+   cloisonnement par bureau ne cloisonnait plus rien. Index dans GEO. */
+const ZONES = {
+  "Bureau de terrain d'Ambovombe": [0,1,2,3],   /* Androy */
+  "Bureau de terrain d'Ampanihy":  [6],         /* Ampanihy Ouest */
+  "Bureau de terrain de Toliara":  [7,8],       /* Toliara II */
+  "Bureau de terrain de Manakara": [9],         /* Manakara */
+  "Bureau de terrain de Tolagnaro":[4,5],       /* Anosy */
+};
 
 function seed(){
   const existing = db.prepare("SELECT COUNT(*) c FROM sites").get().c;
@@ -87,14 +99,25 @@ if(info){
   const pwHash = await hashPassword(info.plainPassword);
   tx(() => {
     for(const t of ["site_months","visits","sites","coverage_params","outputs","outcomes","outcome_plan",
-                    "population_values","population","pdd","datasets","scripts","odk_forms",
+                    "population_values","population","caseload","pdd","datasets","scripts","odk_forms",
                     "report_templates","dashboards","indicators","activity_categories","partners",
-                    "poi_subtypes","offices","users","settings"]) db.prepare(`DELETE FROM ${t}`).run();
+                    "poi_subtypes","mre_cost","mre_activity",
+                    /* tpm efface contrats, plans, zones, lignes et dépenses en cascade */
+                    "tpm","offices","users","settings",
+                    /* geo_version efface geo_unit en cascade */
+                    "office_scope","geo_version","geo"]) db.prepare(`DELETE FROM ${t}`).run();
 
     const officeId = {};
-    const insOffice = db.prepare("INSERT INTO offices (id,name,code,kind) VALUES (?,?,?,?)");
-    OFFICES.forEach(([name,code]) => { const id = newId("off");
-      officeId[name] = id; insOffice.run(id, name, code, code==="HQ" ? "hq" : "field"); });
+    /* Le bureau central est national : ses staffs voient tous les sites sans être
+       administrateurs. Les antennes viennent de ZONES pour rester cohérentes
+       avec les districts réellement couverts. */
+    const insOffice = db.prepare(`INSERT INTO offices (id,name,code,kind,scope_mode,antennes,manager)
+                                  VALUES (?,?,?,?,?,?,?)`);
+    OFFICES.forEach(([name,code]) => { const id = newId("off"); const hq = code === "HQ";
+      officeId[name] = id;
+      insOffice.run(id, name, code, hq ? "hq" : "field", hq ? "national" : "geo",
+        JSON.stringify(hq ? [] : [code[0] + code.slice(1).toLowerCase()]),
+        hq ? "Chef de l'unité suivi-évaluation" : "Chef de bureau"); });
 
     const catId = {};
     const insCat = db.prepare("INSERT INTO activity_categories (id,name,tag,program_area) VALUES (?,?,?,?)");
@@ -108,9 +131,46 @@ if(info){
     const insPoi = db.prepare("INSERT INTO poi_subtypes (id,label,code) VALUES (?,?,?)");
     POI.forEach(([l,c]) => insPoi.run(newId("poi"), l, c));
 
+    /* Un centre par commune, partagé par tout ce qui porte des coordonnées : la
+       table plate historique, le référentiel arborescent et les sites. Avant, les
+       trois tiraient au hasard dans tout le sud de l'île indépendamment les uns
+       des autres — invisible sur une carte de points, absurde dès qu'on dessine les
+       contours, où chaque commune devenait un rectangle grand comme une région. */
+    const CENTRE = GEO.map((_, gi) => [
+      -25.4 + Math.floor(gi / 4) * 1.9 + (gi % 2) * 0.35,   /* latitude  */
+      43.8 + (gi % 4) * 1.15,                                /* longitude */
+    ]);
+    const autour = (gi, rayon) => {
+      const [la, lo] = CENTRE[gi]; const a = Math.random() * 2 * Math.PI;
+      const d = Math.sqrt(Math.random()) * rayon;
+      return [r5(la + Math.sin(a) * d), r5(lo + Math.cos(a) * d * 1.1)];
+    };
+
+    /* Table plate historique — conservée tant que sites.geo_id la référence. */
     const insGeo = db.prepare("INSERT INTO geo (id,adm0,adm1,adm2,adm3,lat,lon) VALUES (?,?,?,?,?,?,?)");
-    GEO.forEach(g => insGeo.run(newId("geo"), g[0], g[1], g[2], g[3],
-      r5(-25+Math.random()*8), r5(43.5+Math.random()*4)));
+    GEO.forEach((g, gi) => insGeo.run(newId("geo"), g[0], g[1], g[2], g[3],
+      CENTRE[gi][0], CENTRE[gi][1]));
+
+    /* Référentiel arborescent : c'est lui que l'application interroge désormais.
+       Trois fokontany par commune, pour que la cascade ait quatre niveaux réels. */
+    /* Les coordonnées étaient tirées au hasard dans tout le sud de l'île, y compris
+       pour les fokontany d'une même commune. Sur une carte de points cela passait
+       inaperçu ; dès qu'on dessine les contours, chaque commune devient un
+       rectangle grand comme une région et l'emboîtement n'a plus de sens. Les
+       localités sont donc regroupées : une commune occupe une petite zone, ses
+       fokontany se répartissent autour de son centre. */
+    const geoRows = [];
+    GEO.forEach(([adm0, adm1, adm2, adm3], gi) => {
+      const [cLat, cLon] = CENTRE[gi];
+      for(let k = 1; k <= 3; k++){
+        const a = (k / 3) * 2 * Math.PI;
+        geoRows.push({ adm0, adm1, adm2, adm3,
+          adm4: `${adm3} ${["Centre","Nord","Sud"][k-1]}`,
+          lat: r5(cLat + Math.sin(a) * 0.14), lon: r5(cLon + Math.cos(a) * 0.16) });
+      }
+    });
+    const { units } = buildUnits(geoRows);
+    writeVersion({ label:"Jeu de démonstration", source:"seed.js", units });
 
     const insInd = db.prepare(`INSERT INTO indicators (id,code,name,basket,unit,target,direction,method,frequency)
                                VALUES (?,?,?,?,?,?,?,?,?)`);
@@ -139,7 +199,9 @@ if(info){
       insParam.run(newId("cov"), `ACT-${YEAR}-${String(++pIdx).padStart(3,"0")}`,
         officeId[office], catId[tag].id, tag, dur, risk, feas);
       for(let k=0;k<count;k++){
-        const g = GEO[n % GEO.length];
+        const zone = ZONES[office] || GEO.map((_,i)=>i);
+        const g = GEO[zone[n % zone.length]];
+        const pos = autour(zone[n % zone.length], 0.1);
         const label = CAT_SITE[tag] || pick(POI)[0];
         const poi = POI.find(p=>p[0]===label) || POI[1];
         const id = newId("site");
@@ -155,7 +217,11 @@ if(info){
             : label==="Formation sanitaire" ? "Health Center" : "FDP",
           adm1:g[1], adm2:g[2], adm3:g[3], adm4:`Fokontany ${g[3]} ${(n%9)+1}`,
           urban_area: n % 7 === 0 ? "Oui" : "Non",
-          lat: r5(-25+Math.random()*8), lon: r5(43.5+Math.random()*4),
+          /* Le site est dans sa commune, pas ailleurs dans l'île — et d'un seul
+             tirage : deux appels auraient croisé la latitude d'un point avec la
+             longitude d'un autre. Le rayon reste sous celui du cadre de la commune,
+             sinon des sites se retrouveraient hors de leur propre contour. */
+          lat: pos[0], lon: pos[1],
           security: pick([0,0,0,1,1,3]), modality: pick(["Espèces","Coupons","Vivres","Renforcement de capacités","Mixte"]),
           beneficiaries: 60 + Math.floor(Math.random()*7000),
           partner_id: partnerId[partner], responsible, last_visit:null,
@@ -203,6 +269,7 @@ if(info){
         `${YEAR}-06-20`, 180+Math.floor(Math.random()*300));
     }));
 
+    /* Table historique, conservée le temps de la reprise (voir src/link-geo.js). */
     const insPop = db.prepare("INSERT INTO population (id,area_key,level,base,rate) VALUES (?,?,?,?,?)");
     [...new Set(GEO.map(g=>g[2]))].forEach(k =>
       insPop.run(newId("pop"), k, "adm2", 40000+Math.floor(Math.random()*160000), 2.7));
@@ -215,12 +282,19 @@ if(info){
        @district,@commune,@partner_id,@modality,@commodity,@days,@benef_planned,@households,
        @tonnage,@amount,@benef_actual,@received,@distributed,@status)`);
     const BUREAUX = OFFICES.filter(o=>o[1]!=="HQ");
+    /* Un bureau par commune, pas tous les bureaux dans toutes les communes :
+       sinon les volumes cumulés donnent des communes à un million d'habitants. */
+    const bureauDe = {};
+    for(const [office, idx] of Object.entries(ZONES))
+      for(const i of idx){ const b = BUREAUX.find(o => o[0] === office); if(b) bureauDe[GEO[i][3]] = b; }
+    /* Filet : une commune non attribuée revient au premier bureau. */
+    GEO.forEach(g => { bureauDe[g[3]] = bureauDe[g[3]] || BUREAUX[0]; });
     [Math.max(0,new Date().getMonth()-1), new Date().getMonth()].forEach(mi =>
-      BUREAUX.forEach(([oname, code]) => GEO.slice(0,4).forEach(g =>
+      GEO.forEach(g => { const [oname, code] = bureauDe[g[3]];
         ["GD","PREVMA"].forEach(actType => {
           if(Math.random() < 0.25) return;
           const modality = actType==="GD" ? pick(["Food","Food","Cash"]) : "Food";
-          const bp = 1500 + Math.floor(Math.random()*22000);
+          const bp = 1200 + Math.floor(Math.random()*9000);
           const days = actType==="GD" ? 15 : 30;
           const tonnage = modality==="Food" ? r2(bp*days*0.0006*(0.8+Math.random()*0.5)) : 0;
           const amount = modality==="Cash" ? Math.round(bp*days*1600) : 0;
@@ -236,7 +310,7 @@ if(info){
             days, benef_planned:bp, households:Math.round(bp/5), tonnage, amount,
             benef_actual:Math.round(bp*cb), received:r2((modality==="Food"?tonnage:amount)*cr),
             distributed:r2((modality==="Food"?tonnage:amount)*cd), status: cd>0 ? "done" : "planned" });
-        }))));
+        }); }));
 
     db.prepare("INSERT INTO report_templates (id,name,blocks,intro) VALUES (?,?,?,?)")
       .run(newId("tpl"), "Rapport mensuel de suivi",
@@ -258,12 +332,366 @@ if(info){
       odkBase:"https://odk-central.example.org", opSize:"Large" })
       .forEach(([k,v]) => setS.run(k, JSON.stringify(v)));
 
+
+    /* Périmètre déclaré de chaque bureau : on attribue le district de chacune de
+       ses communes. Déclarer le district plutôt que la commune est plus proche de
+       la réalité — un bureau couvre un district, pas une liste de communes. */
+    {
+      const gv0 = db.prepare("SELECT id FROM geo_version WHERE is_current=1").get();
+      const insScope = db.prepare(
+        "INSERT OR IGNORE INTO office_scope (office_id,geo_pcode) VALUES (?,?)");
+      for(const [office, idx] of Object.entries(ZONES)){
+        if(!officeId[office]) continue;
+        for(const i of idx){
+          const m = resolveUnit({ adm1:GEO[i][1], adm2:GEO[i][2] }, gv0.id);
+          if(m.pcode) insScope.run(officeId[office], m.pcode);
+        }
+      }
+      /* Le bureau central n'a pas de périmètre : il voit tout par son rôle. */
+    }
+
+    /* Sites et plan de distribution rattachés au référentiel dès la génération :
+       le jeu de démonstration est cohérent sans passer par src/link-geo.js. */
+    {
+      const gv = db.prepare("SELECT id FROM geo_version WHERE is_current=1").get();
+      const lier = (table, cols) => {
+        const upd = db.prepare(`UPDATE ${table} SET geo_pcode=? WHERE id=?`);
+        let n = 0;
+        for(const row of db.prepare(`SELECT * FROM ${table}`).all()){
+          const names = {}; for(const [lvl, col] of Object.entries(cols)) names[lvl] = row[col];
+          const m = resolveUnit(names, gv.id);
+          if(m.pcode){ upd.run(m.pcode, row.id); n++; }
+        }
+        return n;
+      };
+      lier("sites", { adm1:"adm1", adm2:"adm2", adm3:"adm3", adm4:"adm4" });
+      lier("pdd",   { adm1:"region", adm2:"district", adm3:"commune" });
+    }
+
+    /* Population et ciblage par commune — dérivés du plan de distribution afin que
+       les taux restent plausibles. Un taux de couverture de 2 700 % dans un jeu de
+       démonstration décrédibilise l'outil avant même qu'on l'ait regardé.
+
+       Le ciblage diffère selon l'activité ; la ligne « toutes activités » porte le
+       total dédoublonné, donc inférieur à la somme des activités. */
+    const insCl = db.prepare(`INSERT INTO caseload
+      (id,geo_pcode,level,year,month,activity_tag,population,households,targeted,targeted_hh,source)
+      VALUES (?,?,?,?,NULL,?,?,?,?,?,?)`);
+    const SOURCE = "INSTAT RGPH-3 2018, projeté 2,7 %";
+    const plannedBy = Object.fromEntries(db.prepare(
+      `SELECT geo_pcode, SUM(benef_planned) p FROM pdd
+       WHERE year=? AND geo_pcode IS NOT NULL GROUP BY geo_pcode`).all(YEAR).map(x=>[x.geo_pcode,x.p]));
+    db.prepare(`SELECT pcode, name FROM geo_unit
+      WHERE version_id=(SELECT id FROM geo_version WHERE is_current=1) AND level='adm3'`)
+      .all().forEach(c => {
+        const planned = plannedBy[c.pcode] || 0;
+        /* Cible déduite du planifié : couverture entre 80 % et 110 %. */
+        const total = planned
+          ? Math.round(planned / (0.8 + Math.random()*0.3))
+          : 4000 + Math.floor(Math.random()*16000);
+        /* Population telle que le taux de ciblage tombe entre 20 % et 35 %. */
+        const pop = Math.round(total / (0.20 + Math.random()*0.15));
+        const hh  = Math.round(pop/4.8);
+        insCl.run(newId("cl"), c.pcode, "adm3", YEAR, "", pop, hh, total, Math.round(total/4.8), SOURCE);
+        /* Les activités se recouvrent : leur somme dépasse le total dédoublonné. */
+        const brut = total / 0.72;
+        [["URT",0.46],["NTA",0.26],["SMP",0.28]].forEach(([tag,share]) => {
+          const t = Math.round(brut*share);
+          insCl.run(newId("cl"), c.pcode, "adm3", YEAR, tag, pop, hh, t, Math.round(t/4.8), SOURCE);
+        });
+      });
+
+    /* ── Plan MRE et budget ────────────────────────────────────────────
+       Un plan annuel plausible : quelques activités portées par le bureau pays,
+       quelques-unes par les bureaux de terrain, chacune chiffrée par lignes. Le
+       budget n'est jamais saisi en bloc — il se déduit des lignes, comme la
+       route le calcule. La dépense n'est renseignée que sur les mois écoulés,
+       sinon l'exécution budgétaire afficherait 0 % pour toute l'année à venir. */
+    const hqId = officeId["Bureau central d'Antananarivo"];
+    const moisCourant = new Date().getMonth();
+    const insMre = db.prepare(`INSERT INTO mre_activity
+      (id,year,ref,title,kind,purpose,method,office_id,activity_tag,responsible,
+       start_month,end_month,sample,status,funding,currency,note)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'USD',?)`);
+    const insCost = db.prepare(`INSERT INTO mre_cost
+      (id,activity_id,category,label,unit,qty,unit_cost,spent,month) VALUES (?,?,?,?,?,?,?,?,?)`);
+    const PLAN_MRE = [
+      ["MRE-01","Suivi de processus des distributions générales","suivi",
+       "Vérifier la conformité des distributions aux procédures et recueillir les plaintes",
+       "Visites de site avec formulaire ODK", null,"URT","Unité suivi-évaluation",0,11,null,
+       "Formulaire de suivi mensuel dans chaque bureau",
+       [["personnel","Agents de suivi de terrain","personne-mois",60,420,"deplacement","Indemnités de déplacement","personne-jour",480,18],
+        ["transport","Location de véhicules","véhicule-jour",240,95],
+        ["communication","Forfaits données pour tablettes","mois",72,9]]],
+      ["MRE-02","Enquête post-distribution — premier semestre","enquete",
+       "Mesurer la satisfaction, l'utilisation de l'assistance et les délais de service",
+       "Échantillon aléatoire stratifié par bureau, entretiens ménages", null,"URT",
+       "Unité suivi-évaluation",2,3,1200,"Enquête semestrielle, base de sondage issue des listes de bénéficiaires",
+       [["enqueteurs","Enquêteurs et superviseurs","personne-jour",180,14],
+        ["deplacement","Indemnités enquêteurs","personne-jour",180,12],
+        ["transport","Transport terrain","véhicule-jour",45,95],
+        ["equipement","Tablettes de remplacement","unité",6,220],
+        ["atelier","Atelier de restitution","forfait",1,1800]]],
+      ["MRE-03","Enquête post-distribution — second semestre","enquete",
+       "Reproduire la mesure du premier semestre pour comparer les deux périodes",
+       "Même protocole que MRE-02, pour comparabilité", null,"URT","Unité suivi-évaluation",8,9,1200,
+       "La comparabilité impose de ne pas modifier le questionnaire en cours d'année",
+       [["enqueteurs","Enquêteurs et superviseurs","personne-jour",180,14],
+        ["deplacement","Indemnités enquêteurs","personne-jour",180,12],
+        ["transport","Transport terrain","véhicule-jour",45,95],
+        ["atelier","Atelier de restitution","forfait",1,1800]]],
+      ["MRE-04","Évaluation à mi-parcours du plan stratégique pays","evaluation",
+       "Apprécier la pertinence et l'efficacité des activités à mi-parcours",
+       "Évaluation externe : revue documentaire, entretiens, visites de terrain", null,null,
+       "Bureau pays et unité évaluation",4,7,null,"Cabinet externe, gestion décentralisée",
+       [["consultant","Cabinet d'évaluation","forfait",1,48000],
+        ["transport","Déplacements de l'équipe d'évaluation","véhicule-jour",30,95],
+        ["atelier","Atelier de validation des conclusions","forfait",1,3200],
+        ["impression","Édition du rapport","forfait",1,900]]],
+      ["MRE-05","Revue trimestrielle de la performance","revue",
+       "Rapprocher le plan et le réalisé, décider des réorientations",
+       "Réunion de revue sur données du tableau de bord", null,null,"Unité suivi-évaluation",0,11,null,
+       "Quatre séances par an, une par trimestre",
+       [["atelier","Séances de revue trimestrielle","séance",4,1400],
+        ["impression","Supports de séance","forfait",4,120]]],
+      ["MRE-06","Analyse de la couverture géographique et des écarts de ciblage","etude",
+       "Identifier les communes ciblées non couvertes et l'inverse",
+       "Croisement du référentiel administratif, du ciblage et du plan de distribution", null,null,
+       "Unité suivi-évaluation",1,2,null,"S'appuie sur l'écran de couverture géographique",
+       [["personnel","Analyste de données","personne-mois",2,1900],
+        ["autre","Achat de données de population complémentaires","forfait",1,600]]],
+      ["MRE-07","Renforcement des capacités des partenaires coopérants en suivi","capacite",
+       "Homogénéiser la qualité des rapports des partenaires",
+       "Deux sessions de formation régionales", null,null,"Unité suivi-évaluation",5,6,null,
+       "Une session par pôle géographique",
+       [["atelier","Sessions de formation","session",2,2600],
+        ["deplacement","Indemnités des participants","personne-jour",120,15],
+        ["impression","Manuels de suivi","unité",90,7]]],
+    ];
+    PLAN_MRE.forEach(([ref,title,kind,purpose,method,_o,tag,resp,m0,m1,sample,note,lignes]) => {
+      const id = newId("mre");
+      insMre.run(id, YEAR, ref, title, kind, purpose, method, hqId, tag, resp, m0, m1, sample,
+        m1 < moisCourant ? "realise" : m0 <= moisCourant ? "en_cours" : "planifie",
+        "Ressources programme", note);
+      lignes.forEach(([cat,label,unit,qty,cost]) => {
+        /* Une activité longue laisse son mois vide : la route répartit alors la
+           ligne sur toute sa durée, ce qui est le cas réel d'un suivi continu.
+           Une activité courte est imputée à son mois de début. */
+        const mois = (m1 - m0) > 2 ? null : m0;
+        /* Dépense constatée seulement si l'activité a commencé, avec un écart
+           réaliste de part et d'autre du budget. */
+        const engagee = m0 <= moisCourant;
+        insCost.run(newId("mrc"), id, cat, label, unit, qty, cost,
+          engagee ? r2(qty * cost * (0.82 + Math.random()*0.3)) : null, mois);
+      });
+    });
+    /* Chaque bureau de terrain porte son propre suivi de proximité : le plan
+       n'est pas seulement national, et le cloisonnement doit avoir de la matière. */
+    Object.keys(ZONES).forEach((office, i) => {
+      const id = newId("mre");
+      insMre.run(id, YEAR, `MRE-B${String(i+1).padStart(2,"0")}`,
+        `Suivi de proximité — ${office.replace("Bureau de terrain d'","").replace("Bureau de terrain de ","")}`,
+        "suivi", "Couvrir les sites du bureau selon l'exigence minimale de suivi",
+        "Visites de site planifiées par le risque", officeId[office], null, "Chef de bureau",
+        0, 11, null, moisCourant > 0 ? "en_cours" : "planifie", "Ressources programme",
+        "Décliné du plan national sur la zone du bureau");
+      [["deplacement","Indemnités de déplacement","personne-jour",96,18],
+       ["transport","Carburant et entretien","mois",12,340]].forEach(([cat,label,unit,qty,cost]) =>
+        insCost.run(newId("mrc"), id, cat, label, unit, qty, cost,
+          r2(qty * cost * (0.85 + Math.random()*0.25) * (moisCourant+1)/12), null));
+    });
+
+    /* ── Contours administratifs du jeu de démonstration ───────────────
+       Un fond de carte réel suppose un shapefile officiel, qui ne peut pas vivre
+       dans un dépôt de code. On fabrique donc des contours COHÉRENTS : chaque
+       district est un rectangle autour de ses communes, chaque commune un
+       rectangle autour de ses fokontany, et l'emboîtement est respecté. Ce n'est
+       pas la géographie de Madagascar, et le libellé de la source le dit — mais
+       cela suffit à ce que la carte, les aplats thématiques et le cadrage soient
+       exerçables sans fichier externe. */
+    {
+      const gvG = db.prepare("SELECT id FROM geo_version WHERE is_current=1").get();
+      /* Les unités feuilles portent déjà des coordonnées (posées à la génération) :
+         on remonte les cadres depuis elles. */
+      const unites = db.prepare(
+        `SELECT pcode, parent_pcode, level, lat, lon FROM geo_unit WHERE version_id=?`).all(gvG.id);
+      const enfantsDe = {};
+      unites.forEach(u => { if(u.parent_pcode)
+        (enfantsDe[u.parent_pcode] = enfantsDe[u.parent_pcode] || []).push(u); });
+
+      /* Cadre d'une unité : ses propres coordonnées, élargies par celles de ses
+         descendants. Calculé de bas en haut, une seule fois par unité. */
+      const cadres = {};
+      const cadreDe = (u) => {
+        if(cadres[u.pcode]) return cadres[u.pcode];
+        let box = null;
+        const etendre = (lon, lat, m) => {
+          const b = { w:lon-m, e:lon+m, s:lat-m, n:lat+m };
+          box = box ? { w:Math.min(box.w,b.w), e:Math.max(box.e,b.e),
+                        s:Math.min(box.s,b.s), n:Math.max(box.n,b.n) } : b;
+        };
+        for(const c of (enfantsDe[u.pcode] || [])){
+          const cb = cadreDe(c);
+          if(cb) box = box ? { w:Math.min(box.w,cb.w), e:Math.max(box.e,cb.e),
+                               s:Math.min(box.s,cb.s), n:Math.max(box.n,cb.n) } : { ...cb };
+        }
+        /* Marge propre au niveau : un fokontany est petit, une région large. */
+        const marge = { adm4:0.03, adm3:0.06, adm2:0.12, adm1:0.2, adm0:0.4 }[u.level] || 0.05;
+        if(u.lat != null && u.lon != null) etendre(u.lon, u.lat, marge);
+        if(!box) return (cadres[u.pcode] = null);
+        /* Un cadre plat ne se dessine pas : on l'épaissit du minimum. */
+        if(box.e - box.w < 0.01){ box.w -= 0.01; box.e += 0.01; }
+        if(box.n - box.s < 0.01){ box.s -= 0.01; box.n += 0.01; }
+        return (cadres[u.pcode] = box);
+      };
+
+      const insG = db.prepare(`INSERT INTO geo_geom
+        (pcode,version_id,level,geometry,simple,min_lon,min_lat,max_lon,max_lat,points,points_simple)
+        VALUES (?,?,?,?,?,?,?,?,?,5,5)`);
+      let nG = 0;
+      for(const u of unites){
+        if(u.level === "adm0") continue;   /* le pays n'a pas à être dessiné */
+        const b = cadreDe(u);
+        if(!b) continue;
+        const g = JSON.stringify({ type:"Polygon", coordinates:[[
+          [r5(b.w), r5(b.s)], [r5(b.e), r5(b.s)], [r5(b.e), r5(b.n)],
+          [r5(b.w), r5(b.n)], [r5(b.w), r5(b.s)] ]] });
+        /* Cinq sommets : la simplification n'aurait rien à retirer, les deux
+           résolutions sont donc identiques ici. */
+        insG.run(u.pcode, gvG.id, u.level, g, g, r5(b.w), r5(b.s), r5(b.e), r5(b.n));
+        nG++;
+      }
+      db.prepare(`UPDATE geo_version SET geom_units=?,
+                  geom_source='Contours de démonstration — rectangles emboîtés, non géographiques',
+                  geom_at=datetime('now') WHERE id=?`).run(nG, gvG.id);
+    }
+
+    /* ── Suivi tiers ───────────────────────────────────────────────────
+       Le barème et les quantités reprennent le classeur réel d'un prestataire de
+       suivi : indemnité de superviseur et d'agent à la personne-jour, location et
+       carburant au véhicule-jour, forfait de communication. Le budget des plans
+       n'est pas écrit ici — il est calculé par lib/tpm.js à partir de ce barème et
+       des affectations, comme il le sera en production. */
+    {
+      const gvT = db.prepare("SELECT id FROM geo_version WHERE is_current=1").get();
+      const insTpm = db.prepare(`INSERT INTO tpm (id,name,code,office_id,contact,email,active,updated_at)
+                                 VALUES (?,?,?,?,?,?,1,datetime('now'))`);
+      const insCtr = db.prepare(`INSERT INTO tpm_contract
+        (id,tpm_id,ref,ceiling,currency,start_date,end_date,status,note,updated_at)
+        VALUES (?,?,?,?,'MGA',?,?,'actif',?,datetime('now'))`);
+      const insRate = db.prepare(`INSERT INTO tpm_rate
+        (id,contract_id,driver,label,unit,unit_cost,active,sort) VALUES (?,?,?,?,?,?,1,?)`);
+      const insPlan = db.prepare(`INSERT INTO tpm_plan
+        (id,tpm_id,contract_id,year,month,ref,status,note,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,datetime('now'))`);
+      const insZone = db.prepare(`INSERT INTO tpm_zone (id,plan_id,geo_pcode,activity_tag,
+        team_label,supervisors,agents,days,travel_days,vehicles,fuel_litres,sites,note)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+      const insRev = db.prepare(`INSERT INTO tpm_review
+        (id,plan_id,level,decision,comment,amount,user_id,user_label) VALUES (?,?,?,?,?,?,NULL,?)`);
+      const insExp = db.prepare(`INSERT INTO tpm_expense (id,plan_id,line_id,spent_on,amount,ref)
+                                 VALUES (?,?,?,?,?,?)`);
+
+      /* Barème commun, en ariary — les montants du classeur de référence. */
+      const BAREME = [
+        ["superviseur", "Indemnité des superviseurs", "pers-jour", 70000],
+        ["agent",       "Indemnité des agents",       "pers-jour", 60000],
+        ["vehicule",    "Location voiture",           "véhicule-jour", 300000],
+        ["carburant",   "Carburant voiture",          "litre", 5000],
+        ["forfait",     "Forfait communication",      "forfait", 10000],
+      ];
+      const PRESTATAIRES = [
+        ["Mahavotse Suivi", "MAHAVOTSE", "Bureau de terrain d'Ambovombe",
+         "R. Randriamalala", 240_000_000],
+        ["Fanavotana Monitoring", "FANAVOTANA", "Bureau de terrain d'Ampanihy",
+         "S. Rakotomalala", 120_000_000],
+      ];
+      const contratDe = {};
+      PRESTATAIRES.forEach(([nom, code, bureau, contact, plafond], i) => {
+        const tid = newId("tpm");
+        insTpm.run(tid, nom, code, officeId[bureau] || null, contact,
+          `${code.toLowerCase()}@prestataire.mg`);
+        const cid = newId("tct");
+        insCtr.run(cid, tid, `TPM-${YEAR}-${String(i+1).padStart(2,"0")}`, plafond,
+          `${YEAR}-01-01`, `${YEAR}-12-31`,
+          "Suivi de processus et de distribution des activités du bureau");
+        BAREME.forEach(([driver, label, unit, cost], k) =>
+          insRate.run(newId("trt"), cid, driver, label, unit, cost, k));
+        contratDe[nom] = { tid, cid, bureau, plafond };
+        /* Un avenant sur le premier contrat : le suivi budgétaire n'a d'intérêt
+           que si le plafond a une histoire. */
+        if(i === 0) db.prepare(`INSERT INTO tpm_amendment (id,contract_id,ref,delta,reason,signed_at)
+                                VALUES (?,?,?,?,?,?)`)
+          .run(newId("tam"), cid, "AV-01", 30_000_000,
+               "Extension du périmètre au district de Beloha", `${YEAR}-04-15`);
+      });
+
+      /* Trois mois de plans, à des étapes différentes du circuit : un clôturé, un
+         validé au niveau pays avec ses dépenses, un en cours de validation, et un
+         brouillon. Sans cette variété, l'écran de validation serait toujours vide
+         et le circuit ne se verrait pas. */
+      const mois = new Date().getMonth();
+      const ETAPES = [
+        [Math.max(0, mois - 2), "cloture",       ["tpm","bureau","pays"]],
+        [Math.max(0, mois - 1), "valide_pays",   ["tpm","bureau","pays"]],
+        [mois,                  "valide_tpm",    ["tpm"]],
+        [Math.min(11, mois + 1),"brouillon",     []],
+      ];
+      Object.entries(contratDe).forEach(([nom, c], pi) => {
+        /* Les zones du prestataire : les communes des districts de son bureau. */
+        const idx = ZONES[c.bureau] || [];
+        const communes = idx.map(i => resolveUnit(
+          { adm1:GEO[i][1], adm2:GEO[i][2], adm3:GEO[i][3] }, gvT.id))
+          .filter(m => m.pcode);
+        if(!communes.length) return;
+
+        ETAPES.forEach(([m, statut, niveaux], si) => {
+          const pid = newId("tpp");
+          insPlan.run(pid, c.tid, c.cid, YEAR, m,
+            `${YEAR}-${String(m+1).padStart(2,"0")}-${(pi+1)}`, statut,
+            "Suivi de processus des distributions générales et de la prise en charge nutritionnelle");
+          communes.forEach((cm, zi) => {
+            const jours = 2 + (zi % 3) * 2;
+            insZone.run(newId("tpz"), pid, cm.pcode, ["URT","NTA","SMP"][zi % 3],
+              `TEAM${zi+1}`, 1 + (zi % 2), 1 + (zi % 3), jours, jours > 4 ? 1 : 0,
+              1, 15 * jours, 3 + zi, null);
+          });
+          /* Les lignes dérivent du barème : on appelle la même fonction que la route. */
+          regenerate(pid);
+          /* Les frais communs du mois, hors équipe — comme le groupe électrogène
+             du classeur, qui ne dérive d'aucune quantité d'équipe. */
+          db.prepare(`INSERT INTO tpm_line (id,plan_id,zone_id,driver,label,unit,qty1,qty2,unit_cost,derived,sort)
+                      VALUES (?,?,NULL,'forfait',?,?,?,1,?,0,900)`)
+            .run(newId("tpl"), pid, "Groupe électrogène avec carburant", "groupe", 1, 80000);
+
+          const montant = planAmount(pid);
+          niveaux.forEach(niv => insRev.run(newId("trv"), pid, niv, "valide",
+            niv === "pays" ? "Conforme au périmètre contractuel." : null, montant,
+            niv === "tpm" ? "Responsable prestataire" :
+            niv === "bureau" ? "Suivi-évaluation du bureau" : "Suivi-évaluation pays"));
+
+          /* Dépenses sur les plans engagés seulement : une dépense sur un plan non
+             validé serait incohérente avec ce que la route autorise. */
+          if(["valide_pays","cloture"].includes(statut)){
+            const lignes = db.prepare("SELECT id,qty1,qty2,unit_cost FROM tpm_line WHERE plan_id=?").all(pid);
+            lignes.forEach((l, li) => {
+              if(li % 3 === 2) return;   /* toutes les lignes ne sont pas encore réglées */
+              const prevu = l.qty1 * l.qty2 * l.unit_cost;
+              insExp.run(newId("tex"), pid, l.id,
+                `${YEAR}-${String(m+1).padStart(2,"0")}-${String(10 + (li % 15)).padStart(2,"0")}`,
+                r2(prevu * (0.88 + Math.random() * 0.22)), `FAC-${m+1}-${li+1}`);
+            });
+          }
+        });
+      });
+    }
+
     const uid = newId("user");
     db.prepare(`INSERT INTO users (id,email,pw_hash,first_name,last_name,title,office_id,role,tabs,active,must_change_pw)
                 VALUES (?,?,?,?,?,?,?, 'super', ?, 1, 1)`)
       .run(uid, config.bootstrapEmail, pwHash, "Administrateur", "MEMS",
            "Responsable suivi et évaluation", null,
-           JSON.stringify(["home","planning","actual","analytics","reports","settings"]));
+           JSON.stringify(["home","suivi","programme","analytics","reports","settings"]));
   })();
 
   const counts = ["offices","activity_categories","sites","site_months","visits","coverage_params",

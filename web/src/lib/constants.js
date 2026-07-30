@@ -13,17 +13,24 @@ const SERIES = [C.brand, C.ok, C.warn, C.orange, C.aqua, C.magenta, C.navy, C.br
 const MONTHS = ["Jan","Fév","Mar","Avr","Mai","Juin","Juil","Août","Sep","Oct","Nov","Déc"];
 const MONTHS_L = ["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
 
-const CSS = `@import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;600;700&display=swap');
-*{box-sizing:border-box}
+/* La feuille de style importait Open Sans depuis Google Fonts. Trois raisons de
+   ne plus le faire : le README affirme qu'aucune ressource externe n'est chargée
+   — ce qui était faux ; un bureau de terrain sur liaison satellite attendait un
+   aller-retour vers un domaine tiers avant d'avoir son texte à la bonne fonte,
+   et le voyait donc changer sous ses yeux ; et l'application, servie hors ligne,
+   retombait de toute façon sur la fonte système. On assume la fonte système, qui
+   est celle que l'utilisateur lit toute la journée par ailleurs. */
+const CSS = `*{box-sizing:border-box}
 html,body{margin:0;padding:0;min-height:100%;height:100%}
-body,input,select,textarea,button,pre,code{font-family:'Open Sans',system-ui,-apple-system,'Segoe UI',sans-serif}
+body,input,select,textarea,button,pre,code{font-family:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial,'Noto Sans',sans-serif}
 body{background:#edf2f7;color:#0f172a;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;}
 button,select,textarea{font:inherit;color:inherit}
 ::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-thumb{background:#cbd5dd;border-radius:5px}
 ::-webkit-scrollbar-track{background:transparent}
 .f8{font-size:8px}.f9{font-size:9px}.f95{font-size:9.5px}.f10{font-size:10px}.f105{font-size:10.5px}
 .f11{font-size:11px}.f115{font-size:11.5px}.f12{font-size:12px}.f125{font-size:12.5px}.f13{font-size:13px}
-.f15{font-size:15px}.f17{font-size:17px}.f23{font-size:23px}
+.f15{font-size:15px}.f17{font-size:17px}.f19{font-size:19px}
+.tr14{letter-spacing:.14em}
 .mi-f115{font-size:11.5px !important}.mi-f12{font-size:12px !important}.mi-xs{font-size:12px !important}
 .mi-tc{text-align:center !important}.mi-py1{padding-top:4px !important;padding-bottom:4px !important}
 .mi-py05{padding-top:2px !important;padding-bottom:2px !important}
@@ -35,6 +42,7 @@ button,select,textarea{font:inherit;color:inherit}
 .mh190{max-height:190px}.mh240{max-height:240px}.mh280{max-height:280px}.mh300{max-height:300px}
 .mh340{max-height:340px}.mh420{max-height:420px}.mh440{max-height:440px}
 .mh55{max-height:55vh}.mh62{max-height:62vh}.mh65{max-height:65vh}.mh68{max-height:68vh}
+.mh78{max-height:78vh}
 .mw220{max-width:220px}.mw240{max-width:240px}.mw300{max-width:300px}.mw320{max-width:320px}
 .mw420{max-width:420px}.mw1520{max-width:1520px}
 .mnw52{min-width:52px}.mnw260{min-width:260px}.w38{width:38px}.w46{width:46%}.h22{height:22px}
@@ -101,14 +109,16 @@ const D_INDICATORS = [
   { id:"ADH",  name:"Adhérence — participation à un nombre suffisant de distributions",        unit:"%", target:80, dir:"up",   basket:"Couverture",              method:"Suivi post-distribution", freq:"Trimestriel" },
 ];
 
-const TABS_ALL = [["home","Accueil"],["planning","Planning"],["actual","Actual Data"],
+/* Le prévu et le réalisé ne sont pas deux sujets mais deux vues du même sujet :
+   le premier niveau suit désormais les deux métiers réellement distincts. */
+const TABS_ALL = [["home","Accueil"],["suivi","Suivi-évaluation"],["programme","Programme"],
   ["analytics","Analyses"],["reports","Rapports"],["settings","Paramètres"]];
 const D_ROLES = {
   super:  { label:"Super-utilisateur", tabs:TABS_ALL.map(t=>t[0]), edit:true, del:true, validate:true, admin:true, sync:true },
   admin:  { label:"Administrateur",    tabs:TABS_ALL.map(t=>t[0]), edit:true, del:true, validate:true, admin:true, sync:true },
-  validator:{label:"Validateur",       tabs:["home","planning","actual","analytics","reports"], edit:true, del:false, validate:true, admin:false, sync:true },
-  editor: { label:"Éditeur",           tabs:["home","planning","actual","analytics","reports"], edit:true, del:false, validate:false,admin:false, sync:true },
-  viewer: { label:"Lecteur",           tabs:["home","planning","actual","reports"],              edit:false,del:false, validate:false,admin:false, sync:false },
+  validator:{label:"Validateur",       tabs:["home","suivi","programme","analytics","reports"], edit:true, del:false, validate:true, admin:false, sync:true },
+  editor: { label:"Éditeur",           tabs:["home","suivi","programme","analytics","reports"], edit:true, del:false, validate:false,admin:false, sync:true },
+  viewer: { label:"Lecteur",           tabs:["home","suivi","programme","reports"],              edit:false,del:false, validate:false,admin:false, sync:false },
 };
 
 const D_WEIGHTS = {

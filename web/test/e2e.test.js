@@ -134,7 +134,7 @@ test("accueil : les données viennent du serveur et les indicateurs sont calcul�
 
 test("navigation : les cinq onglets s'ouvrent sans erreur", async () => {
   const nav = (l) => all("header nav button").find(b => b.textContent.trim().startsWith(l));
-  for(const onglet of ["Planning", "Actual Data", "Analyses", "Rapports", "Accueil"]){
+  for(const onglet of ["Suivi-évaluation", "Programme", "Analyses", "Rapports", "Accueil"]){
     await click(nav(onglet), `onglet ${onglet}`);
     await flush();
     assert.ok(all("main h2").length > 0, `${onglet} affiche un titre`);
@@ -144,7 +144,7 @@ test("navigation : les cinq onglets s'ouvrent sans erreur", async () => {
 
 test("cartographie : points projetés, filtres actifs, fiche au clic", async () => {
   const nav = (l) => all("header nav button").find(b => b.textContent.trim().startsWith(l));
-  await click(nav("Actual Data"), "Actual Data"); await flush();
+  await click(nav("Suivi-évaluation"), "Suivi-évaluation"); await flush();
   const sousOnglet = all("main button").filter(b => b.className.includes("-mb-px"))
     .find(b => b.textContent.trim() === "Cartographie");
   await click(sousOnglet, "sous-onglet Cartographie");
@@ -182,7 +182,7 @@ test("cartographie : points projetés, filtres actifs, fiche au clic", async () 
 
 test("écriture : une modification est enregistrée sur le serveur et survit au rechargement", async () => {
   const nav = (l) => all("header nav button").find(b => b.textContent.trim().startsWith(l));
-  await click(nav("Planning"), "Planning"); await flush();
+  await click(nav("Suivi-évaluation"), "Suivi-évaluation"); await flush();
   const onglet = all("main button").filter(b => b.className.includes("-mb-px"))
     .find(b => b.textContent.trim() === "Paramètres de couverture");
   await click(onglet, "paramètres de couverture"); await flush();
@@ -203,6 +203,62 @@ test("écriture : une modification est enregistrée sur le serveur et survit au 
   const r = await fetch(`${BASE}/health`);
   assert.equal((await r.json()).database.foreignKeyViolations, 0,
     "l'écriture n'a introduit aucune incohérence référentielle");
+});
+
+test("plan MRE : la destination s'ouvre, le budget est calculé, la bascule fonctionne", async () => {
+  const nav = (l) => all("header nav button").find(b => b.textContent.trim().startsWith(l));
+  await click(nav("Suivi-évaluation"), "Suivi-évaluation"); await flush();
+  const onglet = all("main button").filter(b => b.className.includes("-mb-px"))
+    .find(b => b.textContent.trim() === "Plan MRE et budget");
+  await click(onglet, "sous-onglet Plan MRE et budget");
+  await flush(); await flush(); await flush();
+
+  assert.ok(byText("h3", "Plan MRE"), "le plan de l'année s'affiche");
+  const texte = document.body.textContent;
+  for(const bloc of ["Budget total", "Exécution budgétaire", "Budget par nature d'activité",
+                     "Budget par catégorie de coût", "Charge mensuelle du plan"])
+    assert.ok(texte.includes(bloc), `le bloc « ${bloc} » est présent`);
+
+  /* Le budget affiché vient du serveur : on vérifie qu'il est chiffré, et que le
+     total du plan égale bien la somme des budgets d'activité de la colonne. */
+  const lignes = all("main tbody tr");
+  assert.ok(lignes.length > 0, "le plan comporte des activités");
+  /* On lit les valeurs brutes portées par les cellules, pas leur texte : le montant
+     est groupé à la française (espace insécable fine) et suivi du nombre de lignes,
+     les deux nombres se touchent. Même raison que `data-site` sur la carte. */
+  const somme = all("main tbody td[data-budget]")
+    .reduce((t, td) => t + Number(td.getAttribute("data-budget") || 0), 0);
+  const total = Number(all("main tfoot td[data-budget-total]")[0]
+    ?.getAttribute("data-budget-total") || 0);
+  assert.ok(total > 0, "le total du plan est chiffré");
+  assert.equal(Math.round(total), Math.round(somme),
+    "le total du plan est bien la somme des budgets d'activité");
+
+  /* La bascule montre l'exécution budgétaire — l'autre vue du même plan. */
+  await click(byExact("button", "Exécution budgétaire"), "bascule vers l'exécution");
+  await flush(); await flush();
+  assert.ok(byText("h3", "Exécution budgétaire"), "la vue d'exécution s'affiche");
+  assert.ok(document.body.textContent.includes("Dépense constatée"));
+  assert.equal(ctx.errors.length, 0, "aucune erreur sur le plan MRE");
+});
+
+test("bureaux : l'écran de configuration liste les bureaux et leur périmètre", async () => {
+  /* Ce que la liste de noms non persistée ne faisait pas : montrer la
+     configuration réelle, y compris le bureau à périmètre national. */
+  const menu = all("header.sticky button").pop();
+  await click(menu, "menu du compte"); await flush();
+  await click(byText("button", "Paramètres de l'application"), "paramètres");
+  await flush(); await flush();
+  const onglet = all("main button").filter(b => b.className.includes("-mb-px"))
+    .find(b => b.textContent.trim() === "Bureaux");
+  await click(onglet, "sous-onglet Bureaux");
+  await flush(); await flush(); await flush();
+
+  assert.ok(byText("h3", "Bureaux et antennes"), "la liste des bureaux s'affiche");
+  assert.ok(document.body.textContent.includes("national — tous les sites"),
+    "le bureau pays est signalé comme couvrant tous les sites");
+  assert.ok(all("main tbody tr").length >= 2, "plusieurs bureaux sont listés");
+  assert.equal(ctx.errors.length, 0, "aucune erreur sur l'écran des bureaux");
 });
 
 test("déconnexion : la session est fermée et l'écran de connexion revient", async () => {

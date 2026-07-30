@@ -1,7 +1,9 @@
 import { Router } from "express";
 import { db, tx } from "../db.js";
 import { newId } from "../lib/crypto.js";
-import { requireCap, can } from "../lib/auth.js";
+import { labelsFor } from "../lib/geo.js";
+import { requireCap } from "../lib/auth.js";
+import { officeBound as scopeOf } from "../lib/scope.js";
 import { validate, schemas } from "../lib/validate.js";
 import { z } from "zod";
 
@@ -12,8 +14,10 @@ const audit = (req, action, entity_id, text) =>
     .run(newId("aud"), req.user.id, `${req.user.first_name} ${req.user.last_name||""}`.trim(),
          req.user.office_id||"", entity_id, action, text);
 
-/* Un compte rattaché à un bureau ne voit et ne modifie que ses propres sites. */
-const scopeOf = (u) => (can(u,"admin") || !u.office_id) ? null : u.office_id;
+/* Un compte rattaché à un bureau ne voit et ne modifie que ses propres sites —
+   sauf si ce bureau est déclaré national. La règle vient de lib/scope.js : elle
+   était réécrite ici et dans analytics.js, et ces copies auraient ignoré le
+   bureau pays. */
 function assertScope(req, site){
   const s = scopeOf(req.user);
   if(s && site && site.office_id !== s){
@@ -52,8 +56,25 @@ r.get("/:id", (req, res) => {
   res.json({ site:s, months: db.prepare("SELECT * FROM site_months WHERE site_id=?").all(s.id) });
 });
 
+
+/* Le rattachement fait foi : quand un site porte un geo_pcode, ses libellés
+   administratifs et ses coordonnées en descendent, plutôt que d'être saisis
+   séparément — c'est ce qui les empêche de diverger du référentiel. */
+function applyGeo(b){
+  if(!b.geo_pcode) return b;
+  const l = labelsFor(b.geo_pcode);
+  if(!l.adm1 && !l.adm2 && !l.adm3 && !l.adm4) return b;   /* p-code inconnu : on n'écrase rien */
+  b.adm1 = l.adm1 || null; b.adm2 = l.adm2 || null;
+  b.adm3 = l.adm3 || null; b.adm4 = l.adm4 || null;
+  /* Les coordonnées propres au site priment : une école n'est pas au centroïde
+     de son fokontany. Celles du référentiel ne servent que de repli. */
+  if(b.lat == null) b.lat = l.lat;
+  if(b.lon == null) b.lon = l.lon;
+  return b;
+}
+
 r.post("/", requireCap("edit"), validate(schemas.site), (req, res) => {
-  const b = req.body;
+  const b = applyGeo(req.body);
   const scope = scopeOf(req.user);
   if(scope) b.office_id = scope;
   if(db.prepare("SELECT 1 FROM sites WHERE code=?").get(b.code))
@@ -70,12 +91,20 @@ r.put("/:id", requireCap("edit"), validate(schemas.site), (req, res) => {
   const cur = db.prepare("SELECT * FROM sites WHERE id=?").get(req.params.id);
   if(!cur) return res.status(404).json({ error:"site introuvable" });
   assertScope(req, cur);
-  const b = req.body; const scope = scopeOf(req.user);
+  const b = applyGeo(req.body); const scope = scopeOf(req.user);
   if(scope) b.office_id = scope;
+  /* Révision : si le client renvoie celle qu'il a lue et qu'elle a changé depuis,
+     quelqu'un d'autre a modifié ce site pendant sa saisie. On refuse plutôt que
+     d'écraser en silence, et on rend la version courante pour qu'il puisse comparer. */
+  if(b.rev !== undefined && Number(b.rev) !== cur.rev)
+    return res.status(409).json({
+      error:"ce site a été modifié pendant votre saisie. Rechargez pour repartir de la version à jour.",
+      revEnvoyee:Number(b.rev), revCourante:cur.rev, courant:cur });
+  delete b.rev;
   const dup = db.prepare("SELECT id FROM sites WHERE code=? AND id<>?").get(b.code, cur.id);
   if(dup) return res.status(409).json({ error:"un autre site porte déjà ce code" });
   const cols = Object.keys(b).filter(k=>k!=="id");
-  db.prepare(`UPDATE sites SET ${cols.map(k=>k+"=?").join(",")}, updated_at=datetime('now') WHERE id=?`)
+  db.prepare(`UPDATE sites SET ${cols.map(k=>k+"=?").join(",")}, rev=rev+1, updated_at=datetime('now') WHERE id=?`)
     .run(...cols.map(k=>b[k]), cur.id);
   audit(req, "update", cur.id, `Site modifié — ${b.name}`);
   res.json({ site: db.prepare("SELECT * FROM sites WHERE id=?").get(cur.id) });

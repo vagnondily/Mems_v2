@@ -4,12 +4,10 @@ import { Toast, Btn } from "./components/ui.jsx";
 import { uid } from "./lib/calc.js";
 import { ACT_CATEGORIES, C, D_MMR, D_SCORING, D_ROLES, D_FORMULAS, D_WEIGHTS } from "./lib/constants.js";
 import { api, setToken, setUnauthorizedHandler, createSyncQueue } from "./lib/api.js";
-import { ActualData } from "./views/ActualData.jsx";
 import { Analytics } from "./views/Analytics.jsx";
 import { Home } from "./views/Home.jsx";
 import { Login } from "./views/Login.jsx";
-import MapView from "./views/MapView.jsx";
-import { Planning } from "./views/Planning.jsx";
+import { Programme, Suivi } from "./views/Merged.jsx";
 import { Reports } from "./views/Reports.jsx";
 import { SettingsView } from "./views/Settings.jsx";
 import { Shell } from "./views/Shell.jsx";
@@ -20,18 +18,29 @@ import { Shell } from "./views/Shell.jsx";
 const SYNCED = ["params","outputs","indicators","outcomes","population","pdd",
                 "reportTemplates","dashboards","datasets","scripts","odkForms","settings"];
 
+/* Les projections vers le serveur conservent `rev` : c'est la révision lue, que le
+   serveur compare à la sienne pour détecter qu'un collègue a modifié la même ligne. */
 const SHAPERS = {
   outputs: (rows, db) => rows.map(o => ({ ...o, year: db.year })),
   outcomes: (rows, db) => rows.map(o => ({
-    id:o.id, indicator_id: o.indicator_id || (db.indicators.find(i=>i.id===o.indicator)||{}).key,
+    id:o.id, rev:o.rev,
+    indicator_id: o.indicator_id || (db.indicators.find(i=>i.id===o.indicator)||{}).key,
     adm1:o.adm1, round_label:o.round, planned:o.planned, value:o.value,
     collected_at:o.date, sample:o.sample })).filter(o => o.indicator_id),
-  indicators: (rows) => rows.map(i => ({ id:i.key, code:i.id, name:i.name, basket:i.basket,
-    unit:i.unit, target:i.target, direction:i.dir, method:i.method, frequency:i.freq })),
-  params: (rows) => rows.map(p => ({ id:p.id, csp:p.csp, office_id:p.office_id,
+  indicators: (rows) => rows.map(i => ({ id:i.key, rev:i.rev, code:i.id, name:i.name,
+    basket:i.basket, unit:i.unit, target:i.target, direction:i.dir,
+    method:i.method, frequency:i.freq })),
+  params: (rows) => rows.map(p => ({ id:p.id, rev:p.rev, csp:p.csp, office_id:p.office_id,
     category_id:p.category_id, tag:p.tag, duration:p.duration,
     riskLevel:p.riskLevel, feasiblePerMonth:p.feasiblePerMonth })).filter(p => p.office_id),
   pdd: (rows, db) => rows.map(p => ({ ...p, year: p.year || db.year })),
+};
+
+/* Les identifiants d'une collection, tels que le serveur les connaît. La projection
+   `indicators` renomme la clé : on la traverse pour comparer sur le même terrain. */
+const idsOf = (name, rows, db) => {
+  const shaped = SHAPERS[name] ? SHAPERS[name](rows || [], db) : (rows || []);
+  return new Set(shaped.map(r => r.id).filter(Boolean));
 };
 
 const DEV_ADMIN_CREDENTIALS = import.meta.env?.DEV ? {
@@ -39,11 +48,29 @@ const DEV_ADMIN_CREDENTIALS = import.meta.env?.DEV ? {
   password: "MemsAdmin2026",
 } : null;
 
+/* Le serveur parle snake_case, l'interface camelCase. Un seul point de conversion :
+   sans lui, me.firstName et me.office sont undefined partout (« Bonjour undefined »,
+   avatar « ? », cloisonnement d'interface inopérant). */
+const normalizeMe = (u) => u && ({
+  ...u,
+  firstName: u.first_name || "",
+  lastName:  u.last_name  || "",
+  title:     u.title      || "",
+  office:    u.office     || "",
+  tabs: Array.isArray(u.tabs) ? u.tabs : [],
+});
+
+/* Onglets autorisés : une seule règle, partagée par App et par la coquille.
+   `tabs` vaut [] par défaut côté serveur ; il faut donc retomber sur le rôle,
+   sinon un compte se retrouve avec une navigation vide. */
+const resolveTabs = (u) =>
+  (u?.tabs?.length ? u.tabs : D_ROLES[u?.role]?.tabs) || ["home"];
+
 export default function App(){
   const [db, setDb] = useState(null);
   const [me, setMe] = useState(null);
   const [tab, setTabState] = useState("home");
-  const [subs, setSubs] = useState({ planning:"overreaching", actual:"summary",
+  const [subs, setSubs] = useState({ suivi:"summary", programme:"distribution",
     analytics:"datasets", reports:"extract", settings:"general" });
   const [toasts, setToasts] = useState([]);
   const [phase, setPhase] = useState("boot");
@@ -62,14 +89,6 @@ export default function App(){
     setMe(null); setDb(null); setPhase("login");
     notify("Session expirée, reconnectez-vous", "warn");
   }); }, [notify]);
-
-  useEffect(() => {
-    queue.current = createSyncQueue({ onStatus: (s) => {
-      setSync(s);
-      if(s.state === "error" && s.failures >= 3)
-        notify(`Enregistrement impossible (${s.collection}) : ${s.message}`, "err");
-    }});
-  }, [notify]);
 
   const hydrate = useCallback((state) => ({
     ...state,
@@ -94,18 +113,34 @@ export default function App(){
     prevDb.current = d; setDb(d); return d;
   }, [hydrate]);
 
+  useEffect(() => {
+    queue.current = createSyncQueue({
+      onStatus: (s) => {
+        setSync(s);
+        if(s.state === "error" && s.failures >= 3)
+          notify(`Enregistrement impossible (${s.collection}) : ${s.message}`, "err");
+      },
+      /* Écriture concurrente : insister écraserait le travail de l'autre. On prévient
+         et on repart de la version à jour. */
+      onConflict: async (name, message) => {
+        notify(message || "Cette donnée a été modifiée par ailleurs — rechargement", "warn");
+        try{ await loadState(); }catch(e){}
+      },
+    });
+  }, [notify, loadState]);
+
   useEffect(() => { (async () => {
     try{ await api.health(); }
     catch(e){
       setFatal("Le serveur ne répond pas. Vérifiez qu'il est démarré et que l'adresse de l'API est correcte.");
       setPhase("fatal"); return;
     }
-    try{ const { user } = await api.me(); setMe(user); await loadState(); setPhase("ready"); }
+    try{ const { user } = await api.me(); setMe(normalizeMe(user)); await loadState(); setPhase("ready"); }
     catch(e){
       if(DEV_ADMIN_CREDENTIALS){
         try{
           const r = await api.login(DEV_ADMIN_CREDENTIALS.email, DEV_ADMIN_CREDENTIALS.password);
-          setToken(r.token); setMe(r.user); await loadState(); setPhase("ready");
+          setToken(r.token); setMe(normalizeMe(r.user)); await loadState(); setPhase("ready");
           notify(`Bienvenue ${r.user.first_name}`, "ok");
           return;
         }catch(loginError){}
@@ -115,7 +150,7 @@ export default function App(){
   })(); }, [loadState, notify]);
 
   const onLogin = async (user, token) => {
-    setToken(token); setMe(user); await loadState(); setPhase("ready");
+    setToken(token); setMe(normalizeMe(user)); await loadState(); setPhase("ready");
     notify(`Bienvenue ${user.first_name}`, "ok");
   };
   const onLogout = async () => {
@@ -134,7 +169,15 @@ export default function App(){
         if(before[name] === next[name]) continue;
         if(JSON.stringify(before[name]) === JSON.stringify(next[name])) continue;
         const shaper = SHAPERS[name];
-        queue.current?.push(name, shaper ? shaper(next[name], next) : next[name]);
+        /* Ce que CE client a retiré, et rien d'autre. Le serveur ne déduit plus les
+           suppressions : sans cela, enregistrer effaçait les lignes ajoutées entre-temps
+           par un collègue, que ce client n'avait jamais reçues. */
+        let deletes = [];
+        if(name !== "settings" && Array.isArray(before[name]) && Array.isArray(next[name])){
+          const apres = idsOf(name, next[name], next);
+          deletes = [...idsOf(name, before[name], before)].filter(id => !apres.has(id));
+        }
+        queue.current?.push(name, shaper ? shaper(next[name], next) : next[name], deletes);
       }
       prevDb.current = next;
       return next;
@@ -143,12 +186,9 @@ export default function App(){
 
   const setTab = (t, s) => { setTabState(t); if(s) setSubs(x => ({ ...x, [t]:s })); };
   const setSub = (t) => (s) => setSubs(x => ({ ...x, [t]:s }));
-  const can = useCallback((f) => {
-    if(!me) return false;
-    const caps = { super:{edit:1,del:1,validate:1,admin:1}, admin:{edit:1,del:1,validate:1,admin:1},
-      validator:{edit:1,validate:1}, editor:{edit:1}, viewer:{} }[me.role] || {};
-    return !!caps[f];
-  }, [me]);
+  /* Une seule matrice de droits côté client (D_ROLES), alignée sur celle du serveur.
+     Le serveur reste l'arbitre : ceci ne fait que masquer ce qu'il refuserait. */
+  const can = useCallback((f) => !!D_ROLES[me?.role]?.[f], [me]);
 
   useEffect(() => {
     const h = (e) => { if(queue.current?.busy){ e.preventDefault(); e.returnValue = ""; } };
@@ -177,27 +217,24 @@ export default function App(){
     <Toast list={toasts} />
   </>);
 
-  const allowed = (me.tabs && me.tabs.length) ? me.tabs
-    : ["home","planning","actual","analytics","reports"];
+  const allowed = resolveTabs(me);
   const view = allowed.includes(tab) ? tab : (allowed[0] || "home");
 
   return (<>
-    <Shell db={db} me={me} tab={view} sub={subs[view]} setTab={setTab}
+    <Shell db={db} me={me} tab={view} sub={subs[view]} setTab={setTab} allowed={allowed}
            onLogout={onLogout} sync={sync} notify={notify}>
       <Boundary reset={view + "|" + (subs[view] || "")}>
         {view==="home" && <Home db={db} me={me} go={setTab} />}
-        {view==="planning" && <Planning db={db} set={set} me={me} sub={subs.planning}
-          setSub={setSub("planning")} notify={notify} can={can} />}
-        {view==="actual" && (subs.actual === "map"
-          ? <MapView db={db} me={me} notify={notify} go={setTab} />
-          : <ActualData db={db} set={set} me={me} sub={subs.actual}
-              setSub={setSub("actual")} notify={notify} can={can} go={setTab} />)}
+        {view==="suivi" && <Suivi db={db} set={set} me={me} sub={subs.suivi}
+          setSub={setSub("suivi")} notify={notify} can={can} go={setTab} />}
+        {view==="programme" && <Programme db={db} set={set} me={me} sub={subs.programme}
+          setSub={setSub("programme")} notify={notify} can={can} go={setTab} />}
         {view==="analytics" && <Analytics db={db} set={set} sub={subs.analytics}
           setSub={setSub("analytics")} notify={notify} can={can} />}
         {view==="reports" && <Reports db={db} set={set} sub={subs.reports}
           setSub={setSub("reports")} notify={notify} can={can} />}
         {view==="settings" && <SettingsView db={db} set={set} me={me} sub={subs.settings}
-          setSub={setSub("settings")} notify={notify} can={can} />}
+          setSub={setSub("settings")} notify={notify} can={can} reload={loadState} />}
       </Boundary>
     </Shell>
     <Toast list={toasts} />

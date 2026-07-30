@@ -1,10 +1,10 @@
 import { Router } from "express";
 import { db } from "../db.js";
 import { z } from "zod";
-import { can } from "../lib/auth.js";
+import { officeBound as scopeOf } from "../lib/scope.js";
 
 const r = Router();
-const scopeOf = (u) => (can(u,"admin") || !u.office_id) ? null : u.office_id;
+/* Cloisonnement par bureau : voir lib/scope.js — définition unique. */
 
 /* Points cartographiques : calculés côté serveur pour éviter d'envoyer le registre entier. */
 r.get("/map", (req, res) => {
@@ -27,6 +27,10 @@ r.get("/map", (req, res) => {
 
   const rows = db.prepare(`
     SELECT s.id, s.code, s.name, s.status, s.lat, s.lon, s.adm1, s.adm2, s.adm3, s.adm4,
+           /* Le p-code permet à la carte de rapporter chaque site à son contour :
+              sans lui, l'aplat thématique devrait se rattacher par nom de commune,
+              ce qui échoue sur les homonymes de deux districts différents. */
+           s.geo_pcode,
            s.activity_tag, s.beneficiaries, s.security, s.last_visit, s.modality,
            o.name AS office, c.name AS category,
            COALESCE(m.planned,0) AS planned, COALESCE(m.done,0) AS done
