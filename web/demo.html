@@ -190,230 +190,268 @@
   </div>
 </div>
 
-  <script>
-    const pages = {
-      home: {
-        title: 'Accueil',
-        subtitle: 'Vue synthétique des indicateurs et du suivi terrain.',
-        cards: [
-          { label: 'Sites actifs', value: '128' },
-          { label: 'Couverture moyenne', value: '87%' },
-          { label: 'Bénéficiaires', value: '23 450' }
-        ],
-        panels: [
-          { title: 'Exigence minimale de suivi', text: 'Les objectifs prioritaires sont affichés avec le statut de réalisation et les tâches urgentes.' },
-          { title: 'Trois derniers mois', text: 'Suivi des indicateurs opérationnels et de couverture sur la période récente.' }
-        ],
-        table: {
-          header: ['Zone', 'Sites actifs', 'Visites planifiées', 'Taux de réalisation'],
-          rows: [
-            ['Ambovombe', '23', '18', '78%'],
-            ['Ampanihy', '38', '33', '87%'],
-            ['Manakara', '17', '15', '88%'],
-            ['Toliara', '11', '10', '91%']
-          ]
-        },
-        note: 'La page d’accueil donne un aperçu rapide des sites, des tendances et des résultats par zone.'
-      },
-      planning: {
-        title: 'Planning',
-        subtitle: 'Calendrier des visites et paramètres de couverture.',
-        cards: [
-          { label: 'Sites planifiés', value: '112' },
-          { label: 'Visites urgentes', value: '14' },
-          { label: 'Couverture cible', value: '91%' }
-        ],
-        panels: [
-          { title: 'Couverture terrain', text: 'Le plan de couverture par bureau et activité est visible dans le tableau ci-dessous.' },
-          { title: 'Prochaines échéances', text: 'Les visites critiques sont priorisées pour le mois à venir.' }
-        ],
-        table: {
-          header: ['Activité', 'Bureau', 'Sites prévus', 'Risque', 'Statut'],
-          rows: [
-            ['URT', 'Ambovombe', '23', 'Moyen', 'Active'],
-            ['SMP', 'Ampanihy', '38', 'Élevé', 'Active'],
-            ['NTA', 'Manakara', '17', 'Faible', 'Planifiée'],
-            ['CAR', 'Toliara', '11', 'Moyen', 'Active']
-          ]
-        },
-        note: 'Les statuts reflètent la priorité et le risque des visites sur le terrain.'
-      },
-      actual: {
-        title: 'Actual Data',
-        subtitle: 'Suivi terrain et données opérationnelles.',
-        cards: [
-          { label: 'Visites réalisées', value: '94' },
-          { label: 'Données saisies', value: '78%' },
-          { label: 'Issues identifiées', value: '5' }
-        ],
-        panels: [
-          { title: 'Synthèse des observations', text: 'La collecte terrain montre des écarts à corriger sur certains sites et une bonne progression globale.' },
-          { title: 'Sources de données', text: 'Les formulaires ODK et les rapports terrain alimentent les analyses et les tableaux de bord.' }
-        ],
-        map: 'Carte des sites actifs avec filtres de statut et activité.',
-        table: {
-          header: ['Site', 'Zone', 'Statut', 'Visites', 'Dernière visite'],
-          rows: [
-            ['Ambovombe 1', 'Ambovombe', 'Active', '8', '14/07/2026'],
-            ['Ampanihy Est', 'Ampanihy', 'Active', '12', '11/07/2026'],
-            ['Manakara Nord', 'Manakara', 'Inactive', '4', '05/07/2026'],
-            ['Toliara Ouest', 'Toliara', 'Active', '5', '09/07/2026']
-          ]
-        }
-      },
-      analytics: {
-        title: 'Analyses',
-        subtitle: 'Indicateurs consolidés et scripts d’analyse.',
-        bars: [
-          { label: 'URT', value: 78, color: '#2563eb' },
-          { label: 'NTA', value: 88, color: '#0ea5e9' },
-          { label: 'SMP', value: 72, color: '#38bdf8' }
-        ],
-        items: [
-          { title: 'Coverage SQL', description: 'Agrégations mensuelles de couverture par bureau.' },
-          { title: 'Trend script', description: 'Profil de performance des activités sur le trimestre.' }
-        ],
-        note: 'Les analyses permettent de visualiser les résultats par activité et par zone.'
-      },
-      reports: {
-        title: 'Rapports',
-        subtitle: 'Construction de rapports et extractions ODK simulées.',
-        cards: [
-          { label: 'Rapports générés', value: '18' },
-          { label: 'Exports ODK', value: '4' },
-          { label: 'Modèles disponibles', value: '6' }
-        ],
-        items: [
-          { title: 'Rapport mensuel de suivi', description: 'Synthèse des indicateurs et de la couverture opérationnelle.' },
-          { title: 'Note de couverture trimestrielle', description: 'Analyse des performances et recommandations par bureau.' }
-        ],
-        actions: [
-          { label: 'Générer un rapport', hint: 'Créer un PDF de synthèse.' },
-          { label: 'Exporter ODK', hint: 'Télécharger les données à partir de la source terrain.' }
-        ],
-        note: 'Les rapports sont produits à partir des données du suivi et des extraits ODK.'
-      }
-    };
+<!-- ══════════════ Application ══════════════ -->
+<div class="app hidden" id="app">
+  <header class="top">
+    <div class="brand">
+      <!-- Version inversée du signe : le dégradé bleu-vert d'origine se confond
+           avec le bleu sombre de la barre. -->
+      <svg viewBox="0 0 140 140" width="30" height="30" aria-hidden="true">
+        <path d="M 20 80 A 40 40 0 1 1 100 80" fill="none" stroke="#fff" stroke-width="10" stroke-linecap="round"/>
+        <path d="M 40 75 Q 40 50 50 40 Q 50 65 40 75 Z" fill="rgba(255,255,255,.92)"/>
+        <path d="M 76 75 Q 76 40 66 30 Q 66 60 76 75 Z" fill="rgba(255,255,255,.8)"/>
+        <rect x="55" y="25" width="6" height="40" rx="3" fill="#fff"/>
+        <circle cx="63" cy="15" r="8" fill="#FBBF24"/><circle cx="63" cy="15" r="3" fill="#0B4F72"/>
+      </svg>
+      <b>MEMS</b>
+    </div>
+    <nav class="tabs" id="nav"></nav>
+    <div class="right">
+      <span class="sync"><i></i> Enregistré</span>
+      <button class="who" id="whoBtn"><span class="av" id="avat">?</span><span id="whoName"></span> ▾</button>
+    </div>
+  </header>
+  <div class="card-menu hidden" id="whoMenu"></div>
+  <main id="view"></main>
+  <footer class="bot">
+    <div id="footOrg"></div>
+    <span style="margin-left:auto"><b style="color:#475569">MEMS</b> ·
+      Monitoring and Evaluation Management System · <span id="footYear"></span></span>
+  </footer>
+</div>
 
-    const loginScreen = document.getElementById('login-screen');
-    const appScreen = document.getElementById('app-screen');
-    const navContainer = document.getElementById('demo-nav');
-    const demoContent = document.getElementById('demo-content');
-    const pageTitle = document.getElementById('page-title');
-    const pageSubtitle = document.getElementById('page-subtitle');
+<script>
+"use strict";
+/* ═══════════════════════════════════════════════════════════════════════
+   1. RÉFÉRENTIELS — repris de web/src/lib/constants.js
+   ═══════════════════════════════════════════════════════════════════════ */
+const YEAR = new Date().getFullYear();
+const MONTHS  = ["Jan","Fév","Mar","Avr","Mai","Juin","Juil","Août","Sep","Oct","Nov","Déc"];
+const MONTHS_L= ["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
+const NOW_M   = Math.min(9, new Date().getMonth());
 
-    const navButtons = Object.keys(pages).map(key => {
-      const btn = document.createElement('button');
-      btn.textContent = pages[key].title;
-      btn.dataset.page = key;
-      btn.addEventListener('click', () => setPage(key));
-      navContainer.appendChild(btn);
-      return btn;
-    });
+const TAGS = [
+  ["URT","Transferts de ressources non conditionnels"],["ACL","Création d'actifs et moyens d'existence"],
+  ["CAR","Adaptation climatique et gestion des risques"],["SMP","Programmes en milieu scolaire"],
+  ["NTA","Traitement de la malnutrition"],["MPA","Prévention de la malnutrition"],
+  ["SAMS","Appui aux marchés des petits producteurs"],["EPA","Préparation aux urgences"],
+  ["AAM","Analyse, évaluation et suivi"],
+];
+const TAG_LABEL = Object.fromEntries(TAGS);
 
-    function setPage(key) {
-      navButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.page === key));
-      const page = pages[key];
-      pageTitle.textContent = page.title;
-      pageSubtitle.textContent = page.subtitle;
-      demoContent.innerHTML = '';
+/* Matrice des rôles — identique à D_ROLES côté application */
+const ROLES = {
+  super:    { label:"Super-utilisateur", tabs:["home","suivi","programme","analytics","reports","settings"], edit:1,del:1,validate:1,admin:1 },
+  admin:    { label:"Administrateur",    tabs:["home","suivi","programme","analytics","reports","settings"], edit:1,del:1,validate:1,admin:1 },
+  validator:{ label:"Validateur",        tabs:["home","suivi","programme","analytics","reports"],           edit:1,del:0,validate:1,admin:0 },
+  editor:   { label:"Éditeur",           tabs:["home","suivi","programme","analytics","reports"],           edit:1,del:0,validate:0,admin:0 },
+  viewer:   { label:"Lecteur",           tabs:["home","suivi","programme","reports"],                      edit:0,del:0,validate:0,admin:0 },
+};
 
-      if (page.cards) {
-        const cards = document.createElement('div');
-        cards.className = 'cards';
-        page.cards.forEach(card => {
-          const node = document.createElement('div');
-          node.className = 'small-card';
-          node.innerHTML = `<h3>${card.label}</h3><div class="value">${card.value}</div>`;
-          cards.appendChild(node);
-        });
-        demoContent.appendChild(cards);
-      }
+const OFFICES = ["Bureau de terrain d'Ambovombe","Bureau de terrain d'Ampanihy",
+  "Bureau de terrain de Toliara","Bureau de terrain de Manakara","Bureau central d'Antananarivo"];
 
-      if (page.panels) {
-        const grid = document.createElement('div');
-        grid.className = 'panel-grid';
-        page.panels.forEach(panel => {
-          const node = document.createElement('div');
-          node.className = 'panel';
-          node.innerHTML = `<h3>${panel.title}</h3><p>${panel.text}</p>`;
-          grid.appendChild(node);
-        });
-        demoContent.appendChild(grid);
-      }
+/* Profils proposés à l'écran de connexion : le rôle et le bureau changent
+   réellement ce que la démonstration affiche. */
+const PROFILES = [
+  { id:"admin",  first:"Hanta",  last:"Rakotoarisoa", title:"Responsable suivi et évaluation",
+    role:"admin",     office:"", desc:"Tous les onglets, tous les bureaux, administration" },
+  { id:"valid",  first:"Tiana",  last:"Randrianasolo", title:"Chargée de validation",
+    role:"validator", office:"Bureau de terrain d'Ampanihy", desc:"Valide les visites — un seul bureau, pas de paramètres" },
+  { id:"edit",   first:"Naina",  last:"Rabe",          title:"Assistant suivi et évaluation",
+    role:"editor",    office:"Bureau de terrain d'Ambovombe", desc:"Saisit et modifie — un seul bureau, sans validation" },
+  { id:"view",   first:"Miora",  last:"Andriamana",    title:"Chargée de programme",
+    role:"viewer",    office:"Bureau de terrain de Manakara", desc:"Consultation seule, sans onglet Analyses" },
+];
 
-      if (page.table) {
-        const section = document.createElement('div');
-        section.className = 'panel';
-        section.innerHTML = `
-          <h3>Paramètres de couverture</h3>
-          <table class="table"><thead><tr>${page.table.header.map(th => `<th>${th}</th>`).join('')}</tr></thead><tbody>${page.table.rows.map(row => `
-            <tr>${row.map((cell, idx) => {
-              if (idx === 2 && page.title === 'Accueil') return `<td>${cell}</td>`;
-              if (idx === 4) return `<td><span class="status-chip ${cell.toLowerCase()}">${cell}</span></td>`;
-              return `<td>${cell}</td>`;
-            }).join('')}</tr>
-          `).join('')}</tbody></table>`;
-        demoContent.appendChild(section);
-      }
+/* ═══════════════════════════════════════════════════════════════════════
+   2. DONNÉES DE DÉMONSTRATION — géographie et bureaux de Madagascar
+   ═══════════════════════════════════════════════════════════════════════ */
 
-      if (page.note) {
-        const noteSection = document.createElement('div');
-        noteSection.className = 'panel';
-        noteSection.innerHTML = `<h3>Résumé</h3><p>${page.note}</p>`;
-        demoContent.appendChild(noteSection);
-      }
+/* Découpage administratif : région → district → commune → fokontany.
+   Échantillon représentatif du référentiel complet (23 régions, 119 districts,
+   ~1 695 communes, ~18 000 fokontany). */
+const GEO = [
+  { adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Ambovombe",  adm4:"Ambovombe Centre", pcode:"MG81101001001", lat:-25.173, lon:46.087 },
+  { adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Ambovombe",  adm4:"Antanandava",      pcode:"MG81101001002", lat:-25.201, lon:46.112 },
+  { adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Ambondro",   adm4:"Ambondro",         pcode:"MG81101002001", lat:-25.281, lon:45.958 },
+  { adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Antanimora Sud", adm4:"Antanimora",   pcode:"MG81101003001", lat:-24.812, lon:45.661 },
+  { adm1:"Androy", adm2:"Tsihombe",         adm3:"Tsihombe",   adm4:"Tsihombe Centre",  pcode:"MG81103001001", lat:-25.316, lon:45.487 },
+  { adm1:"Androy", adm2:"Tsihombe",         adm3:"Antaritarika",adm4:"Antaritarika",    pcode:"MG81103002001", lat:-25.462, lon:45.372 },
+  { adm1:"Androy", adm2:"Bekily",           adm3:"Bekily",     adm4:"Bekily Centre",    pcode:"MG81102001001", lat:-24.229, lon:45.306 },
+  { adm1:"Atsimo-Andrefana", adm2:"Ampanihy Ouest", adm3:"Ampanihy", adm4:"Ampanihy Centre", pcode:"MG73102001001", lat:-24.697, lon:44.746 },
+  { adm1:"Atsimo-Andrefana", adm2:"Ampanihy Ouest", adm3:"Ejeda",   adm4:"Ejeda",       pcode:"MG73102002001", lat:-24.353, lon:44.531 },
+  { adm1:"Atsimo-Andrefana", adm2:"Ampanihy Ouest", adm3:"Fotadrevo",adm4:"Fotadrevo",  pcode:"MG73102003001", lat:-24.062, lon:45.028 },
+  { adm1:"Atsimo-Andrefana", adm2:"Toliara II",     adm3:"Ankililoaka", adm4:"Ankililoaka", pcode:"MG73108001001", lat:-22.789, lon:43.606 },
+  { adm1:"Atsimo-Andrefana", adm2:"Toliara II",     adm3:"Belalanda",adm4:"Belalanda",  pcode:"MG73108002001", lat:-23.269, lon:43.641 },
+  { adm1:"Anosy",   adm2:"Taolagnaro",   adm3:"Tolagnaro",  adm4:"Tolagnaro Centre", pcode:"MG82101001001", lat:-25.031, lon:46.999 },
+  { adm1:"Anosy",   adm2:"Taolagnaro",   adm3:"Mahatalaky", adm4:"Mahatalaky",       pcode:"MG82101002001", lat:-24.803, lon:47.112 },
+  { adm1:"Vatovavy",adm2:"Manakara Atsimo", adm3:"Manakara", adm4:"Manakara Be",     pcode:"MG51101001001", lat:-22.145, lon:48.019 },
+  { adm1:"Vatovavy",adm2:"Manakara Atsimo", adm3:"Ambila",   adm4:"Ambila",          pcode:"MG51101002001", lat:-22.038, lon:48.061 },
+];
 
-      if (page.map) {
-        const section = document.createElement('div');
-        section.className = 'panel';
-        section.innerHTML = `<h3>Cartographie des sites</h3><p>${page.map}</p><div class="map-card">Carte des sites et filtres de statut</div>`;
-        demoContent.appendChild(section);
-      }
+/* Paramètres de couverture : un couple (bureau, activité) est unique. */
+const PARAMS = [
+  { office:"Bureau de terrain d'Ambovombe", tag:"URT", cat:"Transferts monétaires", duration:12, risk:3, feasible:14 },
+  { office:"Bureau de terrain d'Ambovombe", tag:"NTA", cat:"Nutrition",             duration:12, risk:2, feasible:9  },
+  { office:"Bureau de terrain d'Ambovombe", tag:"SMP", cat:"Cantines scolaires",    duration:9,  risk:1, feasible:6  },
+  { office:"Bureau de terrain d'Ampanihy",  tag:"URT", cat:"Transferts monétaires", duration:12, risk:3, feasible:11 },
+  { office:"Bureau de terrain d'Ampanihy",  tag:"MPA", cat:"Nutrition préventive",  duration:12, risk:2, feasible:8  },
+  { office:"Bureau de terrain de Toliara",  tag:"ACL", cat:"Création d'actifs",     duration:10, risk:2, feasible:7  },
+  { office:"Bureau de terrain de Toliara",  tag:"SAMS",cat:"Appui aux marchés",     duration:12, risk:1, feasible:5  },
+  { office:"Bureau de terrain de Manakara", tag:"SMP", cat:"Cantines scolaires",    duration:9,  risk:1, feasible:6  },
+  { office:"Bureau de terrain de Manakara", tag:"CAR", cat:"Adaptation climatique", duration:12, risk:2, feasible:4  },
+];
 
-      if (page.bars) {
-        const section = document.createElement('div');
-        section.className = 'panel';
-        section.innerHTML = '<h3>Couverture par activité</h3>';
-        page.bars.forEach(bar => {
-          const barRow = document.createElement('div');
-          barRow.className = 'bar-row';
-          barRow.innerHTML = `<span class="bar-label">${bar.label}</span><div class="bar-track"><div class="bar-fill" style="width:${bar.value}%; background:${bar.color};"></div></div><span>${bar.value}%</span>`;
-          section.appendChild(barRow);
-        });
-        demoContent.appendChild(section);
-      }
+/* Registre des sites. `plan` : 12 mois, p=planifié, d=réalisé, a=mois actif. */
+function mkPlan(seed, density, doneUntil){
+  const out=[]; let x=seed;
+  for(let m=0;m<12;m++){
+    x=(x*1103515245+12345)&0x7fffffff;
+    const p=((x>>7)%100)<density;
+    out.push({ p, d: p && m<=doneUntil && ((x>>11)%100)<78, a:true });
+  }
+  return out;
+}
+const SITES = [
+  { code:"AMB-001", poi:"CSB II Ambovombe Centre", office:"Bureau de terrain d'Ambovombe", tag:"NTA",
+    adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Ambovombe", adm4:"Ambovombe Centre",
+    lat:-25.173, lon:46.087, status:"Active", sec:0, benef:4200, partner:"Partenaire A",
+    resp:"Naina Rabe", last:"2026-06-14", plan:mkPlan(11,62,NOW_M) },
+  { code:"AMB-002", poi:"Point de distribution Antanandava", office:"Bureau de terrain d'Ambovombe", tag:"URT",
+    adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Ambovombe", adm4:"Antanandava",
+    lat:-25.201, lon:46.112, status:"Active", sec:1, benef:7850, partner:"Partenaire B",
+    resp:"Naina Rabe", last:"2026-07-02", plan:mkPlan(23,75,NOW_M) },
+  { code:"AMB-003", poi:"EPP Ambondro", office:"Bureau de terrain d'Ambovombe", tag:"SMP",
+    adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Ambondro", adm4:"Ambondro",
+    lat:-25.281, lon:45.958, status:"Active", sec:0, benef:1120, partner:"Partenaire A",
+    resp:"Naina Rabe", last:"2026-05-21", plan:mkPlan(37,48,NOW_M) },
+  { code:"AMB-004", poi:"CSB I Antanimora Sud", office:"Bureau de terrain d'Ambovombe", tag:"NTA",
+    adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Antanimora Sud", adm4:"Antanimora",
+    lat:-24.812, lon:45.661, status:"Inactive", sec:3, benef:0, partner:"Partenaire C",
+    resp:"Naina Rabe", last:"2025-11-08", plan:mkPlan(41,0,-1) },
+  { code:"TSI-001", poi:"Point de distribution Tsihombe", office:"Bureau de terrain d'Ambovombe", tag:"URT",
+    adm1:"Androy", adm2:"Tsihombe", adm3:"Tsihombe", adm4:"Tsihombe Centre",
+    lat:-25.316, lon:45.487, status:"Active", sec:1, benef:5300, partner:"Partenaire B",
+    resp:"Naina Rabe", last:"2026-06-28", plan:mkPlan(53,70,NOW_M) },
+  { code:"TSI-002", poi:"CSB II Antaritarika", office:"Bureau de terrain d'Ambovombe", tag:"NTA",
+    adm1:"Androy", adm2:"Tsihombe", adm3:"Antaritarika", adm4:"Antaritarika",
+    lat:-25.462, lon:45.372, status:"Active", sec:1, benef:2640, partner:"Partenaire A",
+    resp:"Naina Rabe", last:"2026-04-30", plan:mkPlan(67,55,NOW_M-2) },
+  { code:"BEK-001", poi:"Marché de Bekily", office:"Bureau de terrain d'Ambovombe", tag:"SAMS",
+    adm1:"Androy", adm2:"Bekily", adm3:"Bekily", adm4:"Bekily Centre",
+    lat:-24.229, lon:45.306, status:"Active", sec:0, benef:1980, partner:"Partenaire D",
+    resp:"Naina Rabe", last:"", plan:mkPlan(71,40,-1) },
+  { code:"AMP-001", poi:"Point de distribution Ampanihy", office:"Bureau de terrain d'Ampanihy", tag:"URT",
+    adm1:"Atsimo-Andrefana", adm2:"Ampanihy Ouest", adm3:"Ampanihy", adm4:"Ampanihy Centre",
+    lat:-24.697, lon:44.746, status:"Active", sec:1, benef:9400, partner:"Partenaire B",
+    resp:"Tiana Randrianasolo", last:"2026-07-08", plan:mkPlan(83,80,NOW_M) },
+  { code:"AMP-002", poi:"CSB II Ejeda", office:"Bureau de terrain d'Ampanihy", tag:"MPA",
+    adm1:"Atsimo-Andrefana", adm2:"Ampanihy Ouest", adm3:"Ejeda", adm4:"Ejeda",
+    lat:-24.353, lon:44.531, status:"Active", sec:0, benef:3100, partner:"Partenaire C",
+    resp:"Tiana Randrianasolo", last:"2026-06-02", plan:mkPlan(97,58,NOW_M-1) },
+  { code:"AMP-003", poi:"CSB I Fotadrevo", office:"Bureau de terrain d'Ampanihy", tag:"MPA",
+    adm1:"Atsimo-Andrefana", adm2:"Ampanihy Ouest", adm3:"Fotadrevo", adm4:"Fotadrevo",
+    lat:-24.062, lon:45.028, status:"Active", sec:3, benef:1450, partner:"Partenaire C",
+    resp:"Tiana Randrianasolo", last:"2026-03-17", plan:mkPlan(103,45,NOW_M-3) },
+  { code:"TLR-001", poi:"Périmètre maraîcher Ankililoaka", office:"Bureau de terrain de Toliara", tag:"ACL",
+    adm1:"Atsimo-Andrefana", adm2:"Toliara II", adm3:"Ankililoaka", adm4:"Ankililoaka",
+    lat:-22.789, lon:43.606, status:"Active", sec:0, benef:2870, partner:"Partenaire D",
+    resp:"Fanja Ratsimba", last:"2026-06-19", plan:mkPlan(113,60,NOW_M) },
+  { code:"TLR-002", poi:"Marché de Belalanda", office:"Bureau de terrain de Toliara", tag:"SAMS",
+    adm1:"Atsimo-Andrefana", adm2:"Toliara II", adm3:"Belalanda", adm4:"Belalanda",
+    lat:-23.269, lon:43.641, status:"Active", sec:0, benef:1620, partner:"Partenaire E",
+    resp:"Fanja Ratsimba", last:"2026-05-05", plan:mkPlan(127,42,NOW_M-2) },
+  { code:"MNK-001", poi:"EPP Manakara Be", office:"Bureau de terrain de Manakara", tag:"SMP",
+    adm1:"Vatovavy", adm2:"Manakara Atsimo", adm3:"Manakara", adm4:"Manakara Be",
+    lat:-22.145, lon:48.019, status:"Active", sec:0, benef:2240, partner:"Partenaire A",
+    resp:"Miora Andriamana", last:"2026-06-25", plan:mkPlan(139,65,NOW_M) },
+  { code:"MNK-002", poi:"Digue d'Ambila", office:"Bureau de terrain de Manakara", tag:"CAR",
+    adm1:"Vatovavy", adm2:"Manakara Atsimo", adm3:"Ambila", adm4:"Ambila",
+    lat:-22.038, lon:48.061, status:"Active", sec:0, benef:3350, partner:"Partenaire E",
+    resp:"Miora Andriamana", last:"2026-04-11", plan:mkPlan(149,50,NOW_M-3) },
+  { code:"ANO-001", poi:"CSB II Tolagnaro", office:"Bureau de terrain de Manakara", tag:"NTA",
+    adm1:"Anosy", adm2:"Taolagnaro", adm3:"Tolagnaro", adm4:"Tolagnaro Centre",
+    lat:-25.031, lon:46.999, status:"Active", sec:1, benef:4780, partner:"Partenaire A",
+    resp:"Miora Andriamana", last:"2026-07-04", plan:mkPlan(157,72,NOW_M) },
+];
 
-      if (page.items) {
-        const section = document.createElement('div');
-        section.className = 'panel';
-        section.innerHTML = `<h3>Modèles de rapport</h3>`;
-        page.items.forEach(item => {
-          const itemNode = document.createElement('div');
-          itemNode.className = 'report-card';
-          itemNode.innerHTML = `<h3>${item.title}</h3><p>${item.description}</p>`;
-          section.appendChild(itemNode);
-        });
-        demoContent.appendChild(section);
-      }
+/* Population et ciblage par commune, par période — l'un des besoins programme. */
+const CASELOAD = [
+  { adm3:"Ambovombe",   adm2:"Ambovombe-Androy", pop:154_800, hh:31_200, targeted: 42_300, tag:"URT" },
+  { adm3:"Ambondro",    adm2:"Ambovombe-Androy", pop: 38_400, hh: 7_900, targeted: 11_200, tag:"SMP" },
+  { adm3:"Antanimora Sud", adm2:"Ambovombe-Androy", pop:29_700, hh:6_100, targeted: 8_400, tag:"NTA" },
+  { adm3:"Tsihombe",    adm2:"Tsihombe",         pop: 61_500, hh:12_800, targeted: 19_600, tag:"URT" },
+  { adm3:"Antaritarika",adm2:"Tsihombe",         pop: 24_300, hh: 5_200, targeted:  7_100, tag:"NTA" },
+  { adm3:"Bekily",      adm2:"Bekily",           pop: 47_900, hh: 9_800, targeted: 12_400, tag:"SAMS" },
+  { adm3:"Ampanihy",    adm2:"Ampanihy Ouest",   pop:112_600, hh:23_400, targeted: 38_900, tag:"URT" },
+  { adm3:"Ejeda",       adm2:"Ampanihy Ouest",   pop: 43_200, hh: 8_900, targeted: 13_700, tag:"MPA" },
+  { adm3:"Fotadrevo",   adm2:"Ampanihy Ouest",   pop: 31_100, hh: 6_400, targeted:  9_200, tag:"MPA" },
+  { adm3:"Ankililoaka", adm2:"Toliara II",       pop: 58_700, hh:12_100, targeted: 15_300, tag:"ACL" },
+  { adm3:"Belalanda",   adm2:"Toliara II",       pop: 34_900, hh: 7_200, targeted:  8_800, tag:"SAMS" },
+  { adm3:"Manakara",    adm2:"Manakara Atsimo",  pop: 97_400, hh:20_300, targeted: 24_600, tag:"SMP" },
+  { adm3:"Ambila",      adm2:"Manakara Atsimo",  pop: 26_800, hh: 5_600, targeted:  7_900, tag:"CAR" },
+  { adm3:"Tolagnaro",   adm2:"Taolagnaro",       pop: 88_200, hh:18_400, targeted: 21_500, tag:"NTA" },
+];
+/* ── Contours administratifs ───────────────────────────────────────────
+   Le référentiel ne portait que des points, et la carte projetait des cercles sur
+   un fond vide : une commune sans site n'apparaissait nulle part. Les contours
+   sont ce qui permet de la dessiner — et donc de voir les vides.
 
-      if (page.actions) {
-        const section = document.createElement('div');
-        section.className = 'panel';
-        section.innerHTML = '<h3>Actions disponibles</h3>';
-        page.actions.forEach(action => {
-          const actionNode = document.createElement('div');
-          actionNode.className = 'report-card';
-          actionNode.innerHTML = `<h3>${action.label}</h3><p>${action.hint}</p>`;
-          section.appendChild(actionNode);
-        });
-        demoContent.appendChild(section);
-      }
+   Ceux-ci sont fabriqués : un rectangle autour des fokontany de chaque commune,
+   un autre autour des communes de chaque district. Ce n'est pas la géographie de
+   Madagascar, et l'écran le dit — mais l'emboîtement est réel, ce qui suffit à
+   montrer ce que le fond de carte apporte. En production ils viennent d'un
+   shapefile officiel, lu dans le navigateur puis simplifié par le serveur. */
+function boiteAutour(pts, marge){
+  const la = pts.map(p=>p.lat), lo = pts.map(p=>p.lon);
+  return { w:Math.min(...lo)-marge, e:Math.max(...lo)+marge,
+           s:Math.min(...la)-marge, n:Math.max(...la)+marge };
+}
+const CONTOURS = (() => {
+  const par = (cle, marge) => {
+    const g = {};
+    GEO.forEach(x => { (g[x[cle]] = g[x[cle]] || []).push(x); });
+    return Object.entries(g).map(([nom, pts]) => ({
+      nom, niveau:cle, adm1:pts[0].adm1, adm2:pts[0].adm2, adm3:pts[0].adm3,
+      boite: boiteAutour(pts, marge) }));
+  };
+  return { adm2: par("adm2", 0.22), adm3: par("adm3", 0.1) };
+})();
 
-      const note = document.createElement('div');
-      note.className = 'footer-note';
-      note.textContent = 'Démo statique : l’application ressemble au vrai site, mais les données sont factices et aucune requête réseau n’est effectuée.';
-      demoContent.appendChild(note);
+const OFFICE_OF_ADM2 = {
+  "Ambovombe-Androy":"Bureau de terrain d'Ambovombe", "Tsihombe":"Bureau de terrain d'Ambovombe",
+  "Bekily":"Bureau de terrain d'Ambovombe", "Ampanihy Ouest":"Bureau de terrain d'Ampanihy",
+  "Toliara II":"Bureau de terrain de Toliara", "Manakara Atsimo":"Bureau de terrain de Manakara",
+  "Taolagnaro":"Bureau de terrain de Manakara",
+};
+
+/* Plan de distribution (PDD) : planifié et réalisé, par mois et par commune. */
+const PDD = (() => {
+  const out=[]; let x=7919;
+  const rows=[["Ambovombe","Ambovombe-Androy","GD","Vivres","Riz",12400],
+              ["Tsihombe","Tsihombe","GD","Vivres","Riz",6800],
+              ["Ambondro","Ambovombe-Androy","PREVMA","Espèces","—",3200],
+              ["Ampanihy","Ampanihy Ouest","GD","Espèces","—",11200],
+              ["Ejeda","Ampanihy Ouest","PREVMA","Vivres","CSB+",4100],
+              ["Ankililoaka","Toliara II","GD","Coupons","—",5400],
+              ["Manakara","Manakara Atsimo","GD","Vivres","Riz",7300],
+              ["Tolagnaro","Taolagnaro","PREVMA","Espèces","—",4900]];
+  for(const [adm3,adm2,type,moda,com,base] of rows){
+    for(let m=0;m<=NOW_M;m++){
+      x=(x*1103515245+12345)&0x7fffffff;
+      if(((x>>9)%100) > 62) continue;
+      const planned = Math.round(base*(0.85+((x>>5)%30)/100));
+      const past = m < NOW_M;
+      const ratio = past ? (0.55+((x>>13)%48)/100) : 0;
+      out.push({ month:m, adm3, adm2, office:OFFICE_OF_ADM2[adm2], actType:type,
+        modality:moda, commodity:com,
+        benefPlanned:planned, benefActual: past ? Math.round(planned*Math.min(1.02,ratio+0.12)) : 0,
+        tonnage: moda==="Vivres" ? Math.round(planned*0.012*10)/10 : 0,
+        amount:  moda!=="Vivres" ? planned*38000 : 0,
+        received: past ? Math.round(planned*Math.min(1,ratio+0.2)) : 0,
+        distributed: past ? Math.round(planned*ratio) : 0,
+        status: past ? "done" : "planned" });
     }
   }
   return out;

@@ -6,6 +6,7 @@ import { download, toCSV } from "../components/ui.jsx";
 import { Card, Btn, Select, Stat, StatRow, Empty, Note, Bar2, TableWrap, Th, Td, inputCls } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
 import { useGeoCascade, names } from "../lib/geo.js";
+import { niveau, niveaux } from "../lib/levels.js";
 
 /* Projection équirectangulaire simple, suffisante pour un pays et sans dépendance externe.
    Aucune tuile n'est appelée : la carte fonctionne hors ligne et ne fuite aucune donnée. */
@@ -43,7 +44,10 @@ const FILL_MODES = [
   ["coverage", "Couverture du suivi"],
   ["benef",    "Bénéficiaires"],
 ];
-const GEO_LEVELS = [["adm1","Régions"],["adm2","Districts"],["adm3","Communes"],["adm4","Fokontany"]];
+/* Les niveaux proposés viennent de la configuration du pays : « Régions,
+   Districts, Communes, Fokontany » est le vocabulaire de Madagascar, pas celui du
+   logiciel. Le pays n'est pas proposé — on ne colore pas un aplat sur une seule
+   forme. */
 
 /* Une géométrie GeoJSON vers un chemin SVG, projeté.
 
@@ -96,6 +100,7 @@ export default function MapView({ db, me, notify, go }){
   const [geoLevel, setGeoLevel] = useState("adm2");
   const [shapes, setShapes] = useState({ features:[], extent:null, tronque:false, loading:false });
   const [selShape, setSelShape] = useState(null);
+  const GEO_LEVELS = niveaux(db, { from:"adm1", to:"adm4" });
   const W = 900, H = 560;
 
   const load = async () => {
@@ -459,7 +464,7 @@ export default function MapView({ db, me, notify, go }){
                     <div className="f11 text-slate-500 mb-2">{sel.code} · {sel.office}</div>
                     <dl className="space-y-1 f115">
                       {[["Emplacement", [sel.adm1, sel.adm2, sel.adm3].filter(Boolean).join(", ")],
-                        ["Fokontany", sel.adm4 || "—"],
+                        [niveau(db, "adm4"), sel.adm4 || "—"],
                         ["Catégorie", sel.category || "—"],
                         ["Activité", sel.activity_tag || "—"],
                         ["Bénéficiaires", fmt(sel.beneficiaries)],

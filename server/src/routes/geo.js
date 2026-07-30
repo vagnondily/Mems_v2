@@ -181,7 +181,10 @@ r.put("/versions/:id/current", requireCap("admin"), (req, res) => {
   const v = db.prepare("SELECT * FROM geo_version WHERE id=?").get(req.params.id);
   if(!v) return res.status(404).json({ error:"millésime introuvable" });
   db.transaction(() => {
-    db.prepare("UPDATE geo_version SET is_current=0 WHERE is_current=1").run();
+    /* Un courant par pays : activer un millésime ne retire pas le référentiel des
+       autres pays configurés. */
+    db.prepare("UPDATE geo_version SET is_current=0 WHERE is_current=1 AND country IS ?")
+      .run(v.country ?? null);
     db.prepare("UPDATE geo_version SET is_current=1 WHERE id=?").run(v.id);
   })();
   db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)

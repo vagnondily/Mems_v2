@@ -11,20 +11,29 @@ import { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, DURATIONS, D_FORMULAS, D_SEC
    référentiel de production avait été chargé par le script src/import-geo.js, si
    bien que ce chemin-là n'avait jamais été emprunté. */
 import { GUESS, guessField, readGeoFile } from "../lib/shapefile.js";
+import { niveau, niveaux } from "../lib/levels.js";
 import { Sources } from "./ActualData.jsx";
 import { MonthCellModal, MonthGrid, MonthLegend } from "./Planning.jsx";
 import { BLOCKS } from "./Reports.jsx";
 import { PageHead } from "./Shell.jsx";
 
 /* ══════════════════ Paramètres ══════════════════ */
-function SettingsView({ db, set, me, sub, setSub, notify, can }){
-  const items = [["general","Général"],["about","À propos"],["sites","Sites"],["locations","Localités"],["indicators","Indicateurs"],
-    ["calc","Calculs"],["odk","ODK Central"],["templates","Modèles de rapport"],["api","API"],["users","Utilisateurs"]];
+function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
+  /* La fusion de `main` avait repris sa propre liste d'onglets, sans « Bureaux » ni
+     « Périmètre des bureaux » : les deux écrans existaient toujours dans le fichier
+     mais n'étaient plus atteignables, et `reload` ne remontait plus. Les voici
+     rétablis, avec « À propos » qui venait de main. */
+  const items = [["general","Général"],["country","Pays"],["offices","Bureaux"],["sites","Sites"],
+    ["locations","Localités"],["scope","Périmètre des bureaux"],["indicators","Indicateurs"],
+    ["calc","Calculs"],["odk","ODK Central"],["templates","Modèles de rapport"],
+    ["api","API"],["users","Utilisateurs"],["about","À propos"]];
   return (
     <div className="space-y-4">
       <PageHead title="Paramètres" text="Configuration de l'application, référentiels, registre des sites, calculs, sources et accès." />
       <Tabs items={items} value={sub} onChange={setSub} />
       {sub==="general" && <SetGeneral db={db} set={set} />}
+      {sub==="country" && <SetCountry db={db} notify={notify} can={can} reload={reload} />}
+      {sub==="offices" && <SetOffices db={db} notify={notify} can={can} reload={reload} />}
       {sub==="about" && <SetAbout db={db} />}
       {sub==="sites" && <SitesModule db={db} set={set} me={me} notify={notify} can={can} context="settings" />}
       {sub==="locations" && <SetLocations db={db} notify={notify} can={can} />}
@@ -277,8 +286,15 @@ function SitesModule({ db, set, me, notify, can, context }){
     modality:db.lists.modalities[0], beneficiaries:0, synergies:0, newPartner:0, expPartner:0,
     issueIPM:0, issueReport:0, issueCFM:0, fraud:0 });
 
+  /* Les quatre niveaux administratifs portaient trois intitulés neutres
+     (« Admin level 1 » à « 3 ») et un quatrième propre à Madagascar
+     (« Fokontany ») : la même colonne nommée de deux façons selon sa profondeur.
+     Les quatre viennent maintenant du pays configuré. Ce ne sont que des en-têtes
+     d'affichage — aucun import ne s'y raccroche, la correspondance des champs se
+     fait ailleurs et explicitement. */
   const COLS = ["ID","Status","Point of Interest","POI Subtypes","POI Subtypes Code","Activity Tag","Sub Office",
-    "Antenne","Activity Category","Programme Area","Admin level 1","Admin level 2","Admin level 3","Fokontany",
+    "Antenne","Activity Category","Programme Area",
+    ...niveaux(db, { from:"adm1", to:"adm4", plural:false }).map(x => x[1]),
     "Urban Area","GPS-Latitude","GPS-Longitude","Security situation","Modality type","Beneficiary number"];
 
   return (
@@ -589,6 +605,140 @@ function SiteModal({ open, site, db, onClose, onSave }){
    Le rôle dit ce qu'un compte peut faire ; le périmètre dit où. Un bureau couvre
    les unités qu'on lui attribue — le plus souvent des districts — et le périmètre
    effectif est tout ce qui en descend. */
+/* ── Pays et vocabulaire du découpage ─────────────────────────────────
+   Cette première version sert Madagascar, et d'autres pays suivront. Ce qui
+   change ici n'est pas la capacité à servir plusieurs pays en même temps — cela
+   demanderait de rattacher sites, bureaux et comptes à un pays — mais le fait que
+   plus rien de spécifique à Madagascar ne soit écrit dans le code.
+
+   « Régions / Districts / Communes / Fokontany » figurait en dur dans huit
+   endroits de l'interface. La RDC a des Provinces, Territoires, Secteurs et
+   Groupements ; l'Éthiopie des Regions, Zones, Woredas et Kebeles. Le schéma, lui,
+   n'a jamais connu que adm0 à adm4. */
+function SetCountry({ db, notify, can, reload }){
+  const [data,setData] = useState(null);
+  const [edit,setEdit] = useState(null);
+  const [busy,setBusy] = useState(false);
+
+  const charger = () => api.countries().then(setData)
+    .catch(e => { notify(e.message,"err"); setData({ rows:[], levels:[] }); });
+  useEffect(()=>{ charger(); },[]);
+  if(!data) return <Empty icon={MapPin} title="Chargement de la configuration du pays…" />;
+
+  const vide = { code:"", name:"", currency:"USD", active:true,
+    levels: Object.fromEntries((data.levels||[]).map(l => [l, { one:"", many:"" }])) };
+
+  const enregistrer = async () => {
+    setBusy(true);
+    const b = { code:edit.code, name:edit.name, currency:edit.currency,
+      levels:edit.levels, lat:edit.lat ?? null, lon:edit.lon ?? null,
+      note:edit.note || null, active:edit.active !== false };
+    if(edit._existe) b.rev = edit.rev;
+    try{
+      edit._existe ? await api.updateCountry(edit.code, b) : await api.createCountry(b);
+      setEdit(null); await charger();
+      /* Les libellés voyagent avec l'état initial : sans rechargement, les écrans
+         continueraient d'afficher l'ancien vocabulaire jusqu'au prochain F5. */
+      if(reload) await reload();
+      notify("Pays enregistré", "ok");
+    }catch(e){ notify(e.message, "err"); }
+    setBusy(false);
+  };
+
+  return (
+    <>
+      <Note>Le découpage administratif du schéma est neutre : <code className="bg-white px-1 rounded">adm0</code>
+        {" "}à <code className="bg-white px-1 rounded">adm4</code>. Ce sont les <b>libellés</b> qui sont propres à
+        un pays — région, district, commune, fokontany à Madagascar ; province, territoire, secteur,
+        groupement en RDC. Ils sont configurés ici et utilisés partout, plutôt que réécrits écran par écran.
+        <br /><br />
+        <b>Un seul pays est courant à la fois.</b> C'est ce qui correspond à un déploiement par bureau
+        pays. Servir plusieurs pays depuis une même instance supposerait de rattacher les sites, les
+        bureaux et les comptes à un pays — une autre décision, celle de savoir si un utilisateur
+        traverse les frontières.</Note>
+
+      <Card flush title="Pays configurés"
+        subtitle={`${data.rows.length} pays · courant : ${data.current?.name || "aucun"}`}
+        right={can("admin") && <Btn size="sm" icon={Plus}
+          onClick={()=>setEdit({ ...vide, _existe:false })}>Ajouter un pays</Btn>}>
+        <TableWrap>
+          <thead><tr><Th>Pays</Th><Th>Code</Th><Th>Devise locale</Th><Th>Vocabulaire du découpage</Th>
+            <Th num>Millésimes</Th><Th>État</Th><Th /></tr></thead>
+          <tbody>{data.rows.map(c=>(
+            <tr key={c.code} className="hover:bg-sky-50">
+              <Td className="font-medium text-slate-800">{c.name}
+                {c.note && <div className="f105 text-slate-400 whitespace-normal mw420">{c.note}</div>}</Td>
+              <Td className="f115 text-slate-500">{c.code}</Td>
+              <Td className="f115">{c.currency}</Td>
+              <Td className="f115 text-slate-600 whitespace-normal mw420">
+                {["adm1","adm2","adm3","adm4"].map(l => c.levels[l]?.many).filter(Boolean).join(" · ")}</Td>
+              <Td num className={c.versions ? "" : "text-amber-700"}>{c.versions || "aucun"}</Td>
+              <Td>{c.current ? <Badge tone="g">courant</Badge>
+                : c.active ? <Badge>actif</Badge> : <Badge tone="r">désactivé</Badge>}</Td>
+              <Td className="text-right whitespace-nowrap">{can("admin") && (<>
+                <Btn size="sm" kind="sec" icon={Pencil}
+                  onClick={()=>setEdit({ ...c, _existe:true })}>Modifier</Btn>
+                {!c.current && c.active && <Btn size="sm" kind="sec" className="ml-2" disabled={busy}
+                  onClick={async ()=>{ if(!confirm(`Rendre « ${c.name} » courant ? Le référentiel géographique suivra.`)) return;
+                    setBusy(true);
+                    try{ const r = await api.setCountry(c.code); await charger();
+                      if(reload) await reload();
+                      notify(r.avertissement || `Pays courant : ${c.name}`, r.avertissement ? "warn" : "ok");
+                    }catch(e){ notify(e.message,"err"); }
+                    setBusy(false); }}>Rendre courant</Btn>}</>)}</Td>
+            </tr>))}</tbody>
+        </TableWrap>
+      </Card>
+
+      <Modal open={!!edit} wide onClose={()=>setEdit(null)}
+        title={edit?._existe ? `Configuration de ${edit.name}` : "Nouveau pays"}
+        subtitle="Identité, devise locale et libellés des cinq niveaux administratifs"
+        footer={<><Btn kind="sec" onClick={()=>setEdit(null)}>Annuler</Btn>
+          <Btn icon={Save} disabled={busy || !edit?.name?.trim() || (edit?.code||"").length !== 3}
+            onClick={enregistrer}>{busy ? "Enregistrement…" : "Enregistrer"}</Btn></>}>
+        {edit && (<>
+          <div className="grid grid-cols-4 gap-x-4">
+            <Field label="Nom du pays" className="col-span-2">
+              <Input value={edit.name||""} onChange={e=>setEdit(p=>({...p,name:e.target.value}))} /></Field>
+            <Field label="Code ISO" hint="Trois lettres — MDG, COD, ETH">
+              <Input maxLength={3} value={edit.code||""} readOnly={edit._existe}
+                onChange={e=>setEdit(p=>({...p,code:e.target.value.toUpperCase()}))} /></Field>
+            <Field label="Devise locale" hint="Utilisée pour les contrats de prestataires">
+              <Input maxLength={3} value={edit.currency||""}
+                onChange={e=>setEdit(p=>({...p,currency:e.target.value.toUpperCase()}))} /></Field>
+            <Field label="Latitude du centre" hint="Cadre la carte avant tout import de contours">
+              <Input type="number" value={edit.lat ?? ""}
+                onChange={e=>setEdit(p=>({...p,lat:e.target.value}))} /></Field>
+            <Field label="Longitude du centre">
+              <Input type="number" value={edit.lon ?? ""}
+                onChange={e=>setEdit(p=>({...p,lon:e.target.value}))} /></Field>
+            <Field label="Note" className="col-span-2"><Input value={edit.note||""}
+              onChange={e=>setEdit(p=>({...p,note:e.target.value}))} /></Field>
+          </div>
+
+          <Field label="Libellés des niveaux administratifs"
+            hint="Singulier et pluriel. Les cinq sont exigés : un niveau non nommé s'afficherait « adm4 » quelque part.">
+            <TableWrap max="mh300">
+              <thead><tr><Th>Code du schéma</Th><Th>Singulier</Th><Th>Pluriel</Th></tr></thead>
+              <tbody>{(data.levels||[]).map(l=>(
+                <tr key={l}>
+                  <Td className="f115 c-bd">{l}</Td>
+                  <Td><input value={edit.levels?.[l]?.one || ""} className={clsx(inputCls,"mi-py1")}
+                    onChange={e=>setEdit(p=>({...p, levels:{...p.levels,
+                      [l]:{ ...(p.levels?.[l]||{}), one:e.target.value }}}))} /></Td>
+                  <Td><input value={edit.levels?.[l]?.many || ""} className={clsx(inputCls,"mi-py1")}
+                    onChange={e=>setEdit(p=>({...p, levels:{...p.levels,
+                      [l]:{ ...(p.levels?.[l]||{}), many:e.target.value }}}))} /></Td>
+                </tr>))}</tbody>
+            </TableWrap>
+          </Field>
+          <Sw label="Pays actif" hint="Un pays désactivé ne peut pas être rendu courant"
+            on={edit.active !== false} onChange={v=>setEdit(p=>({...p,active:v}))} />
+        </>)}
+      </Modal>
+    </>);
+}
+
 /* ── Bureaux ──────────────────────────────────────────────────────────
    Configuration réelle des bureaux, en base. Deux choses s'y règlent qui
    n'existaient nulle part : la création d'un bureau, et son mode de périmètre.
@@ -1090,7 +1240,8 @@ function SetLocations({ db, notify, can }){
       {cur ? (
         <Card title="Référentiel courant" subtitle={`« ${cur.label} » — importé le ${String(cur.importedAt||"").slice(0,10)}`}>
           <StatRow>
-            {[["adm1","Régions"],["adm2","Districts"],["adm3","Communes"],["adm4","Fokontany"]].map(([k,l])=>(
+            {/* Les libellés viennent du pays configuré, pas du code. */}
+            {niveaux(db, { from:"adm1", to:"adm4" }).map(([k,l])=>(
               <Stat key={k} label={l} value={fmt(cur.counts?.[k] || 0)} />))}
             <Stat label="Total des unités" value={fmt(cur.units)} />
           </StatRow>
@@ -1122,8 +1273,7 @@ function SetLocations({ db, notify, can }){
           {!!cur.geom?.parNiveau?.length && (
             <StatRow>
               {cur.geom.parNiveau.map(x=>(
-                <Stat key={x.level} label={{ adm0:"Pays", adm1:"Régions", adm2:"Districts",
-                  adm3:"Communes", adm4:"Fokontany" }[x.level] || x.level}
+                <Stat key={x.level} label={niveau(db, x.level, true)}
                   value={fmt(x.units)}
                   sub={`${fmt(x.points_simple)} sommets affichés sur ${fmt(x.points)}`} />))}
             </StatRow>)}
@@ -1148,7 +1298,7 @@ function SetLocations({ db, notify, can }){
 
           {geomDraft && (<>
             <div className="grid grid-cols-5 gap-x-3">
-              {[["adm1","Région"],["adm2","District"],["adm3","Commune"],["adm4","Fokontany"],
+              {[...niveaux(db, { from:"adm1", to:"adm4", plural:false }),
                 ["code","P-code (optionnel)"]].map(([k,l])=>(
                 <Field key={k} label={l}>
                   <Select value={geomMap[k]||""} onChange={e=>setGeomMap(m=>({...m,[k]:e.target.value}))}
@@ -1241,7 +1391,8 @@ function SetLocations({ db, notify, can }){
           <div className="relative"><Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
             <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Rechercher…" className={clsx(inputCls,"pl-7 mi-py1 w-44")} /></div></>}>
         <TableWrap>
-          <thead><tr>{["Région","District","Commune","Fokontany","P-code"].map(h=><Th key={h}>{h}</Th>)}
+          <thead><tr>{[...niveaux(db, { from:"adm1", to:"adm4", plural:false }).map(x=>x[1]),
+            "P-code"].map(h=><Th key={h}>{h}</Th>)}
             <Th num>Latitude</Th><Th num>Longitude</Th><Th num>Sites</Th></tr></thead>
           <tbody>{dir.rows.map(g=>{
             const cnt = db.sites.filter(s=>g.adm3 && s.adm3===g.adm3).length;

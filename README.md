@@ -156,6 +156,55 @@ users ──< sessions                           (cascade : supprimer un compte 
 | `CHECK` sur `security IN (0,1,3,99)`, `risk_level BETWEEN 1 AND 3`, etc. | la codification métier est garantie par la base, pas seulement par l'interface |
 | `geo_unit` en arbre versionné plutôt que table plate | une commune est une ligne : on peut enfin y attacher population, ciblage et distributions |
 
+### Le pays, configuration et non hypothèse
+
+Cette première version sert **Madagascar** ; d'autres pays suivront. Ce n'est pas la même
+chose que servir plusieurs pays *en même temps* — cela demanderait de rattacher les sites,
+les bureaux et les comptes à un pays, c'est-à-dire de décider si un utilisateur traverse
+les frontières. Ce qui est fait ici est plus modeste et vaut dans tous les cas : **plus
+rien de spécifique à Madagascar n'est écrit dans le code.**
+
+Trois choses l'étaient :
+
+| Ce qui était en dur | Où | Maintenant |
+|---|---|---|
+| « Régions / Districts / Communes / Fokontany » | 8 endroits, 2 fichiers | `country.levels`, résolu par `lib/levels.js` |
+| Devise `MGA` | schéma et route TPM | `country.currency`, résolue à l'écriture |
+| Le pays du découpage | nulle part — les millésimes ne le disaient pas | `geo_version.country` |
+
+Le schéma, lui, a toujours été neutre : `adm0` à `adm4`. C'était la seule couche qui
+l'était. La RDC a des Provinces, Territoires, Secteurs et Groupements ; l'Éthiopie des
+Regions, Zones, Woredas et Kebeles — et le libellé du quatrième niveau apparaissait
+jusque dans les en-têtes du registre des sites, où trois colonnes s'appelaient « Admin
+level 1 » à « 3 » et la quatrième « Fokontany ».
+
+Les libellés partent avec l'**état initial** : chaque écran en a besoin pour nommer ses
+colonnes, et les demander séparément afficherait « adm3 » le temps d'un aller-retour. Un
+niveau non nommé rend son code brut, jamais le libellé d'un autre pays — un écran qui
+affiche `adm4` signale qu'il manque une configuration ; un écran qui affiche « Fokontany »
+sur un pays qui n'en a pas **ment**.
+
+#### Un millésime courant par pays
+
+`geo_version.is_current` était unique sur toute la table : un seul découpage courant au
+monde. Ma première version de la bascule de pays désactivait donc le millésime du pays
+quitté et activait « le plus récemment importé » du pays rejoint. **C'était faux** : on
+peut avoir délibérément activé un millésime plus ancien — le COD-AB v2023 plutôt que le
+v2024, parce que les données de l'année s'y raccrochent — et un aller-retour l'aurait
+remplacé sans le dire.
+
+Le bon modèle n'a aucun état à retenir : l'unicité porte sur `(country)`, chaque pays a son
+millésime actif, et « le référentiel courant » est celui du pays courant. Changer de pays
+ne touche plus aux millésimes du tout. Et si le pays courant n'a pas de découpage,
+`currentVersion()` rend **null** plutôt que celui d'un autre pays : l'application dit
+« aucun référentiel » au lieu d'afficher la géographie de Madagascar sous un vocabulaire
+congolais, qui serait l'erreur la plus difficile à voir de toutes.
+
+*Paramètres → Pays* configure tout cela. Ce qui reste à faire quand le deuxième pays
+arrivera dépend d'une décision qui n'est pas prise : une instance par pays ne demande rien
+de plus ; une instance pour plusieurs pays demande de rattacher `sites`, `offices` et
+`users` à un pays, et de décider ce qu'un rapport agrège.
+
 ### Le référentiel géographique
 
 Le découpage administratif est un **arbre versionné**, pas une liste plate :
@@ -586,6 +635,9 @@ elles exigent un jeton — en-tête `Authorization: Bearer …` ou cookie `httpO
 | POST | `/sites/bulk` | `edit` | modification groupée, champs sur liste blanche |
 | GET | `/geo` | connecté | répertoire paginé, filtré par unité parente ou par recherche |
 | GET | `/geo/levels` | connecté | enfants d'une unité — la cascade se fait un niveau à la fois |
+| GET | `/country` | connecté | pays configurés, pays courant, codes de niveaux du schéma |
+| POST/PUT/DELETE | `/country`, `/country/:code` | `admin` | configuration d'un pays et de son vocabulaire |
+| PUT | `/country/:code/current` | `admin` | change le pays courant ; chaque pays garde son millésime |
 | GET | `/geo/coverage` | connecté | unités couvertes et non couvertes, à tout niveau |
 | GET | `/geo/geometry` | connecté | contours d'un niveau, version allégée ou `?detail=true` |
 | POST | `/geo/geometry` | `admin` | import par lots ; le premier lot porte `reset` |
@@ -980,7 +1032,7 @@ jamais un fichier déjà appliqué en production.
 ### Tests
 
 ```bash
-npm test              # 89 tests d'API puis 12 tests de bout en bout
+npm test              # 96 tests d'API puis 12 tests de bout en bout
 cd server && npm test # API seule
 cd web && npm test    # interface seule, contre un serveur réellement démarré
 ```

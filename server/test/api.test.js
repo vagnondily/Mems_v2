@@ -1959,3 +1959,162 @@ test("contours : leur retrait est complet et remet le millésime à zéro", asyn
   assert.equal(lu.body.features.length, 0);
   assert.equal(lu.body.extent, null);
 });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Le pays comme configuration.
+
+   Cette première version sert Madagascar, d'autres suivront. Ce que ces tests
+   verrouillent n'est pas le multi-pays simultané — il n'existe pas — mais le fait
+   que plus rien de spécifique à Madagascar ne soit écrit dans le code : les
+   libellés des niveaux et la devise locale viennent de la configuration, et le
+   millésime du découpage sait à quel pays il appartient.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+test("pays : Madagascar est configuré, courant, et son vocabulaire est servi", async () => {
+  const r = await request(app).get("/api/country").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200);
+  const mdg = r.body.rows.find(c => c.code === "MDG");
+  assert.ok(mdg, "Madagascar est configuré");
+  assert.equal(mdg.current, true);
+  assert.equal(mdg.currency, "MGA");
+  assert.equal(mdg.levels.adm3.one, "Commune");
+  assert.equal(mdg.levels.adm4.many, "Fokontany");
+  /* Les cinq niveaux sont nommés : un niveau manquant afficherait son code brut. */
+  assert.deepEqual(r.body.levels, ["adm0","adm1","adm2","adm3","adm4"]);
+  for(const l of r.body.levels){
+    assert.ok(mdg.levels[l]?.one && mdg.levels[l]?.many, `${l} porte ses deux formes`);
+  }
+
+  /* L'interface reçoit le vocabulaire avec l'état initial : sans cela, chaque
+     écran afficherait « adm3 » le temps d'un aller-retour supplémentaire. */
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(st.body.country.code, "MDG");
+  assert.equal(st.body.country.levels.adm2.many, "Districts");
+});
+
+test("pays : le millésime du découpage sait à quel pays il appartient", async () => {
+  const v = await request(app).get("/api/geo/versions").set("Authorization", `Bearer ${adminToken}`);
+  assert.ok(v.body.rows.length > 0);
+  /* Le jeu d'essai a été semé après la migration : son millésime porte le pays. */
+  const lignes = db.prepare("SELECT country FROM geo_version").all();
+  assert.ok(lignes.every(x => x.country === "MDG"),
+    "tous les millésimes sont rattachés — la migration rattrape les anciens, writeVersion les nouveaux");
+});
+
+test("pays : la devise d'un contrat vient de la configuration, non du code", async () => {
+  const office = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
+  const t = await request(app).post("/api/tpm").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Prestataire devise", office_id:office.id });
+  /* Aucune devise passée : elle doit venir du pays courant, pas d'un « MGA »
+     inscrit dans la route. */
+  const c = await request(app).post("/api/tpm/contracts").set("Authorization", `Bearer ${adminToken}`)
+    .send({ tpm_id:t.body.id, ref:"CTR-DEVISE", ceiling:1_000_000 });
+  assert.equal(c.status, 201);
+  assert.equal(db.prepare("SELECT currency FROM tpm_contract WHERE id=?").get(c.body.id).currency,
+    "MGA", "la devise locale du pays courant");
+
+  /* On change la devise du pays : un contrat créé ensuite la reprend. */
+  const mdg = db.prepare("SELECT * FROM country WHERE code='MDG'").get();
+  await request(app).put("/api/country/MDG").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:mdg.name, currency:"EUR", levels:JSON.parse(mdg.levels),
+            lat:mdg.lat, lon:mdg.lon, active:true, rev:mdg.rev });
+  const c2 = await request(app).post("/api/tpm/contracts").set("Authorization", `Bearer ${adminToken}`)
+    .send({ tpm_id:t.body.id, ref:"CTR-DEVISE-2", ceiling:1_000_000 });
+  assert.equal(db.prepare("SELECT currency FROM tpm_contract WHERE id=?").get(c2.body.id).currency, "EUR");
+
+  /* Remis en état : la base d'essai ne doit pas rester en euros. */
+  const maj = db.prepare("SELECT rev FROM country WHERE code='MDG'").get();
+  await request(app).put("/api/country/MDG").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:mdg.name, currency:"MGA", levels:JSON.parse(mdg.levels),
+            lat:mdg.lat, lon:mdg.lon, active:true, rev:maj.rev });
+});
+
+test("pays : ajouter un pays exige les cinq niveaux et un code ISO à trois lettres", async () => {
+  const niv = { adm0:{one:"Pays",many:"Pays"}, adm1:{one:"Province",many:"Provinces"},
+    adm2:{one:"Territoire",many:"Territoires"}, adm3:{one:"Secteur",many:"Secteurs"},
+    adm4:{one:"Groupement",many:"Groupements"} };
+
+  const codeCourt = await request(app).post("/api/country").set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"CD", name:"RD Congo", currency:"CDF", levels:niv });
+  assert.equal(codeCourt.status, 422);
+
+  const incomplet = await request(app).post("/api/country").set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"COD", name:"RD Congo", currency:"CDF",
+            levels:{ adm1:niv.adm1, adm2:niv.adm2 } });
+  assert.equal(incomplet.status, 422, "les cinq niveaux sont exigés");
+
+  const ok = await request(app).post("/api/country").set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"cod", name:"RD Congo", currency:"CDF", levels:niv, lat:-4.0, lon:21.7 });
+  assert.equal(ok.status, 201);
+  assert.equal(ok.body.country.code, "COD", "le code est normalisé en majuscules");
+  assert.equal(ok.body.country.current, false, "ajouter un pays ne le rend pas courant");
+  assert.equal(ok.body.country.versions, 0, "et il n'a aucun découpage");
+
+  const dup = await request(app).post("/api/country").set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"COD", name:"Congo bis", currency:"CDF", levels:niv });
+  assert.equal(dup.status, 409);
+});
+
+test("pays : chaque pays garde son millésime, et l'absence de découpage est dite", async () => {
+  const avant = db.prepare("SELECT id FROM geo_version WHERE country='MDG' AND is_current=1").get();
+  assert.ok(avant, "Madagascar a un millésime actif avant le changement");
+
+  const r = await request(app).put("/api/country/COD/current").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.current.code, "COD");
+  assert.equal(r.body.current.levels.adm3.one, "Secteur", "le vocabulaire a suivi");
+  /* Aucun découpage pour la RDC : l'appelant est averti, et rien n'est présenté à
+     sa place. Afficher la géographie de Madagascar sous un vocabulaire congolais
+     serait l'erreur la plus difficile à voir de toutes. */
+  assert.equal(r.body.referentiel, null);
+  assert.ok(/Aucun découpage/.test(r.body.avertissement || ""), r.body.avertissement);
+
+  /* Le millésime de Madagascar N'EST PAS désactivé : chaque pays garde le sien.
+     Ma première version le désactivait puis « reprenait le plus récent » au
+     retour — ce qui aurait remplacé sans le dire un millésime délibérément
+     choisi. */
+  assert.equal(db.prepare("SELECT is_current FROM geo_version WHERE id=?").get(avant.id).is_current, 1,
+    "le millésime malgache reste celui de Madagascar");
+
+  /* Mais il n'est pas servi : le référentiel courant est celui du pays courant,
+     et l'application répond vide plutôt que d'échouer ou de mentir. */
+  const g = await request(app).get("/api/geo/levels").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(g.status, 200);
+  assert.deepEqual(g.body.rows, []);
+  const cov = await request(app).get("/api/geo/coverage").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(cov.status, 200);
+
+  /* Retour à Madagascar : c'est exactement le même millésime qui ressort. */
+  const retour = await request(app).put("/api/country/MDG/current")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(retour.body.current.code, "MDG");
+  assert.equal(retour.body.referentiel?.id, avant.id, "le millésime choisi est retrouvé, pas remplacé");
+  const g2 = await request(app).get("/api/geo/levels").set("Authorization", `Bearer ${adminToken}`);
+  assert.ok(g2.body.rows.length > 0, "et le découpage est de nouveau servi");
+});
+
+test("pays : le pays courant ne se supprime ni ne se désactive", async () => {
+  const del = await request(app).delete("/api/country/MDG").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(del.status, 409);
+  const mdg = db.prepare("SELECT * FROM country WHERE code='MDG'").get();
+  const off = await request(app).put("/api/country/MDG").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:mdg.name, currency:mdg.currency, levels:JSON.parse(mdg.levels),
+            active:false, rev:mdg.rev });
+  assert.equal(off.status, 409);
+  assert.ok(/pays courant/.test(off.body.error), off.body.error);
+
+  /* Un pays sans découpage se supprime ; un pays qui en porte, non. */
+  assert.equal((await request(app).delete("/api/country/COD")
+    .set("Authorization", `Bearer ${adminToken}`)).status, 200);
+});
+
+test("pays : la configuration est réservée aux administrateurs, la lecture ouverte", async () => {
+  const te = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  assert.equal((await request(app).get("/api/country").set("Authorization", `Bearer ${te}`)).status, 200,
+    "tout compte lit le vocabulaire : ses écrans en ont besoin");
+  for(const [m, chemin] of [["post","/api/country"], ["put","/api/country/MDG"],
+                            ["put","/api/country/MDG/current"], ["delete","/api/country/MDG"]]){
+    const r = await request(app)[m](chemin).set("Authorization", `Bearer ${te}`).send({ name:"X" });
+    assert.equal(r.status, 403, `${m.toUpperCase()} ${chemin}`);
+  }
+});

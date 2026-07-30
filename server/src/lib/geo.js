@@ -99,26 +99,56 @@ export function buildUnits(rows){
 }
 
 /* Écrit un millésime complet en une transaction, et le rend courant. */
-export function writeVersion({ label, source, units, userId = null, makeCurrent = true }){
+export function writeVersion({ label, source, units, userId = null, makeCurrent = true,
+                              country = null }){
   const id = newId("gv");
+  /* Le millésime appartient à un pays. À défaut de précision, c'est le pays
+     courant : un découpage importé décrit le pays qu'on est en train de servir.
+     La résolution est faite ici et non dans chaque appelant — la route d'import,
+     le script en ligne de commande et le jeu de démonstration passent tous par
+     cette fonction, et trois rattachements séparés finiraient par diverger. */
+  const pays = country
+    || db.prepare("SELECT code FROM country WHERE is_current=1").get()?.code
+    || null;
   tx(() => {
-    db.prepare(`INSERT INTO geo_version (id,label,source,imported_by,units,is_current)
-                VALUES (?,?,?,?,?,0)`).run(id, label, source ?? null, userId, units.length);
+    db.prepare(`INSERT INTO geo_version (id,label,source,imported_by,units,is_current,country)
+                VALUES (?,?,?,?,?,0,?)`).run(id, label, source ?? null, userId, units.length, pays);
     const ins = db.prepare(`INSERT INTO geo_unit
       (pcode,version_id,parent_pcode,level,name,name_norm,path,lat,lon)
       VALUES (?,?,?,?,?,?,?,?,?)`);
     for(const u of units)
       ins.run(u.pcode, id, u.parent_pcode, u.level, u.name, u.name_norm, u.path, u.lat, u.lon);
     if(makeCurrent){
-      db.prepare("UPDATE geo_version SET is_current=0 WHERE is_current=1").run();
+      /* On ne désactive que le millésime du même pays : activer un découpage
+         congolais ne doit pas retirer le référentiel malgache à ceux qui
+         travaillent dessus. */
+      db.prepare("UPDATE geo_version SET is_current=0 WHERE is_current=1 AND country IS ?").run(pays);
       db.prepare("UPDATE geo_version SET is_current=1 WHERE id=?").run(id);
     }
   })();
   return id;
 }
 
-export const currentVersion = () =>
-  db.prepare("SELECT * FROM geo_version WHERE is_current=1").get() || null;
+/* Le référentiel courant est celui du PAYS courant. Chaque pays a son millésime
+   actif, et changer de pays n'y touche pas : il n'y a donc aucun état à retenir,
+   et un aller-retour entre deux pays ne bascule pas silencieusement sur un autre
+   millésime que celui qu'on avait choisi.
+
+   Le repli sur « n'importe quel millésime courant » couvre la base dont aucun
+   pays n'est configuré — migration non appliquée, ou millésime importé avant
+   qu'elle le soit. */
+export function currentVersion(){
+  const pays = db.prepare("SELECT code FROM country WHERE is_current=1").get()?.code;
+  if(pays){
+    const v = db.prepare("SELECT * FROM geo_version WHERE is_current=1 AND country=?").get(pays);
+    if(v) return v;
+    /* Le pays courant n'a pas de découpage : on ne rend PAS celui d'un autre pays.
+       Afficher la géographie du Congo sous le vocabulaire malgache serait l'erreur
+       la plus difficile à voir de toutes. */
+    return null;
+  }
+  return db.prepare("SELECT * FROM geo_version WHERE is_current=1").get() || null;
+}
 
 /* ── Rapprochement d'un libellé vers le référentiel ────────────────────
    On descend l'arbre niveau par niveau en comparant les formes normalisées :
