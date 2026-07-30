@@ -6,7 +6,25 @@ const BASE = import.meta.env?.VITE_API_URL || "/api";
 let token = null;
 let onUnauthorized = () => {};
 
+/* Le pays dans lequel un compte NON borné travaille.
+
+   Il part sur chaque appel dans `X-MEMS-Country`. Il est ignoré par le serveur pour
+   un compte borné à un pays — la garde est là-bas, pas ici : un contrôle qui ne vit
+   que dans le navigateur n'en est pas un.
+
+   Conservé dans `localStorage` pour survivre à un rechargement : sans cela, un
+   administrateur régional se retrouverait dans le pays par défaut de l'instance à
+   chaque F5, et croirait ses données perdues. */
+const CLE_PAYS = "mems.pays";
+let pays = null;
+try{ pays = localStorage.getItem(CLE_PAYS) || null; }catch(e){ pays = null; }
+
 export const setToken = (t) => { token = t; };
+export const getWorkingCountry = () => pays;
+export const setWorkingCountry = (code) => {
+  pays = code || null;
+  try{ code ? localStorage.setItem(CLE_PAYS, code) : localStorage.removeItem(CLE_PAYS); }catch(e){}
+};
 export const setUnauthorizedHandler = (fn) => { onUnauthorized = fn; };
 
 export class ApiError extends Error {
@@ -17,6 +35,7 @@ async function call(method, path, body, opts = {}){
   const headers = { "Accept": "application/json" };
   if(body !== undefined) headers["Content-Type"] = "application/json";
   if(token) headers["Authorization"] = `Bearer ${token}`;
+  if(pays) headers["X-MEMS-Country"] = pays;
   let res;
   try{
     res = await fetch(BASE + path, {
@@ -42,6 +61,7 @@ async function call(method, path, body, opts = {}){
 async function fetchBlob(path){
   const headers = {};
   if(token) headers["Authorization"] = `Bearer ${token}`;
+  if(pays) headers["X-MEMS-Country"] = pays;
   const res = await fetch(BASE + path, { headers, credentials:"include" });
   if(!res.ok){
     let msg = `erreur ${res.status}`;
@@ -54,6 +74,7 @@ async function fetchBlob(path){
 async function postFile(path, file, field = "file"){
   const headers = {};
   if(token) headers["Authorization"] = `Bearer ${token}`;
+  if(pays) headers["X-MEMS-Country"] = pays;
   const body = new FormData(); body.append(field, file, file.name);
   const res = await fetch(BASE + path, { method:"POST", headers, credentials:"include", body });
   let payload = null;
@@ -153,7 +174,10 @@ export const api = {
   countries:      ()             => call("GET", "/country"),
   createCountry:  (c)            => call("POST", "/country", c),
   updateCountry:  (code, c)      => call("PUT", `/country/${encodeURIComponent(code)}`, c),
-  setCountry:     (code)         => call("PUT", `/country/${encodeURIComponent(code)}/current`),
+  /* Le pays PAR DÉFAUT de l'instance — celui d'un compte qui n'en déclare aucun. À
+     ne pas confondre avec `setWorkingCountry`, qui place l'appelant dans un pays le
+     temps de sa session sans rien changer pour les autres. */
+  setDefaultCountry: (code)      => call("PUT", `/country/${encodeURIComponent(code)}/current`),
   deleteCountry:  (code)         => call("DELETE", `/country/${encodeURIComponent(code)}`),
 
   offices:      ()           => call("GET", "/offices"),

@@ -3,8 +3,9 @@ import { z } from "zod";
 import { db } from "../db.js";
 import { newId } from "../lib/crypto.js";
 import { requireCap } from "../lib/auth.js";
-import { declaredFor, outsideDeclared, scopeOf, unitsIn } from "../lib/scope.js";
+import { countryBound, countryClause, declaredFor, outsideDeclared, scopeOf, unitsIn } from "../lib/scope.js";
 import { currentVersion } from "../lib/geo.js";
+import { writeCountry } from "../lib/country.js";
 
 /* ═══════════════════════════════════════════════════════════════════════
    Bureaux et antennes — configuration réelle.
@@ -34,6 +35,10 @@ const schema = z.object({
   name:       z.string().trim().min(2).max(120),
   code:       S(24),
   kind:       z.enum(["field", "hq"]).default("field"),
+  /* Le pays de rattachement. Optionnel dans le schéma, mais pas facultatif : la
+     route le résout, et un compte borné ne peut pas le choisir. */
+  country_code: z.string().trim().length(3).optional().nullable()
+    .transform(v => (v ? v.toUpperCase() : null)),
   /* 'national' fait sauter le cloisonnement géographique du bureau — d'où
      l'énumération stricte : une valeur libre finirait par élargir un accès. */
   scope_mode: z.enum(["geo", "national"]).default("geo"),
@@ -67,6 +72,7 @@ const shape = (o) => {
   const hors = outsideDeclared(o.id);
   return {
     id:o.id, name:o.name, code:o.code || "", kind:o.kind, scope_mode:o.scope_mode || "geo",
+    country_code:o.country_code || null, country:o.country_name || "",
     antennes: (() => { try{ return JSON.parse(o.antennes || "[]"); }catch(e){ return []; } })(),
     manager:o.manager || "", email:o.email || "", phone:o.phone || "",
     lat:o.lat, lon:o.lon, note:o.note || "", active:!!o.active, rev:o.rev || 1,
@@ -82,29 +88,55 @@ const shape = (o) => {
   };
 };
 
-r.get("/", (req, res) => res.json({ offices:
-  db.prepare("SELECT * FROM offices ORDER BY kind DESC, name").all().map(shape) }));
+/* Le bureau introuvable et le bureau d'un autre pays donnent la MÊME réponse.
+   Distinguer les deux apprendrait à un compte de Madagascar qu'un bureau existe
+   ailleurs, et un identifiant se devine par essais. */
+const lire = (id) => db.prepare(
+  `SELECT o.*, p.name country_name FROM offices o
+   LEFT JOIN country p ON p.code = o.country_code WHERE o.id=?`).get(id);
+
+const visible = (req, id) => {
+  const o = lire(id);
+  if(!o) return null;
+  const pays = countryBound(req.user);
+  if(pays && o.country_code && o.country_code !== pays) return null;
+  return o;
+};
+
+r.get("/", (req, res) => {
+  const c = countryClause(req.user, "o");
+  res.json({ offices: db.prepare(
+    `SELECT o.*, p.name country_name FROM offices o
+     LEFT JOIN country p ON p.code = o.country_code
+     WHERE 1=1 ${c.sql} ORDER BY o.kind DESC, o.name`).all(...c.args).map(shape) });
+});
 
 r.post("/", requireCap("admin"), (req, res) => {
   const p = schema.safeParse(req.body);
   if(!p.success) return res.status(422).json({ error:"bureau invalide",
     details: p.error.issues.map(i => ({ champ:i.path.join("."), message:i.message })) });
   const b = p.data;
+  const pays = writeCountry(req.user, b.country_code);
+  if(pays.error) return res.status(422).json({ error:pays.error });
+  /* L'unicité du nom reste globale à l'instance et non par pays : deux bureaux
+     homonymes dans deux pays rendraient tous les écrans de rattachement ambigus,
+     et « Bureau de Tana » n'a de sens qu'une fois. */
   if(db.prepare("SELECT 1 FROM offices WHERE name=? COLLATE NOCASE").get(b.name))
     return res.status(409).json({ error:"un bureau porte déjà ce nom" });
 
   const id = newId("off");
-  db.prepare(`INSERT INTO offices (id,name,code,kind,scope_mode,antennes,manager,email,phone,
-              lat,lon,note,active,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`)
-    .run(id, b.name, b.code, b.kind, b.scope_mode, JSON.stringify(b.antennes),
+  db.prepare(`INSERT INTO offices (id,name,code,kind,country_code,scope_mode,antennes,manager,email,
+              phone,lat,lon,note,active,updated_at)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`)
+    .run(id, b.name, b.code, b.kind, pays.code, b.scope_mode, JSON.stringify(b.antennes),
          b.manager, b.email, b.phone, b.lat ?? null, b.lon ?? null, b.note, b.active?1:0);
-  audit(req, "create", id, `Bureau créé — ${b.name}` +
+  audit(req, "create", id, `Bureau créé — ${b.name} (${pays.code})` +
     (b.scope_mode === "national" ? " (périmètre national)" : ""));
-  res.status(201).json({ office: shape(db.prepare("SELECT * FROM offices WHERE id=?").get(id)) });
+  res.status(201).json({ office: shape(lire(id)) });
 });
 
 r.put("/:id", requireCap("admin"), (req, res) => {
-  const cur = db.prepare("SELECT * FROM offices WHERE id=?").get(req.params.id);
+  const cur = visible(req, req.params.id);
   if(!cur) return res.status(404).json({ error:"bureau introuvable" });
   const p = schema.safeParse(req.body);
   if(!p.success) return res.status(422).json({ error:"bureau invalide",
@@ -120,6 +152,23 @@ r.put("/:id", requireCap("admin"), (req, res) => {
   if(db.prepare("SELECT 1 FROM offices WHERE name=? COLLATE NOCASE AND id<>?").get(b.name, cur.id))
     return res.status(409).json({ error:"un bureau porte déjà ce nom" });
 
+  /* Changer un bureau de pays emmènerait avec lui ses sites, son périmètre déclaré
+     et ses comptes — or ce périmètre est fait de p-codes appartenant au découpage de
+     l'ancien pays, qui ne veulent rien dire dans le nouveau. On l'autorise donc tant
+     que rien n'est rattaché, et on refuse ensuite : créer le bureau du nouveau pays
+     et y déplacer les données est un geste explicite, celui-ci ne l'était pas.
+     Un compte borné ne change de toute façon rien : son pays est imposé. */
+  const paysVoulu = countryBound(req.user) ? cur.country_code
+                                           : (b.country_code || cur.country_code);
+  if(paysVoulu !== cur.country_code){
+    const u = { ...usage(cur.id), perimetre: declaredFor(cur.id).length };
+    const total = Object.values(u).reduce((a, x) => a + x, 0);
+    if(total) return res.status(409).json({
+      error:"ce bureau porte des données : il ne peut pas changer de pays", usage:u });
+    const v = writeCountry(null, paysVoulu);
+    if(v.error) return res.status(422).json({ error:v.error });
+  }
+
   /* Désactiver un bureau qui porte encore des comptes actifs les enfermerait :
      ils resteraient rattachés à un bureau inexistant du point de vue des
      filtres, sans que personne ne le voie. */
@@ -129,25 +178,27 @@ r.put("/:id", requireCap("admin"), (req, res) => {
       error:`${actifs} compte(s) actif(s) dépendent de ce bureau : rattachez-les ailleurs d'abord` });
   }
 
-  db.prepare(`UPDATE offices SET name=?, code=?, kind=?, scope_mode=?, antennes=?, manager=?,
-              email=?, phone=?, lat=?, lon=?, note=?, active=?, rev=rev+1,
+  db.prepare(`UPDATE offices SET name=?, code=?, kind=?, country_code=?, scope_mode=?, antennes=?,
+              manager=?, email=?, phone=?, lat=?, lon=?, note=?, active=?, rev=rev+1,
               updated_at=datetime('now') WHERE id=?`)
-    .run(b.name, b.code, b.kind, b.scope_mode, JSON.stringify(b.antennes), b.manager,
+    .run(b.name, b.code, b.kind, paysVoulu, b.scope_mode, JSON.stringify(b.antennes), b.manager,
          b.email, b.phone, b.lat ?? null, b.lon ?? null, b.note, b.active?1:0, cur.id);
 
   const changements = [];
   if(b.name !== cur.name) changements.push(`renommé « ${cur.name} » → « ${b.name} »`);
+  if(paysVoulu !== cur.country_code)
+    changements.push(`rattaché au pays ${paysVoulu}`);
   if(b.scope_mode !== (cur.scope_mode || "geo"))
     changements.push(`périmètre ${b.scope_mode === "national" ? "porté au national" : "ramené au périmètre déclaré"}`);
   if(b.active !== !!cur.active) changements.push(b.active ? "réactivé" : "désactivé");
   audit(req, "update", cur.id, `Bureau ${b.name}` +
     (changements.length ? ` — ${changements.join(", ")}` : " modifié"));
 
-  res.json({ office: shape(db.prepare("SELECT * FROM offices WHERE id=?").get(cur.id)) });
+  res.json({ office: shape(lire(cur.id)) });
 });
 
 r.delete("/:id", requireCap("admin"), (req, res) => {
-  const cur = db.prepare("SELECT * FROM offices WHERE id=?").get(req.params.id);
+  const cur = visible(req, req.params.id);
   if(!cur) return res.status(404).json({ error:"bureau introuvable" });
   const u = usage(cur.id);
   const total = Object.values(u).reduce((a,b)=>a+b, 0);

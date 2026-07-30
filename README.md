@@ -73,6 +73,14 @@ mems/
 │  ├─ migrations/006_revisions.sql révisions de ligne pour l'écriture concurrente
 │  ├─ migrations/007_office_scope.sql périmètre géographique déclaré des bureaux
 │  ├─ migrations/008_nav_merge.sql  fusion des onglets Planning et Actual Data
+│  ├─ migrations/009_office_config.sql bureaux : nature, périmètre national, antennes
+│  ├─ migrations/010_mre.sql       plan MRE et lignes de coût
+│  ├─ migrations/011_tpm.sql       prestataires, contrats, barèmes, plans, dépenses
+│  ├─ migrations/012_geo_geom.sql  contours administratifs, deux résolutions
+│  ├─ migrations/013_country.sql   pays, devise et vocabulaire des niveaux
+│  ├─ migrations/014_geo_version_par_pays.sql un millésime courant PAR PAYS
+│  ├─ migrations/015_multi_pays.sql rattachement des bureaux, comptes, TPM et plan MRE
+│  ├─ migrations/016_ref_mre_par_pays.sql référence d'activité unique par pays
 │  ├─ src/
 │  │  ├─ index.js              montage Express, sécurité, service du frontend compilé
 │  │  ├─ config.js             lecture et contrôle des variables d'environnement
@@ -83,7 +91,11 @@ mems/
 │  │  ├─ lib/crypto.js         chiffrement au repos, génération d'identifiants
 │  │  ├─ lib/geo.js            construction de l'arbre administratif, millésimes
 │  │  ├─ lib/import.js         modèles Excel, réconciliation par clé, diff
-│  │  ├─ lib/scope.js          périmètre géographique — une seule définition
+│  │  ├─ lib/scope.js          pays, bureau, périmètre géographique — une seule définition
+│  │  ├─ lib/ctx.js            contexte de requête (AsyncLocalStorage) : pays courant
+│  │  ├─ lib/country.js        pays, vocabulaire des niveaux, devise locale
+│  │  ├─ lib/tpm.js            budget dérivé d'un plan de prestataire, circuit de validation
+│  │  ├─ lib/geom.js           lecture des contours, simplification, cadre englobant
 │  │  ├─ import-geo.js         chargement du référentiel complet en ligne de commande
 │  │  ├─ link-geo.js           rapprochement des données existantes vers le référentiel
 │  │  ├─ lib/logger.js         journal avec masquage des secrets
@@ -158,11 +170,10 @@ users ──< sessions                           (cascade : supprimer un compte 
 
 ### Le pays, configuration et non hypothèse
 
-Cette première version sert **Madagascar** ; d'autres pays suivront. Ce n'est pas la même
-chose que servir plusieurs pays *en même temps* — cela demanderait de rattacher les sites,
-les bureaux et les comptes à un pays, c'est-à-dire de décider si un utilisateur traverse
-les frontières. Ce qui est fait ici est plus modeste et vaut dans tous les cas : **plus
-rien de spécifique à Madagascar n'est écrit dans le code.**
+Cette première version est déployée pour **Madagascar** ; d'autres pays suivront, et une
+**instance en sert plusieurs à la fois** — c'est le sujet de la section suivante. Le
+préalable était de rendre le pays configurable : **plus rien de spécifique à Madagascar
+n'est écrit dans le code.**
 
 Trois choses l'étaient :
 
@@ -200,10 +211,86 @@ ne touche plus aux millésimes du tout. Et si le pays courant n'a pas de découp
 « aucun référentiel » au lieu d'afficher la géographie de Madagascar sous un vocabulaire
 congolais, qui serait l'erreur la plus difficile à voir de toutes.
 
-*Paramètres → Pays* configure tout cela. Ce qui reste à faire quand le deuxième pays
-arrivera dépend d'une décision qui n'est pas prise : une instance par pays ne demande rien
-de plus ; une instance pour plusieurs pays demande de rattacher `sites`, `offices` et
-`users` à un pays, et de décider ce qu'un rapport agrège.
+*Paramètres → Pays* configure tout cela.
+
+### Une instance, plusieurs pays
+
+Le pays configurable ne suffisait pas : il restait un **drapeau global**,
+`country.is_current`, et un drapeau global est un **état partagé**. Deux comptes de deux
+pays se le seraient disputé — le premier bascule sur Madagascar, le second voit sa
+géographie changer sous ses yeux, sans rien avoir fait.
+
+Le pays est donc devenu une propriété des **entités**, et le pays courant une propriété du
+**compte**. `country.is_current` reste, mais seulement comme *valeur par défaut* : celle
+d'un compte qui n'en déclare aucun, et celle qu'un nouveau compte reçoit.
+
+Quatre tables portent un pays, et pas une de plus :
+
+| Table | Pourquoi elle le porte |
+|---|---|
+| `offices` | un bureau appartient à un pays, par définition |
+| `users` | le pays d'un compte ; **NULL = tous les pays** (bureau régional, administrateur d'instance) |
+| `tpm` | un prestataire est contracté dans un pays |
+| `mre_activity` | le plan MRE est celui d'un bureau pays |
+
+Tout le reste est atteignable à travers l'un de ces quatre, ou à travers le découpage
+géographique : sites, visites, paramètres de couverture et plan de distribution passent par
+leur **bureau** ; ciblage et population passent par leur **p-code**, dont le chemin
+normalisé commence par le nom du pays. Dupliquer le pays sur ces tables aurait créé autant
+d'occasions de le voir diverger de son bureau — c'est pourquoi `officeClause()` lit le pays
+*à travers* le bureau, par une sous-requête, plutôt que dans une colonne qu'il faudrait
+maintenir.
+
+#### Trois couches de cloisonnement
+
+```
+pays  →  bureau  →  périmètre géographique
+↑ countryBound     ↑ officeBound     ↑ scopeOf
+```
+
+Le **pays** ne dépend pas du rôle, contrairement au bureau : un administrateur de bureau
+pays administre *son pays*, pas l'instance. Seul un compte créé volontairement sans pays
+traverse les frontières — et un administrateur borné ne peut pas en créer un, ce serait
+créer un compte plus large que soi.
+
+#### Le pays qui nomme et le pays qui filtre
+
+Deux notions distinctes sortent du contexte de requête, et les confondre serait une erreur :
+
+| | Rôle | Vide possible ? |
+|---|---|---|
+| `ctx().country` | vocabulaire des niveaux, découpage, devise locale | non — sinon les écrans afficheraient « adm3 » |
+| `ctx().countryFilter` | quelles données sont visibles | **oui** — un compte non borné voit tous les pays |
+
+Un compte non borné qui n'a rien demandé garde la **vue d'ensemble** : c'est ce dont un
+bureau régional a besoin, et ce qui permet au premier administrateur de configurer le
+deuxième pays. Dès qu'il choisit un pays — sélecteur d'en-tête, en-tête `X-MEMS-Country` —
+il y travaille comme les autres.
+
+Le contexte passe par `AsyncLocalStorage` (`lib/ctx.js`) et non par une variable de module.
+Ce n'est pas un raffinement : les gestionnaires de route `await` — hachage d'un mot de
+passe, lecture d'un fichier téléversé — et Node reprend une autre requête entre-temps. Une
+variable partagée aurait renvoyé le pays du voisin, sans que rien ne le signale.
+
+#### Les écritures, pas seulement les lectures
+
+Un filtre en lecture qu'une écriture contourne ne protège rien. Le pays d'un compte borné
+l'emporte donc sur le formulaire (`writeCountry()`), et chaque `office_id` reçu d'un
+formulaire est vérifié (`officeReach()`) — y compris dans la **modification groupée** des
+sites, qui est la porte la plus large puisqu'elle prend une liste d'identifiants et accepte
+`office_id` comme champ. La synchronisation des collections `params` et `pdd`, qui
+n'était **pas** cloisonnée du tout, l'est désormais dans les deux sens : le bureau que la
+ligne entrante désigne, et celui de la ligne déjà en base qu'on modifie ou supprime.
+
+Une règle de forme, tenue partout : hors de son pays, une entité est **introuvable** (404),
+pas refusée (403). Un 403 confirmerait qu'elle existe, et un identifiant se devine par
+essais. À l'intérieur d'un pays, en revanche, un bureau voisin se nomme : l'utilisateur
+sait qu'il existe, le lui cacher n'apporterait rien.
+
+Enfin, la référence d'une activité MRE est unique **par pays** (migration 016) et non par
+instance : deux bureaux pays numérotent leurs activités indépendamment, et le premier à
+saisir « ME-2026-01 » interdisait la même référence au second, avec un message parlant d'un
+doublon invisible pour lui.
 
 ### Le référentiel géographique
 
@@ -622,6 +709,12 @@ curl -s http://localhost:4000/api/health | jq
 Toutes les routes sont sous `/api`. Sauf `/api/health` et `/api/auth/login`,
 elles exigent un jeton — en-tête `Authorization: Bearer …` ou cookie `httpOnly`.
 
+Un en-tête facultatif, `X-MEMS-Country: COD` (ou `?country=COD`), place l'appelant dans un
+pays le temps de la requête : vocabulaire des niveaux, découpage géographique, devise
+locale et **périmètre des données**. Il est **ignoré** pour un compte rattaché à un pays —
+silencieusement et volontairement, puisque répondre 403 lui apprendrait qu'un autre pays
+existe. Sans en-tête, un compte non borné voit **tous** les pays.
+
 | Méthode | Route | Droit | Rôle |
 |---|---|---|---|
 | GET | `/health` | — | état du service et intégrité de la base |
@@ -635,9 +728,9 @@ elles exigent un jeton — en-tête `Authorization: Bearer …` ou cookie `httpO
 | POST | `/sites/bulk` | `edit` | modification groupée, champs sur liste blanche |
 | GET | `/geo` | connecté | répertoire paginé, filtré par unité parente ou par recherche |
 | GET | `/geo/levels` | connecté | enfants d'une unité — la cascade se fait un niveau à la fois |
-| GET | `/country` | connecté | pays configurés, pays courant, codes de niveaux du schéma |
+| GET | `/country` | connecté | pays configurés, pays par défaut, codes de niveaux du schéma |
 | POST/PUT/DELETE | `/country`, `/country/:code` | `admin` | configuration d'un pays et de son vocabulaire |
-| PUT | `/country/:code/current` | `admin` | change le pays courant ; chaque pays garde son millésime |
+| PUT | `/country/:code/current` | `admin` | change le pays **par défaut de l'instance** ; chaque pays garde son millésime |
 | GET | `/geo/coverage` | connecté | unités couvertes et non couvertes, à tout niveau |
 | GET | `/geo/geometry` | connecté | contours d'un niveau, version allégée ou `?detail=true` |
 | POST | `/geo/geometry` | `admin` | import par lots ; le premier lot porte `reset` |
@@ -925,6 +1018,7 @@ curl -sI http://localhost:4000/api/health | grep -i "content-security-policy\|x-
 |---|---|
 | « Le serveur ne répond pas » à l'écran | le serveur est arrêté, ou `CORS_ORIGINS` ne contient pas l'adresse du site |
 | Connexion refusée alors que le mot de passe est bon | compte verrouillé (`locked_until`) ou désactivé — `SELECT email, active, locked_until FROM users;` |
+| Le lot de tests de bout en bout passe mais ne rend jamais la main | c'est le lanceur de `node --test` qui ne se termine pas alors que le fichier de test, lui, est fini — d'où `--test-force-exit` dans `web/package.json`. Sans ce drapeau, l'intégration continue attendrait sa limite de temps sur une suite verte |
 | « Échec d'enregistrement » dans l'en-tête | ouvrez la console : la file de synchronisation affiche la collection et le message du serveur |
 | Une section affiche « Cette section n'a pas pu s'afficher » | la frontière d'erreur a intercepté une exception ; le message exact est dans la console |
 | Un calcul semble faux | tous les calculs métier sont dans `web/src/lib/calc.js`, avec les formules en commentaire |

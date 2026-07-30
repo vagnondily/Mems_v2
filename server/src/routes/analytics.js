@@ -1,10 +1,12 @@
 import { Router } from "express";
 import { db } from "../db.js";
 import { z } from "zod";
-import { officeBound as scopeOf } from "../lib/scope.js";
+import { officeBound as scopeOf, officeClause } from "../lib/scope.js";
 
 const r = Router();
-/* Cloisonnement par bureau : voir lib/scope.js — définition unique. */
+/* Cloisonnement par bureau puis par pays : voir lib/scope.js — définition unique.
+   `officeClause` porte les deux, parce qu'un total qui additionnerait les sites de
+   deux pays serait faux pour tout le monde. */
 
 /* Points cartographiques : calculés côté serveur pour éviter d'envoyer le registre entier. */
 r.get("/map", (req, res) => {
@@ -17,9 +19,10 @@ r.get("/map", (req, res) => {
   if(!q.success) return res.status(422).json({ error:"filtres invalides" });
   const f = q.data;
   const scope = scopeOf(req.user);
+  const oc = officeClause(req.user, "s");
   const where = ["s.lat IS NOT NULL", "s.lon IS NOT NULL"]; const args = [];
-  if(scope){ where.push("s.office_id = ?"); args.push(scope); }
-  else if(f.office_id){ where.push("s.office_id = ?"); args.push(f.office_id); }
+  if(oc.sql){ where.push(oc.sql.replace(/^ AND /, "")); args.push(...oc.args); }
+  if(!scope && f.office_id){ where.push("s.office_id = ?"); args.push(f.office_id); }
   for(const k of ["adm1","adm2"]) if(f[k]){ where.push(`s.${k} = ?`); args.push(f[k]); }
   if(f.category_id){ where.push("s.category_id = ?"); args.push(f.category_id); }
   if(f.activity_tag){ where.push("s.activity_tag = ?"); args.push(f.activity_tag); }
@@ -52,7 +55,7 @@ r.get("/map", (req, res) => {
 /* Couverture mensuelle par catégorie, agrégée en base plutôt qu'en mémoire du navigateur. */
 r.get("/coverage", (req, res) => {
   const year = parseInt(req.query.year, 10) || new Date().getFullYear();
-  const scope = scopeOf(req.user);
+  const oc = officeClause(req.user, "s");
   const rows = db.prepare(`
     SELECT COALESCE(c.name,'(non renseignée)') AS category, m.month,
            SUM(CASE WHEN m.active=1 AND s.status='Active' THEN 1 ELSE 0 END) AS active,
@@ -60,26 +63,26 @@ r.get("/coverage", (req, res) => {
     FROM site_months m
     JOIN sites s ON s.id = m.site_id
     LEFT JOIN activity_categories c ON c.id = s.category_id
-    WHERE m.year = ? ${scope ? "AND s.office_id = ?" : ""}
+    WHERE m.year = ? ${oc.sql}
     GROUP BY category, m.month ORDER BY category, m.month`)
-    .all(year, ...(scope?[scope]:[]));
+    .all(year, ...oc.args);
   res.json({ year, rows });
 });
 
 r.get("/summary", (req, res) => {
   const year = parseInt(req.query.year, 10) || new Date().getFullYear();
-  const scope = scopeOf(req.user);
-  const w = scope ? "WHERE office_id = ?" : "";
-  const a = scope ? [scope] : [];
+  const oc = officeClause(req.user, "s");
+  const a = oc.args;
   res.json({
     year,
-    sites: db.prepare(`SELECT COUNT(*) c FROM sites ${w}`).get(...a).c,
-    active: db.prepare(`SELECT COUNT(*) c FROM sites ${w ? w+" AND" : "WHERE"} status='Active'`).get(...a).c,
-    beneficiaries: db.prepare(`SELECT COALESCE(SUM(beneficiaries),0) s FROM sites ${w ? w+" AND" : "WHERE"} status='Active'`).get(...a).s,
+    sites: db.prepare(`SELECT COUNT(*) c FROM sites s WHERE 1=1 ${oc.sql}`).get(...a).c,
+    active: db.prepare(`SELECT COUNT(*) c FROM sites s WHERE s.status='Active' ${oc.sql}`).get(...a).c,
+    beneficiaries: db.prepare(`SELECT COALESCE(SUM(s.beneficiaries),0) s FROM sites s
+      WHERE s.status='Active' ${oc.sql}`).get(...a).s,
     visits: db.prepare(`SELECT COUNT(*) c FROM visits v JOIN sites s ON s.id=v.site_id
-      WHERE v.visit_date LIKE ? ${scope ? "AND s.office_id=?" : ""}`).get(`${year}%`, ...a).c,
+      WHERE v.visit_date LIKE ? ${oc.sql}`).get(`${year}%`, ...a).c,
     pending: db.prepare(`SELECT COUNT(*) c FROM visits v JOIN sites s ON s.id=v.site_id
-      WHERE v.status='À valider' ${scope ? "AND s.office_id=?" : ""}`).get(...a).c,
+      WHERE v.status='À valider' ${oc.sql}`).get(...a).c,
   });
 });
 export default r;

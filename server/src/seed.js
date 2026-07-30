@@ -111,11 +111,18 @@ if(info){
     /* Le bureau central est national : ses staffs voient tous les sites sans être
        administrateurs. Les antennes viennent de ZONES pour rester cohérentes
        avec les districts réellement couverts. */
-    const insOffice = db.prepare(`INSERT INTO offices (id,name,code,kind,scope_mode,antennes,manager)
-                                  VALUES (?,?,?,?,?,?,?)`);
+    /* Le pays de rattachement vient de la configuration, pas d'un « MDG » écrit ici :
+       une instance sert plusieurs pays, et un bureau sans pays serait visible depuis
+       tous — ce qui est le bon repli pour une ligne ancienne, mais un défaut pour une
+       ligne qu'on crée. Le rattrapage de la migration 015 ne peut rien pour elles :
+       elle s'exécute avant l'amorçage, sur une table vide. */
+    const paysSeed = db.prepare("SELECT code FROM country WHERE is_current=1").get()?.code
+      || db.prepare("SELECT code FROM country ORDER BY name LIMIT 1").get()?.code || null;
+    const insOffice = db.prepare(`INSERT INTO offices (id,name,code,kind,country_code,scope_mode,antennes,manager)
+                                  VALUES (?,?,?,?,?,?,?,?)`);
     OFFICES.forEach(([name,code]) => { const id = newId("off"); const hq = code === "HQ";
       officeId[name] = id;
-      insOffice.run(id, name, code, hq ? "hq" : "field", hq ? "national" : "geo",
+      insOffice.run(id, name, code, hq ? "hq" : "field", paysSeed, hq ? "national" : "geo",
         JSON.stringify(hq ? [] : [code[0] + code.slice(1).toLowerCase()]),
         hq ? "Chef de l'unité suivi-évaluation" : "Chef de bureau"); });
 
@@ -412,8 +419,8 @@ if(info){
     const moisCourant = new Date().getMonth();
     const insMre = db.prepare(`INSERT INTO mre_activity
       (id,year,ref,title,kind,purpose,method,office_id,activity_tag,responsible,
-       start_month,end_month,sample,status,funding,currency,note)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'USD',?)`);
+       start_month,end_month,sample,status,funding,currency,note,country_code)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'USD',?,?)`);
     const insCost = db.prepare(`INSERT INTO mre_cost
       (id,activity_id,category,label,unit,qty,unit_cost,spent,month) VALUES (?,?,?,?,?,?,?,?,?)`);
     const PLAN_MRE = [
@@ -473,7 +480,7 @@ if(info){
       const id = newId("mre");
       insMre.run(id, YEAR, ref, title, kind, purpose, method, hqId, tag, resp, m0, m1, sample,
         m1 < moisCourant ? "realise" : m0 <= moisCourant ? "en_cours" : "planifie",
-        "Ressources programme", note);
+        "Ressources programme", note, paysSeed);
       lignes.forEach(([cat,label,unit,qty,cost]) => {
         /* Une activité longue laisse son mois vide : la route répartit alors la
            ligne sur toute sa durée, ce qui est le cas réel d'un suivi continu.
@@ -495,7 +502,7 @@ if(info){
         "suivi", "Couvrir les sites du bureau selon l'exigence minimale de suivi",
         "Visites de site planifiées par le risque", officeId[office], null, "Chef de bureau",
         0, 11, null, moisCourant > 0 ? "en_cours" : "planifie", "Ressources programme",
-        "Décliné du plan national sur la zone du bureau");
+        "Décliné du plan national sur la zone du bureau", paysSeed);
       [["deplacement","Indemnités de déplacement","personne-jour",96,18],
        ["transport","Carburant et entretien","mois",12,340]].forEach(([cat,label,unit,qty,cost]) =>
         insCost.run(newId("mrc"), id, cat, label, unit, qty, cost,
@@ -575,8 +582,8 @@ if(info){
        des affectations, comme il le sera en production. */
     {
       const gvT = db.prepare("SELECT id FROM geo_version WHERE is_current=1").get();
-      const insTpm = db.prepare(`INSERT INTO tpm (id,name,code,office_id,contact,email,active,updated_at)
-                                 VALUES (?,?,?,?,?,?,1,datetime('now'))`);
+      const insTpm = db.prepare(`INSERT INTO tpm (id,name,code,office_id,country_code,contact,email,active,updated_at)
+                                 VALUES (?,?,?,?,?,?,?,1,datetime('now'))`);
       const insCtr = db.prepare(`INSERT INTO tpm_contract
         (id,tpm_id,ref,ceiling,currency,start_date,end_date,status,note,updated_at)
         VALUES (?,?,?,?,'MGA',?,?,'actif',?,datetime('now'))`);
@@ -610,7 +617,7 @@ if(info){
       const contratDe = {};
       PRESTATAIRES.forEach(([nom, code, bureau, contact, plafond], i) => {
         const tid = newId("tpm");
-        insTpm.run(tid, nom, code, officeId[bureau] || null, contact,
+        insTpm.run(tid, nom, code, officeId[bureau] || null, paysSeed, contact,
           `${code.toLowerCase()}@prestataire.mg`);
         const cid = newId("tct");
         insCtr.run(cid, tid, `TPM-${YEAR}-${String(i+1).padStart(2,"0")}`, plafond,

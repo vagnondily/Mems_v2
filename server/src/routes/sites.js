@@ -3,7 +3,7 @@ import { db, tx } from "../db.js";
 import { newId } from "../lib/crypto.js";
 import { labelsFor } from "../lib/geo.js";
 import { requireCap } from "../lib/auth.js";
-import { officeBound as scopeOf } from "../lib/scope.js";
+import { officeBound as scopeOf, officeClause, officeReach } from "../lib/scope.js";
 import { validate, schemas } from "../lib/validate.js";
 import { z } from "zod";
 
@@ -19,10 +19,15 @@ const audit = (req, action, entity_id, text) =>
    était réécrite ici et dans analytics.js, et ces copies auraient ignoré le
    bureau pays. */
 function assertScope(req, site){
-  const s = scopeOf(req.user);
-  if(s && site && site.office_id !== s){
-    const e = new Error("ce site relève d'un autre bureau"); e.status = 403; throw e;
-  }
+  if(!site) return;
+  const refus = officeReach(req.user, site.office_id);
+  if(!refus) return;
+  /* Un bureau voisin se nomme — l'utilisateur sait qu'il existe. Un autre PAYS ne se
+     confirme pas : on rend la même réponse que pour un identifiant inventé. */
+  const e = refus === "pays"
+    ? Object.assign(new Error("site introuvable"), { status:404 })
+    : Object.assign(new Error("ce site relève d'un autre bureau"), { status:403 });
+  throw e;
 }
 
 r.get("/", (req, res) => {
@@ -35,16 +40,17 @@ r.get("/", (req, res) => {
   if(!q.success) return res.status(422).json({ error:"filtres invalides" });
   const f = q.data;
   const scope = scopeOf(req.user);
-  const where = []; const args = [];
-  if(scope){ where.push("office_id = ?"); args.push(scope); }
-  else if(f.office_id){ where.push("office_id = ?"); args.push(f.office_id); }
-  if(f.status){ where.push("status = ?"); args.push(f.status); }
-  if(f.search){ where.push("(name LIKE ? OR code LIKE ? OR adm3 LIKE ?)");
+  /* Bureau puis pays, en une seule clause : la table `sites` ne porte pas de pays,
+     il se lit à travers son bureau. */
+  const oc = officeClause(req.user, "t");
+  const where = ["1=1" + oc.sql]; const args = [...oc.args];
+  if(!scope && f.office_id){ where.push("t.office_id = ?"); args.push(f.office_id); }
+  if(f.status){ where.push("t.status = ?"); args.push(f.status); }
+  if(f.search){ where.push("(t.name LIKE ? OR t.code LIKE ? OR t.adm3 LIKE ?)");
     const s = `%${f.search}%`; args.push(s,s,s); }
-  const sql = `SELECT * FROM sites ${where.length ? "WHERE "+where.join(" AND ") : ""}
-               ORDER BY code LIMIT ? OFFSET ?`;
-  const rows = db.prepare(sql).all(...args, f.limit, f.offset);
-  const total = db.prepare(`SELECT COUNT(*) c FROM sites ${where.length ? "WHERE "+where.join(" AND ") : ""}`)
+  const rows = db.prepare(`SELECT t.* FROM sites t WHERE ${where.join(" AND ")}
+               ORDER BY t.code LIMIT ? OFFSET ?`).all(...args, f.limit, f.offset);
+  const total = db.prepare(`SELECT COUNT(*) c FROM sites t WHERE ${where.join(" AND ")}`)
     .get(...args).c;
   res.json({ total, rows });
 });
@@ -77,6 +83,10 @@ r.post("/", requireCap("edit"), validate(schemas.site), (req, res) => {
   const b = applyGeo(req.body);
   const scope = scopeOf(req.user);
   if(scope) b.office_id = scope;
+  /* Le bureau vient du formulaire pour un compte non cloisonné : il faut vérifier
+     qu'il est dans son pays, sinon le cloisonnement en lecture ne protège rien. */
+  if(officeReach(req.user, b.office_id))
+    return res.status(422).json({ error:"ce bureau n'est pas dans votre périmètre" });
   if(db.prepare("SELECT 1 FROM sites WHERE code=?").get(b.code))
     return res.status(409).json({ error:"un site porte déjà ce code" });
   const id = newId("site");
@@ -93,6 +103,8 @@ r.put("/:id", requireCap("edit"), validate(schemas.site), (req, res) => {
   assertScope(req, cur);
   const b = applyGeo(req.body); const scope = scopeOf(req.user);
   if(scope) b.office_id = scope;
+  if(officeReach(req.user, b.office_id))
+    return res.status(422).json({ error:"ce bureau n'est pas dans votre périmètre" });
   /* Révision : si le client renvoie celle qu'il a lue et qu'elle a changé depuis,
      quelqu'un d'autre a modifié ce site pendant sa saisie. On refuse plutôt que
      d'écraser en silence, et on rend la version courante pour qu'il puisse comparer. */
@@ -161,11 +173,17 @@ r.post("/bulk", requireCap("edit"), (req, res) => {
   const { ids, field, value } = p.data;
   if(!BULK_FIELDS.has(field))
     return res.status(422).json({ error:`le champ « ${field} » n'est pas modifiable en masse` });
-  const scope = scopeOf(req.user);
+  /* Le bureau est modifiable en masse : il faut donc vérifier la DESTINATION, pas
+     seulement les sites touchés. Sans cela, une modification groupée déplacerait des
+     sites vers un bureau d'un autre pays — la porte de sortie la plus large du
+     cloisonnement, puisqu'elle prend une liste d'identifiants. */
+  if(field === "office_id" && value != null && officeReach(req.user, String(value)))
+    return res.status(422).json({ error:"ce bureau n'est pas dans votre périmètre" });
+  const oc = officeClause(req.user, "sites");
   const stmt = db.prepare(`UPDATE sites SET ${field}=?, updated_at=datetime('now')
-                           WHERE id=? ${scope ? "AND office_id=?" : ""}`);
+                           WHERE id=? ${oc.sql}`);
   let n = 0;
-  tx(() => { for(const id of ids) n += stmt.run(value, id, ...(scope?[scope]:[])).changes; })();
+  tx(() => { for(const id of ids) n += stmt.run(value, id, ...oc.args).changes; })();
   audit(req, "bulk", null, `Modification groupée de ${n} site(s) — ${field}`);
   res.json({ updated:n });
 });

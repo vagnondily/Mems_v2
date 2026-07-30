@@ -2118,3 +2118,227 @@ test("pays : la configuration est réservée aux administrateurs, la lecture ouv
     assert.equal(r.status, 403, `${m.toUpperCase()} ${chemin}`);
   }
 });
+
+/* ════════════════════════════════════════════════════════════════════════
+   Une instance, plusieurs pays.
+
+   Le cloisonnement se lit sur trois couches — pays, bureau, périmètre
+   géographique — et c'est la première qui manquait. Ces essais la prennent par
+   les deux bouts : ce qu'un compte borné NE voit pas, et ce qu'il ne peut pas
+   écrire même en forçant le formulaire. La seconde question est la vraie : un
+   filtre en lecture qu'une écriture contourne ne protège rien.
+   ════════════════════════════════════════════════════════════════════════ */
+const NIV_COD = { adm0:{one:"Pays",many:"Pays"}, adm1:{one:"Province",many:"Provinces"},
+  adm2:{one:"Territoire",many:"Territoires"}, adm3:{one:"Secteur",many:"Secteurs"},
+  adm4:{one:"Groupement",many:"Groupements"} };
+const multi = {};
+
+test("multi-pays : deux pays coexistent, chacun avec ses bureaux", async () => {
+  const cod = await request(app).post("/api/country").set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"COD", name:"RD Congo", currency:"CDF", levels:NIV_COD, lat:-4.0, lon:21.7 });
+  assert.equal(cod.status, 201);
+
+  /* L'administrateur de l'instance n'est borné à aucun pays : il désigne celui du
+     bureau qu'il crée. Sans `country_code`, le bureau irait dans le pays par défaut
+     de l'instance — ce qui est le comportement voulu, mais pas ce qu'on veut ici. */
+  const kin = await request(app).post("/api/offices").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Bureau de Kinshasa", kind:"field", country_code:"COD" });
+  assert.equal(kin.status, 201);
+  assert.equal(kin.body.office.country_code, "COD");
+  multi.kinshasa = kin.body.office.id;
+
+  const mdg = await request(app).post("/api/offices").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Bureau de Fianarantsoa", kind:"field" });
+  assert.equal(mdg.status, 201);
+  assert.equal(mdg.body.office.country_code, "MDG",
+    "sans pays demandé, le bureau va dans le pays par défaut de l'instance");
+  multi.fianar = mdg.body.office.id;
+
+  /* Un pays inexistant est refusé, pas rattaché au hasard : une entité qu'on
+     retrouverait des mois plus tard dans le mauvais pays est pire qu'un refus. */
+  const nulPart = await request(app).post("/api/offices").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Bureau de nulle part", kind:"field", country_code:"ZZZ" });
+  assert.equal(nulPart.status, 422);
+  assert.ok(/n'est pas configuré/.test(nulPart.body.error), nulPart.body.error);
+});
+
+test("multi-pays : un administrateur non borné voit tout, l'en-tête le place dans un pays", async () => {
+  const tout = await request(app).get("/api/offices").set("Authorization", `Bearer ${adminToken}`);
+  const codes = tout.body.offices.map(o => o.id);
+  assert.ok(codes.includes(multi.kinshasa) && codes.includes(multi.fianar),
+    "sans en-tête, l'administrateur d'instance voit les bureaux des deux pays");
+
+  const congo = await request(app).get("/api/offices")
+    .set("Authorization", `Bearer ${adminToken}`).set("X-MEMS-Country", "COD");
+  const ids = congo.body.offices.map(o => o.id);
+  assert.ok(ids.includes(multi.kinshasa), "placé au Congo, il voit Kinshasa");
+  assert.ok(!ids.includes(multi.fianar), "et plus Fianarantsoa");
+
+  /* Le vocabulaire suit le même en-tête : c'est la même requête qui nomme et qui
+     filtre, et deux réponses différentes seraient invérifiables à l'écran. */
+  const etat = await request(app).get("/api/state")
+    .set("Authorization", `Bearer ${adminToken}`).set("X-MEMS-Country", "COD");
+  assert.equal(etat.body.country.code, "COD");
+  assert.equal(etat.body.country.levels.adm3.one, "Secteur");
+  assert.ok(etat.body.countries.some(c => c.code === "MDG"),
+    "un compte non borné reçoit la liste des pays : c'est lui qui porte le sélecteur");
+});
+
+test("multi-pays : un compte borné ne voit pas l'autre pays, et n'y écrit pas", async () => {
+  /* Un administrateur DE PAYS : il administre son pays, pas l'instance. Le rôle dit
+     ce qu'on peut faire, le pays où — ce sont deux axes distincts. */
+  const cr = await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"admin-mdg@test.local", password:"AdminMadagascar1", first_name:"Ravo",
+            role:"admin", country_code:"MDG", tabs:["home"], active:true });
+  assert.equal(cr.status, 201);
+  assert.equal(cr.body.user.country_code, "MDG");
+  const mg = (await login("admin-mdg@test.local", "AdminMadagascar1")).body.token;
+  multi.mgToken = mg;
+
+  const vus = await request(app).get("/api/offices").set("Authorization", `Bearer ${mg}`);
+  const ids = vus.body.offices.map(o => o.id);
+  assert.ok(ids.includes(multi.fianar));
+  assert.ok(!ids.includes(multi.kinshasa), "le bureau congolais n'existe pas pour lui");
+
+  /* L'en-tête ne lui sert à rien : un compte borné ne sort pas de son pays, et sa
+     demande est ignorée silencieusement — lui répondre 403 lui apprendrait qu'un
+     autre pays existe. */
+  const force = await request(app).get("/api/offices")
+    .set("Authorization", `Bearer ${mg}`).set("X-MEMS-Country", "COD");
+  assert.equal(force.status, 200);
+  assert.ok(!force.body.offices.some(o => o.id === multi.kinshasa));
+
+  /* Le bureau congolais est introuvable, pas refusé : un 403 confirmerait qu'il
+     existe, et un identifiant se devine par essais. */
+  const modif = await request(app).put(`/api/offices/${multi.kinshasa}`)
+    .set("Authorization", `Bearer ${mg}`).send({ name:"Bureau détourné", kind:"field" });
+  assert.equal(modif.status, 404);
+
+  /* Et l'écriture ne suit pas le formulaire : le pays du compte s'impose. */
+  const cree = await request(app).post("/api/offices").set("Authorization", `Bearer ${mg}`)
+    .send({ name:"Bureau tenté au Congo", kind:"field", country_code:"COD" });
+  assert.equal(cree.status, 201);
+  assert.equal(cree.body.office.country_code, "MDG",
+    "le pays du compte gagne contre le champ du formulaire");
+  await request(app).delete(`/api/offices/${cree.body.office.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+});
+
+test("multi-pays : les sites suivent le pays de leur bureau", async () => {
+  const site = await request(app).post("/api/sites").set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"COD-001", name:"Site congolais", office_id:multi.kinshasa,
+            status:"Active", activity_tag:"ACT1" });
+  assert.equal(site.status, 201);
+  multi.siteCod = site.body.site.id;
+
+  /* La table `sites` ne porte pas de pays — décision assumée de la migration 015,
+     pour qu'il ne puisse pas diverger de celui du bureau. Le filtre passe donc par
+     le bureau, et c'est ce qu'on vérifie ici. */
+  const liste = await request(app).get("/api/sites?limit=2000")
+    .set("Authorization", `Bearer ${multi.mgToken}`);
+  assert.ok(!liste.body.rows.some(s => s.id === multi.siteCod));
+  assert.equal((await request(app).get(`/api/sites/${multi.siteCod}`)
+    .set("Authorization", `Bearer ${multi.mgToken}`)).status, 404);
+
+  const etat = await request(app).get("/api/state").set("Authorization", `Bearer ${multi.mgToken}`);
+  assert.ok(!etat.body.sites.some(s => s.id === multi.siteCod));
+  assert.deepEqual(etat.body.countries, [],
+    "un compte borné ne reçoit pas la liste des pays : il n'a rien à choisir");
+
+  /* Rattacher un site à un bureau d'un autre pays est refusé à l'écriture. Sans
+     cela, le filtre en lecture ne protégerait rien : il suffirait de changer un
+     champ du formulaire. */
+  const ailleurs = await request(app).post("/api/sites").set("Authorization", `Bearer ${multi.mgToken}`)
+    .send({ code:"MDG-XX1", name:"Site détourné", office_id:multi.kinshasa,
+            status:"Active", activity_tag:"ACT1" });
+  assert.equal(ailleurs.status, 422);
+  assert.ok(/périmètre/.test(ailleurs.body.error), ailleurs.body.error);
+
+  /* Même chose par la modification groupée, qui est la porte la plus large :
+     elle prend une liste d'identifiants et un champ, dont `office_id`. */
+  const groupe = await request(app).post("/api/sites/bulk")
+    .set("Authorization", `Bearer ${multi.mgToken}`)
+    .send({ ids:[multi.siteCod], field:"office_id", value:multi.fianar });
+  assert.equal(groupe.body.updated, 0, "aucun site d'un autre pays n'est touché");
+  assert.equal(db.prepare("SELECT office_id FROM sites WHERE id=?").get(multi.siteCod).office_id,
+    multi.kinshasa);
+  const vers = await request(app).post("/api/sites/bulk")
+    .set("Authorization", `Bearer ${multi.mgToken}`)
+    .send({ ids:[multi.siteCod], field:"office_id", value:multi.kinshasa });
+  assert.equal(vers.status, 422, "et le bureau de destination est vérifié lui aussi");
+
+  /* Les agrégats ne mélangent pas deux pays : un total faux est pire qu'un total
+     absent, parce qu'on le croit. */
+  const resume = await request(app).get("/api/analytics/summary")
+    .set("Authorization", `Bearer ${multi.mgToken}`);
+  const tous = await request(app).get("/api/analytics/summary")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(tous.body.sites, resume.body.sites + 1, "le seul site congolais est en dehors");
+});
+
+test("multi-pays : un administrateur de pays n'administre ni les autres pays ni les comptes sans pays", async () => {
+  const comptes = await request(app).get("/api/users").set("Authorization", `Bearer ${multi.mgToken}`);
+  assert.equal(comptes.status, 200);
+  assert.ok(comptes.body.users.every(u => u.country_code === "MDG"),
+    "ni les comptes d'un autre pays, ni les comptes non bornés — ces derniers voient tout");
+  assert.ok(!comptes.body.users.some(u => u.email === "admin@test.local"));
+
+  /* Le compte non borné est hors de portée : le modifier serait prendre la main sur
+     toute l'instance depuis un pays. */
+  const cible = db.prepare("SELECT id FROM users WHERE email='admin@test.local'").get();
+  const pris = await request(app).put(`/api/users/${cible.id}`)
+    .set("Authorization", `Bearer ${multi.mgToken}`)
+    .send({ email:"admin@test.local", first_name:"Repris", role:"viewer", tabs:[], active:true });
+  assert.equal(pris.status, 404);
+
+  /* Créer un compte sans pays serait créer un compte plus large que soi : refusé
+     explicitement, parce que l'appelant a le droit d'administrer et doit savoir ce
+     qu'il ne peut pas faire. */
+  const global = await request(app).post("/api/users").set("Authorization", `Bearer ${multi.mgToken}`)
+    .send({ email:"global@test.local", password:"GlobalMotDePasse1", first_name:"Global",
+            role:"viewer", country_code:"COD", tabs:["home"], active:true });
+  assert.equal(global.status, 403);
+  assert.ok(/votre pays/.test(global.body.error), global.body.error);
+
+  const sien = await request(app).post("/api/users").set("Authorization", `Bearer ${multi.mgToken}`)
+    .send({ email:"local-mdg@test.local", password:"LocalMotDePasse1", first_name:"Local",
+            role:"viewer", tabs:["home"], active:true });
+  assert.equal(sien.status, 201);
+  assert.equal(sien.body.user.country_code, "MDG",
+    "un compte créé sans pays reçoit celui de son créateur, non l'absence de pays");
+});
+
+test("multi-pays : prestataires et plan MRE sont rattachés, et la référence MRE est unique par pays", async () => {
+  const tp = await request(app).post("/api/tpm").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Prestataire congolais", office_id:multi.kinshasa, country_code:"COD" });
+  assert.equal(tp.status, 201);
+  const vus = await request(app).get("/api/tpm").set("Authorization", `Bearer ${multi.mgToken}`);
+  assert.ok(!vus.body.rows.some(x => x.id === tp.body.id));
+  assert.equal((await request(app).put(`/api/tpm/${tp.body.id}`)
+    .set("Authorization", `Bearer ${multi.mgToken}`).send({ name:"Détourné" })).status, 404);
+
+  /* La référence d'une activité MRE était unique pour toute l'instance : le premier
+     pays à saisir « ME-2026-01 » l'interdisait au second, avec un message parlant
+     d'un doublon invisible pour lui. Elle est désormais unique par pays. */
+  const a1 = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:2026, ref:"ME-2026-01", title:"Suivi de processus Madagascar", kind:"suivi" });
+  assert.equal(a1.status, 201);
+  const memeP = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:2026, ref:"ME-2026-01", title:"Doublon dans le même pays", kind:"suivi" });
+  assert.equal(memeP.status, 409, "dans un même pays, la référence reste unique");
+
+  const a2 = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
+    .set("X-MEMS-Country", "COD")
+    .send({ year:2026, ref:"ME-2026-01", title:"Suivi de processus Congo", kind:"suivi" });
+  assert.equal(a2.status, 201, "le même numéro est libre dans un autre pays");
+  assert.equal(db.prepare("SELECT country_code FROM mre_activity WHERE id=?").get(a2.body.activity.id)
+    .country_code, "COD");
+
+  const planMg = await request(app).get("/api/mre?year=2026").set("Authorization", `Bearer ${multi.mgToken}`);
+  assert.ok(planMg.body.rows.some(x => x.id === a1.body.activity.id));
+  assert.ok(!planMg.body.rows.some(x => x.id === a2.body.activity.id),
+    "deux plans pays ne s'additionnent pas dans un même total");
+  assert.equal((await request(app).put(`/api/mre/${a2.body.activity.id}`)
+    .set("Authorization", `Bearer ${multi.mgToken}`)
+    .send({ year:2026, title:"Détourné", kind:"suivi" })).status, 404);
+});

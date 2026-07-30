@@ -115,6 +115,11 @@ export const schemas = {
     first_name: z.string().min(1).max(80),
     last_name: nullableStr(80), title: nullableStr(120),
     office_id: nullableStr(64),
+    /* Le pays du compte. NULL est un choix qui se dit : le compte n'est borné à aucun
+       pays — bureau régional, administrateur de l'instance — et voit les données de
+       tous. Seul un compte lui-même non borné peut en créer un. */
+    country_code: z.string().trim().length(3).nullish()
+      .transform(v => (v ? v.toUpperCase() : null)),
     /* Rattachement à un prestataire de suivi. Un compte qui en porte un est un
        intervenant externe : il ne voit que les plans de son prestataire, quel que
        soit son rôle. Voir tpmBound dans lib/scope.js. */

@@ -3,9 +3,9 @@ import { z } from "zod";
 import { db, tx } from "../db.js";
 import { newId } from "../lib/crypto.js";
 import { requireCap, can } from "../lib/auth.js";
-import { isNational, officeBound, tpmBound } from "../lib/scope.js";
+import { countryBound, countryClause, isNational, officeBound, tpmBound } from "../lib/scope.js";
 import { currentVersion } from "../lib/geo.js";
-import { localCurrency } from "../lib/country.js";
+import { localCurrency, writeCountry } from "../lib/country.js";
 import { contractBalance, lineTotal, modifiable, niveauAttendu, planAmount, planDetail,
          regenerate, suggestZones, TRANSITIONS } from "../lib/tpm.js";
 
@@ -48,11 +48,15 @@ const label = (u) => `${u.first_name||""} ${u.last_name||""}`.trim() || u.email;
 const visibleTpm = (req) => {
   const mien = tpmBound(req.user);
   if(mien) return { sql:" AND t.id = ?", args:[mien] };
+  /* Le pays d'abord : un prestataire contracté au Congo n'a rien à faire dans la
+     liste d'un bureau malgache, quel que soit son rattachement de bureau. */
+  const pays = countryClause(req.user, "t");
   const bureau = officeBound(req.user);
   /* Un bureau voit les prestataires qui lui sont rattachés et ceux qui ne le sont
      à aucun bureau — un TPM national travaille pour tout le monde. */
-  if(bureau) return { sql:" AND (t.office_id = ? OR t.office_id IS NULL)", args:[bureau] };
-  return { sql:"", args:[] };
+  if(bureau) return { sql:pays.sql + " AND (t.office_id = ? OR t.office_id IS NULL)",
+                      args:[...pays.args, bureau] };
+  return pays;
 };
 
 r.get("/", (req, res) => {
@@ -75,7 +79,8 @@ r.get("/", (req, res) => {
       }));
     return { id:t.id, name:t.name, code:t.code || "", office_id:t.office_id,
       office:t.office_name || "", contact:t.contact || "", email:t.email || "",
-      phone:t.phone || "", note:t.note || "", active:!!t.active, rev:t.rev,
+      phone:t.phone || "", note:t.note || "", country_code:t.country_code || null,
+      active:!!t.active, rev:t.rev,
       users: db.prepare("SELECT COUNT(*) c FROM users WHERE tpm_id=?").get(t.id).c,
       contrats };
   }) });
@@ -83,6 +88,7 @@ r.get("/", (req, res) => {
 
 const tpmSchema = z.object({
   name: z.string().trim().min(2).max(120), code:S(24), office_id:S(64),
+  country_code: z.string().trim().length(3).nullish().transform(v => (v ? v.toUpperCase() : null)),
   contact:S(120), email:S(160), phone:S(40), note:S(600),
   active: z.boolean().default(true), rev: z.coerce.number().int().min(1).optional(),
 });
@@ -94,15 +100,25 @@ r.post("/", requireCap("admin"), (req, res) => {
   if(db.prepare("SELECT 1 FROM tpm WHERE name=? COLLATE NOCASE").get(p.data.name))
     return res.status(409).json({ error:"un prestataire porte déjà ce nom" });
   const id = newId("tpm"); const b = p.data;
-  db.prepare(`INSERT INTO tpm (id,name,code,office_id,contact,email,phone,note,active,updated_at)
-              VALUES (?,?,?,?,?,?,?,?,?,datetime('now'))`)
-    .run(id, b.name, b.code, b.office_id, b.contact, b.email, b.phone, b.note, b.active?1:0);
-  audit(req, "tpm", id, "create", `Prestataire de suivi créé — ${b.name}`);
+  const pays = writeCountry(req.user, b.country_code);
+  if(pays.error) return res.status(422).json({ error:pays.error });
+  db.prepare(`INSERT INTO tpm (id,name,code,office_id,country_code,contact,email,phone,note,active,updated_at)
+              VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))`)
+    .run(id, b.name, b.code, b.office_id, pays.code, b.contact, b.email, b.phone, b.note, b.active?1:0);
+  audit(req, "tpm", id, "create", `Prestataire de suivi créé — ${b.name} (${pays.code})`);
   res.status(201).json({ ok:true, id });
 });
 
+/* Le prestataire d'un autre pays est introuvable, pas refusé : même raison qu'ailleurs. */
+const monTpm = (req, id) => {
+  const t = db.prepare("SELECT * FROM tpm WHERE id=?").get(id);
+  if(!t) return null;
+  const pays = countryBound(req.user);
+  return (pays && t.country_code && t.country_code !== pays) ? null : t;
+};
+
 r.put("/:id", requireCap("admin"), (req, res) => {
-  const cur = db.prepare("SELECT * FROM tpm WHERE id=?").get(req.params.id);
+  const cur = monTpm(req, req.params.id);
   if(!cur) return res.status(404).json({ error:"prestataire introuvable" });
   const p = tpmSchema.safeParse(req.body);
   if(!p.success) return res.status(422).json({ error:"prestataire invalide" });
@@ -119,7 +135,7 @@ r.put("/:id", requireCap("admin"), (req, res) => {
 });
 
 r.delete("/:id", requireCap("admin"), (req, res) => {
-  const cur = db.prepare("SELECT * FROM tpm WHERE id=?").get(req.params.id);
+  const cur = monTpm(req, req.params.id);
   if(!cur) return res.status(404).json({ error:"prestataire introuvable" });
   const plans = db.prepare("SELECT COUNT(*) c FROM tpm_plan WHERE tpm_id=?").get(cur.id).c;
   const comptes = db.prepare("SELECT COUNT(*) c FROM users WHERE tpm_id=?").get(cur.id).c;
@@ -155,7 +171,7 @@ r.post("/contracts", requireCap("admin"), (req, res) => {
   if(!p.success) return res.status(422).json({ error:"contrat invalide",
     details:p.error.issues.map(i => ({ champ:i.path.join("."), message:i.message })) });
   const b = p.data;
-  if(!db.prepare("SELECT 1 FROM tpm WHERE id=?").get(b.tpm_id))
+  if(!monTpm(req, b.tpm_id))
     return res.status(404).json({ error:"prestataire introuvable" });
   if(db.prepare("SELECT 1 FROM tpm_contract WHERE tpm_id=? AND ref=?").get(b.tpm_id, b.ref))
     return res.status(409).json({ error:`la référence ${b.ref} existe déjà pour ce prestataire` });
@@ -254,6 +270,10 @@ function visiblePlans(req, f){
   const mien = tpmBound(req.user);
   if(mien){ where.push("p.tpm_id = ?"); args.push(mien); }
   else {
+    /* Le plan suit le pays de son prestataire : il n'a pas de pays propre, et lui en
+       donner un aurait créé une occasion de le voir diverger de celui du contrat. */
+    const pays = countryClause(req.user, "t");
+    if(pays.sql){ where.push(pays.sql.replace(/^ AND /, "")); args.push(...pays.args); }
     const bureau = officeBound(req.user);
     if(bureau){ where.push("(t.office_id = ? OR t.office_id IS NULL)"); args.push(bureau); }
     if(f.tpm_id){ where.push("p.tpm_id = ?"); args.push(f.tpm_id); }
@@ -268,12 +288,17 @@ function visiblePlans(req, f){
 
 /* Le plan est-il accessible à l'appelant, et en lecture ou en écriture ? */
 function reachable(req, id){
-  const p = db.prepare(`SELECT p.*, t.office_id tpm_office FROM tpm_plan p
-    JOIN tpm t ON t.id = p.tpm_id WHERE p.id = ?`).get(id);
+  const p = db.prepare(`SELECT p.*, t.office_id tpm_office, t.country_code tpm_country
+    FROM tpm_plan p JOIN tpm t ON t.id = p.tpm_id WHERE p.id = ?`).get(id);
   if(!p) return { error:"plan introuvable", status:404 };
   const mien = tpmBound(req.user);
   if(mien && p.tpm_id !== mien)
     return { error:"ce plan relève d'un autre prestataire", status:403 };
+  /* Hors de son pays, le plan est introuvable et non refusé : un 403 confirmerait
+     qu'il existe, ce qui n'est pas l'affaire d'un compte d'un autre pays. */
+  const pays = countryBound(req.user);
+  if(pays && p.tpm_country && p.tpm_country !== pays)
+    return { error:"plan introuvable", status:404 };
   const bureau = officeBound(req.user);
   if(!mien && bureau && p.tpm_office && p.tpm_office !== bureau)
     return { error:"ce prestataire relève d'un autre bureau", status:403 };

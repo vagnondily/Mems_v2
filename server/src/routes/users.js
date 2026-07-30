@@ -4,11 +4,42 @@ import { newId } from "../lib/crypto.js";
 import { requireCap } from "../lib/auth.js";
 import { validate, schemas } from "../lib/validate.js";
 import { hashPassword, passwordProblems } from "../lib/auth.js";
+import { countryBound } from "../lib/scope.js";
 
 const r = Router();
 const shape = (u) => ({ id:u.id, email:u.email, first_name:u.first_name, last_name:u.last_name,
-  title:u.title, office_id:u.office_id, tpm_id:u.tpm_id || null, role:u.role,
+  title:u.title, office_id:u.office_id, country_code:u.country_code || null,
+  tpm_id:u.tpm_id || null, role:u.role,
   tabs:JSON.parse(u.tabs||"[]"), active:!!u.active, last_login:u.last_login });
+
+/* Le pays d'un compte qu'on crée ou modifie.
+
+   Un administrateur borné à un pays administre son pays : il ne peut ni créer un
+   compte ailleurs, ni créer un compte SANS pays — ce dernier verrait tous les pays,
+   ce qui serait une élévation de privilège offerte par un champ laissé vide. Un
+   administrateur non borné choisit, y compris de ne rien mettre.
+
+   Rendre 403 plutôt que d'imposer silencieusement : ici l'appelant a le droit
+   d'administrer, il faut donc lui dire ce qu'il ne peut pas faire au lieu de
+   corriger son geste dans son dos. */
+function paysDuCompte(req, b){
+  const mien = countryBound(req.user);
+  if(!mien) return { code: b.country_code ?? null };
+  if(b.country_code && b.country_code !== mien)
+    return { error:"vous n'administrez que les comptes de votre pays" };
+  return { code: mien };
+}
+
+/* Le compte visible de l'appelant. Un administrateur borné ne voit ni les comptes
+   d'un autre pays, ni les comptes non bornés — ces derniers ont, par construction,
+   une portée plus large que la sienne. */
+function joignable(req, id){
+  const u = db.prepare("SELECT * FROM users WHERE id=?").get(id);
+  if(!u) return null;
+  const mien = countryBound(req.user);
+  if(mien && u.country_code !== mien) return null;
+  return u;
+}
 
 /* Un compte de prestataire n'administre pas l'application. Il est déjà borné à son
    prestataire par lib/scope.js, mais le droit d'administration lui donnerait la
@@ -24,8 +55,17 @@ function tpmInterdit(b){
 
 r.use(requireCap("admin"));
 
-r.get("/", (req, res) => res.json({ users:
-  db.prepare("SELECT * FROM users ORDER BY first_name").all().map(shape) }));
+r.get("/", (req, res) => {
+  /* Pas de `countryClause` ici : elle inclut volontairement les lignes sans pays, ce
+     qui convient à un bureau ou à un prestataire mais pas à un compte — un compte
+     sans pays voit tous les pays, et l'exposer à un administrateur borné lui
+     donnerait une cible à modifier. Le filtre est donc strict. */
+  const mien = countryBound(req.user);
+  const rows = mien
+    ? db.prepare("SELECT * FROM users WHERE country_code=? ORDER BY first_name").all(mien)
+    : db.prepare("SELECT * FROM users ORDER BY first_name").all();
+  res.json({ users: rows.map(shape) });
+});
 
 r.post("/", validate(schemas.user), async (req, res) => {
   const b = req.body;
@@ -37,11 +77,13 @@ r.post("/", validate(schemas.user), async (req, res) => {
     return res.status(409).json({ error:"cette adresse est déjà utilisée" });
   const interdit = tpmInterdit(b);
   if(interdit) return res.status(422).json({ error:interdit });
+  const pays = paysDuCompte(req, b);
+  if(pays.error) return res.status(403).json({ error:pays.error });
   const id = newId("user");
-  db.prepare(`INSERT INTO users (id,email,pw_hash,first_name,last_name,title,office_id,tpm_id,role,tabs,active,must_change_pw)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,1)`)
+  db.prepare(`INSERT INTO users (id,email,pw_hash,first_name,last_name,title,office_id,country_code,
+              tpm_id,role,tabs,active,must_change_pw) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)`)
     .run(id, b.email, await hashPassword(b.password), b.first_name, b.last_name, b.title,
-         b.office_id, b.tpm_id, b.role, JSON.stringify(b.tabs), b.active?1:0);
+         b.office_id, pays.code, b.tpm_id, b.role, JSON.stringify(b.tabs), b.active?1:0);
   db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'securite','users',?,'create',?)`)
     .run(newId("aud"), req.user.id, req.user.email, id, `Compte créé — ${b.email}`);
@@ -49,7 +91,7 @@ r.post("/", validate(schemas.user), async (req, res) => {
 });
 
 r.put("/:id", validate(schemas.user), async (req, res) => {
-  const cur = db.prepare("SELECT * FROM users WHERE id=?").get(req.params.id);
+  const cur = joignable(req, req.params.id);
   if(!cur) return res.status(404).json({ error:"compte introuvable" });
   const b = req.body;
   /* Un administrateur ne peut ni se retirer ses propres droits ni se désactiver :
@@ -62,6 +104,11 @@ r.put("/:id", validate(schemas.user), async (req, res) => {
   if(dup) return res.status(409).json({ error:"cette adresse est déjà utilisée" });
   const interdit = tpmInterdit(b);
   if(interdit) return res.status(422).json({ error:interdit });
+  const pays = paysDuCompte(req, b);
+  if(pays.error) return res.status(403).json({ error:pays.error });
+  /* Se retirer son propre pays serait s'élargir soi-même à toute l'instance. */
+  if(cur.id === req.user.id && (pays.code || null) !== (cur.country_code || null))
+    return res.status(409).json({ error:"vous ne pouvez pas changer votre propre pays" });
   let pwSql = "", pwArg = [];
   if(b.password){
     const problems = passwordProblems(b.password);
@@ -71,8 +118,9 @@ r.put("/:id", validate(schemas.user), async (req, res) => {
     db.prepare("UPDATE sessions SET revoked=1 WHERE user_id=?").run(cur.id);
   }
   db.prepare(`UPDATE users SET email=?, first_name=?, last_name=?, title=?, office_id=?,
-              tpm_id=?, role=?, tabs=?, active=?, updated_at=datetime('now') ${pwSql} WHERE id=?`)
-    .run(b.email, b.first_name, b.last_name, b.title, b.office_id, b.tpm_id, b.role,
+              country_code=?, tpm_id=?, role=?, tabs=?, active=?, updated_at=datetime('now')
+              ${pwSql} WHERE id=?`)
+    .run(b.email, b.first_name, b.last_name, b.title, b.office_id, pays.code, b.tpm_id, b.role,
          JSON.stringify(b.tabs), b.active?1:0, ...pwArg, cur.id);
   db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'securite','users',?,'update',?)`)
@@ -83,7 +131,7 @@ r.put("/:id", validate(schemas.user), async (req, res) => {
 r.delete("/:id", (req, res) => {
   if(req.params.id === req.user.id)
     return res.status(409).json({ error:"vous ne pouvez pas supprimer votre propre compte" });
-  const cur = db.prepare("SELECT * FROM users WHERE id=?").get(req.params.id);
+  const cur = joignable(req, req.params.id);
   if(!cur) return res.status(404).json({ error:"compte introuvable" });
   const supers = db.prepare("SELECT COUNT(*) c FROM users WHERE role='super' AND active=1").get().c;
   if(cur.role === "super" && supers <= 1)

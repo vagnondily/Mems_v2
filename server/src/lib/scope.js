@@ -1,5 +1,6 @@
 import { db } from "../db.js";
 import { currentVersion } from "./geo.js";
+import { ctx } from "./ctx.js";
 
 /* ═══════════════════════════════════════════════════════════════════════
    Périmètre géographique d'un utilisateur — une seule définition.
@@ -45,6 +46,45 @@ export function officeBound(user){
   return isNational(user.office_id) ? null : user.office_id;
 }
 
+/* Le pays auquel un compte est cloisonné, ou null s'il n'est borné à aucun.
+
+   C'est la couche la plus haute du cloisonnement, au-dessus du bureau : une
+   instance sert plusieurs pays, et un compte de Madagascar n'a rien à voir dans
+   les données du Congo. Elle ne dépend PAS du rôle — contrairement au bureau, qui
+   ne borne que les rôles opérationnels : un administrateur de bureau pays
+   administre son pays, pas l'instance entière. Seul un compte volontairement créé
+   sans pays — un bureau régional, l'administrateur de l'instance — traverse les
+   frontières.
+
+           pays  →  bureau  →  périmètre géographique
+           ↑ ici    ↑ officeBound   ↑ scopeOf                                     */
+export function countryBound(user){
+  if(user?.country_code) return user.country_code;
+  /* Un compte non borné qui a choisi un pays y travaille comme les autres : il ne
+     voit plus les trois pays mais celui-là. Sans choix, il n'y a pas de filtre —
+     c'est la vue d'ensemble, et c'est ce qui permet de configurer le pays suivant.
+
+     Le contexte n'est lu que pour l'utilisateur de la requête. `countryBound` est
+     aussi appelé avec un AUTRE compte — l'écran des comptes montre le périmètre de
+     chacun — et rendre là le filtre du demandeur ferait mentir cette colonne. */
+  const c = ctx();
+  if(user && c.user && user.id === c.user.id) return c.countryFilter || null;
+  return null;
+}
+
+/* Filtre de pays en SQL, pour une table qui porte `country_code`.
+
+   Les lignes sans pays sont VOLONTAIREMENT incluses. Trois raisons, dans l'ordre :
+   elles datent d'avant le rattachement et les cacher ferait disparaître des données
+   d'un écran sans un mot ; un prestataire ou un bureau peut être régional, donc
+   sans pays unique ; et une suppression silencieuse est le pire signal possible pour
+   une donnée mal rattachée — mieux vaut la voir et la corriger. */
+export function countryClause(user, alias = "t", column = "country_code"){
+  const pays = countryBound(user);
+  if(!pays) return { sql:"", args:[] };
+  return { sql:` AND (${alias}.${column} = ? OR ${alias}.${column} IS NULL)`, args:[pays] };
+}
+
 /* Le prestataire auquel un compte appartient, ou null.
 
    Troisième forme de cloisonnement, après le rôle et le bureau. Un compte rattaché
@@ -55,6 +95,41 @@ export function officeBound(user){
    une erreur de saisie, et la lecture la plus prudente est de le borner. */
 export function tpmBound(user){
   return user?.tpm_id || null;
+}
+
+/* Filtre par bureau ET par pays, pour une table qui porte `office_id` : sites,
+   visites, paramètres de couverture, plan de distribution.
+
+   Ces tables ne portent pas de pays — décision de la migration 015, pour qu'il ne
+   puisse pas diverger de celui de leur bureau. Le pays s'y lit donc à travers le
+   bureau, ce que fait la sous-requête. Un compte borné à un bureau n'a pas besoin du
+   pays : son bureau est déjà dans un seul pays. */
+export function officeClause(user, alias = "t"){
+  const bureau = officeBound(user);
+  if(bureau) return { sql:` AND ${alias}.office_id = ?`, args:[bureau] };
+  const pays = countryBound(user);
+  if(!pays) return { sql:"", args:[] };
+  return {
+    sql:` AND (${alias}.office_id IS NULL OR ${alias}.office_id IN
+              (SELECT id FROM offices WHERE country_code = ? OR country_code IS NULL))`,
+    args:[pays],
+  };
+}
+
+/* Le bureau désigné est-il dans le périmètre de l'appelant ?
+
+   Le filtre en lecture ne suffit pas : les écritures reçoivent un `office_id` venu du
+   formulaire, et sans cette vérification un compte de Madagascar créerait un site
+   dans un bureau du Congo en changeant un champ. Rend le niveau du refus, pour que
+   l'appelant réponde 403 (« un autre bureau », qui existe et se nomme) ou 404 (« un
+   autre pays », dont on ne confirme même pas l'existence). */
+export function officeReach(user, officeId){
+  const bureau = officeBound(user);
+  if(bureau && officeId !== bureau) return "bureau";
+  const pays = countryBound(user);
+  if(!pays || !officeId) return null;
+  const o = db.prepare("SELECT country_code FROM offices WHERE id=?").get(officeId);
+  return (o && o.country_code && o.country_code !== pays) ? "pays" : null;
 }
 
 /* Les unités attribuées à un bureau, telles qu'on les a déclarées. */

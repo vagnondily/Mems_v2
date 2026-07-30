@@ -3,8 +3,9 @@ import { z } from "zod";
 import { db, tx } from "../db.js";
 import { newId } from "../lib/crypto.js";
 import { requireCap } from "../lib/auth.js";
-import { officeBound } from "../lib/scope.js";
+import { countryBound, countryClause, officeBound } from "../lib/scope.js";
 import { currentVersion } from "../lib/geo.js";
+import { writeCountry } from "../lib/country.js";
 
 /* ═══════════════════════════════════════════════════════════════════════
    Plan MRE et budget — suivi, revue, évaluation.
@@ -59,6 +60,8 @@ const activitySchema = z.object({
   purpose:      S(600),
   method:       S(300),
   office_id:    S(64),
+  /* Le pays du plan. Un compte borné ne le choisit pas : la route l'impose. */
+  country_code: z.string().trim().length(3).nullish().transform(v => (v ? v.toUpperCase() : null)),
   activity_tag: S(20),
   indicator_id: S(64),
   geo_pcode:    S(64),
@@ -150,6 +153,10 @@ const shape = (a, cost, labels) => {
 function visibles(req, extra = {}){
   const bound = officeBound(req.user);
   const where = ["a.year = ?"]; const args = [extra.year];
+  /* Le pays avant le bureau : le plan MRE est celui d'un bureau pays, et deux pays
+     n'ont pas à voir leurs plans additionnés dans un même total. */
+  const pays = countryClause(req.user, "a");
+  if(pays.sql){ where.push(pays.sql.replace(/^ AND /, "")); args.push(...pays.args); }
   if(bound){ where.push("(a.office_id = ? OR a.office_id IS NULL)"); args.push(bound); }
   else if(extra.office_id){ where.push("a.office_id = ?"); args.push(extra.office_id); }
   if(extra.kind){   where.push("a.kind = ?");   args.push(extra.kind); }
@@ -269,16 +276,21 @@ r.post("/", requireCap("edit"), (req, res) => {
   const bound = officeBound(req.user);
   /* Un compte cloisonné ne crée que pour son bureau, quoi que dise le corps. */
   if(bound) b.office_id = bound;
-  if(b.ref && db.prepare("SELECT 1 FROM mre_activity WHERE year=? AND ref=?").get(b.year, b.ref))
+  const pays = writeCountry(req.user, b.country_code);
+  if(pays.error) return res.status(422).json({ error:pays.error });
+  if(b.ref && db.prepare(
+      "SELECT 1 FROM mre_activity WHERE year=? AND ref=? AND (country_code=? OR country_code IS NULL)")
+      .get(b.year, b.ref, pays.code))
     return res.status(409).json({ error:`la référence ${b.ref} existe déjà pour ${b.year}` });
   if(b.start_month != null && b.end_month != null && b.end_month < b.start_month)
     return res.status(422).json({ error:"le mois de fin précède le mois de début" });
 
   const id = newId("mre");
-  db.prepare(`INSERT INTO mre_activity (id,year,ref,title,kind,purpose,method,office_id,activity_tag,
-    indicator_id,geo_pcode,responsible,start_month,end_month,sample,status,funding,currency,note,created_by)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(id, b.year, b.ref, b.title, b.kind, b.purpose, b.method, b.office_id, b.activity_tag,
+  db.prepare(`INSERT INTO mre_activity (id,year,ref,title,kind,purpose,method,office_id,country_code,
+    activity_tag,indicator_id,geo_pcode,responsible,start_month,end_month,sample,status,funding,
+    currency,note,created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, b.year, b.ref, b.title, b.kind, b.purpose, b.method, b.office_id, pays.code, b.activity_tag,
          b.indicator_id, b.geo_pcode, b.responsible, b.start_month, b.end_month, b.sample,
          b.status, b.funding, b.currency, b.note, req.user.id);
   audit(req, "create", id, `Plan MRE ${b.year} — activité créée : ${b.title}`);
@@ -296,8 +308,12 @@ r.put("/:id", requireCap("edit"), (req, res) => {
     return res.status(409).json({ error:"cette activité a été modifiée entre-temps",
       courant: one(req, cur.row.id) });
   if(officeBound(req.user)) b.office_id = cur.row.office_id;
-  if(b.ref && db.prepare("SELECT 1 FROM mre_activity WHERE year=? AND ref=? AND id<>?")
-      .get(b.year, b.ref, cur.row.id))
+  /* L'unicité de la référence est par pays : deux bureaux pays numérotent leurs
+     activités indépendamment, et « MDG-2025-01 » n'entre pas en concurrence avec la
+     numérotation du voisin. */
+  if(b.ref && db.prepare(`SELECT 1 FROM mre_activity WHERE year=? AND ref=? AND id<>?
+      AND (country_code IS ? OR country_code IS NULL)`)
+      .get(b.year, b.ref, cur.row.id, cur.row.country_code))
     return res.status(409).json({ error:`la référence ${b.ref} existe déjà pour ${b.year}` });
   if(b.start_month != null && b.end_month != null && b.end_month < b.start_month)
     return res.status(422).json({ error:"le mois de fin précède le mois de début" });
@@ -371,6 +387,11 @@ function one(req, id){
 function mine(req, id){
   const row = db.prepare("SELECT * FROM mre_activity WHERE id=?").get(id);
   if(!row) return { error:"activité introuvable", status:404 };
+  /* Un autre pays rend l'activité introuvable, non refusée : la distinction dirait
+     qu'elle existe, ce qui ne regarde pas un compte d'un autre pays. */
+  const pays = countryBound(req.user);
+  if(pays && row.country_code && row.country_code !== pays)
+    return { error:"activité introuvable", status:404 };
   const bound = officeBound(req.user);
   if(bound && row.office_id !== bound)
     return { error: row.office_id

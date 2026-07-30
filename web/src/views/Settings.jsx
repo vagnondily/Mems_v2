@@ -652,13 +652,15 @@ function SetCountry({ db, notify, can, reload }){
         un pays — région, district, commune, fokontany à Madagascar ; province, territoire, secteur,
         groupement en RDC. Ils sont configurés ici et utilisés partout, plutôt que réécrits écran par écran.
         <br /><br />
-        <b>Un seul pays est courant à la fois.</b> C'est ce qui correspond à un déploiement par bureau
-        pays. Servir plusieurs pays depuis une même instance supposerait de rattacher les sites, les
-        bureaux et les comptes à un pays — une autre décision, celle de savoir si un utilisateur
-        traverse les frontières.</Note>
+        <b>Une instance sert plusieurs pays.</b> Le pays marqué ici n'est donc pas « le pays de tout le
+        monde » : c'est le <b>pays par défaut de l'instance</b> — celui d'un compte qui n'en déclare
+        aucun, et celui qu'un nouveau compte reçoit. Le pays dans lequel un utilisateur travaille est
+        une propriété de <b>son compte</b> (Paramètres → Utilisateurs) ; un compte non borné le change
+        par le sélecteur de l'en-tête. Un drapeau unique et global serait un état partagé que deux
+        comptes de deux pays se disputeraient.</Note>
 
       <Card flush title="Pays configurés"
-        subtitle={`${data.rows.length} pays · courant : ${data.current?.name || "aucun"}`}
+        subtitle={`${data.rows.length} pays · par défaut : ${data.current?.name || "aucun"}`}
         right={can("admin") && <Btn size="sm" icon={Plus}
           onClick={()=>setEdit({ ...vide, _existe:false })}>Ajouter un pays</Btn>}>
         <TableWrap>
@@ -673,19 +675,19 @@ function SetCountry({ db, notify, can, reload }){
               <Td className="f115 text-slate-600 whitespace-normal mw420">
                 {["adm1","adm2","adm3","adm4"].map(l => c.levels[l]?.many).filter(Boolean).join(" · ")}</Td>
               <Td num className={c.versions ? "" : "text-amber-700"}>{c.versions || "aucun"}</Td>
-              <Td>{c.current ? <Badge tone="g">courant</Badge>
+              <Td>{c.current ? <Badge tone="g">par défaut</Badge>
                 : c.active ? <Badge>actif</Badge> : <Badge tone="r">désactivé</Badge>}</Td>
               <Td className="text-right whitespace-nowrap">{can("admin") && (<>
                 <Btn size="sm" kind="sec" icon={Pencil}
                   onClick={()=>setEdit({ ...c, _existe:true })}>Modifier</Btn>
                 {!c.current && c.active && <Btn size="sm" kind="sec" className="ml-2" disabled={busy}
-                  onClick={async ()=>{ if(!confirm(`Rendre « ${c.name} » courant ? Le référentiel géographique suivra.`)) return;
+                  onClick={async ()=>{ if(!confirm(`Faire de « ${c.name} » le pays par défaut de l'instance ? Les comptes sans pays déclaré y basculeront.`)) return;
                     setBusy(true);
-                    try{ const r = await api.setCountry(c.code); await charger();
+                    try{ const r = await api.setDefaultCountry(c.code); await charger();
                       if(reload) await reload();
-                      notify(r.avertissement || `Pays courant : ${c.name}`, r.avertissement ? "warn" : "ok");
+                      notify(r.avertissement || `Pays par défaut : ${c.name}`, r.avertissement ? "warn" : "ok");
                     }catch(e){ notify(e.message,"err"); }
-                    setBusy(false); }}>Rendre courant</Btn>}</>)}</Td>
+                    setBusy(false); }}>Rendre par défaut</Btn>}</>)}</Td>
             </tr>))}</tbody>
         </TableWrap>
       </Card>
@@ -759,7 +761,7 @@ function SetOffices({ db, notify, can, reload }){
   const enregistrer = async (f) => {
     setBusy(true);
     const payload = { name:(f.name||"").trim(), code:f.code||null, kind:f.kind||"field",
-      scope_mode:f.scope_mode||"geo",
+      scope_mode:f.scope_mode||"geo", country_code:f.country_code || null,
       antennes:(f.antennes||[]).map(a=>a.trim()).filter(Boolean),
       manager:f.manager||null, email:f.email||null, phone:f.phone||null,
       lat:f.lat===""||f.lat==null?null:r5(n(f.lat)), lon:f.lon===""||f.lon==null?null:r5(n(f.lon)),
@@ -788,6 +790,7 @@ function SetOffices({ db, notify, can, reload }){
 
   if(rows === null) return <Empty icon={Building2} title="Chargement des bureaux…" />;
   const nat = rows.filter(o=>o.scope_mode==="national").length;
+  const multi = (db?.countries || []).length > 1;
 
   return (
     <>
@@ -803,13 +806,17 @@ function SetOffices({ db, notify, can, reload }){
           onClick={()=>setEdit({ kind:"field", scope_mode:"geo", active:true, antennes:[] })}>
           Ajouter un bureau</Btn>}>
         <TableWrap max="mh480">
-          <thead><tr><Th>Bureau</Th><Th>Code</Th><Th>Nature</Th><Th>Périmètre</Th>
-            <Th>Antennes</Th><Th>Responsable</Th><Th num>Sites</Th><Th num>Comptes</Th>
-            <Th>Statut</Th><Th /></tr></thead>
+          {/* La colonne « Pays » n'apparaît que si l'instance en sert plusieurs :
+              une colonne qui répète la même valeur sur chaque ligne prend de la place
+              sans rien apprendre. */}
+          <thead><tr><Th>Bureau</Th><Th>Code</Th>{multi && <Th>Pays</Th>}<Th>Nature</Th>
+            <Th>Périmètre</Th><Th>Antennes</Th><Th>Responsable</Th><Th num>Sites</Th>
+            <Th num>Comptes</Th><Th>Statut</Th><Th /></tr></thead>
           <tbody>{rows.map(o=>(
             <tr key={o.id} className="hover:bg-sky-50">
               <Td className="font-medium text-slate-800">{o.name}</Td>
               <Td className="f115 text-slate-500">{o.code || "—"}</Td>
+              {multi && <Td className="f115 text-slate-600">{o.country || o.country_code || "—"}</Td>}
               <Td>{o.kind==="hq" ? <Badge tone="b">bureau pays</Badge> : <Badge>terrain</Badge>}</Td>
               <Td>{o.scope_mode==="national"
                 ? <Badge tone="b">national — tous les sites</Badge>
@@ -837,11 +844,11 @@ function SetOffices({ db, notify, can, reload }){
           l'ensemble, sans leur donner la gestion des comptes.</Note>)}
 
       <OfficeModal open={!!edit} office={edit} busy={busy}
-        onClose={()=>setEdit(null)} onSave={enregistrer} />
+        onClose={()=>setEdit(null)} onSave={enregistrer} db={db} />
     </>);
 }
 
-function OfficeModal({ open, office, busy, onClose, onSave }){
+function OfficeModal({ open, office, busy, onClose, onSave, db }){
   const [f,setF] = useState({});
   useEffect(()=>{ setF(office ? { ...office, antennes:[...(office.antennes||[])] }
                               : { kind:"field", scope_mode:"geo", active:true, antennes:[] }); },[office]);
@@ -866,6 +873,17 @@ function OfficeModal({ open, office, busy, onClose, onSave }){
         <Field label="Nature">
           <Select value={f.kind||"field"} onChange={e=>u("kind",e.target.value)}
             options={[["field","Bureau de terrain"],["hq","Bureau pays"]]} /></Field>
+        {/* Le pays n'apparaît que si l'instance en sert plusieurs, et que l'appelant
+            n'est borné à aucun — sinon il n'y a rien à choisir, et un champ à une
+            seule valeur est du bruit. Un bureau qui porte déjà des données ne change
+            plus de pays : son périmètre géographique appartient au découpage de
+            celui-ci. */}
+        {(db?.countries || []).length > 1 && (
+          <Field label="Pays" hint={office?.id ? "Un bureau qui porte des données ne change plus de pays" : ""}>
+            <Select value={f.country_code || db?.country?.code || ""}
+              disabled={!!office?.id && !!Object.values(office.usage||{}).reduce((a,b)=>a+b,0)}
+              onChange={e=>u("country_code",e.target.value)}
+              options={db.countries.map(c => [c.code, c.name])} /></Field>)}
         <Field label="Responsable"><Input value={f.manager||""} onChange={e=>u("manager",e.target.value)} /></Field>
         <Field label="Adresse électronique"><Input type="email" value={f.email||""} onChange={e=>u("email",e.target.value)} /></Field>
         <Field label="Téléphone"><Input value={f.phone||""} onChange={e=>u("phone",e.target.value)} /></Field>
@@ -1799,6 +1817,11 @@ function SetUsers({ db, set, me, notify }){
     const payload = { email:(u2.email||"").trim(), first_name:u2.firstName || u2.first_name || "",
       last_name:u2.lastName || u2.last_name || null, title:u2.title || null,
       office_id:u2.office_id || null, role:u2.role || "viewer",
+      /* `country_code` et `tpm_id` sont renvoyés tels quels. Les omettre les
+         effacerait : la validation les traite comme facultatifs et un champ absent
+         devient NULL — un compte de prestataire modifié depuis cet écran perdait
+         ainsi son rattachement, et un compte de pays y gagnerait la vue de tous. */
+      country_code:u2.country_code || null, tpm_id:u2.tpm_id || null,
       tabs:u2.tabs || [], active:u2.active !== false };
     if(u2._pw) payload.password = u2._pw;
     try{
@@ -1823,7 +1846,10 @@ function SetUsers({ db, set, me, notify }){
       <Card flush title="Comptes" subtitle={`${db.users.length} comptes · ${db.users.filter(u=>u.active!==false).length} actifs`}
         right={<Btn size="sm" icon={Plus} onClick={()=>setEdit({ role:"viewer", active:true, tabs:db.roles.viewer.tabs })}>Ajouter un utilisateur</Btn>}>
         <TableWrap max="mh440">
-          <thead><tr><Th>Utilisateur</Th><Th>Fonction</Th><Th>Bureau</Th><Th>Adresse électronique</Th>
+          {/* Comme pour les bureaux : la colonne « Pays » ne s'affiche que si
+              l'instance en sert plusieurs. */}
+          <thead><tr><Th>Utilisateur</Th><Th>Fonction</Th><Th>Bureau</Th>
+            {(db.countries||[]).length > 1 && <Th>Pays</Th>}<Th>Adresse électronique</Th>
             <Th>Rôle</Th><Th>Onglets</Th><Th>Statut</Th><Th /></tr></thead>
           <tbody>{db.users.map((u2,i)=>(
             <tr key={u2.id} className="hover:bg-sky-50">
@@ -1832,6 +1858,13 @@ function SetUsers({ db, set, me, notify }){
                   {(u2.first_name?.[0]||"")+(u2.last_name?.[0]||"")}</span>
                 <b>{u2.first_name} {u2.last_name}</b></div></Td>
               <Td className="text-slate-600">{u2.title}</Td><Td>{(db.offices.find(o=>o.id===u2.office_id)||{}).name || "Tous"}</Td>
+              {(db.countries||[]).length > 1 && (
+                <Td className="f115 text-slate-600">
+                  {u2.country_code
+                    ? ((db.countries.find(c=>c.code===u2.country_code)||{}).name || u2.country_code)
+                    /* Un compte sans pays voit tous les pays : c'est un périmètre, pas un
+                       champ oublié, et il se dit explicitement. */
+                    : <Badge tone="b">tous les pays</Badge>}</Td>)}
               <Td className="f115">{u2.email}</Td>
               <Td><Badge tone={u2.role==="super"||u2.role==="admin"?"r":u2.role==="validator"?"b":u2.role==="editor"?"g":"n"}>
                 {db.roles[u2.role]?.label}</Badge></Td>
@@ -1883,6 +1916,16 @@ function UserModal({ open, user, db, onClose, onSave }){
         <Field label="Bureau de terrain d'appartenance" hint="Restreint la vue aux sites de ce bureau, hors administrateurs">
           <Select value={f.office_id||""} onChange={e=>u("office_id",e.target.value)} empty="Tous les bureaux"
             options={(db.offices||[]).map(o=>[o.id,o.name])} /></Field>
+        {/* Le pays borne le compte au-dessus du bureau. « Tous les pays » n'est
+            proposé que par un compte lui-même non borné, et n'apparaît pas autrement :
+            c'est le périmètre d'un bureau régional, pas un champ qu'on laisse vide par
+            distraction. */}
+        {(db?.countries || []).length > 1 && (
+          <Field label="Pays d'appartenance"
+            hint="Au-dessus du bureau : le compte ne voit que les données de ce pays">
+            <Select value={f.country_code||""} onChange={e=>u("country_code",e.target.value)}
+              empty={db?.me?.country_code ? undefined : "Tous les pays (bureau régional)"}
+              options={db.countries.map(c=>[c.code,c.name])} /></Field>)}
         <Field label="Adresse électronique"><Input type="email" value={f.email||""} onChange={e=>u("email",e.target.value)} /></Field>
         <Field label={user?.id?"Nouveau mot de passe":"Mot de passe"} hint={user?.id?"Laisser vide pour conserver l'actuel":"Huit caractères au minimum"}>
           <Input type="password" value={f._pw||""} onChange={e=>u("_pw",e.target.value)} /></Field>

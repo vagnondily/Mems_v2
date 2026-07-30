@@ -3,7 +3,7 @@ import { z } from "zod";
 import { db } from "../db.js";
 import { requireCap } from "../lib/auth.js";
 import { LEVELS } from "../lib/geo.js";
-import { allCountries, currentCountry } from "../lib/country.js";
+import { allCountries, defaultCountry } from "../lib/country.js";
 import { newId } from "../lib/crypto.js";
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -41,7 +41,7 @@ const audit = (req, action, code, text) =>
     .run(newId("aud"), req.user.id, req.user.email || req.user.first_name, code, action, text);
 
 r.get("/", (req, res) => res.json({
-  rows: allCountries(), current: currentCountry(),
+  rows: allCountries(), current: defaultCountry(),
   /* Les codes de niveaux du schéma, pour que l'écran de configuration sache
      lesquels nommer sans les redéclarer de son côté. */
   levels: LEVELS,
@@ -83,9 +83,11 @@ r.put("/:code", requireCap("admin"), (req, res) => {
   res.json({ country: allCountries().find(c => c.code === cur.code) });
 });
 
-/* Rendre un pays courant. Le découpage suit : le millésime courant doit appartenir
-   au pays courant, sinon l'application afficherait le vocabulaire d'un pays sur la
-   géographie d'un autre — l'erreur la plus difficile à voir de toutes. */
+/* Définir le pays PAR DÉFAUT de l'instance : celui des comptes qui n'en déclarent
+   aucun, et celui qu'un nouveau compte reçoit. Ce n'est plus « le pays courant » au
+   sens où un utilisateur y travaille — cela, c'est `users.country_code`, et un
+   compte non borné le change par l'en-tête X-MEMS-Country. Un drapeau global
+   serait sinon un état partagé que deux comptes de deux pays se disputeraient. */
 r.put("/:code/current", requireCap("admin"), (req, res) => {
   const c = db.prepare("SELECT * FROM country WHERE code=?").get(req.params.code.toUpperCase());
   if(!c) return res.status(404).json({ error:"pays introuvable" });
@@ -107,7 +109,9 @@ r.put("/:code/current", requireCap("admin"), (req, res) => {
     (actif ? ` — référentiel « ${actif.label} »`
            : total ? ` — ${total} découpage(s) chargé(s), aucun activé`
                    : " — aucun découpage chargé pour ce pays"));
-  res.json({ current: currentCountry(),
+  /* On rend le pays lu en base, non celui du contexte de la requête : ce dernier a
+     été calculé au début de l'appel, donc avant le changement. */
+  res.json({ current: defaultCountry(),
     referentiel: actif ? { id:actif.id, label:actif.label } : null,
     avertissement: actif ? null
       : total ? `${total} découpage(s) existent pour ce pays mais aucun n'est activé : choisissez-en un dans Localités.`

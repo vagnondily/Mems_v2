@@ -5,7 +5,8 @@ import { newId } from "../lib/crypto.js";
 import { requireCap } from "../lib/auth.js";
 import { validate, schemas } from "../lib/validate.js";
 import { buildUnits, writeVersion, currentVersion, LEVELS } from "../lib/geo.js";
-import { scopeOf, declaredFor, unitsIn, outsideDeclared } from "../lib/scope.js";
+import { countryBound, scopeOf, declaredFor, unitsIn, outsideDeclared } from "../lib/scope.js";
+import { ctxCountry } from "../lib/ctx.js";
 import { extent, geomSummary, readGeometries, writeGeometries } from "../lib/geom.js";
 
 const r = Router();
@@ -166,9 +167,15 @@ r.get("/coverage", (req, res) => {
 
 /* ── Millésimes ────────────────────────────────────────────────────── */
 r.get("/versions", (req, res) => {
+  /* Les millésimes d'un autre pays ne s'affichent pas : ils décrivent une géographie
+     dans laquelle l'appelant ne travaille pas, et un clic malheureux sur « rendre
+     courant » y déplacerait tout son écran. Le filtre suit le pays de la requête et
+     non celui du compte : un administrateur d'instance qui se place au Congo veut la
+     liste du Congo. */
+  const pays = ctxCountry()?.code || null;
   res.json({ rows: db.prepare(`SELECT v.*, u.first_name AS by_name
     FROM geo_version v LEFT JOIN users u ON u.id=v.imported_by
-    ORDER BY v.imported_at DESC`).all().map(x => ({
+    WHERE (v.country IS ? OR ? IS NULL) ORDER BY v.imported_at DESC`).all(pays, pays).map(x => ({
       id:x.id, label:x.label, source:x.source, units:x.units,
       importedAt:x.imported_at, importedBy:x.by_name || "", current: !!x.is_current,
       /* L'état des contours accompagne le millésime : sans lui l'écran de
@@ -180,6 +187,11 @@ r.get("/versions", (req, res) => {
 r.put("/versions/:id/current", requireCap("admin"), (req, res) => {
   const v = db.prepare("SELECT * FROM geo_version WHERE id=?").get(req.params.id);
   if(!v) return res.status(404).json({ error:"millésime introuvable" });
+  /* Activer le millésime d'un autre pays changerait la géographie de ce pays-là
+     depuis un écran qui n'y appartient pas. Introuvable, pour ne pas le confirmer. */
+  const mien = countryBound(req.user);
+  if(mien && v.country && v.country !== mien)
+    return res.status(404).json({ error:"millésime introuvable" });
   db.transaction(() => {
     /* Un courant par pays : activer un millésime ne retire pas le référentiel des
        autres pays configurés. */

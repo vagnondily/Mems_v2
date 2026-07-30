@@ -64,6 +64,10 @@
   .menu button:hover{background:#f8fafc}
   .menu button.on{color:var(--brand);font-weight:600;background:#eff6ff}
   .right{margin-left:auto;display:flex;align-items:center;gap:12px;flex-shrink:0}
+  .paysSel{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:rgba(255,255,255,.8)}
+  .paysSel select{background:transparent;border:none;outline:none;color:#fff;font-size:11.5px;
+    font-weight:600;cursor:pointer;font-family:inherit}
+  .paysSel select option{color:#1e293b}
   .sync{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;
     font-size:11px;font-weight:600;background:rgba(255,255,255,.1);color:rgba(255,255,255,.85)}
   .sync i{width:6px;height:6px;border-radius:50%;background:#bef264;display:block}
@@ -207,6 +211,11 @@
     </div>
     <nav class="tabs" id="nav"></nav>
     <div class="right">
+      <!-- Sélecteur de pays : visible seulement pour un compte qui n'est borné à aucun.
+           Un compte rattaché à un pays n'a rien à choisir, et lui montrer la liste lui
+           apprendrait quels autres pays existent sur l'instance. -->
+      <label class="paysSel hidden" id="paysWrap" title="Pays dans lequel vous travaillez">
+        <span>◍</span><select id="paysSel"></select></label>
       <span class="sync"><i></i> Enregistré</span>
       <button class="who" id="whoBtn"><span class="av" id="avat">?</span><span id="whoName"></span> ▾</button>
     </div>
@@ -251,17 +260,23 @@ const ROLES = {
 const OFFICES = ["Bureau de terrain d'Ambovombe","Bureau de terrain d'Ampanihy",
   "Bureau de terrain de Toliara","Bureau de terrain de Manakara","Bureau central d'Antananarivo"];
 
-/* Profils proposés à l'écran de connexion : le rôle et le bureau changent
-   réellement ce que la démonstration affiche. */
+/* Profils proposés à l'écran de connexion : le rôle, le bureau et le PAYS changent
+   réellement ce que la démonstration affiche.
+
+   `pays:""` n'est pas un oubli : le compte n'est borné à aucun pays — c'est le cas
+   d'un bureau régional et de l'administrateur de l'instance — et c'est lui seul qui
+   porte le sélecteur de pays. Les autres profils sont rattachés à Madagascar et n'ont
+   rien à choisir : leur montrer la liste leur apprendrait quels autres pays existent
+   sur l'instance, ce qui n'est pas leur affaire. */
 const PROFILES = [
   { id:"admin",  first:"Hanta",  last:"Rakotoarisoa", title:"Responsable suivi et évaluation",
-    role:"admin",     office:"", desc:"Tous les onglets, tous les bureaux, administration" },
+    role:"admin",     office:"", pays:"", desc:"Tous les onglets, tous les bureaux, tous les pays" },
   { id:"valid",  first:"Tiana",  last:"Randrianasolo", title:"Chargée de validation",
-    role:"validator", office:"Bureau de terrain d'Ampanihy", desc:"Valide les visites — un seul bureau, pas de paramètres" },
+    role:"validator", office:"Bureau de terrain d'Ampanihy", pays:"MDG", desc:"Valide les visites — un seul bureau, pas de paramètres" },
   { id:"edit",   first:"Naina",  last:"Rabe",          title:"Assistant suivi et évaluation",
-    role:"editor",    office:"Bureau de terrain d'Ambovombe", desc:"Saisit et modifie — un seul bureau, sans validation" },
+    role:"editor",    office:"Bureau de terrain d'Ambovombe", pays:"MDG", desc:"Saisit et modifie — un seul bureau, sans validation" },
   { id:"view",   first:"Miora",  last:"Andriamana",    title:"Chargée de programme",
-    role:"viewer",    office:"Bureau de terrain de Manakara", desc:"Consultation seule, sans onglet Analyses" },
+    role:"viewer",    office:"Bureau de terrain de Manakara", pays:"MDG", desc:"Consultation seule, sans onglet Analyses" },
 ];
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -585,13 +600,26 @@ const myMre = () => state.me.office
 
 /* Configuration des bureaux. `mode` est le point qui manquait : le bureau pays
    est national, ses comptes voient tous les sites sans être administrateurs. */
+/* Une instance sert plusieurs pays. Le vocabulaire des niveaux administratifs en
+   fait partie : « Régions / Districts / Communes / Fokontany » est celui de
+   Madagascar, pas celui d'un système de suivi. La RDC a des Provinces, Territoires,
+   Secteurs et Groupements — et le libellé du quatrième niveau apparaissait jusque
+   dans les en-têtes du registre des sites. */
+const PAYS = [
+  { code:"MDG", name:"Madagascar", cur:"MGA", defaut:1, versions:2,
+    niveaux:["Région","District","Commune","Fokontany"] },
+  { code:"COD", name:"RD Congo", cur:"CDF", defaut:0, versions:0,
+    niveaux:["Province","Territoire","Secteur","Groupement"] },
+];
+const paysCourant = () => PAYS.find(p => p.code === state.pays) || PAYS[0];
+
 const OFFICE_CFG = OFFICES.map(o => {
   const hq = o === "Bureau central d'Antananarivo";
   return { name:o, code:hq ? "HQ" : o.replace(/^Bureau de terrain d[e']/,"").trim().toUpperCase(),
     kind:hq ? "hq" : "field", mode:hq ? "national" : "geo",
     antennes:hq ? [] : [o.replace(/^Bureau de terrain d[e']/,"").trim()],
     manager:hq ? "Chef de l'unité suivi-évaluation" : "Chef de bureau",
-    sites:SITES.filter(x=>x.office===o).length, active:true };
+    sites:SITES.filter(x=>x.office===o).length, active:true, pays:"MDG" };
 });
 
 /* ── Suivi tiers (TPM) ────────────────────────────────────────────────
@@ -720,11 +748,11 @@ const NAV = [
                                              ["results","Résultats"],["sources","Sources de données"]] },
   { id:"analytics",label:"Analyses",    sub:[["datasets","Jeux de données"],["scripts","Scripts d'analyse"],["viz","Visualisations"]] },
   { id:"reports",  label:"Rapports",    sub:[["extract","Extraction ODK"],["build","Générateur de rapport"]] },
-  { id:"settings", label:"Paramètres",  sub:[["general","Général"],["offices","Bureaux"],["sites","Sites"],["locations","Localités"],
+  { id:"settings", label:"Paramètres",  sub:[["general","Général"],["country","Pays"],["offices","Bureaux"],["sites","Sites"],["locations","Localités"],
                                              ["indicators","Indicateurs"],["calc","Calculs"],["odk","ODK Central"],
                                              ["templates","Modèles de rapport"],["api","API"],["users","Utilisateurs"]] },
 ];
-const state = { me:PROFILES[0], tab:"home", sub:{}, open:null, volet:{} };
+const state = { me:PROFILES[0], tab:"home", sub:{}, open:null, volet:{}, pays:"MDG" };
 
 const can  = c => !!ROLES[state.me.role][c];
 const tabs = () => ROLES[state.me.role].tabs;
@@ -1676,6 +1704,48 @@ V["suivi:tpm"] = () => {
         niveau seulement : tant qu'un plan circule, il n'engage rien.</div>`);
 };
 
+/* ── Pays ──────────────────────────────────────────────────────────────
+   Une instance sert plusieurs pays, et c'est le compte — non un drapeau global —
+   qui porte celui dans lequel on travaille. Un drapeau global serait un état
+   PARTAGÉ : le premier bascule sur Madagascar, le second voit sa géographie changer
+   sous ses yeux sans rien avoir fait. */
+V["settings:country"] = () => head("Pays et vocabulaire administratif",
+    "Une instance sert plusieurs pays. Chaque pays porte sa devise et le nom de ses quatre niveaux de découpage.",
+    btn("Ajouter un pays","admin",1))
+  + card("Pays configurés", `${PAYS.length} pays · ${PAYS.filter(p=>p.versions).length} avec découpage chargé`,
+      table([["Pays"],["Code"],["Devise"],["Niveaux administratifs"],["Millésimes","n"],["Par défaut"],["Actions"]],
+        PAYS.map(p=>[
+          `<b>${esc(p.name)}</b>`, `<span class="badge">${esc(p.code)}</span>`, esc(p.cur),
+          p.niveaux.map(n=>esc(n)).join(" · "),
+          p.versions || '<span class="badge y">aucun</span>',
+          p.defaut ? '<span class="badge b">par défaut de l\'instance</span>' : btn("Rendre par défaut","admin"),
+          btn("Modifier","admin")+" "+btn("Supprimer","del")])), 1)
+  + `<div class="grid g2">
+      ${card("Ce que porte un pays",null,
+        `<div class="note info">« Régions / Districts / Communes / Fokontany » est le vocabulaire de
+          <b>Madagascar</b>, pas celui d'un système de suivi. Il figurait en dur dans huit endroits
+          de l'interface — jusque dans les en-têtes du registre des sites, où trois colonnes
+          s'appelaient « Admin level 1 » à « 3 » et la quatrième « Fokontany ». Un niveau non
+          nommé rend désormais son code brut (<code>adm4</code>) : un écran qui affiche
+          <code>adm4</code> signale qu'il manque une configuration, un écran qui affiche
+          « Fokontany » sur un pays qui n'en a pas <b>mentirait</b>.</div>
+         <div class="note">Un <b>millésime courant par pays</b> : changer de pays ne touche à aucun
+          découpage. La première version désactivait le millésime du pays quitté puis activait
+          « le plus récemment importé » du pays rejoint — faux, car on peut avoir délibérément
+          choisi un millésime plus ancien parce que les données de l'année s'y raccrochent.</div>`)}
+      ${card("Trois couches de cloisonnement",null,
+        `<div class="mono" style="font-size:11.5px;line-height:1.9;color:var(--t2)">
+           pays &nbsp;→&nbsp; bureau &nbsp;→&nbsp; périmètre géographique</div>
+         <div class="note">Le <b>pays</b> ne dépend pas du rôle, contrairement au bureau : un
+           administrateur de bureau pays administre <i>son pays</i>, pas l'instance. Seul un compte
+           créé volontairement <b>sans pays</b> traverse les frontières — un bureau régional,
+           l'administrateur de l'instance — et un administrateur borné ne peut pas en créer un :
+           ce serait créer un compte plus large que soi.</div>
+         <div class="note warn">Hors de son pays, une entité est <b>introuvable</b>, pas refusée.
+           Un refus confirmerait qu'elle existe, et un identifiant se devine par essais. À
+           l'intérieur d'un pays, en revanche, un bureau voisin se nomme.</div>`)}
+    </div>`;
+
 /* ── Bureaux ───────────────────────────────────────────────────────── */
 V["settings:offices"] = () => head("Bureaux",
     "Un bureau porte les sites, les comptes, les paramètres de couverture et le plan de distribution. Son mode de périmètre décide de ce que ses comptes non administrateurs peuvent voir.",
@@ -1686,10 +1756,11 @@ V["settings:offices"] = () => head("Bureaux",
       aurait donné au passage la gestion des comptes.</div>`
   + card("Bureaux et antennes",
       `${OFFICE_CFG.length} bureau(x) · ${OFFICE_CFG.filter(o=>o.active).length} actifs · ${OFFICE_CFG.filter(o=>o.mode==="national").length} à périmètre national`,
-      table([["Bureau"],["Code"],["Nature"],["Périmètre"],["Antennes"],["Responsable"],["Sites","n"],["État"],["Actions"]],
+      table([["Bureau"],["Code"],["Pays"],["Nature"],["Périmètre"],["Antennes"],["Responsable"],["Sites","n"],["État"],["Actions"]],
         OFFICE_CFG.map(o=>[
           `<b>${esc(o.name)}</b>`,
           `<span style="color:var(--t2);font-size:11.5px">${esc(o.code)}</span>`,
+          esc((PAYS.find(p=>p.code===o.pays)||{}).name || o.pays),
           o.kind==="hq" ? '<span class="badge b">bureau pays</span>' : '<span class="badge">terrain</span>',
           o.mode==="national" ? '<span class="badge b">national — tous les sites</span>'
             : `<span class="badge g">périmètre déclaré</span>`,
@@ -1747,6 +1818,18 @@ function renderView(){
   window.scrollTo(0,0);
 }
 
+/* Le pays de travail. Le changer redessine tout : dans l'application réelle, la page
+   est rechargée — les collections en mémoire d'un pays ne doivent jamais s'afficher
+   sous le vocabulaire de l'autre, et un rafraîchissement partiel laisserait cet état
+   le temps d'un battement de cil. C'est exactement l'erreur la plus difficile à voir. */
+function renderPays(){
+  const borne = !!state.me.pays;
+  $("paysWrap").classList.toggle("hidden", borne || PAYS.length < 2);
+  if(borne || PAYS.length < 2) return;
+  $("paysSel").innerHTML = PAYS.map(p =>
+    `<option value="${p.code}" ${p.code===state.pays?"selected":""}>${esc(p.name)}</option>`).join("");
+}
+
 function renderWho(){
   const r = ROLES[state.me.role];
   $("avat").textContent = (state.me.first[0]||"")+(state.me.last[0]||"");
@@ -1774,9 +1857,13 @@ function renderWho(){
   $("footYear").textContent = `démonstration · exercice ${YEAR}`;
 }
 
-function render(){ renderNav(); renderWho(); renderView(); }
+function render(){ renderNav(); renderPays(); renderWho(); renderView(); }
 
 /* ── Événements ────────────────────────────────────────────── */
+document.addEventListener("change", e => {
+  if(e.target.id === "paysSel"){ state.pays = e.target.value; render(); }
+});
+
 document.addEventListener("click", e => {
   const vb = e.target.closest("[data-volet]");
   if(vb){ state.volet[vb.dataset.volet] = vb.dataset.v; renderView(); return; }

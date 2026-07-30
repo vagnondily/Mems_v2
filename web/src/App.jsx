@@ -3,7 +3,7 @@ import { Boundary } from "./components/Boundary.jsx";
 import { Toast, Btn } from "./components/ui.jsx";
 import { uid } from "./lib/calc.js";
 import { ACT_CATEGORIES, C, D_MMR, D_SCORING, D_ROLES, D_FORMULAS, D_WEIGHTS } from "./lib/constants.js";
-import { api, setToken, setUnauthorizedHandler, createSyncQueue } from "./lib/api.js";
+import { api, setToken, setUnauthorizedHandler, setWorkingCountry, createSyncQueue } from "./lib/api.js";
 import { Analytics } from "./views/Analytics.jsx";
 import { Home } from "./views/Home.jsx";
 import { Login } from "./views/Login.jsx";
@@ -155,6 +155,10 @@ export default function App(){
   };
   const onLogout = async () => {
     try{ await queue.current?.flushAll(); await api.logout(); }catch(e){}
+    /* Le pays de travail est oublié à la déconnexion : le poste peut être partagé, et
+       le compte suivant n'a pas à hériter du pays choisi par le précédent — le serveur
+       l'ignorerait s'il est borné, mais un autre compte non borné le reprendrait. */
+    setWorkingCountry(null);
     setToken(null); setMe(null); setDb(null); setTabState("home"); setPhase("login");
   };
 

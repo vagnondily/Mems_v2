@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { BarChart3, CalendarRange, ChevronDown, Cog, Database, FileText, LayoutDashboard, LogOut } from "lucide-react";
+import { BarChart3, CalendarRange, ChevronDown, Cog, Database, FileText, Globe, LayoutDashboard, LogOut } from "lucide-react";
 import { Badge, BrandMark } from "../components/ui.jsx";
 import { clsx } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
+import { getWorkingCountry, setWorkingCountry } from "../lib/api.js";
 
 /* ══════════════════ Coquille ══════════════════ */
 const NAV = [
@@ -40,6 +41,38 @@ function SyncBadge({ sync }){
         sync.state==="error" ? "bg-rose-300" : sync.state==="saved" ? "bg-lime-300" : "bg-amber-300")} />
       {label}
     </span>);
+}
+
+/* Sélecteur de pays — visible seulement pour un compte qui n'est borné à aucun :
+   bureau régional, administrateur de l'instance. Le serveur ne renvoie la liste qu'à
+   ceux-là (voir `countries` dans /api/state), donc l'absence de sélecteur n'est pas
+   une décision de l'interface : c'est le reflet de ce que le compte a le droit de
+   voir. Un compte rattaché à un pays n'a rien à choisir.
+
+   Le changement recharge la page. C'est volontaire, et ce n'est pas de la paresse :
+   l'application garde en mémoire tout un jeu de collections — sites, plans, découpage
+   administratif, libellés des niveaux — et un rafraîchissement partiel laisserait
+   momentanément des données d'un pays sous le vocabulaire de l'autre. C'est
+   exactement l'erreur la plus difficile à voir, et un rechargement de deux secondes
+   la rend impossible. */
+function PaysCourant({ db }){
+  const liste = db?.countries || [];
+  if(liste.length < 2) return null;
+  /* Le pays retenu localement ne fait pas foi : s'il a été désactivé ou supprimé
+     depuis, le serveur a servi autre chose, et c'est ce qu'il faut montrer. */
+  const garde = getWorkingCountry();
+  const actuel = liste.some(c => c.code === garde) ? garde : (db?.country?.code || "");
+  return (
+    <label className="hidden md:flex items-center gap-1.5 f115 text-white/80"
+      title="Pays dans lequel vous travaillez">
+      <Globe size={14} className="opacity-80" />
+      <select value={actuel} aria-label="Pays"
+        onChange={e => { setWorkingCountry(e.target.value); window.location.reload(); }}
+        className="bg-transparent text-white f115 font-semibold border-none outline-none cursor-pointer">
+        {liste.map(c => (
+          <option key={c.code} value={c.code} className="text-slate-800">{c.name}</option>))}
+      </select>
+    </label>);
 }
 
 /* `allowed` est calculé une seule fois par App (resolveTabs) et transmis ici :
@@ -89,6 +122,7 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, allowed = [
             </div>))}
         </nav>
         <div className="ml-auto flex items-center gap-3 shrink-0">
+          <PaysCourant db={db} />
           <SyncBadge sync={sync} />
           <div className="relative" onClick={e=>e.stopPropagation()}>
             {/* La pastille suffit à identifier le compte ; l'anneau et le fond

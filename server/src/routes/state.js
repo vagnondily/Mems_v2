@@ -1,8 +1,8 @@
 import { Router } from "express";
 import { db } from "../db.js";
 import { currentVersion } from "../lib/geo.js";
-import { officeBound } from "../lib/scope.js";
-import { currentCountry } from "../lib/country.js";
+import { countryBound, officeBound, officeClause } from "../lib/scope.js";
+import { allCountries, currentCountry } from "../lib/country.js";
 
 const r = Router();
 const J = (v, d) => { try{ return JSON.parse(v); }catch(e){ return d; } };
@@ -14,17 +14,23 @@ r.get("/state", (req, res) => {
   /* Une seule définition du cloisonnement par bureau, partagée avec la géographie :
      un bureau déclaré national n'en cloisonne aucun de ses comptes. */
   const officeFilter = officeBound(u);
+  /* Couche au-dessus du bureau : le pays. Un compte borné à un pays ne voit ni ses
+     bureaux, ni — à travers eux — ses sites, visites et plans de distribution. */
+  const paysFilter = countryBound(u);
+  const oc = officeClause(u, "t");
 
-  const offices = db.prepare("SELECT * FROM offices ORDER BY name").all();
+  const offices = paysFilter
+    ? db.prepare(`SELECT * FROM offices WHERE country_code=? OR country_code IS NULL
+                  ORDER BY name`).all(paysFilter)
+    : db.prepare("SELECT * FROM offices ORDER BY name").all();
   const officeName = Object.fromEntries(offices.map(o=>[o.id, o.name]));
   const partners = db.prepare("SELECT * FROM partners ORDER BY name").all();
   const partnerName = Object.fromEntries(partners.map(p=>[p.id, p.name]));
   const cats = db.prepare("SELECT * FROM activity_categories ORDER BY name").all();
   const catName = Object.fromEntries(cats.map(c=>[c.id, c.name]));
 
-  const siteRows = officeFilter
-    ? db.prepare("SELECT * FROM sites WHERE office_id=? ORDER BY code").all(officeFilter)
-    : db.prepare("SELECT * FROM sites ORDER BY code").all();
+  const siteRows = db.prepare(
+    `SELECT t.* FROM sites t WHERE 1=1 ${oc.sql} ORDER BY t.code`).all(...oc.args);
   const year = new Date().getFullYear();
   const months = db.prepare("SELECT * FROM site_months WHERE year=?").all(year);
   const byId = {};
@@ -50,18 +56,15 @@ r.get("/state", (req, res) => {
     plan: byId[s.id],
   }));
 
-  const params = (officeFilter
-    ? db.prepare("SELECT * FROM coverage_params WHERE office_id=?").all(officeFilter)
-    : db.prepare("SELECT * FROM coverage_params").all()
-  ).map(p => ({
+  const params = db.prepare(
+    `SELECT t.* FROM coverage_params t WHERE 1=1 ${oc.sql}`).all(...oc.args).map(p => ({
     id:p.id, rev:p.rev, csp:p.csp||"", office: officeName[p.office_id]||"", office_id:p.office_id,
     tag:p.activity_tag, category: catName[p.category_id]||"", category_id:p.category_id,
     duration:p.duration, riskLevel:p.risk_level, feasiblePerMonth:p.feasible_per_month }));
 
-  const visits = (officeFilter
-    ? db.prepare("SELECT * FROM visits WHERE office_id=? ORDER BY visit_date DESC LIMIT 5000").all(officeFilter)
-    : db.prepare("SELECT * FROM visits ORDER BY visit_date DESC LIMIT 5000").all()
-  ).map(v => ({
+  const visits = db.prepare(
+    `SELECT t.* FROM visits t WHERE 1=1 ${oc.sql} ORDER BY t.visit_date DESC LIMIT 5000`)
+    .all(...oc.args).map(v => ({
     id:v.id, siteId:v.site_id, date:v.visit_date, office: officeName[v.office_id]||"",
     tag:v.activity_tag||"", monitor:v.monitor||"", form:v.form_id||"", status:v.status }));
 
@@ -89,10 +92,9 @@ r.get("/state", (req, res) => {
     base:p.base, rate:p.rate,
     values: Object.fromEntries(popVals.filter(v=>v.population_id===p.id).map(v=>[v.year, v.value])) }));
 
-  const pdd = (officeFilter
-    ? db.prepare("SELECT * FROM pdd WHERE office_id=? ORDER BY year, month, bureau").all(officeFilter)
-    : db.prepare("SELECT * FROM pdd ORDER BY year, month, bureau").all()
-  ).map(p => ({
+  const pdd = db.prepare(
+    `SELECT t.* FROM pdd t WHERE 1=1 ${oc.sql} ORDER BY t.year, t.month, t.bureau`)
+    .all(...oc.args).map(p => ({
     /* office_id doit figurer ici : le client renvoie la collection telle qu'il l'a reçue,
        et un champ absent est réécrit à NULL par la synchronisation — le rattachement au
        bureau était donc effacé à chaque enregistrement du plan de distribution. */
@@ -128,6 +130,15 @@ r.get("/state", (req, res) => {
      initial parce que chaque écran en a besoin pour nommer ses colonnes : le
      demander séparément afficherait « adm3 » le temps d'un aller-retour. */
   const country = currentCountry();
+  /* La liste des pays ne part QUE vers un compte non borné : c'est lui qui porte le
+     sélecteur d'en-tête. L'envoyer à un compte borné lui apprendrait quels autres
+     pays existent sur l'instance, ce qui n'est pas son affaire — et son sélecteur
+     n'aurait de toute façon rien à changer.
+
+     La condition porte sur le COMPTE (`u.country_code`), pas sur le filtre de la
+     requête : un administrateur d'instance qui vient de se placer au Congo doit
+     encore voir la liste, sinon il ne pourrait plus en sortir. */
+  const countries = u.country_code ? [] : allCountries().filter(c => c.active);
 
   const odkForms = db.prepare("SELECT * FROM odk_forms").all().map(f => ({
     id:f.id, rev:f.rev, name:f.name, formId:f.form_id, project:f.project||"", kind:f.kind,
@@ -139,9 +150,10 @@ r.get("/state", (req, res) => {
     db.prepare("SELECT key, value FROM settings").all().map(s => [s.key, J(s.value, s.value)]));
 
   res.json({
-    year, me: { id:u.id, role:u.role, office_id:u.office_id },
+    year, me: { id:u.id, role:u.role, office_id:u.office_id,
+      country_code:u.country_code || null },
     offices, partners, categories: cats, sites, params, visits, indicators, outcomes,
-    outputs, population, pdd, geoVersion, country, odkForms, settings,
+    outputs, population, pdd, geoVersion, country, countries, odkForms, settings,
     outcomePlan: Object.fromEntries(
       Object.entries(db.prepare("SELECT * FROM outcome_plan WHERE year=?").all(year)
         .reduce((acc,r2) => { const code = indByKey[r2.indicator_id]; if(!code) return acc;
@@ -156,13 +168,27 @@ r.get("/state", (req, res) => {
     dashboards: db.prepare("SELECT * FROM dashboards").all().map(d => ({
       id:d.id, rev:d.rev, name:d.name, widgets:J(d.widgets,[]) })),
     /* Le journal révèle qui fait quoi : il suit le même cloisonnement que les données. */
-    audit: (officeFilter
-      ? db.prepare(`SELECT * FROM audit WHERE kind<>'securite' AND office=?
-                    ORDER BY at DESC LIMIT 60`).all(officeName[officeFilter] || "")
-      : db.prepare("SELECT * FROM audit WHERE kind<>'securite' ORDER BY at DESC LIMIT 60").all()
-    ).map(a => ({ id:a.id, at:a.at, user:a.user_label||"", office:a.office||"", kind:a.kind, text:a.text })),
+    audit: (() => {
+      if(officeFilter) return db.prepare(`SELECT * FROM audit WHERE kind<>'securite' AND office=?
+        ORDER BY at DESC LIMIT 60`).all(officeName[officeFilter] || "");
+      /* Le journal ne porte que le NOM du bureau, pas son identifiant : on filtre donc
+         sur les noms des bureaux visibles. Les lignes sans bureau restent — ce sont
+         les actions de configuration, qui n'appartiennent à aucun pays. */
+      if(paysFilter){
+        const noms = offices.map(o => o.name);
+        const q = noms.map(() => "?").join(",") || "''";
+        return db.prepare(`SELECT * FROM audit WHERE kind<>'securite'
+          AND (office IN (${q}) OR office IS NULL OR office='')
+          ORDER BY at DESC LIMIT 60`).all(...noms);
+      }
+      return db.prepare("SELECT * FROM audit WHERE kind<>'securite' ORDER BY at DESC LIMIT 60").all();
+    })().map(a => ({ id:a.id, at:a.at, user:a.user_label||"", office:a.office||"", kind:a.kind, text:a.text })),
+    /* Les comptes suivent le filtre strict de /api/users : un administrateur borné à
+       un pays ne voit ni les comptes d'un autre pays ni les comptes non bornés. */
     users: (u.role==="super" || u.role==="admin")
-      ? db.prepare("SELECT id,email,first_name,last_name,title,office_id,role,tabs,active FROM users ORDER BY first_name").all()
+      ? db.prepare(`SELECT id,email,first_name,last_name,title,office_id,country_code,role,tabs,active
+                    FROM users WHERE (? IS NULL OR country_code = ?) ORDER BY first_name`)
+          .all(paysFilter, paysFilter)
           .map(x => ({ ...x, tabs:J(x.tabs,[]), active:!!x.active }))
       : [],
   });

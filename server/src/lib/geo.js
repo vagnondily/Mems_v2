@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { db, tx } from "../db.js";
 import { newId } from "./crypto.js";
+import { ctxCountry } from "./ctx.js";
 
 export const LEVELS = ["adm0","adm1","adm2","adm3","adm4"];
 
@@ -129,16 +130,27 @@ export function writeVersion({ label, source, units, userId = null, makeCurrent 
   return id;
 }
 
-/* Le référentiel courant est celui du PAYS courant. Chaque pays a son millésime
-   actif, et changer de pays n'y touche pas : il n'y a donc aucun état à retenir,
-   et un aller-retour entre deux pays ne bascule pas silencieusement sur un autre
-   millésime que celui qu'on avait choisi.
+/* Le référentiel actif d'un pays. Chaque pays a son millésime, et changer de pays
+   n'y touche pas : il n'y a aucun état à retenir, et un aller-retour entre deux
+   pays ne bascule pas silencieusement sur un autre millésime que celui qu'on avait
+   choisi.
+
+   Le code du pays est un ARGUMENT et non une lecture globale : avec plusieurs pays
+   servis par la même instance, deux requêtes simultanées portent sur deux pays, et
+   une variable globale les mélangerait. Les routes passent le pays de leur
+   appelant ; l'absence d'argument retombe sur le pays par défaut de l'instance,
+   pour les quelques appels sans contexte d'utilisateur.
 
    Le repli sur « n'importe quel millésime courant » couvre la base dont aucun
    pays n'est configuré — migration non appliquée, ou millésime importé avant
    qu'elle le soit. */
-export function currentVersion(){
-  const pays = db.prepare("SELECT code FROM country WHERE is_current=1").get()?.code;
+export function currentVersion(countryCode = null){
+  /* Le pays vient, dans l'ordre : de l'argument explicite, du contexte de la
+     requête en cours, puis du pays par défaut de l'instance pour les appels hors
+     requête. Aucune variable de module — voir lib/ctx.js pour pourquoi. */
+  const pays = countryCode
+    || ctxCountry()?.code
+    || db.prepare("SELECT code FROM country WHERE is_current=1").get()?.code;
   if(pays){
     const v = db.prepare("SELECT * FROM geo_version WHERE is_current=1 AND country=?").get(pays);
     if(v) return v;

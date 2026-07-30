@@ -4,6 +4,7 @@ import { db, tx } from "../db.js";
 import { newId } from "../lib/crypto.js";
 import { encrypt } from "../lib/crypto.js";
 import { requireCap, can } from "../lib/auth.js";
+import { officeReach } from "../lib/scope.js";
 
 const r = Router();
 const S = (max=200) => z.string().max(max).nullish().transform(v => v ?? null);
@@ -16,7 +17,10 @@ const B = z.union([z.boolean(), z.number(), z.string()]).transform(v =>
    Une écriture remplace la collection entière dans une transaction :
    les lignes absentes du corps sont supprimées, les autres insérées ou mises à jour. */
 const COLLECTIONS = {
-  params: { table:"coverage_params", cap:"edit",
+  /* `scoped` marque les collections qui portent un bureau : leur écriture est
+     vérifiée ligne à ligne, dans les deux sens — le bureau désigné par la ligne
+     entrante, et celui de la ligne déjà en base qu'on modifie ou supprime. */
+  params: { table:"coverage_params", cap:"edit", scoped:true,
     schema: z.object({ id:S(64), csp:S(40), office_id:z.string().max(64),
       category_id:S(64), tag:z.string().min(1).max(20),
       duration:I(0,12), riskLevel:I(1,3), feasiblePerMonth:I(0,1000) }),
@@ -50,7 +54,7 @@ const COLLECTIONS = {
       level:z.string().max(20).default("adm2"), base:I(), rate:N(-50,50) }),
     map: (x) => ({ area_key:x.key, level:x.level, base_year:2018, base:x.base, rate:x.rate }) },
 
-  pdd: { table:"pdd", cap:"edit",
+  pdd: { table:"pdd", cap:"edit", scoped:true,
     schema: z.object({ id:S(64), year:I(2000,2100), month:I(0,11), wbs:S(40),
       actType:z.string().min(1).max(40), tag:S(20), actMain:S(200), office_id:S(64), geo_pcode:S(64),
       bureau:z.string().min(1).max(120), region:S(120), district:S(120), commune:S(120),
@@ -104,6 +108,13 @@ const COLLECTIONS = {
       ...(x.token ? { token_enc: encrypt(x.token) } : {}) }) },
 };
 
+/* La ligne déjà en base est-elle hors de portée ? Absente, elle ne l'est pas : la
+   création est traitée par le contrôle du bureau désigné. */
+function existingOffice(stmt, id, req){
+  const row = stmt.get(id);
+  return row ? !!officeReach(req.user, row.office_id ?? null) : false;
+}
+
 /* Synchronisation d'une collection.
 
    Deux différences essentielles avec la version précédente :
@@ -132,6 +143,29 @@ r.put("/collections/:name", (req, res, next) => {
   const { rows, deletes } = parsed.data;
   let created = 0, updated = 0, removed = 0;
   const conflits = [];
+
+  /* Cloisonnement des collections qui portent un bureau.
+
+     Il manquait : la synchronisation acceptait n'importe quel `office_id`, et un
+     compte de terrain pouvait donc écrire les paramètres de couverture ou le plan de
+     distribution d'un autre bureau. Le rattachement des pays rend l'oubli visible —
+     ce serait désormais un autre PAYS — mais le trou existait déjà.
+
+     Les deux sens comptent : le bureau que la ligne entrante DÉSIGNE, et celui de la
+     ligne déjà en base qu'on modifie ou supprime. Ne vérifier que le premier
+     laisserait déplacer une ligne du voisin vers son propre bureau. */
+  if(def.scoped){
+    const nom = db.prepare(`SELECT office_id FROM ${def.table} WHERE id=?`);
+    const hors = [];
+    for(const raw of rows){
+      if(officeReach(req.user, raw.office_id ?? null)) hors.push(raw.id || "(nouvelle ligne)");
+      else if(raw.id && existingOffice(nom, raw.id, req)) hors.push(raw.id);
+    }
+    for(const id of deletes) if(existingOffice(nom, id, req)) hors.push(id);
+    if(hors.length) return res.status(403).json({
+      error: `${hors.length} ligne(s) relèvent d'un bureau hors de votre périmètre`,
+      lignes: hors.slice(0, 20) });
+  }
 
   /* Les conflits se détectent avant d'écrire : soit l'ensemble passe, soit rien. */
   const existing = new Map(db.prepare(`SELECT id, rev FROM ${def.table}`).all().map(x => [x.id, x.rev]));

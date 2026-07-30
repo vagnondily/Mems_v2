@@ -77,6 +77,11 @@ before(async () => {
 });
 
 after(async () => {
+  /* Fermer la fenêtre simulée : jsdom y garde des minuteurs et un observateur de
+     redimensionnement, qui suffisent à retenir la boucle d'événements. Sans cela le
+     lot de tests passait puis ne rendait jamais la main — un test vert qui ne
+     s'arrête pas est un test qui bloque une intégration continue. */
+  try{ ctx?.dom?.window?.close(); }catch(e){}
   child?.kill("SIGTERM");
   for(const f of [DB, DB+"-wal", DB+"-shm"]) if(fs.existsSync(f)) fs.unlinkSync(f);
   if(fs.existsSync("test/_app.mjs")) fs.unlinkSync("test/_app.mjs");
@@ -259,6 +264,62 @@ test("bureaux : l'écran de configuration liste les bureaux et leur périmètre"
     "le bureau pays est signalé comme couvrant tous les sites");
   assert.ok(all("main tbody tr").length >= 2, "plusieurs bureaux sont listés");
   assert.equal(ctx.errors.length, 0, "aucune erreur sur l'écran des bureaux");
+});
+
+test("multi-pays : le sélecteur n'apparaît qu'avec deux pays, et place le compte dans l'un d'eux", async () => {
+  /* Un seul pays configuré : pas de sélecteur. Un champ qui ne propose qu'une valeur
+     est du bruit, et il ferait croire à un choix qui n'existe pas. */
+  assert.equal(all('header select[aria-label="Pays"]').length, 0,
+    "aucun sélecteur tant que l'instance ne sert qu'un pays");
+
+  /* On configure un deuxième pays comme le ferait un administrateur, par l'API — la
+     saisie du vocabulaire des cinq niveaux est déjà éprouvée côté serveur. */
+  const niv = { adm0:{one:"Pays",many:"Pays"}, adm1:{one:"Province",many:"Provinces"},
+    adm2:{one:"Territoire",many:"Territoires"}, adm3:{one:"Secteur",many:"Secteurs"},
+    adm4:{one:"Groupement",many:"Groupements"} };
+  const cr = await fetch(`${BASE}/country`, { method:"POST",
+    headers:{ "content-type":"application/json" },
+    body: JSON.stringify({ code:"COD", name:"RD Congo", currency:"CDF", levels:niv }) });
+  assert.equal(cr.status, 201);
+
+  /* Le rechargement du navigateur n'existe pas dans ce DOM simulé : on le remplace
+     pour observer que le changement de pays le demande bien. Il est voulu — les
+     collections en mémoire d'un pays ne doivent jamais s'afficher sous le vocabulaire
+     de l'autre, et un rafraîchissement partiel laisserait cet état une fraction de
+     seconde. */
+  const avantReload = ctx.reloads();
+
+  /* L'état est relu : c'est lui qui porte la liste des pays. */
+  const menu = all("header.sticky button").pop();
+  await click(menu, "menu du compte"); await flush();
+  await click(byText("button", "Se déconnecter"), "se déconnecter"); await flush(); await flush();
+  await type(all('input[type="email"]')[0], ADMIN.email);
+  /* Le mot de passe d'amorçage a été remplacé au premier accès (essai n° 4) : c'est
+     celui-là qu'il faut redonner. */
+  await type(all('input[type="password"]')[0], "NouveauMotDePasse2026");
+  await click(byText("button", "Se connecter"), "se connecter");
+  await flush(); await flush(); await flush();
+
+  const sel = all('header select[aria-label="Pays"]')[0];
+  assert.ok(sel, "le sélecteur apparaît dès que deux pays sont servis");
+  const codes = [...sel.options].map(o => o.value);
+  assert.deepEqual(codes.sort(), ["COD","MDG"], "les deux pays sont proposés");
+  assert.equal(sel.value, "MDG", "on démarre dans le pays par défaut de l'instance");
+
+  await type(sel, "COD");
+  assert.equal(ctx.reloads() - avantReload, 1, "changer de pays recharge l'application");
+  assert.equal(window.localStorage.getItem("mems.pays"), "COD",
+    "le choix survit à un rechargement");
+
+  /* Et le serveur suit l'en-tête : même session, autre vocabulaire, autres bureaux. */
+  const etat = await (await fetch(`${BASE}/state`, { headers:{ "X-MEMS-Country":"COD" } })).json();
+  assert.equal(etat.country.code, "COD");
+  assert.equal(etat.country.levels.adm3.one, "Secteur");
+  assert.equal(etat.offices.length, 0, "aucun bureau congolais n'est encore configuré");
+  assert.ok(etat.sites.length === 0, "et donc aucun site : les sites suivent leur bureau");
+
+  /* Remise en état pour la suite du parcours. */
+  window.localStorage.removeItem("mems.pays");
 });
 
 test("déconnexion : la session est fermée et l'écran de connexion revient", async () => {

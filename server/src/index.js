@@ -12,6 +12,8 @@ import { db, migrate, integrity } from "./db.js";
 import { log } from "./lib/logger.js";
 import { backfillFromLegacy } from "./lib/geo.js";
 import { authenticate } from "./lib/auth.js";
+import { runWithCtx } from "./lib/ctx.js";
+import { countryFor } from "./lib/country.js";
 import authRoutes from "./routes/auth.js";
 import stateRoutes from "./routes/state.js";
 import siteRoutes from "./routes/sites.js";
@@ -96,18 +98,49 @@ app.get("/api/health", (req, res) => {
 });
 
 app.use("/api/auth", authRoutes);
-app.use("/api", authenticate, stateRoutes);
-app.use("/api/sites", authenticate, siteRoutes);
-app.use("/api/geo", authenticate, geoRoutes);
-app.use("/api/users", authenticate, userRoutes);
-app.use("/api/offices", authenticate, officeRoutes);
-app.use("/api/country", authenticate, countryRoutes);
-app.use("/api/analytics", authenticate, analyticsRoutes);
-app.use("/api/caseload", authenticate, caseloadRoutes);
-app.use("/api/import", authenticate, importRoutes);
-app.use("/api/mre", authenticate, mreRoutes);
-app.use("/api/tpm", authenticate, tpmRoutes);
-app.use("/api", authenticate, collectionRoutes);
+
+/* ── Contexte de pays ────────────────────────────────────────────────
+   Une instance sert plusieurs pays. Chaque requête authentifiée porte donc son
+   pays, et tout ce qui en dépend — le référentiel géographique, le vocabulaire
+   des niveaux, la devise locale — le lit dans ce contexte plutôt que dans une
+   variable globale qui serait partagée entre requêtes concurrentes.
+
+   Le pays vient du compte quand il en déclare un. Un compte non borné — bureau
+   régional, administrateur de l'instance — peut se placer dans un pays le temps
+   d'une requête, par l'en-tête `X-MEMS-Country`. Un compte borné ne peut pas en
+   sortir : sa demande est ignorée.
+
+   Deux notions distinctes sortent d'ici, et les confondre serait une erreur :
+
+     `country`       le pays qui NOMME — vocabulaire des niveaux, découpage
+                     géographique, devise locale. Toujours renseigné, sinon les
+                     écrans afficheraient « adm3 ».
+     `countryFilter` le pays qui FILTRE les données. Vide pour un compte non borné
+                     qui n'a rien demandé : c'est la vue d'ensemble d'un bureau
+                     régional, et c'est aussi ce qui permet au premier
+                     administrateur de configurer le deuxième pays. */
+app.use("/api", authenticate, (req, res, next) => {
+  const demande = req.get("x-mems-country") || req.query.country;
+  const pays = countryFor(req.user, demande);
+  runWithCtx({
+    user: req.user,
+    country: pays,
+    countryFilter: req.user?.country_code || (demande ? pays.code : null),
+  }, () => next());
+});
+
+app.use("/api", stateRoutes);
+app.use("/api/sites", siteRoutes);
+app.use("/api/geo", geoRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/offices", officeRoutes);
+app.use("/api/country", countryRoutes);
+app.use("/api/analytics", analyticsRoutes);
+app.use("/api/caseload", caseloadRoutes);
+app.use("/api/import", importRoutes);
+app.use("/api/mre", mreRoutes);
+app.use("/api/tpm", tpmRoutes);
+app.use("/api", collectionRoutes);
 
 /* En production le serveur sert aussi le frontend compilé. */
 const webDist = path.join(here, "..", "..", "web", "dist");
