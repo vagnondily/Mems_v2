@@ -6,13 +6,14 @@ analyse des données ODK Central, cartographie et restitution.
 
 - **Frontend** : React 18 + Vite, sans framework de composants imposé
 - **Backend** : Node 20 + Express + SQLite (WAL), schéma relationnel avec clés étrangères
-- **Tests** : 50 tests d'API + 10 tests de bout en bout pilotant l'interface réelle
+- **Tests** : 25 tests d'API + 10 tests de bout en bout pilotant l'interface réelle
+- **Démo hors ligne** : `web/demo.html` présente une version statique de l'interface pour les présentations
 
 ---
 
 ## 1. Démarrage rapide
 
-### En local, sans conteneur
+### En local, sans conteneur  
 
 ```bash
 git clone <votre-dépôt> mems && cd mems
@@ -27,10 +28,15 @@ npm run seed          # crée le schéma, les données d'exemple et le compte ad
 npm run dev:server    # http://localhost:4000
 npm run dev:web       # http://localhost:5173  (dans un second terminal)
 ```
-
 À la fin de `npm run seed`, la console affiche **une seule fois** l'adresse et le mot de passe
 de l'administrateur initial. Notez-le : il n'est stocké nulle part en clair et n'apparaît
 jamais dans l'application. À la première connexion, l'application impose son remplacement.
+
+ codespace help
+  press o + enter to open in browser
+  press c + enter to clear console
+  press q + enter to quit
+
 
 ### Avec Docker
 
@@ -43,6 +49,14 @@ docker compose up -d
 
 Le conteneur écoute sur `127.0.0.1:4000`. Publiez-le derrière un reverse proxy TLS
 (voir §7) : l'application ne termine pas elle-même le chiffrement.
+
+### Démo hors ligne
+
+Ouvrez directement `web/demo.html` dans un navigateur pour une version de présentation qui illustre l'interface sans exiger de serveur en local.
+
+- Navigation multi-onglets simulée
+- Données factices pour les écrans principaux
+- Lecture simple via le fichier HTML
 
 ---
 

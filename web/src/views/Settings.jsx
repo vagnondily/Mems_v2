@@ -17,15 +17,15 @@ import { BLOCKS } from "./Reports.jsx";
 import { PageHead } from "./Shell.jsx";
 
 /* ══════════════════ Paramètres ══════════════════ */
-function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
-  const items = [["general","Général"],["offices","Bureaux"],["sites","Sites"],["locations","Localités"],["scope","Périmètre des bureaux"],["indicators","Indicateurs"],
+function SettingsView({ db, set, me, sub, setSub, notify, can }){
+  const items = [["general","Général"],["about","À propos"],["sites","Sites"],["locations","Localités"],["indicators","Indicateurs"],
     ["calc","Calculs"],["odk","ODK Central"],["templates","Modèles de rapport"],["api","API"],["users","Utilisateurs"]];
   return (
     <div className="space-y-4">
       <PageHead title="Paramètres" text="Configuration de l'application, référentiels, registre des sites, calculs, sources et accès." />
       <Tabs items={items} value={sub} onChange={setSub} />
       {sub==="general" && <SetGeneral db={db} set={set} />}
-      {sub==="offices" && <SetOffices db={db} notify={notify} can={can} reload={reload} />}
+      {sub==="about" && <SetAbout db={db} />}
       {sub==="sites" && <SitesModule db={db} set={set} me={me} notify={notify} can={can} context="settings" />}
       {sub==="locations" && <SetLocations db={db} notify={notify} can={can} />}
       {sub==="scope" && <SetScope db={db} notify={notify} can={can} />}
@@ -140,6 +140,24 @@ function SetGeneral({ db, set }){
           </div>))}
         </div>
         <Btn size="sm" kind="sec" icon={Plus} className="mt-3" onClick={()=>set(d=>{ d.actCategories.push(""); return d; })}>Ajouter</Btn>
+      </Card>
+    </div>);
+}
+
+function SetAbout({ db }){
+  return (
+    <div className="space-y-4">
+      <Card title="À propos de MEMS">
+        <p className="text-slate-600 leading-relaxed">Cette application est une interface de suivi et de pilotage. La démo hors ligne est disponible sans installation du serveur.</p>
+        <p className="text-slate-600 leading-relaxed">Cliquez sur le lien ci-dessous pour ouvrir la version de présentation indépendante.</p>
+        <a href="/demo.html" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 px-4 py-3 rounded-xl font-semibold text-slate-900 bg-slate-100 hover:bg-slate-200 transition">Ouvrir la démo offline</a>
+      </Card>
+      <Card title="Informations importantes" subtitle="Démo hors ligne">
+        <ul className="list-disc pl-5 space-y-2 text-slate-600">
+          <li>La démo n'utilise aucun backend serveur.</li>
+          <li>Les écrans et contenus sont simulés pour la présentation.</li>
+          <li>Le fichier <code className="rounded bg-slate-100 px-1 py-0.5">web/demo.html</code> est accessible directement.</li>
+        </ul>
       </Card>
     </div>);
 }
