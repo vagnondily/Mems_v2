@@ -3,6 +3,7 @@ import ExcelJS from "exceljs";
 import { db, tx } from "../db.js";
 import { newId } from "./crypto.js";
 import { currentVersion, resolveUnit, labelsFor } from "./geo.js";
+import { scopeOf, unitsIn } from "./scope.js";
 
 /* ═══════════════════════════════════════════════════════════════════════
    Import par fichier — définition des types.
@@ -504,26 +505,11 @@ export function commitBatch(id, user){
   return { ...res, inchanges:b.summary.inchanges, rejetes:b.summary.rejetes };
 }
 
-/* ── Périmètre : les unités que l'utilisateur peut toucher ─────────── */
+/* ── Périmètre : les unités que l'utilisateur peut toucher ───────────
+   Une seule définition, partagée avec les autres routes (lib/scope.js). */
 export function scopeFor(user){
-  const scoped = ["viewer","editor","validator"].includes(user.role) && user.office_id;
-  const v = currentVersion();
-  if(!v) return { units:[], scope:new Set() };
-
-  if(!scoped){
-    const units = db.prepare(
-      `SELECT pcode FROM geo_unit WHERE version_id=? AND level='adm3' ORDER BY path`).all(v.id);
-    return { units, scope:null };
-  }
-  /* Faute de table de portée géographique explicite, le périmètre se déduit des
-     sites et du plan de distribution du bureau — et de leurs communes. */
-  const paths = db.prepare(`
-    SELECT DISTINCT gu.path FROM geo_unit gu WHERE gu.version_id=? AND gu.pcode IN (
-      SELECT geo_pcode FROM sites WHERE office_id=? AND geo_pcode IS NOT NULL
-      UNION SELECT geo_pcode FROM pdd WHERE office_id=? AND geo_pcode IS NOT NULL)`)
-    .all(v.id, user.office_id, user.office_id).map(x => x.path);
-  const all = db.prepare(
-    `SELECT pcode, path FROM geo_unit WHERE version_id=? AND level='adm3' ORDER BY path`).all(v.id);
-  const units = all.filter(u => paths.some(p => p === u.path || p.startsWith(u.path + "/")));
-  return { units, scope:new Set(units.map(u => u.pcode)) };
+  const scope = scopeOf(user);
+  const units = unitsIn(scope, "adm3");
+  return { units, scope: scope.unbounded ? null : new Set(units.map(u => u.pcode)),
+           source: scope.source };
 }

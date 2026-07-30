@@ -5,6 +5,7 @@ import { newId } from "../lib/crypto.js";
 import { requireCap } from "../lib/auth.js";
 import { validate, schemas } from "../lib/validate.js";
 import { buildUnits, writeVersion, currentVersion, LEVELS } from "../lib/geo.js";
+import { scopeOf, declaredFor, unitsIn, outsideDeclared } from "../lib/scope.js";
 
 const r = Router();
 
@@ -135,7 +136,7 @@ r.get("/coverage", (req, res) => {
 
   /* Chaque site apporte le chemin de l'unité à laquelle il est rattaché.
      Le cloisonnement par bureau s'applique ici comme partout ailleurs. */
-  const scoped = ["viewer","editor","validator"].includes(req.user.role) && req.user.office_id;
+  const scoped = !scopeOf(req.user).unbounded;
   const sites = db.prepare(
     `SELECT s.status, s.last_visit, gu.path
      FROM sites s JOIN geo_unit gu ON gu.pcode = s.geo_pcode AND gu.version_id = ?
@@ -206,6 +207,57 @@ r.post("/bulk", requireCap("admin"), validate(schemas.geoBulk), (req, res) => {
 
   res.json({ versionId:id, imported:units.length, counts,
     rejected: rejected.length, rejectedSample: rejected.slice(0,10) });
+});
+
+/* ── Périmètre géographique des bureaux ──────────────────────────────
+   Déclaratif : on attribue à un bureau les unités qu'il couvre, à n'importe quel
+   niveau. Le périmètre effectif est tout ce qui en descend. Tant qu'un bureau n'a
+   rien de déclaré, il est déduit de ses données — le champ `source` le dit. */
+r.get("/scope", (req, res) => {
+  const v = version();
+  const offices = db.prepare("SELECT id, name, code, kind FROM offices ORDER BY name").all();
+  res.json({ rows: offices.map(o => {
+    const sc = scopeOf({ role:"editor", office_id:o.id });
+    const hors = outsideDeclared(o.id);
+    return { office_id:o.id, name:o.name, code:o.code, kind:o.kind,
+      source: sc.source,
+      units: declaredFor(o.id).map(u => ({ pcode:u.geo_pcode, name:u.name, level:u.level })),
+      /* Combien d'unités le périmètre couvre réellement, une fois descendu. */
+      communes: v ? unitsIn(sc, "adm3").length : 0,
+      horsPerimetre: hors.declared ? { sites:hors.sites, pdd:hors.pdd } : null };
+  }) });
+});
+
+r.put("/scope/:officeId", requireCap("admin"), (req, res) => {
+  const office = db.prepare("SELECT * FROM offices WHERE id=?").get(req.params.officeId);
+  if(!office) return res.status(404).json({ error:"bureau introuvable" });
+  const p = z.object({ pcodes: z.array(z.string().max(64)).max(2000) }).safeParse(req.body);
+  if(!p.success) return res.status(422).json({ error:"liste d'unités invalide" });
+
+  const v = version();
+  if(!v) return res.status(409).json({ error:"aucun référentiel courant" });
+  const connus = new Set(db.prepare("SELECT pcode FROM geo_unit WHERE version_id=?")
+    .all(v.id).map(x => x.pcode));
+  const inconnus = p.data.pcodes.filter(c => !connus.has(c));
+  if(inconnus.length) return res.status(422).json({
+    error:"certaines unités sont absentes du référentiel courant",
+    details: inconnus.slice(0,10).map(c => ({ champ:"pcode", message:c })) });
+
+  db.transaction(() => {
+    db.prepare("DELETE FROM office_scope WHERE office_id=?").run(office.id);
+    const ins = db.prepare(`INSERT INTO office_scope (office_id,geo_pcode,created_by)
+                            VALUES (?,?,?)`);
+    for(const c of p.data.pcodes) ins.run(office.id, c, req.user.id);
+  })();
+
+  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+              VALUES (?,?,?,'plan','office_scope',?,'update',?)`)
+    .run(newId("aud"), req.user.id, req.user.first_name, office.id,
+         `Périmètre de ${office.name} : ${p.data.pcodes.length} unité(s) attribuée(s)`);
+
+  const sc = scopeOf({ role:"editor", office_id:office.id });
+  res.json({ ok:true, attribuees:p.data.pcodes.length,
+    communes: unitsIn(sc, "adm3").length, source:sc.source });
 });
 
 export default r;

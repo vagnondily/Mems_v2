@@ -91,6 +91,8 @@ export const api = {
   geoLevels:    (q="")            => call("GET", `/geo/levels${q}`),
   geoVersions:  ()                => call("GET", "/geo/versions"),
   geoCoverage:  (q="")            => call("GET", `/geo/coverage${q}`),
+  geoScope:     ()                => call("GET", "/geo/scope"),
+  setGeoScope:  (officeId, pcodes)=> call("PUT", `/geo/scope/${encodeURIComponent(officeId)}`, { pcodes }),
   caseload:     (q="")            => call("GET", `/caseload${q}`),
   caseloadTags: (year)            => call("GET", `/caseload/tags?year=${year}`),
   saveCaseload: (rows)            => call("PUT", "/caseload", { rows }),

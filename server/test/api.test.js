@@ -919,3 +919,126 @@ test("concurrence : un site modifié à deux mains est refusé avec sa version c
 
   await request(app).delete(`/api/sites/${site.id}`).set("Authorization", `Bearer ${t}`);
 });
+
+/* ── Périmètre géographique déclaré ───────────────────────────────────
+   Le rôle dit ce qu'on peut faire, le périmètre dit où. Deux axes distincts. */
+
+test("périmètre : déclaré au district, il donne accès à ses communes", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(t);
+
+  const sc = await request(app).get("/api/geo/scope").set("Authorization", `Bearer ${t}`);
+  assert.equal(sc.status, 200);
+  const ambovombe = sc.body.rows.find(o => /Ambovombe/.test(o.name));
+  assert.ok(ambovombe, "le bureau d'Ambovombe est listé");
+  assert.equal(ambovombe.source, "déclaré", "son périmètre est déclaré, non déduit");
+  assert.ok(ambovombe.units.length >= 1, "des unités lui sont attribuées");
+  assert.ok(ambovombe.units.every(u => u.level === "adm2"), "attribuées au niveau district");
+  /* Déclarer un district donne accès à ses communes : le périmètre descend. */
+  assert.ok(ambovombe.communes > ambovombe.units.length,
+    `${ambovombe.units.length} district(s) déclaré(s) → ${ambovombe.communes} commune(s) couverte(s)`);
+
+  /* Le bureau central n'a pas de périmètre : il voit tout par son rôle. */
+  const hq = sc.body.rows.find(o => o.kind === "hq");
+  assert.equal(hq.units.length, 0);
+});
+
+test("périmètre : il borne réellement ce qu'un compte de terrain peut lire", async () => {
+  const ta = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(ta);
+  const te = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  const year = (await request(app).get("/api/state").set("Authorization", `Bearer ${ta}`)).body.year;
+
+  const vueAdmin = await request(app).get(`/api/caseload?level=adm3&year=${year}`)
+    .set("Authorization", `Bearer ${ta}`);
+  const vueTerrain = await request(app).get(`/api/caseload?level=adm3&year=${year}`)
+    .set("Authorization", `Bearer ${te}`);
+  assert.ok(vueTerrain.body.rows.length > 0, "le compte de terrain voit ses communes");
+  assert.ok(vueTerrain.body.rows.length < vueAdmin.body.rows.length,
+    `terrain ${vueTerrain.body.rows.length} communes < admin ${vueAdmin.body.rows.length}`);
+
+  /* Le périmètre est le même pour la couverture géographique : une seule définition. */
+  const couv = await request(app).get("/api/geo/coverage?level=adm3")
+    .set("Authorization", `Bearer ${te}`);
+  assert.equal(couv.status, 200);
+});
+
+test("périmètre : le modifier change immédiatement ce qui est accessible", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(t);
+  const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
+
+  const avant = (await request(app).get("/api/geo/scope").set("Authorization", `Bearer ${t}`))
+    .body.rows.find(o => o.office_id === office.id);
+
+  /* On réduit le périmètre à une seule commune. */
+  const uneCommune = db.prepare(`SELECT pcode FROM geo_unit
+    WHERE version_id=(SELECT id FROM geo_version WHERE is_current=1) AND level='adm3' LIMIT 1`).get();
+  const maj = await request(app).put(`/api/geo/scope/${office.id}`)
+    .set("Authorization", `Bearer ${t}`).send({ pcodes:[uneCommune.pcode] });
+  assert.equal(maj.status, 200);
+  assert.equal(maj.body.communes, 1, "une commune déclarée, une commune couverte");
+  assert.ok(maj.body.communes < avant.communes, "le périmètre s'est réduit");
+
+  /* L'effet est immédiat sur le modèle d'import du compte concerné. */
+  const te = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  const wb = await modele(te);
+  const pcodes = new Set();
+  const ws = wb.getWorksheet("Saisie"); const c = colonnes(ws);
+  ws.eachRow((r,n) => { if(n>2) pcodes.add(String(r.getCell(c["P-code"]).value)); });
+  assert.equal(pcodes.size, 1, "le modèle ne contient plus que la commune déclarée");
+  assert.ok(pcodes.has(uneCommune.pcode));
+
+  /* On rétablit le périmètre d'origine. */
+  await request(app).put(`/api/geo/scope/${office.id}`).set("Authorization", `Bearer ${t}`)
+    .send({ pcodes: avant.units.map(u => u.pcode) });
+});
+
+test("périmètre : sans déclaration, il reste déduit des données — pas d'accès perdu", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(t);
+  const office = db.prepare(`SELECT o.id, o.name FROM offices o
+    WHERE o.kind='field' AND EXISTS (SELECT 1 FROM sites WHERE office_id=o.id)
+    ORDER BY o.name LIMIT 1`).get();
+  const declare = db.prepare("SELECT geo_pcode FROM office_scope WHERE office_id=?").all(office.id);
+
+  /* On efface la déclaration : le repli doit prendre le relais, sinon activer la
+     migration priverait d'un coup tous les comptes de terrain de leur accès. */
+  db.prepare("DELETE FROM office_scope WHERE office_id=?").run(office.id);
+  const sansDeclaration = (await request(app).get("/api/geo/scope")
+    .set("Authorization", `Bearer ${t}`)).body.rows.find(o => o.office_id === office.id);
+  assert.equal(sansDeclaration.source, "déduit");
+  assert.ok(sansDeclaration.communes > 0, "le périmètre déduit n'est pas vide");
+
+  /* On rétablit. */
+  const ins = db.prepare("INSERT INTO office_scope (office_id,geo_pcode) VALUES (?,?)");
+  for(const d of declare) ins.run(office.id, d.geo_pcode);
+  const retabli = (await request(app).get("/api/geo/scope")
+    .set("Authorization", `Bearer ${t}`)).body.rows.find(o => o.office_id === office.id);
+  assert.equal(retabli.source, "déclaré");
+});
+
+test("périmètre : une unité absente du référentiel est refusée", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(t);
+  const office = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
+  const r = await request(app).put(`/api/geo/scope/${office.id}`)
+    .set("Authorization", `Bearer ${t}`).send({ pcodes:["PCODE_QUI_NEXISTE_PAS"] });
+  assert.equal(r.status, 422);
+  assert.ok(/absentes du référentiel/.test(r.body.error), r.body.error);
+  /* Rien n'a été écrit : le périmètre précédent est intact. */
+  assert.ok(db.prepare("SELECT COUNT(*) c FROM office_scope WHERE office_id=?").get(office.id).c > 0);
+});
+
+test("périmètre : sa modification est réservée aux administrateurs et tracée", async () => {
+  const te = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  const office = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
+  const refus = await request(app).put(`/api/geo/scope/${office.id}`)
+    .set("Authorization", `Bearer ${te}`).send({ pcodes:[] });
+  assert.equal(refus.status, 403);
+
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const j = await request(app).get("/api/audit?limit=200").set("Authorization", `Bearer ${t}`);
+  assert.ok(j.body.rows.some(x => x.entity === "office_scope"),
+    "les changements de périmètre laissent une trace");
+});

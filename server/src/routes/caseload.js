@@ -4,27 +4,9 @@ import { db, tx } from "../db.js";
 import { newId } from "../lib/crypto.js";
 import { requireCap } from "../lib/auth.js";
 import { currentVersion, LEVELS } from "../lib/geo.js";
+import { scopeOf, covers } from "../lib/scope.js";
 
 const r = Router();
-
-/* Portée : un compte rattaché à un bureau ne voit que les unités où ce bureau
-   intervient. Faute de table de portée géographique explicite (elle viendra), on
-   déduit le périmètre des sites et du plan de distribution du bureau. */
-function scopePaths(user){
-  const scoped = ["viewer","editor","validator"].includes(user.role) && user.office_id;
-  if(!scoped) return null;
-  const v = currentVersion(); if(!v) return [];
-  const rows = db.prepare(`
-    SELECT DISTINCT gu.path FROM geo_unit gu
-    WHERE gu.version_id = ? AND gu.pcode IN (
-      SELECT geo_pcode FROM sites WHERE office_id = ? AND geo_pcode IS NOT NULL
-      UNION SELECT geo_pcode FROM pdd WHERE office_id = ? AND geo_pcode IS NOT NULL)`)
-    .all(v.id, user.office_id, user.office_id);
-  return rows.map(x => x.path);
-}
-const inScope = (path, paths) =>
-  paths === null ? true
-  : paths.some(p => path === p || path.startsWith(p + "/") || p.startsWith(path + "/"));
 
 /* ── Les nombres ─────────────────────────────────────────────────────
    Par unité et par période : population, ménages, personnes ciblées, puis le
@@ -62,8 +44,8 @@ r.get("/", (req, res) => {
      LEFT JOIN geo_unit p3 ON p3.version_id=u.version_id AND p3.pcode=p2.parent_pcode
      WHERE ${where.join(" AND ")} ORDER BY u.path LIMIT ?`).all(...args, limit);
 
-  const paths = scopePaths(req.user);
-  const kept = units.filter(u => inScope(u.path, paths));
+  const scope = scopeOf(req.user);
+  const kept = units.filter(u => covers(scope, u.path));
   const codes = new Set(kept.map(u => u.pcode));
 
   /* Caseload : la valeur du mois si elle existe, sinon la valeur annuelle. */

@@ -102,7 +102,7 @@ if(info){
                     "report_templates","dashboards","indicators","activity_categories","partners",
                     "poi_subtypes","offices","users","settings",
                     /* geo_version efface geo_unit en cascade */
-                    "geo_version","geo"]) db.prepare(`DELETE FROM ${t}`).run();
+                    "office_scope","geo_version","geo"]) db.prepare(`DELETE FROM ${t}`).run();
 
     const officeId = {};
     const insOffice = db.prepare("INSERT INTO offices (id,name,code,kind) VALUES (?,?,?,?)");
@@ -293,6 +293,23 @@ if(info){
       odkBase:"https://odk-central.example.org", opSize:"Large" })
       .forEach(([k,v]) => setS.run(k, JSON.stringify(v)));
 
+
+    /* Périmètre déclaré de chaque bureau : on attribue le district de chacune de
+       ses communes. Déclarer le district plutôt que la commune est plus proche de
+       la réalité — un bureau couvre un district, pas une liste de communes. */
+    {
+      const gv0 = db.prepare("SELECT id FROM geo_version WHERE is_current=1").get();
+      const insScope = db.prepare(
+        "INSERT OR IGNORE INTO office_scope (office_id,geo_pcode) VALUES (?,?)");
+      for(const [office, idx] of Object.entries(ZONES)){
+        if(!officeId[office]) continue;
+        for(const i of idx){
+          const m = resolveUnit({ adm1:GEO[i][1], adm2:GEO[i][2] }, gv0.id);
+          if(m.pcode) insScope.run(officeId[office], m.pcode);
+        }
+      }
+      /* Le bureau central n'a pas de périmètre : il voit tout par son rôle. */
+    }
 
     /* Sites et plan de distribution rattachés au référentiel dès la génération :
        le jeu de démonstration est cohérent sans passer par src/link-geo.js. */

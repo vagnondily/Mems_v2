@@ -6,7 +6,7 @@ analyse des données ODK Central, cartographie et restitution.
 
 - **Frontend** : React 18 + Vite, sans framework de composants imposé
 - **Backend** : Node 20 + Express + SQLite (WAL), schéma relationnel avec clés étrangères
-- **Tests** : 44 tests d'API + 10 tests de bout en bout pilotant l'interface réelle
+- **Tests** : 50 tests d'API + 10 tests de bout en bout pilotant l'interface réelle
 
 ---
 
@@ -57,6 +57,7 @@ mems/
 │  ├─ migrations/004_caseload.sql  population, ménages et personnes ciblées
 │  ├─ migrations/005_import.sql    lots d'import : analyse, diff, confirmation
 │  ├─ migrations/006_revisions.sql révisions de ligne pour l'écriture concurrente
+│  ├─ migrations/007_office_scope.sql périmètre géographique déclaré des bureaux
 │  ├─ src/
 │  │  ├─ index.js              montage Express, sécurité, service du frontend compilé
 │  │  ├─ config.js             lecture et contrôle des variables d'environnement
@@ -67,11 +68,12 @@ mems/
 │  │  ├─ lib/crypto.js         chiffrement au repos, génération d'identifiants
 │  │  ├─ lib/geo.js            construction de l'arbre administratif, millésimes
 │  │  ├─ lib/import.js         modèles Excel, réconciliation par clé, diff
+│  │  ├─ lib/scope.js          périmètre géographique — une seule définition
 │  │  ├─ import-geo.js         chargement du référentiel complet en ligne de commande
 │  │  ├─ link-geo.js           rapprochement des données existantes vers le référentiel
 │  │  ├─ lib/logger.js         journal avec masquage des secrets
 │  │  └─ routes/               auth, state, sites, geo, users, analytics, collections
-│  └─ test/api.test.js         44 tests d'intégration
+│  └─ test/api.test.js         50 tests d'intégration
 └─ web/                        interface
    ├─ src/
    │  ├─ App.jsx               racine : session, file d'écriture, routage des onglets
@@ -89,7 +91,7 @@ mems/
 
 ## 3. Modèle de données
 
-Trente tables. Les clés étrangères sont **déclarées et contrôlées**
+Trente-et-une tables. Les clés étrangères sont **déclarées et contrôlées**
 (`PRAGMA foreign_keys = ON`), avec `ON DELETE CASCADE` là où la dépendance est
 existentielle et `ON DELETE SET NULL` là où elle est seulement descriptive.
 
@@ -111,6 +113,8 @@ partners ──< sites
 
 indicators ──┬─< outcomes                    (cascade)
              └─< outcome_plan                (PK composite indicator_id, year, month)
+
+offices ──< office_scope                     (périmètre géographique déclaré)
 
 population ──< population_values             (table héritée, remplacée par caseload)
 
@@ -357,6 +361,8 @@ elles exigent un jeton — en-tête `Authorization: Bearer …` ou cookie `httpO
 | POST | `/import/batches/:id/cancel` | `edit` | abandonne le lot |
 | GET | `/geo/versions` | connecté | millésimes du référentiel |
 | PUT | `/geo/versions/:id/current` | `admin` | change le millésime courant |
+| GET | `/geo/scope` | connecté | périmètre de chaque bureau, et son origine |
+| PUT | `/geo/scope/:officeId` | `admin` | attribue les unités couvertes par un bureau |
 | POST | `/geo/bulk` | `admin` | import : le serveur reconstruit l'arbre en une transaction |
 | GET/POST/PUT/DELETE | `/users` | `admin` | gestion des comptes |
 | GET | `/analytics/map` | connecté | points cartographiques filtrés |
@@ -410,6 +416,44 @@ plus dangereux des deux défauts.
 passent en outre par des écritures ligne à ligne (§ import et § population), où la
 question ne se pose plus.
 
+### Périmètre géographique d'un bureau
+
+Deux axes distincts, qu'il ne faut pas confondre :
+
+| | |
+|---|---|
+| Le **rôle** | ce qu'un compte peut faire — lire, modifier, valider, administrer |
+| Le **périmètre** | *où* il peut le faire — quelles unités administratives |
+
+Un validateur de Toliara ne devrait pas valider Antsiranana. Le rôle seul ne le dit pas.
+
+`office_scope` attribue à un bureau les unités qu'il couvre, **à n'importe quel niveau** —
+le plus souvent un district. Le périmètre effectif est tout ce qui en descend, par le
+chemin matérialisé.
+
+Avant, ce périmètre était **déduit** des sites et du plan de distribution du bureau.
+Cela marchait, mais trois choses en découlaient :
+
+- Un bureau qui vient d'ouvrir n'avait aucun périmètre, donc ne pouvait rien saisir : il
+  aurait fallu d'abord y créer un site, ce qui suppose déjà de pouvoir écrire quelque part.
+  Le raisonnement tournait en rond.
+- On ne pouvait pas préparer une extension — « à partir de janvier, Ampanihy couvre aussi
+  Beahitse » n'était pas exprimable avant d'y créer des données.
+- Le périmètre n'était ni visible ni vérifiable : il changeait à chaque site ajouté, sans
+  que personne ne l'ait décidé.
+
+La déduction subsiste **en repli** : tant qu'un bureau n'a rien de déclaré, son périmètre
+est déduit comme avant. Sans ce repli, appliquer la migration priverait d'un coup tous les
+comptes de terrain de leur accès. *Paramètres → Périmètre des bureaux* affiche l'origine
+de chaque périmètre — `déclaré`, `déduit` ou `aucun` — et signale les sites ou lignes de
+plan rattachés hors du périmètre déclaré de leur bureau.
+
+> Cette règle était écrite **trois fois**, dans trois routes, avec trois formulations
+> légèrement différentes. Une règle de sécurité dupliquée est une règle qui finit par
+> diverger — c'est exactement ce qui était arrivé à la matrice des droits, déjà
+> désynchronisée sur `viewer`/`analytics` quand je l'ai trouvée. Elle vit désormais dans
+> `lib/scope.js`, et nulle part ailleurs.
+
 ### Rôles
 
 | Rôle | Onglets | Modifier | Supprimer | Valider | Administrer |
@@ -420,8 +464,16 @@ question ne se pose plus.
 | `editor` | hors paramètres | ✅ | ❌ | ❌ | ❌ |
 | `viewer` | consultation | ❌ | ❌ | ❌ | ❌ |
 
-Un compte rattaché à un bureau (`office_id`) ne voit et ne modifie **que** les sites de ce
-bureau, sauf s'il est administrateur. Le filtrage est appliqué en SQL, pas dans l'interface.
+Un compte rattaché à un bureau (`office_id`) ne voit et ne modifie **que** les données de
+ce bureau, sauf s'il est administrateur. Le filtrage est appliqué **côté serveur**, jamais
+dans l'interface — un filtre d'interface n'est pas une sécurité.
+
+Deux mécanismes s'y combinent, selon la nature de la donnée :
+
+| Donnée | Cloisonnement |
+|---|---|
+| Sites, visites, distributions, paramètres, journal | par `office_id` — la ligne appartient au bureau |
+| Population, ciblage, couverture géographique, périmètre d'import | par **périmètre géographique** (voir ci-dessus) — la donnée est clée sur une unité, pas sur un bureau |
 
 ---
 
@@ -594,7 +646,7 @@ jamais un fichier déjà appliqué en production.
 ### Tests
 
 ```bash
-npm test              # 44 tests d'API puis 10 tests de bout en bout
+npm test              # 50 tests d'API puis 10 tests de bout en bout
 cd server && npm test # API seule
 cd web && npm test    # interface seule, contre un serveur réellement démarré
 ```

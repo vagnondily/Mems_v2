@@ -14,7 +14,7 @@ import { PageHead } from "./Shell.jsx";
 
 /* ══════════════════ Paramètres ══════════════════ */
 function SettingsView({ db, set, me, sub, setSub, notify, can }){
-  const items = [["general","Général"],["sites","Sites"],["locations","Localités"],["indicators","Indicateurs"],
+  const items = [["general","Général"],["sites","Sites"],["locations","Localités"],["scope","Périmètre des bureaux"],["indicators","Indicateurs"],
     ["calc","Calculs"],["odk","ODK Central"],["templates","Modèles de rapport"],["api","API"],["users","Utilisateurs"]];
   return (
     <div className="space-y-4">
@@ -23,6 +23,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can }){
       {sub==="general" && <SetGeneral db={db} set={set} />}
       {sub==="sites" && <SitesModule db={db} set={set} me={me} notify={notify} can={can} context="settings" />}
       {sub==="locations" && <SetLocations db={db} notify={notify} can={can} />}
+      {sub==="scope" && <SetScope db={db} notify={notify} can={can} />}
       {sub==="indicators" && <SetIndicators db={db} set={set} notify={notify} can={can} />}
       {sub==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
       {sub==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} />}
@@ -556,6 +557,143 @@ function SiteModal({ open, site, db, onClose, onSave }){
 }
 
 /* ── Localités : niveaux administratifs issus du shapefile ── */
+/* ── Périmètre des bureaux ──
+   Le rôle dit ce qu'un compte peut faire ; le périmètre dit où. Un bureau couvre
+   les unités qu'on lui attribue — le plus souvent des districts — et le périmètre
+   effectif est tout ce qui en descend. */
+function SetScope({ db, notify, can }){
+  const [rows,setRows]   = useState([]);
+  const [edit,setEdit]   = useState(null);   /* bureau en cours d'édition */
+  const [sel,setSel]     = useState(new Set());
+  const [region,setRegion] = useState("");
+  const [busy,setBusy]   = useState(false);
+  const geo = useGeoCascade({ adm1: region });
+
+  const charger = () => api.geoScope().then(r=>setRows(r.rows||[])).catch(()=>{});
+  useEffect(()=>{ charger(); },[]);
+
+  const ouvrir = (o) => { setEdit(o); setSel(new Set(o.units.map(u=>u.pcode))); setRegion(""); };
+  const bascule = (pcode) => setSel(s => {
+    const n = new Set(s); n.has(pcode) ? n.delete(pcode) : n.add(pcode); return n; });
+
+  const enregistrer = async () => {
+    setBusy(true);
+    try{
+      const r = await api.setGeoScope(edit.office_id, [...sel]);
+      notify(`Périmètre enregistré : ${r.communes} commune(s) couverte(s)`, "ok");
+      setEdit(null); charger();
+    }catch(e){ notify("Refusé : " + e.message, "err"); }
+    setBusy(false);
+  };
+
+  if(!db.geoVersion) return (
+    <Note tone="warn"><b>Aucun référentiel chargé.</b> Le périmètre d'un bureau s'exprime
+      en unités administratives. Chargez un millésime depuis Paramètres → Localités.</Note>);
+
+  return (
+    <>
+      <Note>Un bureau couvre les unités qui lui sont <b>attribuées</b>, à n'importe quel
+        niveau — le plus souvent un district. Le périmètre effectif est tout ce qui en
+        descend. Tant qu'aucune unité n'est attribuée, il est <b>déduit</b> des sites et
+        du plan de distribution du bureau : c'est un repli, pas une intention.
+        <br /><br />
+        Ce périmètre borne ce qu'un compte rattaché à ce bureau peut lire et écrire —
+        population, ciblage, couverture géographique, et les lignes que ses modèles
+        d'import contiennent.</Note>
+
+      <Card flush title="Périmètre par bureau"
+        subtitle={`${rows.length} bureau(x) · ${rows.filter(r=>r.source==="déclaré").length} avec un périmètre déclaré`}>
+        <TableWrap max="mh480">
+          <thead><tr><Th>Bureau</Th><Th>Code</Th><Th>Origine</Th><Th>Unités attribuées</Th>
+            <Th num>Communes couvertes</Th><Th>Cohérence</Th><Th /></tr></thead>
+          <tbody>{rows.map(o=>(
+            <tr key={o.office_id} className="hover:bg-sky-50">
+              <Td className="font-medium text-slate-800">{o.name}</Td>
+              <Td className="f115 text-slate-500">{o.code}</Td>
+              <Td>{o.kind==="hq"
+                ? <Badge tone="b">tous les bureaux</Badge>
+                : o.source==="déclaré" ? <Badge tone="g">déclaré</Badge>
+                : o.source==="déduit" ? <Badge tone="y">déduit</Badge>
+                : <Badge tone="r">aucun</Badge>}</Td>
+              <Td>{o.units.length
+                ? <div className="flex gap-1 flex-wrap">{o.units.slice(0,6).map(u=>(
+                    <Badge key={u.pcode}>{u.name}</Badge>))}
+                    {o.units.length>6 && <Badge>+{o.units.length-6}</Badge>}</div>
+                : <span className="text-slate-400">—</span>}</Td>
+              <Td num>{o.communes || "—"}</Td>
+              <Td>{o.horsPerimetre && (o.horsPerimetre.sites || o.horsPerimetre.pdd)
+                ? <Badge tone="y">
+                    {o.horsPerimetre.sites ? `${o.horsPerimetre.sites} site(s)` : ""}
+                    {o.horsPerimetre.sites && o.horsPerimetre.pdd ? " · " : ""}
+                    {o.horsPerimetre.pdd ? `${o.horsPerimetre.pdd} ligne(s) PDD` : ""} hors périmètre
+                  </Badge>
+                : <span className="text-slate-400">—</span>}</Td>
+              <Td className="text-right">{can("admin") && o.kind!=="hq" &&
+                <Btn size="sm" kind="sec" icon={Pencil} onClick={()=>ouvrir(o)}>Modifier</Btn>}</Td>
+            </tr>))}</tbody>
+        </TableWrap>
+      </Card>
+
+      {rows.some(o => o.horsPerimetre && (o.horsPerimetre.sites || o.horsPerimetre.pdd)) && (
+        <Note tone="warn"><b>Données hors périmètre.</b> Certains sites ou lignes de plan sont
+          rattachés à des unités qui ne figurent pas dans le périmètre déclaré de leur bureau.
+          Ce n'est pas une erreur — les données peuvent précéder la déclaration — mais l'un des
+          deux mérite d'être corrigé : élargir le périmètre, ou réaffecter les données.</Note>)}
+
+      <Modal open={!!edit} wide onClose={()=>setEdit(null)}
+        title={edit ? `Périmètre de ${edit.name}` : ""}
+        subtitle="Attribuez des districts, ou des communes pour un découpage plus fin"
+        footer={<><Btn kind="sec" onClick={()=>setEdit(null)}>Annuler</Btn>
+          <Btn icon={Save} onClick={enregistrer} disabled={busy}>
+            {busy ? "Enregistrement…" : `Enregistrer ${sel.size} unité(s)`}</Btn></>}>
+        {edit && (<>
+          <div className="grid grid-cols-2 gap-x-4">
+            <Field label="Région" hint="Pour parcourir les districts">
+              <Select value={region} onChange={e=>setRegion(e.target.value)} empty="Choisir une région"
+                options={geo.adm1.map(x=>x.name)} /></Field>
+            <div className="self-end pb-3 f125 text-slate-600">
+              {sel.size} unité(s) attribuée(s)
+              {!!sel.size && <button onClick={()=>setSel(new Set())}
+                className="ml-2 c-bd hover:underline">tout retirer</button>}
+            </div>
+          </div>
+
+          {!region ? (
+            <div className="py-8 text-center f125 text-slate-500">
+              Choisissez une région pour voir ses districts.</div>
+          ) : (
+            <TableWrap max="mh300">
+              <thead><tr><Th className="w-14" /><Th>District</Th><Th>P-code</Th><Th /></tr></thead>
+              <tbody>{geo.adm2.map(d=>(
+                <tr key={d.pcode} className={clsx("hover:bg-sky-50", sel.has(d.pcode) && "bg-sky-50")}>
+                  <Td><input type="checkbox" checked={sel.has(d.pcode)}
+                    onChange={()=>bascule(d.pcode)} /></Td>
+                  <Td className="font-medium text-slate-800">{d.name}</Td>
+                  <Td className="f115 c-bd">{d.pcode}</Td>
+                  <Td /></tr>))}</tbody>
+            </TableWrap>)}
+
+          {!!sel.size && (
+            <div className="mt-4 pt-3 border-t border-slate-100">
+              <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">
+                Unités retenues</div>
+              <div className="flex gap-1.5 flex-wrap">
+                {[...sel].map(pc => {
+                  const connu = [...geo.adm2, ...geo.adm3].find(x=>x.pcode===pc)
+                    || edit.units.find(u=>u.pcode===pc);
+                  return (<button key={pc} onClick={()=>bascule(pc)}
+                    className="px-2 py-0.5 rounded f11 font-semibold bg-sky-50 border border-sky-200 c-bd hover:bg-rose-50 hover:border-rose-200">
+                    {connu?.name || pc} ✕</button>);
+                })}
+              </div>
+              <p className="f115 text-slate-500 mt-2">Cliquez pour retirer. Les unités
+                d'autres régions restent attribuées même si elles ne sont pas listées ci-dessus.</p>
+            </div>)}
+        </>)}
+      </Modal>
+    </>);
+}
+
 /* ── Localités : référentiel administratif versionné ──
    Le découpage n'est plus une liste plate éditable ligne à ligne : c'est un arbre
    (région → district → commune → fokontany) chargé par millésime. Sites, population
