@@ -66,6 +66,16 @@ const PLAN = [
   ["Bureau de terrain de Toliara",  [["SMP",31,9,2,14],["NTA",30,12,2,9],["CAR",12,6,1,5],["MPA",8,6,1,4],["URT",7,6,2,3],["SAMS",3,3,1,2]]],
 ];
 const CAT_SITE = { SMP:"École", NTA:"Formation sanitaire", MPA:"Point de distribution", URT:"Point de distribution" };
+/* Un bureau de terrain couvre des districts précis, pas tout le pays. Sans ce
+   découpage, chaque bureau se retrouvait présent dans les dix communes et le
+   cloisonnement par bureau ne cloisonnait plus rien. Index dans GEO. */
+const ZONES = {
+  "Bureau de terrain d'Ambovombe": [0,1,2,3],   /* Androy */
+  "Bureau de terrain d'Ampanihy":  [6],         /* Ampanihy Ouest */
+  "Bureau de terrain de Toliara":  [7,8],       /* Toliara II */
+  "Bureau de terrain de Manakara": [9],         /* Manakara */
+  "Bureau de terrain de Tolagnaro":[4,5],       /* Anosy */
+};
 
 function seed(){
   const existing = db.prepare("SELECT COUNT(*) c FROM sites").get().c;
@@ -155,7 +165,8 @@ if(info){
       insParam.run(newId("cov"), `ACT-${YEAR}-${String(++pIdx).padStart(3,"0")}`,
         officeId[office], catId[tag].id, tag, dur, risk, feas);
       for(let k=0;k<count;k++){
-        const g = GEO[n % GEO.length];
+        const zone = ZONES[office] || GEO.map((_,i)=>i);
+        const g = GEO[zone[n % zone.length]];
         const label = CAT_SITE[tag] || pick(POI)[0];
         const poi = POI.find(p=>p[0]===label) || POI[1];
         const id = newId("site");
@@ -235,7 +246,10 @@ if(info){
     /* Un bureau par commune, pas tous les bureaux dans toutes les communes :
        sinon les volumes cumulés donnent des communes à un million d'habitants. */
     const bureauDe = {};
-    GEO.forEach((g,i) => { bureauDe[g[3]] = BUREAUX[i % BUREAUX.length]; });
+    for(const [office, idx] of Object.entries(ZONES))
+      for(const i of idx){ const b = BUREAUX.find(o => o[0] === office); if(b) bureauDe[GEO[i][3]] = b; }
+    /* Filet : une commune non attribuée revient au premier bureau. */
+    GEO.forEach(g => { bureauDe[g[3]] = bureauDe[g[3]] || BUREAUX[0]; });
     [Math.max(0,new Date().getMonth()-1), new Date().getMonth()].forEach(mi =>
       GEO.forEach(g => { const [oname, code] = bureauDe[g[3]];
         ["GD","PREVMA"].forEach(actType => {

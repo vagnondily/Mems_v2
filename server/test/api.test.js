@@ -587,3 +587,208 @@ test("population et ciblage : les valeurs incohérentes sont rejetées avec leur
   /* Un rejet partiel n'annule pas le reste : ici tout est rejeté, rien n'est écrit. */
   assert.equal(r.body.crees + r.body.modifies, 0);
 });
+
+/* ── Import par fichier ───────────────────────────────────────────────
+   Le pipeline en trois temps : modèle pré-rempli, prévisualisation qui n'écrit
+   rien, puis confirmation en une transaction. */
+const ExcelJS = (await import("exceljs")).default;
+
+async function modele(token, kind = "caseload", year = new Date().getFullYear()){
+  const r = await request(app).get(`/api/import/${kind}/template?year=${year}`)
+    .set("Authorization", `Bearer ${token}`).buffer(true)
+    .parse((res, cb) => { const d = []; res.on("data", c => d.push(c));
+                          res.on("end", () => cb(null, Buffer.concat(d))); });
+  assert.equal(r.status, 200, "le modèle se télécharge");
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(r.body);
+  return wb;
+}
+const colonnes = (ws) => { const c = {}; ws.getRow(1).eachCell((cell,i)=>{ c[String(cell.value)] = i; }); return c; };
+async function televerser(token, wb, kind = "caseload"){
+  const buf = await wb.xlsx.writeBuffer();
+  return request(app).post(`/api/import/${kind}`).set("Authorization", `Bearer ${token}`)
+    .attach("file", Buffer.from(buf), "saisie.xlsx");
+}
+
+test("import : le modèle est pré-rempli, ses clés verrouillées et son type identifié", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(t);
+  const wb = await modele(t);
+  const ws = wb.getWorksheet("Saisie");
+  assert.ok(ws, "la feuille de saisie existe");
+  assert.ok(ws.rowCount > 2, "des lignes sont pré-remplies");
+  assert.ok(ws.sheetProtection, "la feuille est protégée pour préserver les clés");
+
+  const c = colonnes(ws);
+  for(const h of ["P-code","Commune","Année","Activité","Population","Personnes ciblées"])
+    assert.ok(c[h], `la colonne « ${h} » est présente`);
+
+  /* La commune est pré-remplie : l'utilisateur remplit des cases, il ne saisit pas de clés. */
+  const l3 = ws.getRow(3);
+  assert.ok(String(l3.getCell(c["P-code"]).value).length > 3, "le p-code est rempli");
+  assert.ok(String(l3.getCell(c["Commune"]).value).length > 1, "la commune est rappelée");
+  /* Les cellules de mesure sont explicitement déverrouillées. */
+  assert.equal(l3.getCell(c["Population"]).protection?.locked, false);
+
+  /* Feuille d'identification, masquée : c'est elle qui permet de refuser un modèle périmé. */
+  const meta = wb.getWorksheet("_mems");
+  assert.equal(meta.state, "veryHidden");
+  const kv = {}; meta.eachRow(r => { kv[String(r.getCell(1).value)] = String(r.getCell(2).value); });
+  assert.equal(kv.kind, "caseload");
+  assert.ok(kv.geoVersion, "le millésime du référentiel est inscrit");
+});
+
+test("import : la prévisualisation n'écrit rien, la confirmation applique", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(t);
+  const year = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`)).body.year;
+  const wb = await modele(t, "caseload", year);
+  const ws = wb.getWorksheet("Saisie"); const c = colonnes(ws);
+
+  /* On modifie une seule ligne de total, avec une valeur reconnaissable. */
+  let cible = null;
+  for(let n = 3; n <= ws.rowCount; n++){
+    const row = ws.getRow(n);
+    if(String(row.getCell(c["Activité"]).value ?? "") !== "") continue;
+    row.getCell(c["Population"]).value = 123456;
+    row.getCell(c["Personnes ciblées"]).value = 12345;
+    row.getCell(c["Source"]).value = "test import";
+    cible = String(row.getCell(c["P-code"]).value);
+    break;
+  }
+  assert.ok(cible, "une ligne de total a été trouvée");
+
+  const avant = (await request(app).get(`/api/caseload?level=adm3&year=${year}`)
+    .set("Authorization", `Bearer ${t}`)).body.rows.find(x => x.pcode === cible);
+
+  const prev = await televerser(t, wb);
+  assert.equal(prev.status, 200);
+  assert.ok(prev.body.batch, "un lot est créé");
+  assert.equal(prev.body.resume.modifies, 1, "une seule ligne change");
+  /* Les lignes pré-remplies non renseignées ne créent pas d'enregistrements à zéro. */
+  assert.ok(prev.body.resume.vides > 0, "les lignes vides sont écartées, pas créées");
+  assert.ok(/Rien n'a encore été enregistré/.test(prev.body.message));
+
+  /* Le point capital : la base est inchangée avant confirmation. */
+  const pendant = (await request(app).get(`/api/caseload?level=adm3&year=${year}`)
+    .set("Authorization", `Bearer ${t}`)).body.rows.find(x => x.pcode === cible);
+  assert.equal(pendant.population, avant.population, "rien n'est écrit à la prévisualisation");
+
+  const ok = await request(app).post(`/api/import/batches/${prev.body.batch}/commit`)
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.modifies, 1);
+
+  const apres = (await request(app).get(`/api/caseload?level=adm3&year=${year}`)
+    .set("Authorization", `Bearer ${t}`)).body.rows.find(x => x.pcode === cible);
+  assert.equal(apres.population, 123456);
+  assert.equal(apres.targeted, 12345);
+
+  /* Rejouer le même lot est refusé : l'application est idempotente. */
+  const rejoue = await request(app).post(`/api/import/batches/${prev.body.batch}/commit`)
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(rejoue.status, 409);
+
+  /* Réimporter le même fichier ne change plus rien : la réconciliation est par clé. */
+  const encore = await televerser(t, wb);
+  assert.equal(encore.body.resume.crees, 0);
+  assert.equal(encore.body.resume.modifies, 0);
+});
+
+test("import : les lignes fautives sont rejetées avec leur motif, sans bloquer les bonnes", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(t);
+  const year = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`)).body.year;
+  const wb = await modele(t, "caseload", year);
+  const ws = wb.getWorksheet("Saisie"); const c = colonnes(ws);
+
+  /* Une ligne valable, pour vérifier qu'un rejet partiel ne bloque pas le reste. */
+  const bonne = ws.getRow(3);
+  bonne.getCell(c["Activité"]).value = "";
+  bonne.getCell(c["Population"]).value = 40000;
+  bonne.getCell(c["Personnes ciblées"]).value = 9000;
+
+  /* Plus de ciblés que d'habitants. */
+  const l4 = ws.getRow(4);
+  l4.getCell(c["Population"]).value = 1000;
+  l4.getCell(c["Personnes ciblées"]).value = 9999;
+  /* P-code inconnu. */
+  const inconnu = ws.addRow([]);
+  inconnu.getCell(c["P-code"]).value = "PCODE_QUI_NEXISTE_PAS";
+  inconnu.getCell(c["Année"]).value = year;
+  inconnu.getCell(c["Population"]).value = 500;
+  /* Doublon de clé dans le fichier. */
+  const doublon = ws.addRow([]);
+  doublon.getCell(c["P-code"]).value = String(bonne.getCell(c["P-code"]).value);
+  doublon.getCell(c["Année"]).value = year;
+  doublon.getCell(c["Activité"]).value = "";
+  doublon.getCell(c["Population"]).value = 7;
+
+  const prev = await televerser(t, wb);
+  assert.equal(prev.status, 200);
+  assert.equal(prev.body.resume.rejetes, 3, "trois lignes rejetées");
+  const motifs = prev.body.rejets.map(x => x.message).join(" | ");
+  /* Les milliers sont séparés par une espace insécable étroite, pas une espace ordinaire. */
+  assert.ok(/9\s?999 ciblés pour 1\s?000 habitants/.test(motifs), motifs);
+  assert.ok(/absent du référentiel/.test(motifs), motifs);
+  assert.ok(/doublon dans le fichier/.test(motifs), motifs);
+  /* Le rejet est partiel : la ligne valable reste applicable. */
+  assert.ok(prev.body.resume.modifies + prev.body.resume.crees >= 1,
+    "les lignes valables restent applicables malgré les rejets — résumé : "
+    + JSON.stringify(prev.body.resume));
+});
+
+test("import : un modèle d'un autre type ou d'un autre millésime est refusé", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(t);
+  const wb = await modele(t, "caseload");
+
+  /* Téléversé comme plan de distribution : refusé sur l'identification. */
+  const mauvaisType = await televerser(t, wb, "pdd");
+  assert.equal(mauvaisType.status, 422);
+  assert.ok(/modèle « caseload »/.test(mauvaisType.body.error), mauvaisType.body.error);
+
+  /* Après changement de millésime, les p-codes ont pu changer : le modèle est périmé. */
+  const imp = await request(app).post("/api/geo/bulk").set("Authorization", `Bearer ${t}`)
+    .send({ label:"Millésime pour test de péremption", rows:[
+      { adm1:"Androy", adm2:"Ambovombe-Androy", adm3:"Ambovombe", adm4:"Centre" }] });
+  assert.equal(imp.status, 200);
+  const perime = await televerser(t, wb);
+  assert.equal(perime.status, 409);
+  assert.ok(/autre millésime/.test(perime.body.error), perime.body.error);
+  await activerMillesimeDuSeed(t);
+});
+
+test("import : le périmètre du bureau est appliqué ligne à ligne", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(t);
+  /* L'éditeur de terrain crée son propre modèle : il ne contient que son périmètre. */
+  const te = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  const sien = await modele(te);
+  const wsSien = sien.getWorksheet("Saisie");
+  const wbAdmin = await modele(t);
+  assert.ok(wsSien.rowCount < wbAdmin.getWorksheet("Saisie").rowCount,
+    "le modèle de l'éditeur est plus étroit que celui de l'administrateur");
+
+  /* S'il glisse dans son fichier une unité hors de son périmètre, elle est rejetée. */
+  const cAdmin = colonnes(wbAdmin.getWorksheet("Saisie"));
+  const siens = new Set();
+  const cSien = colonnes(wsSien);
+  wsSien.eachRow((r,n) => { if(n>2) siens.add(String(r.getCell(cSien["P-code"]).value)); });
+  let etranger = null;
+  wbAdmin.getWorksheet("Saisie").eachRow((r,n) => {
+    if(n<=2 || etranger) return;
+    const p = String(r.getCell(cAdmin["P-code"]).value);
+    if(!siens.has(p)) etranger = p;
+  });
+  assert.ok(etranger, "une unité hors périmètre existe dans le jeu d'essai");
+
+  const intrus = wsSien.addRow([]);
+  intrus.getCell(cSien["P-code"]).value = etranger;
+  intrus.getCell(cSien["Année"]).value = new Date().getFullYear();
+  intrus.getCell(cSien["Population"]).value = 12345;
+  const prev = await televerser(te, sien);
+  assert.equal(prev.status, 200);
+  assert.ok(prev.body.rejets.some(x => /hors du périmètre/.test(x.message || "")),
+    "l'unité d'un autre bureau est rejetée : un fichier est une entrée utilisateur comme une autre");
+});

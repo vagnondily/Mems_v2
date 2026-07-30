@@ -38,6 +38,30 @@ async function call(method, path, body, opts = {}){
   return payload;
 }
 
+/* Le modèle Excel est un binaire : il ne passe pas par `call`, qui attend du JSON. */
+async function fetchBlob(path){
+  const headers = {};
+  if(token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(BASE + path, { headers, credentials:"include" });
+  if(!res.ok){
+    let msg = `erreur ${res.status}`;
+    try{ const j = await res.json(); msg = j.error || msg; }catch(e){}
+    throw new ApiError(res.status, msg);
+  }
+  return res.blob();
+}
+/* Téléversement multipart : le Content-Type est posé par le navigateur, avec sa frontière. */
+async function postFile(path, file, field = "file"){
+  const headers = {};
+  if(token) headers["Authorization"] = `Bearer ${token}`;
+  const body = new FormData(); body.append(field, file, file.name);
+  const res = await fetch(BASE + path, { method:"POST", headers, credentials:"include", body });
+  let payload = null;
+  try{ payload = await res.json(); }catch(e){}
+  if(!res.ok) throw new ApiError(res.status, payload?.error || `erreur ${res.status}`, payload?.details);
+  return payload;
+}
+
 export const api = {
   get:  (p, o)    => call("GET", p, undefined, o),
   post: (p, b, o) => call("POST", p, b ?? {}, o),
@@ -68,6 +92,14 @@ export const api = {
   caseload:     (q="")            => call("GET", `/caseload${q}`),
   caseloadTags: (year)            => call("GET", `/caseload/tags?year=${year}`),
   saveCaseload: (rows)            => call("PUT", "/caseload", { rows }),
+
+  importKinds:    ()              => call("GET", "/import/kinds"),
+  importTemplate: (kind, year)    => fetchBlob(`/import/${encodeURIComponent(kind)}/template?year=${year}`),
+  importUpload:   (kind, file)    => postFile(`/import/${encodeURIComponent(kind)}`, file),
+  importBatches:  ()              => call("GET", "/import/batches"),
+  importBatch:    (id)            => call("GET", `/import/batches/${encodeURIComponent(id)}`),
+  importCommit:   (id)            => call("POST", `/import/batches/${encodeURIComponent(id)}/commit`, {}),
+  importCancel:   (id)            => call("POST", `/import/batches/${encodeURIComponent(id)}/cancel`, {}),
   setGeoVersion:(id)              => call("PUT", `/geo/versions/${encodeURIComponent(id)}/current`),
   /* Un import crée un millésime complet : le serveur reconstruit l'arbre. */
   importGeo:    (rows, label, source) => call("POST", "/geo/bulk", { rows, label, source }),

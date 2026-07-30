@@ -6,7 +6,7 @@ analyse des données ODK Central, cartographie et restitution.
 
 - **Frontend** : React 18 + Vite, sans framework de composants imposé
 - **Backend** : Node 20 + Express + SQLite (WAL), schéma relationnel avec clés étrangères
-- **Tests** : 35 tests d'API + 10 tests de bout en bout pilotant l'interface réelle
+- **Tests** : 40 tests d'API + 10 tests de bout en bout pilotant l'interface réelle
 
 ---
 
@@ -55,6 +55,7 @@ mems/
 │  ├─ migrations/002_geo_unit.sql  référentiel administratif versionné
 │  ├─ migrations/003_sites_geo.sql rattachement des sites et du PDD au référentiel
 │  ├─ migrations/004_caseload.sql  population, ménages et personnes ciblées
+│  ├─ migrations/005_import.sql    lots d'import : analyse, diff, confirmation
 │  ├─ src/
 │  │  ├─ index.js              montage Express, sécurité, service du frontend compilé
 │  │  ├─ config.js             lecture et contrôle des variables d'environnement
@@ -64,11 +65,12 @@ mems/
 │  │  ├─ lib/validate.js       schémas Zod de toutes les entrées
 │  │  ├─ lib/crypto.js         chiffrement au repos, génération d'identifiants
 │  │  ├─ lib/geo.js            construction de l'arbre administratif, millésimes
+│  │  ├─ lib/import.js         modèles Excel, réconciliation par clé, diff
 │  │  ├─ import-geo.js         chargement du référentiel complet en ligne de commande
 │  │  ├─ link-geo.js           rapprochement des données existantes vers le référentiel
 │  │  ├─ lib/logger.js         journal avec masquage des secrets
 │  │  └─ routes/               auth, state, sites, geo, users, analytics, collections
-│  └─ test/api.test.js         35 tests d'intégration
+│  └─ test/api.test.js         40 tests d'intégration
 └─ web/                        interface
    ├─ src/
    │  ├─ App.jsx               racine : session, file d'écriture, routage des onglets
@@ -86,7 +88,7 @@ mems/
 
 ## 3. Modèle de données
 
-Vingt-sept tables. Les clés étrangères sont **déclarées et contrôlées**
+Trente tables. Les clés étrangères sont **déclarées et contrôlées**
 (`PRAGMA foreign_keys = ON`), avec `ON DELETE CASCADE` là où la dépendance est
 existentielle et `ON DELETE SET NULL` là où elle est seulement descriptive.
 
@@ -256,6 +258,65 @@ n'a aucune présence enregistrée — la question que le modèle plat ne savait 
 > et se retrouvait tronqué à 4 000 lignes. L'interface interroge `/api/geo/levels` niveau
 > par niveau, au fur et à mesure de ce qu'elle affiche.
 
+### Saisir par fichier Excel
+
+Le besoin est simple à énoncer — « remplir dans Excel, puis téléverser » — et
+catastrophique s'il est traité naïvement. Un import qui remplace une collection
+entière fait perdre le travail du bureau qui a téléversé avant. Le dispositif
+tient donc en un principe et trois temps.
+
+**Le principe : réconcilier par clé métier**, jamais par position dans le fichier,
+jamais par remplacement. Une ligne absente du fichier n'est pas supprimée.
+
+| Type | Clé de réconciliation |
+|---|---|
+| Population et ciblage | p-code + année + mois + activité |
+| Plan de distribution | p-code + année + mois + type + modalité |
+
+Conséquence directe : deux bureaux qui téléversent le même mois touchent des clés
+disjointes et **ne s'effacent pas mutuellement**.
+
+**① Le modèle** — `GET /api/import/:kind/template`
+
+Il arrive **déjà rempli des lignes du périmètre de l'utilisateur**, avec les valeurs
+actuelles. La colonne de p-code est verrouillée et grisée, les énumérations ont des
+listes déroulantes Excel, et une feuille masquée (`_mems`) porte le type et le
+millésime du référentiel. L'utilisateur complète des cases ; il ne saisit jamais de clé.
+
+**② Le téléversement** — `POST /api/import/:kind`
+
+Le serveur analyse et renvoie un diff. **Rien n'est écrit.** Les lignes fautives sont
+rejetées une par une, avec leur numéro et leur motif :
+
+```
+ligne  47 · P-code            · absent du référentiel courant
+ligne  88 · Personnes ciblées · 12 400 ciblés pour 9 800 habitants
+ligne  91 · P-code            · hors du périmètre de votre bureau
+ligne 104 · P-code            · ligne en doublon dans le fichier
+```
+
+Un rejet partiel n'annule pas le reste. Les lignes pré-remplies que l'utilisateur n'a
+pas renseignées sont comptées à part et **ignorées** : elles ne créent pas
+d'enregistrements à zéro.
+
+Deux refus en bloc, en revanche, parce qu'ils rattacheraient des chiffres aux mauvaises
+unités : un modèle d'un **autre type**, et un modèle produit avec un **autre millésime**
+du référentiel.
+
+**③ La confirmation** — `POST /api/import/batches/:id/commit`
+
+Une transaction. Rejouer le même lot est refusé ; réimporter le même fichier ne change
+rien — l'opération est idempotente. Un verrou consultatif sérialise deux confirmations
+du même type et du même périmètre.
+
+Le lot survit à un rechargement de page et reste consultable : qui a téléversé quoi,
+quand, avec quel résultat. Le fichier lui-même n'est jamais écrit sur le disque du
+serveur — seul le résultat de l'analyse est conservé.
+
+> L'analyse se fait **côté serveur**, avec `exceljs` en lecture de flux. Le navigateur
+> ne parse rien : la validation n'est pas contournable, et 18 000 lignes ne bloquent pas
+> l'onglet de l'utilisateur.
+
 ### Vérifier l'intégrité à tout moment
 
 ```bash
@@ -287,6 +348,12 @@ elles exigent un jeton — en-tête `Authorization: Bearer …` ou cookie `httpO
 | GET | `/caseload` | connecté | population, ciblage et distribution par unité et par période |
 | GET | `/caseload/tags` | connecté | activités pour lesquelles un ciblage est renseigné |
 | PUT | `/caseload` | `edit` | écriture ligne à ligne, sans suppression implicite |
+| GET | `/import/kinds` | connecté | types importables et colonnes attendues |
+| GET | `/import/:kind/template` | `edit` | modèle Excel pré-rempli du périmètre |
+| POST | `/import/:kind` | `edit` | analyse et diff — **n'écrit rien** |
+| GET | `/import/batches`, `/import/batches/:id` | connecté | lots, propres à leur auteur |
+| POST | `/import/batches/:id/commit` | `edit` | applique le lot en une transaction |
+| POST | `/import/batches/:id/cancel` | `edit` | abandonne le lot |
 | GET | `/geo/versions` | connecté | millésimes du référentiel |
 | PUT | `/geo/versions/:id/current` | `admin` | change le millésime courant |
 | POST | `/geo/bulk` | `admin` | import : le serveur reconstruit l'arbre en une transaction |
@@ -496,7 +563,7 @@ jamais un fichier déjà appliqué en production.
 ### Tests
 
 ```bash
-npm test              # 35 tests d'API puis 10 tests de bout en bout
+npm test              # 40 tests d'API puis 10 tests de bout en bout
 cd server && npm test # API seule
 cd web && npm test    # interface seule, contre un serveur réellement démarré
 ```

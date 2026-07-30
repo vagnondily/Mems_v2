@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api.js";
 import { Activity, Check, ClipboardList, Download, Globe, Link2, ListChecks, Pencil, Plus, Save, Target, Trash2, Users } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ComposedChart, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -12,7 +12,8 @@ import { useGeoCascade, names } from "../lib/geo.js";
 
 /* ══════════════════ Actual Data ══════════════════ */
 function ActualData({ db, set, sub, setSub, me, notify, can, go }){
-  const items = [["summary","Résumé global"],["process","Suivi de processus"],["sites","Sites"],["map","Cartographie"],["distrib","Distributions"],["output","Outputs et population"],["outcome","Outcomes"],["sources","Sources de données"]];
+  const items = [["summary","Résumé global"],["process","Suivi de processus"],["sites","Sites"],["map","Cartographie"],["distrib","Distributions"],["output","Outputs et population"],["outcome","Outcomes"],
+    ["import","Import Excel"],["sources","Sources de données"]];
   return (
     <div className="space-y-4">
       <PageHead title="Actual Data" text="Données réellement collectées : soumissions ODK Central, couverture des sites, produits livrés et indicateurs de résultat." />
@@ -23,6 +24,7 @@ function ActualData({ db, set, sub, setSub, me, notify, can, go }){
       {sub==="distrib" && <DistributionActual db={db} set={set} notify={notify} can={can} />}
       {sub==="output" && <OutputData db={db} set={set} notify={notify} can={can} />}
       {sub==="outcome" && <OutcomeData db={db} set={set} notify={notify} can={can} go={go} />}
+      {sub==="import" && <ImportView db={db} notify={notify} can={can} />}
       {sub==="sources" && <Sources db={db} set={set} notify={notify} can={can} />}
     </div>);
 }
@@ -140,6 +142,179 @@ function ProcessData({ db, set, notify, can, go }){
 }
 
 /* ── Outputs et population ── */
+/* Import par fichier, en trois temps : on télécharge un modèle déjà rempli de ses
+   lignes, on le complète, on le téléverse — et rien n'est enregistré avant d'avoir
+   vu ce qui va changer. */
+function ImportView({ db, notify, can }){
+  const [kind,setKind]   = useState("caseload");
+  const [year,setYear]   = useState(db.year);
+  const [busy,setBusy]   = useState("");
+  const [prev,setPrev]   = useState(null);      /* prévisualisation du lot */
+  const [hist,setHist]   = useState([]);
+  const [err,setErr]     = useState(null);
+  const fileRef = useRef(null);
+
+  const KINDS = [["caseload","Population et ciblage"],["pdd","Plan de distribution"]];
+  const charger = () => api.importBatches().then(r=>setHist(r.rows||[])).catch(()=>{});
+  useEffect(()=>{ charger(); },[]);
+
+  const modele = async () => {
+    setBusy("modele"); setErr(null);
+    try{
+      const blob = await api.importTemplate(kind, year);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `mems_${kind}_${year}.xlsx`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      notify("Modèle téléchargé","ok");
+    }catch(e){ setErr(e.message); notify("Modèle indisponible : " + e.message, "err"); }
+    setBusy("");
+  };
+
+  const televerser = async (file) => {
+    if(!file) return;
+    setBusy("upload"); setErr(null); setPrev(null);
+    try{
+      const r = await api.importUpload(kind, file);
+      setPrev(r);
+      if(r.resume.rejetes) notify(`${r.resume.rejetes} ligne(s) rejetée(s) — voir le détail`, "warn");
+    }catch(e){ setErr(e.message + (e.details ? " · " + e.details.map(d=>d.message).join(" ") : "")); }
+    setBusy("");
+    if(fileRef.current) fileRef.current.value = "";
+  };
+
+  const confirmer = async () => {
+    setBusy("commit");
+    try{
+      const r = await api.importCommit(prev.batch);
+      notify(`Import appliqué : ${r.crees} créé(s), ${r.modifies} modifié(s)`, "ok");
+      setPrev(null); charger();
+    }catch(e){ setErr(e.message); notify("Confirmation refusée : " + e.message, "err"); }
+    setBusy("");
+  };
+
+  const annuler = async () => {
+    try{ await api.importCancel(prev.batch); }catch(e){}
+    setPrev(null); charger();
+  };
+
+  if(!can("edit")) return (
+    <Note tone="warn">L'import de données est réservé aux comptes qui peuvent modifier.</Note>);
+  if(!db.geoVersion) return (
+    <Note tone="warn"><b>Aucun référentiel chargé.</b> Les modèles d'import s'appuient sur le
+      découpage administratif. Chargez un millésime depuis Paramètres → Localités.</Note>);
+
+  const r = prev?.resume;
+  return (
+    <>
+      <Note>Téléchargez le modèle : il arrive <b>déjà rempli des lignes de votre périmètre</b>,
+        avec les codes en colonne verrouillée — vous complétez des cases, vous ne saisissez pas
+        de clés. Au téléversement, l'application vous montre ce qui va changer ; <b>rien n'est
+        enregistré avant votre confirmation</b>. Les lignes absentes du fichier ne sont pas
+        supprimées : deux bureaux peuvent téléverser le même mois sans s'effacer.</Note>
+
+      <div className="grid gap-4" style={{gridTemplateColumns:"360px 1fr"}}>
+        <Card title="① Télécharger le modèle">
+          <Field label="Données à importer">
+            <Select value={kind} onChange={e=>{setKind(e.target.value); setPrev(null);}} options={KINDS} /></Field>
+          <Field label="Exercice">
+            <Select value={String(year)} onChange={e=>setYear(+e.target.value)}
+              options={[db.year-1, db.year, db.year+1].map(y=>[String(y),String(y)])} /></Field>
+          <Btn icon={Download} onClick={modele} disabled={busy==="modele"}>
+            {busy==="modele" ? "Préparation…" : "Télécharger le modèle Excel"}</Btn>
+
+          <div className="mt-4 pt-4 border-t border-slate-100">
+            <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">② Téléverser</div>
+            <input ref={fileRef} type="file" accept=".xlsx" disabled={busy==="upload"}
+              onChange={e=>televerser(e.target.files[0])}
+              className="w-full f125 border border-dashed border-slate-300 rounded p-2 bg-slate-50 cursor-pointer" />
+            {busy==="upload" && <div className="f12 text-slate-500 mt-2">Analyse du fichier…</div>}
+            <p className="f115 text-slate-500 mt-2 leading-relaxed">
+              Format .xlsx. Le fichier n'est pas conservé sur le serveur : seul le résultat
+              de l'analyse est enregistré.</p>
+          </div>
+          {err && <Note tone="err">{err}</Note>}
+        </Card>
+
+        <div>
+          {!prev ? (
+            <Card title="③ Prévisualisation">
+              <div className="py-10 text-center f125 text-slate-500">
+                Téléversez un fichier pour voir ce qui sera créé, modifié ou rejeté.
+              </div>
+            </Card>
+          ) : (
+            <>
+              <Card flush title={`Prévisualisation — ${prev.fichier}`}
+                subtitle={`${fmt(prev.lignes)} ligne(s) lue(s) · lot ${prev.batch}`}>
+                <div className="stats-row" style={{display:"grid",gap:1,background:"#e2e8ec",
+                  gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",borderBottom:"1px solid #e2e8ec"}}>
+                  <Stat label="À créer"    value={fmt(r.crees)}    tone={r.crees?"ok":""} />
+                  <Stat label="À modifier" value={fmt(r.modifies)} tone={r.modifies?"warn":""} />
+                  <Stat label="Inchangées" value={fmt(r.inchanges)} sub="déjà à jour" />
+                  <Stat label="Non renseignées" value={fmt(r.vides||0)} sub="ignorées, pas créées à zéro" />
+                  <Stat label="Rejetées"   value={fmt(r.rejetes)}  tone={r.rejetes?"bad":""} />
+                </div>
+                <div className="p-4 flex items-center gap-3 flex-wrap">
+                  <Note tone={r.crees+r.modifies ? "info" : "warn"} className="flex-1">{prev.message}</Note>
+                  <Btn icon={Check} onClick={confirmer}
+                    disabled={busy==="commit" || !(r.crees+r.modifies)}>
+                    {busy==="commit" ? "Application…" : `Confirmer ${fmt(r.crees+r.modifies)} ligne(s)`}</Btn>
+                  <Btn kind="sec" onClick={annuler} disabled={busy==="commit"}>Abandonner</Btn>
+                </div>
+              </Card>
+
+              {!!prev.rejets?.length && (
+                <Card flush title="Lignes rejetées"
+                  subtitle="Elles ne bloquent pas les autres : le reste du fichier reste applicable">
+                  <TableWrap max="mh300">
+                    <thead><tr><Th className="w-20">Ligne</Th><Th>Unité</Th><Th>Champ</Th><Th>Motif</Th></tr></thead>
+                    <tbody>{prev.rejets.map(x=>(
+                      <tr key={x.ligne} className="hover:bg-rose-50">
+                        <Td className="f115">{x.ligne}</Td>
+                        <Td>{x.unite}</Td>
+                        <Td className="text-slate-600">{x.champ||"—"}</Td>
+                        <Td className="text-rose-700">{x.message}</Td></tr>))}</tbody>
+                  </TableWrap>
+                </Card>)}
+
+              {!!prev.apercu?.modifies?.length && (
+                <Card flush title="Aperçu des modifications">
+                  <TableWrap max="mh300">
+                    <thead><tr><Th className="w-20">Ligne</Th><Th>Unité</Th><Th>Ce qui change</Th></tr></thead>
+                    <tbody>{prev.apercu.modifies.map(x=>(
+                      <tr key={x.ligne} className="hover:bg-sky-50">
+                        <Td className="f115">{x.ligne}</Td><Td>{x.unite}</Td>
+                        <Td className="text-slate-700">{x.message}</Td></tr>))}</tbody>
+                  </TableWrap>
+                </Card>)}
+            </>)}
+        </div>
+      </div>
+
+      {!!hist.length && (
+        <Card flush title="Imports précédents" subtitle="Qui a téléversé quoi, et ce que cela a produit">
+          <TableWrap max="mh300">
+            <thead><tr><Th>Date</Th><Th>Données</Th><Th>Fichier</Th><Th>Par</Th>
+              <Th num>Créées</Th><Th num>Modifiées</Th><Th num>Rejetées</Th><Th>État</Th></tr></thead>
+            <tbody>{hist.map(b=>(
+              <tr key={b.id} className="hover:bg-sky-50">
+                <Td className="f115">{String(b.created_at||"").slice(0,16)}</Td>
+                <Td>{(KINDS.find(k=>k[0]===b.kind)||[])[1] || b.kind}</Td>
+                <Td className="text-slate-600">{b.filename||"—"}</Td>
+                <Td className="text-slate-500">{b.user_label||"—"}</Td>
+                <Td num>{b.summary?.crees ?? "—"}</Td>
+                <Td num>{b.summary?.modifies ?? "—"}</Td>
+                <Td num className={b.summary?.rejetes ? "text-rose-600" : ""}>{b.summary?.rejetes ?? "—"}</Td>
+                <Td><Badge tone={b.status==="committed"?"g":b.status==="cancelled"?"":"y"}>
+                  {b.status==="committed"?"appliqué":b.status==="cancelled"?"abandonné":"en attente"}</Badge></Td>
+              </tr>))}</tbody>
+          </TableWrap>
+        </Card>)}
+    </>);
+}
+
 /* Population, ciblage et distribution par unité et par période — les nombres.
    Trois taux en découlent :
      ciblage     = personnes ciblées / population
