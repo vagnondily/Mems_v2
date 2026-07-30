@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { db } from "../db.js";
 import { currentVersion } from "../lib/geo.js";
+import { officeBound } from "../lib/scope.js";
 
 const r = Router();
 const J = (v, d) => { try{ return JSON.parse(v); }catch(e){ return d; } };
@@ -9,8 +10,9 @@ const J = (v, d) => { try{ return JSON.parse(v); }catch(e){ return d; } };
    Chaque collection provient de sa table : aucune donnée n'est stockée en vrac. */
 r.get("/state", (req, res) => {
   const u = req.user;
-  const scoped = u.role === "viewer" || u.role === "editor" || u.role === "validator";
-  const officeFilter = (scoped && u.office_id) ? u.office_id : null;
+  /* Une seule définition du cloisonnement par bureau, partagée avec la géographie :
+     un bureau déclaré national n'en cloisonne aucun de ses comptes. */
+  const officeFilter = officeBound(u);
 
   const offices = db.prepare("SELECT * FROM offices ORDER BY name").all();
   const officeName = Object.fromEntries(offices.map(o=>[o.id, o.name]));

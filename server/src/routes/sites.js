@@ -2,7 +2,8 @@ import { Router } from "express";
 import { db, tx } from "../db.js";
 import { newId } from "../lib/crypto.js";
 import { labelsFor } from "../lib/geo.js";
-import { requireCap, can } from "../lib/auth.js";
+import { requireCap } from "../lib/auth.js";
+import { officeBound as scopeOf } from "../lib/scope.js";
 import { validate, schemas } from "../lib/validate.js";
 import { z } from "zod";
 
@@ -13,8 +14,10 @@ const audit = (req, action, entity_id, text) =>
     .run(newId("aud"), req.user.id, `${req.user.first_name} ${req.user.last_name||""}`.trim(),
          req.user.office_id||"", entity_id, action, text);
 
-/* Un compte rattaché à un bureau ne voit et ne modifie que ses propres sites. */
-const scopeOf = (u) => (can(u,"admin") || !u.office_id) ? null : u.office_id;
+/* Un compte rattaché à un bureau ne voit et ne modifie que ses propres sites —
+   sauf si ce bureau est déclaré national. La règle vient de lib/scope.js : elle
+   était réécrite ici et dans analytics.js, et ces copies auraient ignoré le
+   bureau pays. */
 function assertScope(req, site){
   const s = scopeOf(req.user);
   if(s && site && site.office_id !== s){

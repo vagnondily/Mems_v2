@@ -13,14 +13,15 @@ import { BLOCKS } from "./Reports.jsx";
 import { PageHead } from "./Shell.jsx";
 
 /* ══════════════════ Paramètres ══════════════════ */
-function SettingsView({ db, set, me, sub, setSub, notify, can }){
-  const items = [["general","Général"],["sites","Sites"],["locations","Localités"],["scope","Périmètre des bureaux"],["indicators","Indicateurs"],
+function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
+  const items = [["general","Général"],["offices","Bureaux"],["sites","Sites"],["locations","Localités"],["scope","Périmètre des bureaux"],["indicators","Indicateurs"],
     ["calc","Calculs"],["odk","ODK Central"],["templates","Modèles de rapport"],["api","API"],["users","Utilisateurs"]];
   return (
     <div className="space-y-4">
       <PageHead title="Paramètres" text="Configuration de l'application, référentiels, registre des sites, calculs, sources et accès." />
       <Tabs items={items} value={sub} onChange={setSub} />
       {sub==="general" && <SetGeneral db={db} set={set} />}
+      {sub==="offices" && <SetOffices db={db} notify={notify} can={can} reload={reload} />}
       {sub==="sites" && <SitesModule db={db} set={set} me={me} notify={notify} can={can} context="settings" />}
       {sub==="locations" && <SetLocations db={db} notify={notify} can={can} />}
       {sub==="scope" && <SetScope db={db} notify={notify} can={can} />}
@@ -35,7 +36,12 @@ function SettingsView({ db, set, me, sub, setSub, notify, can }){
 
 function SetGeneral({ db, set }){
   const s = db.settings; const u = (k,v)=>set(d=>{ d.settings[k]=v; return d; });
-  const LISTS = [["offices","Bureaux et antennes"],["partners","Partenaires coopérants"],["modalities","Types de modalité"]];
+  /* Les bureaux ne figurent plus ici. Ils étaient présentés comme une liste de noms
+     modifiable, mais cette liste est dérivée de la table `offices` à chaque
+     chargement et n'était jamais renvoyée au serveur : toute saisie était perdue.
+     Un bureau porte de surcroît une nature, un périmètre et des antennes, et il est
+     référencé par les sites et les comptes — il a désormais son propre écran. */
+  const LISTS = [["partners","Partenaires coopérants"],["modalities","Types de modalité"]];
   return (
     <div className="grid gap-4" style={{gridTemplateColumns:"repeat(auto-fit,minmax(330px,1fr))"}}>
       <Card title="Identité et affichage">
@@ -561,6 +567,174 @@ function SiteModal({ open, site, db, onClose, onSave }){
    Le rôle dit ce qu'un compte peut faire ; le périmètre dit où. Un bureau couvre
    les unités qu'on lui attribue — le plus souvent des districts — et le périmètre
    effectif est tout ce qui en descend. */
+/* ── Bureaux ──────────────────────────────────────────────────────────
+   Configuration réelle des bureaux, en base. Deux choses s'y règlent qui
+   n'existaient nulle part : la création d'un bureau, et son mode de périmètre.
+
+   Le mode de périmètre est le point délicat. Un compte de terrain est borné aux
+   unités de son bureau ; c'est la bonne règle pour une antenne, mais le bureau
+   pays a des staffs qui doivent voir tous les sites. Les passer administrateurs
+   aurait réglé la visibilité en leur donnant la gestion des comptes. Le périmètre
+   est donc porté par le bureau, indépendamment du rôle. */
+function SetOffices({ db, notify, can, reload }){
+  const [rows,setRows] = useState(null);
+  const [edit,setEdit] = useState(null);
+  const [busy,setBusy] = useState(false);
+
+  const charger = () => api.offices().then(r=>setRows(r.offices||[])).catch(e=>{ notify(e.message,"err"); setRows([]); });
+  useEffect(()=>{ charger(); },[]);
+
+  const enregistrer = async (f) => {
+    setBusy(true);
+    const payload = { name:(f.name||"").trim(), code:f.code||null, kind:f.kind||"field",
+      scope_mode:f.scope_mode||"geo",
+      antennes:(f.antennes||[]).map(a=>a.trim()).filter(Boolean),
+      manager:f.manager||null, email:f.email||null, phone:f.phone||null,
+      lat:f.lat===""||f.lat==null?null:r5(n(f.lat)), lon:f.lon===""||f.lon==null?null:r5(n(f.lon)),
+      note:f.note||null, active:f.active!==false };
+    if(f.id) payload.rev = f.rev;
+    try{
+      f.id ? await api.updateOffice(f.id, payload) : await api.createOffice(payload);
+      setEdit(null); await charger();
+      /* Le nom d'un bureau apparaît sur chaque site et dans tous les filtres :
+         l'état global doit être rechargé, sinon l'écran affiche le nouveau nom et
+         le reste de l'application l'ancien. */
+      if(reload) await reload();
+      notify("Bureau enregistré", "ok");
+    }catch(e){ notify(e.message, "err"); }
+    setBusy(false);
+  };
+
+  const supprimer = async (o) => {
+    const tot = Object.values(o.usage).reduce((a,b)=>a+b,0);
+    if(tot){ notify("Ce bureau est référencé : désactivez-le plutôt que de le supprimer", "warn"); return; }
+    if(!confirm(`Supprimer « ${o.name} » ?`)) return;
+    try{ await api.deleteOffice(o.id); await charger(); if(reload) await reload();
+      notify("Bureau supprimé", "ok"); }
+    catch(e){ notify(e.message, "err"); }
+  };
+
+  if(rows === null) return <Empty icon={Building2} title="Chargement des bureaux…" />;
+  const nat = rows.filter(o=>o.scope_mode==="national").length;
+
+  return (
+    <>
+      <Note>Un bureau est une entité de la base : il porte les sites, les comptes, les
+        paramètres de couverture et le plan de distribution. Son <b>mode de périmètre</b>{" "}
+        décide de ce que ses comptes non administrateurs peuvent voir —
+        soit les unités qui lui sont attribuées (Paramètres → Périmètre des bureaux),
+        soit <b>tout le pays</b> pour le bureau central.</Note>
+
+      <Card flush title="Bureaux et antennes"
+        subtitle={`${rows.length} bureau(x) · ${rows.filter(o=>o.active).length} actifs · ${nat} à périmètre national`}
+        right={can("admin") && <Btn size="sm" icon={Plus}
+          onClick={()=>setEdit({ kind:"field", scope_mode:"geo", active:true, antennes:[] })}>
+          Ajouter un bureau</Btn>}>
+        <TableWrap max="mh480">
+          <thead><tr><Th>Bureau</Th><Th>Code</Th><Th>Nature</Th><Th>Périmètre</Th>
+            <Th>Antennes</Th><Th>Responsable</Th><Th num>Sites</Th><Th num>Comptes</Th>
+            <Th>Statut</Th><Th /></tr></thead>
+          <tbody>{rows.map(o=>(
+            <tr key={o.id} className="hover:bg-sky-50">
+              <Td className="font-medium text-slate-800">{o.name}</Td>
+              <Td className="f115 text-slate-500">{o.code || "—"}</Td>
+              <Td>{o.kind==="hq" ? <Badge tone="b">bureau pays</Badge> : <Badge>terrain</Badge>}</Td>
+              <Td>{o.scope_mode==="national"
+                ? <Badge tone="b">national — tous les sites</Badge>
+                : o.scope.source==="déclaré" ? <Badge tone="g">{o.scope.communes} commune(s)</Badge>
+                : o.scope.source==="déduit"  ? <Badge tone="y">déduit · {o.scope.communes}</Badge>
+                : <Badge tone="r">aucun</Badge>}</Td>
+              <Td className="text-slate-600 f115">{(o.antennes||[]).join(", ") || "—"}</Td>
+              <Td className="text-slate-600">{o.manager || "—"}</Td>
+              <Td num>{o.usage.sites || "—"}</Td>
+              <Td num>{o.usage.users || "—"}</Td>
+              <Td>{o.active ? <Badge tone="g">Actif</Badge> : <Badge>Inactif</Badge>}</Td>
+              <Td className="text-right whitespace-nowrap">{can("admin") && (<>
+                <button onClick={()=>setEdit({ ...o })} className="text-slate-400 m-ico p-1"><Pencil size={14}/></button>
+                <button onClick={()=>supprimer(o)}
+                  title={Object.values(o.usage).reduce((a,b)=>a+b,0) ? "Bureau référencé : désactivez-le" : "Supprimer"}
+                  className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={14}/></button></>)}</Td>
+            </tr>))}</tbody>
+        </TableWrap>
+      </Card>
+
+      {!nat && (
+        <Note tone="warn"><b>Aucun bureau à périmètre national.</b> Les staffs du bureau
+          pays qui ne sont pas administrateurs ne voient que les sites rattachés à leur
+          bureau. Passez le bureau central en périmètre national pour leur ouvrir
+          l'ensemble, sans leur donner la gestion des comptes.</Note>)}
+
+      <OfficeModal open={!!edit} office={edit} busy={busy}
+        onClose={()=>setEdit(null)} onSave={enregistrer} />
+    </>);
+}
+
+function OfficeModal({ open, office, busy, onClose, onSave }){
+  const [f,setF] = useState({});
+  useEffect(()=>{ setF(office ? { ...office, antennes:[...(office.antennes||[])] }
+                              : { kind:"field", scope_mode:"geo", active:true, antennes:[] }); },[office]);
+  if(!open) return null;
+  const u = (k,v)=>setF(p=>({ ...p, [k]:v }));
+  const antenne = (i,v)=>setF(p=>{ const a=[...p.antennes]; a[i]=v; return { ...p, antennes:a }; });
+  const MODES = [
+    ["geo","Périmètre déclaré","Les comptes de ce bureau ne voient que les unités qui lui sont attribuées."],
+    ["national","Périmètre national","Les comptes de ce bureau voient tous les sites du pays, sans droit d'administration."],
+  ];
+  return (
+    <Modal open onClose={onClose} title={office?.id ? "Modifier le bureau" : "Nouveau bureau"}
+      subtitle="Identité, nature, périmètre et antennes de rattachement"
+      footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
+        <Btn icon={Save} disabled={busy || !(f.name||"").trim()} onClick={()=>onSave(f)}>
+          {busy ? "Enregistrement…" : "Enregistrer"}</Btn></>}>
+      <div className="grid grid-cols-2 gap-x-4">
+        <Field label="Nom du bureau"><Input value={f.name||""} onChange={e=>u("name",e.target.value)}
+          placeholder="Bureau de terrain de …" /></Field>
+        <Field label="Code" hint="Court, utilisé dans les exports et les modèles">
+          <Input value={f.code||""} onChange={e=>u("code",e.target.value)} /></Field>
+        <Field label="Nature">
+          <Select value={f.kind||"field"} onChange={e=>u("kind",e.target.value)}
+            options={[["field","Bureau de terrain"],["hq","Bureau pays"]]} /></Field>
+        <Field label="Responsable"><Input value={f.manager||""} onChange={e=>u("manager",e.target.value)} /></Field>
+        <Field label="Adresse électronique"><Input type="email" value={f.email||""} onChange={e=>u("email",e.target.value)} /></Field>
+        <Field label="Téléphone"><Input value={f.phone||""} onChange={e=>u("phone",e.target.value)} /></Field>
+        <Field label="Latitude" hint="Position du bureau, pour la cartographie">
+          <Input type="number" value={f.lat ?? ""} onChange={e=>u("lat",e.target.value)} /></Field>
+        <Field label="Longitude">
+          <Input type="number" value={f.lon ?? ""} onChange={e=>u("lon",e.target.value)} /></Field>
+      </div>
+
+      <Field label="Mode de périmètre" hint="Le rôle dit ce qu'un compte peut faire ; le périmètre dit où">
+        <div className="grid gap-1.5">
+          {MODES.map(([k,label,desc])=>(
+            <label key={k} className={clsx("flex items-start gap-3 px-3 py-2 rounded border cursor-pointer",
+              (f.scope_mode||"geo")===k ? "bd-brand bg-sky-50" : "border-slate-200 hover:bg-slate-50")}>
+              <input type="radio" name="scope_mode" className="mt-1"
+                checked={(f.scope_mode||"geo")===k} onChange={()=>u("scope_mode",k)} />
+              <div><div className="f13 font-semibold text-slate-800">{label}</div>
+                <div className="f115 text-slate-500">{desc}</div></div></label>))}
+        </div></Field>
+
+      <Field label="Antennes" hint="Lieux de rattachement des visites — ce ne sont pas des bureaux : pas de comptes ni de périmètre propre">
+        <div className="space-y-1.5">
+          {(f.antennes||[]).map((a,i)=>(<div key={i} className="flex gap-1.5">
+            <input value={a} onChange={e=>antenne(i,e.target.value)} className={clsx(inputCls,"mi-py1")} />
+            <button onClick={()=>u("antennes",(f.antennes||[]).filter((_,j)=>j!==i))}
+              className="px-2 text-slate-400 hover:text-rose-600"><X size={14}/></button></div>))}
+          <Btn size="sm" kind="sec" icon={Plus}
+            onClick={()=>u("antennes",[...(f.antennes||[]),""])}>Ajouter une antenne</Btn>
+        </div></Field>
+
+      <Field label="Note"><Input value={f.note||""} onChange={e=>u("note",e.target.value)} /></Field>
+      <Sw label="Bureau actif" hint="Un bureau inactif reste dans l'historique ; il ne peut être désactivé s'il porte encore des comptes actifs"
+        on={f.active!==false} onChange={v=>u("active",v)} />
+      {office?.id && !!Object.values(office.usage||{}).reduce((a,b)=>a+b,0) && (
+        <Note>Ce bureau est référencé par {office.usage.sites} site(s), {office.usage.users} compte(s),
+          {" "}{office.usage.params} paramètre(s) de couverture, {office.usage.visits} visite(s)
+          et {office.usage.pdd} ligne(s) de plan de distribution. Le renommer met à jour
+          l'ensemble ; il ne peut pas être supprimé.</Note>)}
+    </Modal>);
+}
+
 function SetScope({ db, notify, can }){
   const [rows,setRows]   = useState([]);
   const [edit,setEdit]   = useState(null);   /* bureau en cours d'édition */
@@ -610,8 +784,10 @@ function SetScope({ db, notify, can }){
             <tr key={o.office_id} className="hover:bg-sky-50">
               <Td className="font-medium text-slate-800">{o.name}</Td>
               <Td className="f115 text-slate-500">{o.code}</Td>
-              <Td>{o.kind==="hq"
-                ? <Badge tone="b">tous les bureaux</Badge>
+              {/* Le critère est le mode de périmètre du bureau, pas sa nature :
+                  un bureau de terrain peut être déclaré national, et l'inverse. */}
+              <Td>{o.source==="national"
+                ? <Badge tone="b">national — tous les sites</Badge>
                 : o.source==="déclaré" ? <Badge tone="g">déclaré</Badge>
                 : o.source==="déduit" ? <Badge tone="y">déduit</Badge>
                 : <Badge tone="r">aucun</Badge>}</Td>
@@ -628,7 +804,7 @@ function SetScope({ db, notify, can }){
                     {o.horsPerimetre.pdd ? `${o.horsPerimetre.pdd} ligne(s) PDD` : ""} hors périmètre
                   </Badge>
                 : <span className="text-slate-400">—</span>}</Td>
-              <Td className="text-right">{can("admin") && o.kind!=="hq" &&
+              <Td className="text-right">{can("admin") && o.source!=="national" &&
                 <Btn size="sm" kind="sec" icon={Pencil} onClick={()=>ouvrir(o)}>Modifier</Btn>}</Td>
             </tr>))}</tbody>
         </TableWrap>

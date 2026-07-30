@@ -16,9 +16,34 @@ import { currentVersion } from "./geo.js";
 
    Un administrateur n'a pas de périmètre : il voit tout. Un compte rattaché à un
    bureau est borné aux unités attribuées à ce bureau.
+
+   Troisième cas, ajouté ensuite : le bureau pays. Ses staffs sont rattachés à un
+   bureau — donc bornés par la règle ci-dessus — mais leur travail porte sur
+   l'ensemble des sites. Les passer administrateurs aurait résolu la visibilité en
+   leur donnant au passage la gestion des comptes : la mauvaise réponse, puisque
+   c'est l'autre axe. Le bureau porte donc un `scope_mode` ; s'il vaut 'national',
+   les comptes qui en dépendent ne sont pas bornés, sans que leur rôle change.
    ═══════════════════════════════════════════════════════════════════════ */
 
 const BORNÉS = ["viewer", "editor", "validator"];
+
+/* Un bureau dont le périmètre est le pays entier. Toute valeur inattendue de
+   `scope_mode` retombe sur le périmètre déclaré, c'est-à-dire le plus restreint :
+   une donnée abîmée ne doit jamais élargir un accès. */
+export function isNational(officeId){
+  if(!officeId) return false;
+  const o = db.prepare("SELECT scope_mode FROM offices WHERE id=?").get(officeId);
+  return o?.scope_mode === "national";
+}
+
+/* Le bureau auquel un compte est cloisonné, ou null s'il voit tout.
+   Les routes qui filtrent par `office_id` — et non par géographie — passent par
+   ici, pour que la règle du bureau national vaille aussi pour elles. */
+export function officeBound(user){
+  const borné = BORNÉS.includes(user?.role) && user?.office_id;
+  if(!borné) return null;
+  return isNational(user.office_id) ? null : user.office_id;
+}
 
 /* Les unités attribuées à un bureau, telles qu'on les a déclarées. */
 export function declaredFor(officeId){
@@ -53,6 +78,8 @@ function inferred(officeId){
 export function scopeOf(user){
   const borné = BORNÉS.includes(user?.role) && user?.office_id;
   if(!borné) return { unbounded:true, paths:[], units:[], source:"aucun" };
+  if(isNational(user.office_id))
+    return { unbounded:true, paths:[], units:[], source:"national" };
 
   const declared = declaredFor(user.office_id);
   const units = declared.length ? declared : inferred(user.office_id);

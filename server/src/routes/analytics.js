@@ -1,10 +1,10 @@
 import { Router } from "express";
 import { db } from "../db.js";
 import { z } from "zod";
-import { can } from "../lib/auth.js";
+import { officeBound as scopeOf } from "../lib/scope.js";
 
 const r = Router();
-const scopeOf = (u) => (can(u,"admin") || !u.office_id) ? null : u.office_id;
+/* Cloisonnement par bureau : voir lib/scope.js — définition unique. */
 
 /* Points cartographiques : calculés côté serveur pour éviter d'envoyer le registre entier. */
 r.get("/map", (req, res) => {

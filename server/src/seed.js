@@ -100,14 +100,21 @@ if(info){
     for(const t of ["site_months","visits","sites","coverage_params","outputs","outcomes","outcome_plan",
                     "population_values","population","caseload","pdd","datasets","scripts","odk_forms",
                     "report_templates","dashboards","indicators","activity_categories","partners",
-                    "poi_subtypes","offices","users","settings",
+                    "poi_subtypes","mre_cost","mre_activity","offices","users","settings",
                     /* geo_version efface geo_unit en cascade */
                     "office_scope","geo_version","geo"]) db.prepare(`DELETE FROM ${t}`).run();
 
     const officeId = {};
-    const insOffice = db.prepare("INSERT INTO offices (id,name,code,kind) VALUES (?,?,?,?)");
-    OFFICES.forEach(([name,code]) => { const id = newId("off");
-      officeId[name] = id; insOffice.run(id, name, code, code==="HQ" ? "hq" : "field"); });
+    /* Le bureau central est national : ses staffs voient tous les sites sans être
+       administrateurs. Les antennes viennent de ZONES pour rester cohérentes
+       avec les districts réellement couverts. */
+    const insOffice = db.prepare(`INSERT INTO offices (id,name,code,kind,scope_mode,antennes,manager)
+                                  VALUES (?,?,?,?,?,?,?)`);
+    OFFICES.forEach(([name,code]) => { const id = newId("off"); const hq = code === "HQ";
+      officeId[name] = id;
+      insOffice.run(id, name, code, hq ? "hq" : "field", hq ? "national" : "geo",
+        JSON.stringify(hq ? [] : [code[0] + code.slice(1).toLowerCase()]),
+        hq ? "Chef de l'unité suivi-évaluation" : "Chef de bureau"); });
 
     const catId = {};
     const insCat = db.prepare("INSERT INTO activity_categories (id,name,tag,program_area) VALUES (?,?,?,?)");
@@ -361,6 +368,106 @@ if(info){
           insCl.run(newId("cl"), c.pcode, "adm3", YEAR, tag, pop, hh, t, Math.round(t/4.8), SOURCE);
         });
       });
+
+    /* ── Plan MRE et budget ────────────────────────────────────────────
+       Un plan annuel plausible : quelques activités portées par le bureau pays,
+       quelques-unes par les bureaux de terrain, chacune chiffrée par lignes. Le
+       budget n'est jamais saisi en bloc — il se déduit des lignes, comme la
+       route le calcule. La dépense n'est renseignée que sur les mois écoulés,
+       sinon l'exécution budgétaire afficherait 0 % pour toute l'année à venir. */
+    const hqId = officeId["Bureau central d'Antananarivo"];
+    const moisCourant = new Date().getMonth();
+    const insMre = db.prepare(`INSERT INTO mre_activity
+      (id,year,ref,title,kind,purpose,method,office_id,activity_tag,responsible,
+       start_month,end_month,sample,status,funding,currency,note)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'USD',?)`);
+    const insCost = db.prepare(`INSERT INTO mre_cost
+      (id,activity_id,category,label,unit,qty,unit_cost,spent,month) VALUES (?,?,?,?,?,?,?,?,?)`);
+    const PLAN_MRE = [
+      ["MRE-01","Suivi de processus des distributions générales","suivi",
+       "Vérifier la conformité des distributions aux procédures et recueillir les plaintes",
+       "Visites de site avec formulaire ODK", null,"URT","Unité suivi-évaluation",0,11,null,
+       "Formulaire de suivi mensuel dans chaque bureau",
+       [["personnel","Agents de suivi de terrain","personne-mois",60,420,"deplacement","Indemnités de déplacement","personne-jour",480,18],
+        ["transport","Location de véhicules","véhicule-jour",240,95],
+        ["communication","Forfaits données pour tablettes","mois",72,9]]],
+      ["MRE-02","Enquête post-distribution — premier semestre","enquete",
+       "Mesurer la satisfaction, l'utilisation de l'assistance et les délais de service",
+       "Échantillon aléatoire stratifié par bureau, entretiens ménages", null,"URT",
+       "Unité suivi-évaluation",2,3,1200,"Enquête semestrielle, base de sondage issue des listes de bénéficiaires",
+       [["enqueteurs","Enquêteurs et superviseurs","personne-jour",180,14],
+        ["deplacement","Indemnités enquêteurs","personne-jour",180,12],
+        ["transport","Transport terrain","véhicule-jour",45,95],
+        ["equipement","Tablettes de remplacement","unité",6,220],
+        ["atelier","Atelier de restitution","forfait",1,1800]]],
+      ["MRE-03","Enquête post-distribution — second semestre","enquete",
+       "Reproduire la mesure du premier semestre pour comparer les deux périodes",
+       "Même protocole que MRE-02, pour comparabilité", null,"URT","Unité suivi-évaluation",8,9,1200,
+       "La comparabilité impose de ne pas modifier le questionnaire en cours d'année",
+       [["enqueteurs","Enquêteurs et superviseurs","personne-jour",180,14],
+        ["deplacement","Indemnités enquêteurs","personne-jour",180,12],
+        ["transport","Transport terrain","véhicule-jour",45,95],
+        ["atelier","Atelier de restitution","forfait",1,1800]]],
+      ["MRE-04","Évaluation à mi-parcours du plan stratégique pays","evaluation",
+       "Apprécier la pertinence et l'efficacité des activités à mi-parcours",
+       "Évaluation externe : revue documentaire, entretiens, visites de terrain", null,null,
+       "Bureau pays et unité évaluation",4,7,null,"Cabinet externe, gestion décentralisée",
+       [["consultant","Cabinet d'évaluation","forfait",1,48000],
+        ["transport","Déplacements de l'équipe d'évaluation","véhicule-jour",30,95],
+        ["atelier","Atelier de validation des conclusions","forfait",1,3200],
+        ["impression","Édition du rapport","forfait",1,900]]],
+      ["MRE-05","Revue trimestrielle de la performance","revue",
+       "Rapprocher le plan et le réalisé, décider des réorientations",
+       "Réunion de revue sur données du tableau de bord", null,null,"Unité suivi-évaluation",0,11,null,
+       "Quatre séances par an, une par trimestre",
+       [["atelier","Séances de revue trimestrielle","séance",4,1400],
+        ["impression","Supports de séance","forfait",4,120]]],
+      ["MRE-06","Analyse de la couverture géographique et des écarts de ciblage","etude",
+       "Identifier les communes ciblées non couvertes et l'inverse",
+       "Croisement du référentiel administratif, du ciblage et du plan de distribution", null,null,
+       "Unité suivi-évaluation",1,2,null,"S'appuie sur l'écran de couverture géographique",
+       [["personnel","Analyste de données","personne-mois",2,1900],
+        ["autre","Achat de données de population complémentaires","forfait",1,600]]],
+      ["MRE-07","Renforcement des capacités des partenaires coopérants en suivi","capacite",
+       "Homogénéiser la qualité des rapports des partenaires",
+       "Deux sessions de formation régionales", null,null,"Unité suivi-évaluation",5,6,null,
+       "Une session par pôle géographique",
+       [["atelier","Sessions de formation","session",2,2600],
+        ["deplacement","Indemnités des participants","personne-jour",120,15],
+        ["impression","Manuels de suivi","unité",90,7]]],
+    ];
+    PLAN_MRE.forEach(([ref,title,kind,purpose,method,_o,tag,resp,m0,m1,sample,note,lignes]) => {
+      const id = newId("mre");
+      insMre.run(id, YEAR, ref, title, kind, purpose, method, hqId, tag, resp, m0, m1, sample,
+        m1 < moisCourant ? "realise" : m0 <= moisCourant ? "en_cours" : "planifie",
+        "Ressources programme", note);
+      lignes.forEach(([cat,label,unit,qty,cost]) => {
+        /* Une activité longue laisse son mois vide : la route répartit alors la
+           ligne sur toute sa durée, ce qui est le cas réel d'un suivi continu.
+           Une activité courte est imputée à son mois de début. */
+        const mois = (m1 - m0) > 2 ? null : m0;
+        /* Dépense constatée seulement si l'activité a commencé, avec un écart
+           réaliste de part et d'autre du budget. */
+        const engagee = m0 <= moisCourant;
+        insCost.run(newId("mrc"), id, cat, label, unit, qty, cost,
+          engagee ? r2(qty * cost * (0.82 + Math.random()*0.3)) : null, mois);
+      });
+    });
+    /* Chaque bureau de terrain porte son propre suivi de proximité : le plan
+       n'est pas seulement national, et le cloisonnement doit avoir de la matière. */
+    Object.keys(ZONES).forEach((office, i) => {
+      const id = newId("mre");
+      insMre.run(id, YEAR, `MRE-B${String(i+1).padStart(2,"0")}`,
+        `Suivi de proximité — ${office.replace("Bureau de terrain d'","").replace("Bureau de terrain de ","")}`,
+        "suivi", "Couvrir les sites du bureau selon l'exigence minimale de suivi",
+        "Visites de site planifiées par le risque", officeId[office], null, "Chef de bureau",
+        0, 11, null, moisCourant > 0 ? "en_cours" : "planifie", "Ressources programme",
+        "Décliné du plan national sur la zone du bureau");
+      [["deplacement","Indemnités de déplacement","personne-jour",96,18],
+       ["transport","Carburant et entretien","mois",12,340]].forEach(([cat,label,unit,qty,cost]) =>
+        insCost.run(newId("mrc"), id, cat, label, unit, qty, cost,
+          r2(qty * cost * (0.85 + Math.random()*0.25) * (moisCourant+1)/12), null));
+    });
 
     const uid = newId("user");
     db.prepare(`INSERT INTO users (id,email,pw_hash,first_name,last_name,title,office_id,role,tabs,active,must_change_pw)

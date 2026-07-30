@@ -108,6 +108,19 @@ export const api = {
   /* Un import crée un millésime complet : le serveur reconstruit l'arbre. */
   importGeo:    (rows, label, source) => call("POST", "/geo/bulk", { rows, label, source }),
 
+  mre:          (q="")       => call("GET", `/mre${q}`),
+  createMre:    (a)          => call("POST", "/mre", a),
+  updateMre:    (id, a)      => call("PUT", `/mre/${encodeURIComponent(id)}`, a),
+  deleteMre:    (id)         => call("DELETE", `/mre/${encodeURIComponent(id)}`),
+  /* Le budget est enregistré en bloc pour une activité, avec sa révision :
+     l'unité d'édition est l'activité, pas la ligne de coût. */
+  saveMreCosts: (id, rev, lines) => call("PUT", `/mre/${encodeURIComponent(id)}/costs`, { rev, lines }),
+
+  offices:      ()           => call("GET", "/offices"),
+  createOffice: (o)          => call("POST", "/offices", o),
+  updateOffice: (id, o)      => call("PUT", `/offices/${encodeURIComponent(id)}`, o),
+  deleteOffice: (id)         => call("DELETE", `/offices/${encodeURIComponent(id)}`),
+
   users:      ()             => call("GET", "/users"),
   createUser: (u)            => call("POST", "/users", u),
   updateUser: (id, u)        => call("PUT", `/users/${encodeURIComponent(id)}`, u),

@@ -9,6 +9,7 @@ import { CoveragePlan, DistributionActual, DistributionPlan, OutcomePlan, Overre
 import { ActualSummary, ImportView, OutcomeData, OutputData, ProcessData,
          Sources } from "./ActualData.jsx";
 import { SitesModule } from "./Settings.jsx";
+import MreView from "./Mre.jsx";
 
 /* ═══════════════════════════════════════════════════════════════════════
    Suivi-évaluation et Programme — deux métiers, un sujet par destination.
@@ -53,12 +54,12 @@ function useVolet(initial = "plan"){
 export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
   const [volet, setVolet] = useVolet();
   const items = [["summary","Résumé global"],["monitoring","Suivi des sites"],
-    ["coverage","Couverture et MMR"],["map","Cartographie"],
+    ["mre","Plan MRE et budget"],["coverage","Couverture et MMR"],["map","Cartographie"],
     ["sites","Registre des sites"],["params","Paramètres de couverture"]];
   return (
     <div className="space-y-4">
       <PageHead title="Suivi-évaluation"
-        text="Planification des visites fondée sur le risque, réalisation du suivi de processus, couverture géographique et exigence minimale." />
+        text="Plan MRE et budget, planification des visites fondée sur le risque, réalisation du suivi de processus et couverture géographique." />
       <Tabs items={items} value={sub} onChange={setSub} />
 
       {sub==="summary" && <ActualSummary db={db} />}
@@ -70,6 +71,9 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
           ? <ProcessPlan db={db} set={set} me={me} notify={notify} can={can} />
           : <ProcessData db={db} set={set} notify={notify} can={can} go={go} />}
       </>)}
+
+      {/* Le plan MRE porte sa propre bascule budget prévu / dépense constatée. */}
+      {sub==="mre" && <MreView db={db} me={me} notify={notify} can={can} />}
 
       {/* La couverture rapproche par nature le prévu et le réalisé : elle n'a pas
           de volet, les deux colonnes sont côte à côte. */}

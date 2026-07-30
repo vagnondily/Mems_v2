@@ -1042,3 +1042,362 @@ test("périmètre : sa modification est réservée aux administrateurs et tracé
   assert.ok(j.body.rows.some(x => x.entity === "office_scope"),
     "les changements de périmètre laissent une trace");
 });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Bureaux : configuration réelle, et le cas du bureau pays.
+
+   Deux choses sont vérifiées ici. D'abord que modifier un bureau modifie
+   vraiment la base : l'écran de configuration écrivait dans une liste de noms
+   dérivée qui n'était jamais renvoyée, donc la saisie était perdue au
+   rechargement — la même famille de défaut que le panneau API. Ensuite que le
+   bureau déclaré national ouvre bien tous les sites à ses comptes sans leur
+   donner l'administration : c'est le besoin des staffs de Tana.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+test("bureaux : la lecture expose la configuration, le périmètre effectif et les références", async () => {
+  const r = await request(app).get("/api/offices").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200);
+  assert.ok(r.body.offices.length >= 2);
+  const hq = r.body.offices.find(o => o.kind === "hq");
+  assert.ok(hq, "le jeu d'essai comporte un bureau pays");
+  assert.equal(hq.scope_mode, "national", "le bureau pays est national");
+  const terrain = r.body.offices.find(o => o.kind === "field");
+  assert.equal(terrain.scope_mode, "geo");
+  assert.ok(terrain.usage.sites > 0, "les références sont comptées");
+  assert.ok(typeof terrain.scope.communes === "number");
+});
+
+test("bureaux : création, renommage persistant et refus du doublon", async () => {
+  const créé = await request(app).post("/api/offices").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Bureau de terrain de Farafangana", code:"FARAFANGANA",
+            antennes:["Vangaindrano"], manager:"R. Andria" });
+  assert.equal(créé.status, 201);
+  const id = créé.body.office.id;
+  assert.deepEqual(créé.body.office.antennes, ["Vangaindrano"]);
+
+  const doublon = await request(app).post("/api/offices").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"bureau de terrain de farafangana" });
+  assert.equal(doublon.status, 409, "le nom est unique, sans égard à la casse");
+
+  const maj = await request(app).put(`/api/offices/${id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Bureau de terrain de Farafangana Sud", code:"FARAFANGANA",
+            antennes:["Vangaindrano","Midongy"], rev: créé.body.office.rev });
+  assert.equal(maj.status, 200);
+  assert.equal(maj.body.office.rev, 2, "la révision avance");
+
+  /* La preuve que ce n'est plus un no-op : la base porte le nouveau nom. */
+  assert.equal(db.prepare("SELECT name FROM offices WHERE id=?").get(id).name,
+    "Bureau de terrain de Farafangana Sud");
+  /* Et l'état renvoyé au client aussi — c'est de là que vient la liste des bureaux. */
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  assert.ok(st.body.offices.some(o => o.name === "Bureau de terrain de Farafangana Sud"));
+});
+
+test("bureaux : révision périmée refusée, valeur courante renvoyée", async () => {
+  const o = db.prepare("SELECT * FROM offices WHERE code='FARAFANGANA'").get();
+  const r = await request(app).put(`/api/offices/${o.id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:o.name, rev:1 });
+  assert.equal(r.status, 409);
+  assert.ok(/modifié entre-temps/.test(r.body.error), r.body.error);
+  assert.equal(r.body.courant.rev, o.rev, "la valeur courante accompagne le refus");
+});
+
+test("bureaux : un bureau référencé ne peut pas être supprimé, seulement désactivé", async () => {
+  const référencé = db.prepare(
+    "SELECT id FROM offices WHERE id IN (SELECT office_id FROM sites) LIMIT 1").get();
+  const orphelins = () => db.prepare("SELECT COUNT(*) c FROM sites WHERE office_id IS NULL").get().c;
+  const avant = orphelins();
+  const refus = await request(app).delete(`/api/offices/${référencé.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(refus.status, 409);
+  assert.ok(refus.body.usage.sites > 0);
+  assert.ok(db.prepare("SELECT 1 FROM offices WHERE id=?").get(référencé.id), "rien n'a été supprimé");
+  /* Et aucun site n'a été détaché au passage — c'est ce que ferait le ON DELETE SET NULL
+     du schéma : des sites sans bureau, invisibles de tous les filtres. */
+  assert.equal(orphelins(), avant, "aucun site détaché");
+
+  /* Un bureau neuf, sans référence, se supprime bien. */
+  const neuf = await request(app).post("/api/offices").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Bureau provisoire" });
+  const del = await request(app).delete(`/api/offices/${neuf.body.office.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(del.status, 200);
+});
+
+test("bureaux : désactiver un bureau portant des comptes actifs est refusé", async () => {
+  const o = db.prepare(
+    "SELECT * FROM offices WHERE id IN (SELECT office_id FROM users WHERE active=1) LIMIT 1").get();
+  const r = await request(app).put(`/api/offices/${o.id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:o.name, code:o.code, kind:o.kind, scope_mode:o.scope_mode,
+            active:false, rev:o.rev });
+  assert.equal(r.status, 409);
+  assert.ok(/compte\(s\) actif\(s\)/.test(r.body.error), r.body.error);
+  assert.equal(db.prepare("SELECT active FROM offices WHERE id=?").get(o.id).active, 1);
+});
+
+test("bureaux : l'écriture est réservée aux administrateurs", async () => {
+  const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  /* La lecture reste ouverte : l'application a besoin des noms de bureaux. */
+  assert.equal((await request(app).get("/api/offices").set("Authorization", `Bearer ${t}`)).status, 200);
+  for(const [méthode, chemin] of [["post","/api/offices"], ["put","/api/offices/x"], ["delete","/api/offices/x"]]){
+    const r = await request(app)[méthode](chemin).set("Authorization", `Bearer ${t}`).send({ name:"Essai" });
+    assert.equal(r.status, 403, `${méthode.toUpperCase()} ${chemin} refusé`);
+  }
+});
+
+test("bureau pays : un compte de Tana voit tous les sites sans être administrateur", async () => {
+  const hq = db.prepare("SELECT id,name FROM offices WHERE kind='hq'").get();
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"tana@test.local", password:"TanaMotDePasse1", first_name:"Tana",
+            role:"editor", office_id:hq.id, tabs:["home"], active:true });
+  const t = (await login("tana@test.local", "TanaMotDePasse1")).body.token;
+
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${t}`);
+  const total = db.prepare("SELECT COUNT(*) c FROM sites").get().c;
+  assert.equal(st.body.sites.length, total, "tous les sites, pas seulement ceux de Tana");
+  assert.ok(db.prepare("SELECT COUNT(*) c FROM sites WHERE office_id<>?").get(hq.id).c > 0,
+    "le jeu d'essai comporte bien des sites d'autres bureaux");
+
+  /* Le site d'un autre bureau est lisible, alors qu'il était refusé au compte de terrain. */
+  const autre = db.prepare("SELECT id FROM sites WHERE office_id<>? LIMIT 1").get(hq.id);
+  assert.equal((await request(app).get(`/api/sites/${autre.id}`)
+    .set("Authorization", `Bearer ${t}`)).status, 200);
+
+  /* Mais le rôle n'a pas bougé : pas d'administration. C'est tout l'intérêt de
+     porter le périmètre sur le bureau et non sur le rôle. */
+  assert.equal((await request(app).get("/api/users").set("Authorization", `Bearer ${t}`)).status, 403);
+  assert.equal((await request(app).post("/api/offices").set("Authorization", `Bearer ${t}`)
+    .send({ name:"Essai" })).status, 403);
+
+  /* Le périmètre géographique suit la même règle : le ciblage national est lisible. */
+  const cov = await request(app).get("/api/geo/coverage").set("Authorization", `Bearer ${t}`);
+  assert.equal(cov.status, 200);
+  const sc = await request(app).get("/api/geo/scope").set("Authorization", `Bearer ${t}`);
+  assert.equal(sc.body.rows.find(x => x.office_id === hq.id).source, "national");
+});
+
+test("bureau pays : ramené au périmètre déclaré, le même compte est de nouveau cloisonné", async () => {
+  const hq = db.prepare("SELECT * FROM offices WHERE kind='hq'").get();
+  const r = await request(app).put(`/api/offices/${hq.id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:hq.name, code:hq.code, kind:"hq", scope_mode:"geo", active:true, rev:hq.rev });
+  assert.equal(r.status, 200);
+
+  const t = (await login("tana@test.local", "TanaMotDePasse1")).body.token;
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${t}`);
+  const siens = db.prepare("SELECT COUNT(*) c FROM sites WHERE office_id=?").get(hq.id).c;
+  assert.equal(st.body.sites.length, siens, "le cloisonnement est revenu");
+  assert.ok(st.body.sites.length < db.prepare("SELECT COUNT(*) c FROM sites").get().c);
+
+  /* Rétabli, pour ne pas laisser la base d'essai dans un état trompeur. */
+  const à_jour = db.prepare("SELECT rev FROM offices WHERE id=?").get(hq.id);
+  await request(app).put(`/api/offices/${hq.id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:hq.name, code:hq.code, kind:"hq", scope_mode:"national", active:true, rev:à_jour.rev });
+  assert.equal(db.prepare("SELECT scope_mode FROM offices WHERE id=?").get(hq.id).scope_mode, "national");
+});
+
+test("bureaux : mode de périmètre inconnu refusé — une valeur libre élargirait un accès", async () => {
+  const o = db.prepare("SELECT * FROM offices WHERE kind='field' LIMIT 1").get();
+  const r = await request(app).put(`/api/offices/${o.id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:o.name, scope_mode:"tout", rev:o.rev });
+  assert.equal(r.status, 422);
+  assert.equal(db.prepare("SELECT scope_mode FROM offices WHERE id=?").get(o.id).scope_mode, "geo");
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Plan MRE et budget.
+
+   Le point à verrouiller est le budget : il doit rester la somme de ses lignes,
+   côté serveur. Si l'écran le recalculait de son côté, ou si un champ « total »
+   existait à côté des lignes, les deux chiffres finiraient par diverger — et
+   c'est le total qu'on présente au bailleur.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+test("MRE : le plan est lu avec ses agrégats, et le budget est la somme des lignes", async () => {
+  const an = new Date().getFullYear();
+  const r = await request(app).get(`/api/mre?year=${an}`).set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200);
+  assert.ok(r.body.rows.length > 0, "le jeu d'essai comporte un plan");
+
+  /* Le total de chaque activité est exactement Σ quantité × coût unitaire. */
+  for(const a of r.body.rows){
+    const attendu = Math.round(a.costs.reduce((t,l)=>t+l.qty*l.unit_cost, 0) * 100) / 100;
+    assert.equal(a.budget, attendu, `budget de ${a.title}`);
+  }
+  /* Et le total du plan est la somme des activités, pas un nombre indépendant. */
+  const somme = Math.round(r.body.rows.reduce((t,a)=>t+a.budget, 0) * 100) / 100;
+  assert.equal(r.body.totals.budget, somme);
+
+  /* Les répartitions portent sur les mêmes montants. */
+  const parCat = Math.round(r.body.parCategorie.reduce((t,c)=>t+c.budget, 0) * 100) / 100;
+  assert.equal(parCat, somme, "la répartition par catégorie totalise le même budget");
+  const parMois = Math.round(r.body.parMois.reduce((t,m)=>t+m.budget, 0) * 100) / 100;
+  assert.equal(parMois, somme, "la répartition mensuelle totalise le même budget");
+  assert.equal(r.body.parMois.length, 12);
+});
+
+test("MRE : création d'une activité, puis de son budget ligne par ligne", async () => {
+  const an = new Date().getFullYear();
+  const c = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:an, ref:"MRE-T1", title:"Enquête de vérification des listes",
+            kind:"enquete", purpose:"Contrôler la qualité des listes de bénéficiaires",
+            start_month:3, end_month:4, sample:400, currency:"USD" });
+  assert.equal(c.status, 201);
+  const a = c.body.activity;
+  assert.equal(a.budget, 0, "une activité neuve n'a pas de budget");
+  assert.equal(a.spent, null, "et pas de dépense — nul, pas zéro");
+
+  const b = await request(app).put(`/api/mre/${a.id}/costs`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ rev:a.rev, lines:[
+      { category:"enqueteurs", label:"Enquêteurs", unit:"personne-jour", qty:60, unit_cost:14 },
+      { category:"transport",  label:"Véhicules",  unit:"véhicule-jour", qty:15, unit_cost:95, spent:1500 },
+    ] });
+  assert.equal(b.status, 200);
+  assert.equal(b.body.activity.budget, 60*14 + 15*95);
+  assert.equal(b.body.activity.spent, 1500);
+  /* L'exécution ne porte que sur ce qui est engagé : 1500 sur 2265, pas sur 840. */
+  assert.equal(b.body.activity.execution, Math.round((1500/2265)*1000)/10);
+  assert.equal(b.body.activity.rev, a.rev + 1, "modifier le budget fait avancer la révision");
+});
+
+test("MRE : le budget remplacé en bloc ne laisse pas d'ancienne ligne derrière lui", async () => {
+  const a = db.prepare("SELECT * FROM mre_activity WHERE ref='MRE-T1'").get();
+  const r = await request(app).put(`/api/mre/${a.id}/costs`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ rev:a.rev, lines:[{ category:"autre", label:"Forfait unique", qty:1, unit_cost:900 }] });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.activity.costs.length, 1);
+  assert.equal(r.body.activity.budget, 900);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM mre_cost WHERE activity_id=?").get(a.id).c, 1);
+});
+
+test("MRE : révision périmée refusée sur l'activité comme sur son budget", async () => {
+  const a = db.prepare("SELECT * FROM mre_activity WHERE ref='MRE-T1'").get();
+  const act = await request(app).put(`/api/mre/${a.id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:a.year, title:a.title, rev:1 });
+  assert.equal(act.status, 409);
+  assert.ok(act.body.courant, "la valeur courante accompagne le refus");
+  const bud = await request(app).put(`/api/mre/${a.id}/costs`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ rev:1, lines:[] });
+  assert.equal(bud.status, 409);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM mre_cost WHERE activity_id=?").get(a.id).c, 1,
+    "le budget n'a pas été vidé au passage");
+});
+
+test("MRE : garde-fous de saisie — référence unique dans l'année, calendrier cohérent", async () => {
+  const an = new Date().getFullYear();
+  const dup = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:an, ref:"MRE-T1", title:"Doublon de référence" });
+  assert.equal(dup.status, 409);
+  /* La même référence est libre pour une autre année : les plans se succèdent. */
+  const autre = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:an+1, ref:"MRE-T1", title:"Même référence, année suivante" });
+  assert.equal(autre.status, 201);
+
+  const inverse = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:an, title:"Calendrier inversé", start_month:8, end_month:2 });
+  assert.equal(inverse.status, 422);
+  assert.ok(/mois de fin précède/.test(inverse.body.error), inverse.body.error);
+
+  const natureInconnue = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:an, title:"Nature inconnue", kind:"bricolage" });
+  assert.equal(natureInconnue.status, 422);
+});
+
+test("MRE : un bureau voit son plan et le plan national, mais ne modifie que le sien", async () => {
+  const an = new Date().getFullYear();
+  const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
+  const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  const r = await request(app).get(`/api/mre?year=${an}`).set("Authorization", `Bearer ${t}`);
+  assert.equal(r.status, 200);
+  /* Rien d'un autre bureau. */
+  assert.ok(r.body.rows.every(a => !a.office_id || a.office_id === office.id),
+    "aucune activité d'un autre bureau");
+  /* Mais le plan national reste visible : le lui cacher laisserait croire
+     qu'aucune évaluation ne porte sur sa zone. */
+  const hqId = db.prepare("SELECT id FROM offices WHERE kind='hq'").get().id;
+  assert.ok(db.prepare("SELECT COUNT(*) c FROM mre_activity WHERE office_id NOT IN (?,?)")
+    .get(office.id, hqId).c >= 0);
+  assert.ok(r.body.rows.some(a => a.office_id === office.id), "il voit son propre plan");
+
+  /* Une activité d'un autre bureau lui est refusée en écriture. */
+  const ailleurs = db.prepare(
+    "SELECT id FROM mre_activity WHERE office_id IS NOT NULL AND office_id<>? LIMIT 1").get(office.id);
+  const refus = await request(app).put(`/api/mre/${ailleurs.id}`)
+    .set("Authorization", `Bearer ${t}`).send({ year:an, title:"Tentative", rev:1 });
+  assert.equal(refus.status, 403);
+
+  /* Et créer sans bureau ne le fait pas basculer dans le plan national :
+     le serveur force son propre bureau, quoi que dise le corps. */
+  const créé = await request(app).post("/api/mre").set("Authorization", `Bearer ${t}`)
+    .send({ year:an, title:"Suivi de proximité complémentaire", office_id:null });
+  assert.equal(créé.status, 201);
+  assert.equal(créé.body.activity.office_id, office.id);
+});
+
+test("MRE : un compte de Tana pilote le plan national", async () => {
+  const an = new Date().getFullYear();
+  const t = (await login("tana@test.local", "TanaMotDePasse1")).body.token;
+  const r = await request(app).get(`/api/mre?year=${an}`).set("Authorization", `Bearer ${t}`);
+  /* Bureau national : il voit tout le plan, comme il voit tous les sites. */
+  const tout = db.prepare("SELECT COUNT(*) c FROM mre_activity WHERE year=?").get(an).c;
+  assert.equal(r.body.rows.length, tout);
+  const ailleurs = db.prepare(
+    "SELECT id FROM mre_activity WHERE year=? AND office_id IS NOT NULL LIMIT 1").get(an);
+  const maj = await request(app).put(`/api/mre/${ailleurs.id}`).set("Authorization", `Bearer ${t}`)
+    .send({ year:an, title:"Ajusté par le bureau pays",
+            rev: db.prepare("SELECT rev FROM mre_activity WHERE id=?").get(ailleurs.id).rev });
+  assert.equal(maj.status, 200);
+});
+
+test("MRE : suppression réservée au droit de suppression, lignes de coût emportées", async () => {
+  const a = db.prepare("SELECT * FROM mre_activity WHERE ref='MRE-T1'").get();
+  const te = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  assert.equal((await request(app).delete(`/api/mre/${a.id}`)
+    .set("Authorization", `Bearer ${te}`)).status, 403, "un éditeur ne supprime pas");
+
+  const r = await request(app).delete(`/api/mre/${a.id}`).set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM mre_cost WHERE activity_id=?").get(a.id).c, 0,
+    "les lignes de coût n'ont pas d'existence propre");
+});
+
+test("MRE : plan mélangeant les devises — aucun total général n'est inventé", async () => {
+  const an = new Date().getFullYear() + 3;   /* année vierge, pour isoler le cas */
+  for(const [titre, devise] of [["Activité en dollars","USD"], ["Activité en ariary","MGA"]]){
+    const c = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
+      .send({ year:an, title:titre, currency:devise });
+    await request(app).put(`/api/mre/${c.body.activity.id}/costs`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ rev:c.body.activity.rev, lines:[{ category:"autre", label:"Forfait", qty:1, unit_cost:1000 }] });
+  }
+  const r = await request(app).get(`/api/mre?year=${an}`).set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.body.totals.currency, null, "pas de devise unique : pas de total présenté comme tel");
+  assert.deepEqual(r.body.totals.devises.sort(), ["MGA","USD"]);
+});
+
+test("MRE : une ligne sans mois est répartie sur la durée, pas posée sur janvier", async () => {
+  const an = new Date().getFullYear() + 4;
+  const c = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:an, title:"Suivi continu sur l'année", start_month:0, end_month:11 });
+  await request(app).put(`/api/mre/${c.body.activity.id}/costs`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ rev:c.body.activity.rev,
+            lines:[{ category:"transport", label:"Carburant", qty:12, unit_cost:100 }] });
+
+  const r = await request(app).get(`/api/mre?year=${an}`).set("Authorization", `Bearer ${adminToken}`);
+  const m = r.body.parMois;
+  assert.ok(m.every(x => x.budget > 0), "les douze mois portent une part du coût");
+  assert.equal(m[0].budget, 100, "et non 1 200 en janvier");
+  /* L'invariant qui compte : la somme des mois est le budget, au centime près. */
+  assert.equal(Math.round(m.reduce((t,x)=>t+x.budget, 0) * 100) / 100, r.body.totals.budget);
+
+  /* Une ligne datée reste imputée à son mois : la répartition n'écrase pas une
+     information plus précise quand elle existe. */
+  const d = await request(app).post("/api/mre").set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:an, title:"Atelier daté", start_month:0, end_month:11 });
+  await request(app).put(`/api/mre/${d.body.activity.id}/costs`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ rev:d.body.activity.rev,
+            lines:[{ category:"atelier", label:"Atelier", qty:1, unit_cost:600, month:6 }] });
+  const r2b = await request(app).get(`/api/mre?year=${an}`).set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r2b.body.parMois[6].budget, 100 + 600);
+});

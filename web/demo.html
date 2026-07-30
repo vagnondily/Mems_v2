@@ -8,7 +8,7 @@
   Démonstration statique de MEMS.
 
   Elle reprend l'intégralité de la surface de l'application réelle : 6 onglets,
-  27 sous-destinations, la matrice des rôles et le cloisonnement par bureau.
+  29 sous-destinations, la matrice des rôles et le cloisonnement par bureau.
   Aucune requête réseau n'est émise, aucune bibliothèque externe n'est chargée :
   ce fichier s'ouvre seul, depuis un disque ou une clé USB.
 
@@ -26,8 +26,10 @@
   }
   *{box-sizing:border-box}
   html,body{margin:0;padding:0;height:100%}
+  /* Fonte système : 'Open Sans' était nommée sans être chargée — ce fichier
+     n'émet aucune requête — donc c'était déjà la fonte système qui s'affichait. */
   body,input,select,textarea,button,pre{
-    font-family:'Open Sans',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif}
+    font-family:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif}
   body{background:var(--bg);color:var(--t1);-webkit-font-smoothing:antialiased}
   button,select,input{font:inherit;color:inherit}
   .hidden{display:none !important}
@@ -37,19 +39,24 @@
   .app{min-height:100vh;display:flex;flex-direction:column}
   header.top{display:flex;align-items:center;gap:16px;padding:0 20px;height:56px;
     background:var(--brandD);color:#fff;position:sticky;top:0;z-index:40}
-  .brand{display:flex;align-items:center;gap:12px;flex-shrink:0}
-  .brand-mark{width:44px;height:44px;border-radius:14px;background:rgba(255,255,255,.1);
-    border:1px solid rgba(255,255,255,.2);display:grid;place-items:center}
-  .brand-mark i{width:22px;height:22px;border-radius:8px;background:var(--aqua);display:block}
-  .brand-txt b{display:block;font-size:17px;letter-spacing:.03em}
-  .brand-txt span{display:block;font-size:9px;opacity:.7;font-weight:300}
-  nav.tabs{display:flex;gap:2px;margin-left:12px;overflow-x:auto}
+  /* Le bloc de marque était un cadre translucide de 44 px contenant un carré de
+     22 px, surmonté de deux lignes dont la seconde à 9 px : le cadre réduisait le
+     signe à une pastille, la ligne de 9 px se lisait comme une salissure, et le
+     bloc occupait deux lignes dans une barre où tout le reste tient sur une seule.
+     Le signe est posé à même la barre, le nom complet a rejoint le pied de page. */
+  .brand{display:flex;align-items:center;gap:10px;flex-shrink:0;height:32px;
+    padding-right:16px;margin-right:8px;border-right:1px solid rgba(255,255,255,.2)}
+  .brand svg{display:block}
+  .brand b{font-size:15px;font-weight:700;letter-spacing:.14em}
+  nav.tabs{display:flex;gap:2px;overflow-x:auto}
   nav.tabs>.tab{position:relative}
   nav.tabs button.t{display:flex;align-items:center;gap:6px;padding:0 13px;height:56px;
-    font-size:13px;font-weight:600;white-space:nowrap;background:none;border:0;
-    border-bottom:3px solid transparent;color:rgba(255,255,255,.8);cursor:pointer}
-  nav.tabs button.t:hover{color:#fff;background:rgba(255,255,255,.07)}
-  nav.tabs button.t.on{color:#fff;background:rgba(255,255,255,.1);border-bottom-color:#fff}
+    font-size:12.5px;font-weight:600;white-space:nowrap;background:none;border:0;
+    border-bottom:2px solid transparent;color:rgba(255,255,255,.65);cursor:pointer}
+  nav.tabs button.t:hover{color:#fff}
+  /* Un seul signal pour l'onglet courant : le filet. Le fond teinté et le texte
+     blanc en plus faisaient trois marques pour une seule idée. */
+  nav.tabs button.t.on{color:#fff;border-bottom-color:#fff}
   .menu{position:absolute;left:0;top:56px;background:#fff;min-width:262px;padding:4px 0;
     border:1px solid var(--line);border-radius:0 0 4px 4px;box-shadow:0 12px 32px rgba(3,28,45,.18);z-index:50}
   .menu button{display:block;width:100%;text-align:left;padding:9px 16px;font-size:13px;
@@ -72,9 +79,11 @@
     display:flex;gap:12px;align-items:center;font-size:11px;color:var(--t2)}
 
   /* ── Blocs ────────────────────────────────────────────────── */
-  .head{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:18px}
-  .head h2{margin:0;font-size:23px;font-weight:600;color:#1e293b}
-  .head p{margin:4px 0 0;font-size:13px;color:var(--t2);max-width:820px;line-height:1.6}
+  /* 23 px en gras au-dessus de cartes titrées à 14 px : l'écart était tel que le
+     titre écrasait le contenu. Ramené à 19 px, phrase en 12,5 px, marge resserrée. */
+  .head{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:16px}
+  .head h2{margin:0;font-size:19px;font-weight:600;color:#0f172a;line-height:1.25}
+  .head p{margin:4px 0 0;font-size:12.5px;color:var(--t2);max-width:820px;line-height:1.6}
   .head .act{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
   .card{background:#fff;border:1px solid var(--line);border-radius:4px;margin-bottom:16px}
   .card>h3{margin:0;padding:13px 16px 0;font-size:14px;font-weight:600;color:#1e293b}
@@ -185,8 +194,16 @@
 <div class="app hidden" id="app">
   <header class="top">
     <div class="brand">
-      <div class="brand-mark"><i></i></div>
-      <div class="brand-txt"><b>MEMS</b><span>Monitoring &amp; Evaluation Management System</span></div>
+      <!-- Version inversée du signe : le dégradé bleu-vert d'origine se confond
+           avec le bleu sombre de la barre. -->
+      <svg viewBox="0 0 140 140" width="30" height="30" aria-hidden="true">
+        <path d="M 20 80 A 40 40 0 1 1 100 80" fill="none" stroke="#fff" stroke-width="10" stroke-linecap="round"/>
+        <path d="M 40 75 Q 40 50 50 40 Q 50 65 40 75 Z" fill="rgba(255,255,255,.92)"/>
+        <path d="M 76 75 Q 76 40 66 30 Q 66 60 76 75 Z" fill="rgba(255,255,255,.8)"/>
+        <rect x="55" y="25" width="6" height="40" rx="3" fill="#fff"/>
+        <circle cx="63" cy="15" r="8" fill="#FBBF24"/><circle cx="63" cy="15" r="3" fill="#0B4F72"/>
+      </svg>
+      <b>MEMS</b>
     </div>
     <nav class="tabs" id="nav"></nav>
     <div class="right">
@@ -198,7 +215,8 @@
   <main id="view"></main>
   <footer class="bot">
     <div id="footOrg"></div>
-    <span style="margin-left:auto" id="footYear"></span>
+    <span style="margin-left:auto"><b style="color:#475569">MEMS</b> ·
+      Monitoring and Evaluation Management System · <span id="footYear"></span></span>
   </footer>
 </div>
 
@@ -458,6 +476,98 @@ const AUDIT = [
   { at:"2026-07-19 17:20", user:"Tiana",  office:"Bureau de terrain d'Ampanihy",  kind:"odk",  text:"Visite validé — 2026-07-17" },
   { at:"2026-07-18 11:08", user:"Naina",  office:"Bureau de terrain d'Ambovombe", kind:"plan", text:"Site créé — TSI-002" },
 ];
+/* ── Plan MRE et budget ───────────────────────────────────────────────
+   MRE : Monitoring, Review and Evaluation — le plan annuel d'activités de suivi,
+   de revue et d'évaluation, avec son coût. Le budget n'est jamais un montant
+   saisi : c'est la somme de ses lignes (quantité × coût unitaire), comme dans
+   l'application. Un total qu'on ne peut pas décomposer ne se défend pas. */
+const MRE_KINDS = {
+  suivi:"Suivi de processus et de distribution", revue:"Revue de programme",
+  evaluation:"Évaluation", enquete:"Enquête (post-distribution, base, finale)",
+  etude:"Étude ou analyse", capacite:"Renforcement de capacités en suivi-évaluation",
+};
+const MRE_KIND_TONE = { suivi:"#007DBC", revue:"#7C3AED", evaluation:"#D97706",
+  enquete:"#0891B2", etude:"#059669", capacite:"#DB2777" };
+const MRE_CATS = {
+  personnel:"Personnel de suivi", enqueteurs:"Enquêteurs et superviseurs",
+  deplacement:"Indemnités de déplacement", transport:"Transport et carburant",
+  atelier:"Atelier et restitution", consultant:"Consultant ou cabinet",
+  equipement:"Équipement et tablettes", impression:"Impression et fournitures",
+  communication:"Communication et connectivité", autre:"Autre",
+};
+const MRE = [
+  { ref:"MRE-01", title:"Suivi de processus des distributions générales", kind:"suivi",
+    purpose:"Vérifier la conformité des distributions aux procédures et recueillir les plaintes",
+    office:"", resp:"Unité suivi-évaluation", m0:0, m1:11, sample:null, statut:"en_cours",
+    costs:[["personnel","Agents de suivi de terrain","personne-mois",60,420,24700],
+           ["deplacement","Indemnités de déplacement","personne-jour",480,18,7900],
+           ["transport","Location de véhicules","véhicule-jour",240,95,20400],
+           ["communication","Forfaits données pour tablettes","mois",72,9,610]] },
+  { ref:"MRE-02", title:"Enquête post-distribution — premier semestre", kind:"enquete",
+    purpose:"Mesurer la satisfaction, l'utilisation de l'assistance et les délais de service",
+    office:"", resp:"Unité suivi-évaluation", m0:2, m1:3, sample:1200, statut:"realise",
+    costs:[["enqueteurs","Enquêteurs et superviseurs","personne-jour",180,14,2380],
+           ["deplacement","Indemnités enquêteurs","personne-jour",180,12,2200],
+           ["transport","Transport terrain","véhicule-jour",45,95,4400],
+           ["equipement","Tablettes de remplacement","unité",6,220,1346],
+           ["atelier","Atelier de restitution","forfait",1,1800,1750]] },
+  { ref:"MRE-03", title:"Enquête post-distribution — second semestre", kind:"enquete",
+    purpose:"Reproduire la mesure du premier semestre pour comparer les deux périodes",
+    office:"", resp:"Unité suivi-évaluation", m0:8, m1:9, sample:1200, statut:"planifie",
+    costs:[["enqueteurs","Enquêteurs et superviseurs","personne-jour",180,14,null],
+           ["deplacement","Indemnités enquêteurs","personne-jour",180,12,null],
+           ["transport","Transport terrain","véhicule-jour",45,95,null],
+           ["atelier","Atelier de restitution","forfait",1,1800,null]] },
+  { ref:"MRE-04", title:"Évaluation à mi-parcours du plan stratégique pays", kind:"evaluation",
+    purpose:"Apprécier la pertinence et l'efficacité des activités à mi-parcours",
+    office:"", resp:"Bureau pays et unité évaluation", m0:4, m1:7, sample:null, statut:"en_cours",
+    costs:[["consultant","Cabinet d'évaluation","forfait",1,48000,41290],
+           ["transport","Déplacements de l'équipe","véhicule-jour",30,95,2600],
+           ["atelier","Atelier de validation des conclusions","forfait",1,3200,3350],
+           ["impression","Édition du rapport","forfait",1,900,960]] },
+  { ref:"MRE-05", title:"Revue trimestrielle de la performance", kind:"revue",
+    purpose:"Rapprocher le plan et le réalisé, décider des réorientations",
+    office:"", resp:"Unité suivi-évaluation", m0:0, m1:11, sample:null, statut:"en_cours",
+    costs:[["atelier","Séances de revue trimestrielle","séance",4,1400,5200],
+           ["impression","Supports de séance","forfait",4,120,484]] },
+  { ref:"MRE-06", title:"Analyse de la couverture géographique et des écarts de ciblage", kind:"etude",
+    purpose:"Identifier les communes ciblées non couvertes et l'inverse",
+    office:"", resp:"Unité suivi-évaluation", m0:1, m1:2, sample:null, statut:"realise",
+    costs:[["personnel","Analyste de données","personne-mois",2,1900,4100],
+           ["autre","Données de population complémentaires","forfait",1,600,597]] },
+  { ref:"MRE-07", title:"Renforcement des capacités des partenaires coopérants en suivi", kind:"capacite",
+    purpose:"Homogénéiser la qualité des rapports des partenaires",
+    office:"", resp:"Unité suivi-évaluation", m0:5, m1:6, sample:null, statut:"en_cours",
+    costs:[["atelier","Sessions de formation","session",2,2600,5400],
+           ["deplacement","Indemnités des participants","personne-jour",120,15,1690],
+           ["impression","Manuels de suivi","unité",90,7,640]] },
+  ...OFFICES.filter(o => o !== "Bureau central d'Antananarivo").map((o, i) => ({
+    ref:`MRE-B0${i+1}`,
+    title:`Suivi de proximité — ${o.replace("Bureau de terrain d'","").replace("Bureau de terrain de ","")}`,
+    kind:"suivi", purpose:"Couvrir les sites du bureau selon l'exigence minimale de suivi",
+    office:o, resp:"Chef de bureau", m0:0, m1:11, sample:null, statut:"en_cours",
+    costs:[["deplacement","Indemnités de déplacement","personne-jour",96,18,900+i*90],
+           ["transport","Carburant et entretien","mois",12,340,2400+i*140]] })),
+];
+/* Le budget d'une activité, et sa dépense : calculés, jamais stockés. */
+const mreBudget = a => Math.round(a.costs.reduce((t,c)=>t+c[3]*c[4], 0)*100)/100;
+const mreSpent  = a => a.costs.some(c=>c[5]!=null)
+  ? Math.round(a.costs.reduce((t,c)=>t+(c[5]||0), 0)*100)/100 : null;
+/* Un bureau voit son plan et le plan national ; il n'écrit que sur le sien. */
+const myMre = () => state.me.office
+  ? MRE.filter(a => !a.office || a.office === state.me.office) : MRE;
+
+/* Configuration des bureaux. `mode` est le point qui manquait : le bureau pays
+   est national, ses comptes voient tous les sites sans être administrateurs. */
+const OFFICE_CFG = OFFICES.map(o => {
+  const hq = o === "Bureau central d'Antananarivo";
+  return { name:o, code:hq ? "HQ" : o.replace(/^Bureau de terrain d[e']/,"").trim().toUpperCase(),
+    kind:hq ? "hq" : "field", mode:hq ? "national" : "geo",
+    antennes:hq ? [] : [o.replace(/^Bureau de terrain d[e']/,"").trim()],
+    manager:hq ? "Chef de l'unité suivi-évaluation" : "Chef de bureau",
+    sites:SITES.filter(x=>x.office===o).length, active:true };
+});
+
 const USERS = PROFILES.map(p => ({ ...p, email:`${p.first.toLowerCase()}@mems.mg`, active:true }));
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -511,13 +621,14 @@ const NAV = [
   /* Un sujet par destination : le prévu et le réalisé s'y basculent au lieu de
      se dupliquer dans deux menus distincts. */
   { id:"suivi",     label:"Suivi-évaluation", sub:[["summary","Résumé global"],["monitoring","Suivi des sites"],
+                                             ["mre","Plan MRE et budget"],
                                              ["coverage","Couverture et MMR"],["map","Cartographie"],
                                              ["sites","Registre des sites"],["params","Paramètres de couverture"]] },
   { id:"programme", label:"Programme",  sub:[["distribution","Distributions"],["population","Population et outputs"],
                                              ["results","Résultats"],["sources","Sources de données"]] },
   { id:"analytics",label:"Analyses",    sub:[["datasets","Jeux de données"],["scripts","Scripts d'analyse"],["viz","Visualisations"]] },
   { id:"reports",  label:"Rapports",    sub:[["extract","Extraction ODK"],["build","Générateur de rapport"]] },
-  { id:"settings", label:"Paramètres",  sub:[["general","Général"],["sites","Sites"],["locations","Localités"],
+  { id:"settings", label:"Paramètres",  sub:[["general","Général"],["offices","Bureaux"],["sites","Sites"],["locations","Localités"],
                                              ["indicators","Indicateurs"],["calc","Calculs"],["odk","ODK Central"],
                                              ["templates","Modèles de rapport"],["api","API"],["users","Utilisateurs"]] },
 ];
@@ -1222,6 +1333,162 @@ V["settings:users"] = () => head("Utilisateurs",
       verrouillé 15 minutes ; le message d'erreur reste identique que le compte existe ou non.</div>`);
 
 
+/* ── Plan MRE et budget ────────────────────────────────────────────── */
+const mreCal = (a) => `<div style="display:flex;gap:1px">` + MONTHS.map((m,i)=>
+  `<span title="${esc(m)}" style="width:10px;height:14px;border-radius:2px;background:${
+    i>=a.m0 && i<=a.m1 ? MRE_KIND_TONE[a.kind] : "#f1f5f9"}"></span>`).join("") + `</div>`;
+
+const MRE_STATUT = { planifie:["Planifiée",""], en_cours:["En cours","b"],
+  realise:["Réalisée","g"], reporte:["Reportée","y"], annule:["Annulée","r"] };
+
+function PLAN_mre(){
+  const rows = myMre();
+  const budget = rows.reduce((t,a)=>t+mreBudget(a), 0);
+  /* Par nature, puis par catégorie de coût : la question posée en arbitrage. */
+  const parNature = Object.keys(MRE_KINDS).map(k => {
+    const g = rows.filter(a=>a.kind===k);
+    return { k, label:MRE_KINDS[k], n:g.length, b:g.reduce((t,a)=>t+mreBudget(a),0) };
+  }).filter(x=>x.n).sort((a,b)=>b.b-a.b);
+  const parCat = Object.keys(MRE_CATS).map(c => {
+    const l = rows.flatMap(a=>a.costs).filter(x=>x[0]===c);
+    return { c, label:MRE_CATS[c], b:l.reduce((t,x)=>t+x[3]*x[4],0) };
+  }).filter(x=>x.b).sort((a,b)=>b.b-a.b);
+  /* Une ligne sans mois propre est répartie sur la durée de son activité : la
+     poser sur le mois de début mettrait toute l'année en janvier. */
+  const mois = MONTHS.map(()=>0);
+  rows.forEach(a => a.costs.forEach(c => {
+    const span = a.m1 - a.m0 + 1;
+    for(let m=a.m0; m<=a.m1; m++) mois[m] += (c[3]*c[4])/span; }));
+  const maxMois = Math.max(...mois, 1);
+
+  return `<div class="stats">
+      ${stat("Activités planifiées", fmt(rows.length),
+        `${rows.filter(a=>a.statut==="en_cours").length} en cours · ${rows.filter(a=>a.statut==="realise").length} réalisée(s)`)}
+      ${stat("Budget total", fmt(Math.round(budget))+" USD", `${rows.length} activité(s) chiffrée(s)`)}
+      ${stat("Sans budget", fmt(rows.filter(a=>!mreBudget(a)).length), "à chiffrer avant arbitrage",
+        rows.some(a=>!mreBudget(a))?"warn":"ok")}
+      ${(()=>{ const eng = rows.filter(a=>mreSpent(a)!=null);
+        const b = eng.reduce((t,a)=>t+mreBudget(a),0), d = eng.reduce((t,a)=>t+mreSpent(a),0);
+        const ex = b ? Math.round(d/b*1000)/10 : null;
+        return stat("Exécution budgétaire", ex===null?"—":ex+" %",
+          "dépense / budget des activités engagées", ex===null?"":ex>110?"bad":ex>95?"warn":"ok"); })()}
+    </div>`
+  + card(`Plan MRE ${YEAR}`, `${rows.length} activité(s) · suivi, revue, évaluation, enquête et étude`,
+      table([["Réf."],["Activité"],["Calendrier"],["Budget","n"],["Statut"],["Actions"]],
+        rows.map(a=>[
+          `<span style="color:var(--t2);font-size:11.5px">${esc(a.ref)}</span>`,
+          `<div><b>${esc(a.title)}</b>
+            <div style="font-size:11px;color:var(--t2)">${esc(a.purpose)}</div>
+            <div style="font-size:10.5px;color:var(--t2);margin-top:3px">
+              <span style="display:inline-block;width:6px;height:6px;border-radius:50%;
+                background:${MRE_KIND_TONE[a.kind]};margin-right:4px"></span>${esc(MRE_KINDS[a.kind])}
+              · ${esc(a.office || "Plan national")} · ${esc(a.resp)}${
+                a.sample ? " · échantillon "+fmt(a.sample) : ""}</div></div>`,
+          mreCal(a),
+          `<b>${fmt(Math.round(mreBudget(a)))}</b>
+            <div style="font-size:10.5px;color:var(--t2);font-weight:400">${a.costs.length} ligne(s)</div>`,
+          `<span class="badge ${MRE_STATUT[a.statut][1]}">${esc(MRE_STATUT[a.statut][0])}</span>`,
+          btn("Modifier","edit")]).concat([[
+            `<b>Total du plan</b>`,"","",`<b>${fmt(Math.round(budget))} USD</b>`,"",""]])), 1)
+  + `<div class="grid g2">
+      ${card("Budget par nature d'activité","Ce que le plan consacre au suivi, à la revue, à l'évaluation",
+        parNature.map(x=>`<div style="margin-bottom:10px">
+          <div style="display:flex;align-items:baseline;gap:8px;font-size:12.5px">
+            <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${MRE_KIND_TONE[x.k]}"></span>
+            <span>${esc(x.label)}</span>
+            <b style="margin-left:auto">${fmt(Math.round(x.b))}</b>
+            <span style="color:var(--t3);font-size:11px;width:38px;text-align:right">${Math.round(x.b/budget*100)} %</span></div>
+          <div style="height:6px;background:#f1f5f9;border-radius:99px;margin-top:4px;overflow:hidden">
+            <i style="display:block;height:100%;width:${x.b/budget*100}%;background:${MRE_KIND_TONE[x.k]}"></i></div>
+          <div style="font-size:10.5px;color:var(--t3);margin-top:2px">${x.n} activité(s)</div></div>`).join(""))}
+      ${card("Budget par catégorie de coût","La question posée en arbitrage : où part l'argent",
+        parCat.map(x=>`<div style="margin-bottom:8px">
+          <div style="display:flex;gap:8px;font-size:12.5px"><span>${esc(x.label)}</span>
+            <b style="margin-left:auto">${fmt(Math.round(x.b))}</b></div>
+          <div style="height:6px;background:#f1f5f9;border-radius:99px;margin-top:3px;overflow:hidden">
+            <i style="display:block;height:100%;width:${x.b/parCat[0].b*100}%;background:var(--brand)"></i></div>
+        </div>`).join(""))}
+    </div>`
+  + card("Charge mensuelle du plan",
+      "Une ligne datée est imputée à son mois ; une ligne sans date est répartie sur la durée de son activité — convention explicite, pas une mesure",
+      `<div style="display:flex;align-items:flex-end;gap:6px;height:160px">
+        ${mois.map((v,i)=>`<div style="flex:1;text-align:center">
+          <div title="${fmt(Math.round(v))} USD" style="height:${Math.round(v/maxMois*130)}px;
+            background:var(--brand);border-radius:3px 3px 0 0;min-height:2px"></div>
+          <div style="font-size:10px;color:var(--t2);margin-top:4px">${esc(MONTHS[i])}</div></div>`).join("")}
+      </div>`);
+}
+
+function REEL_mre(){
+  const eng = myMre().filter(a=>mreSpent(a)!=null);
+  const b = eng.reduce((t,a)=>t+mreBudget(a),0), d = eng.reduce((t,a)=>t+mreSpent(a),0);
+  const parCat = Object.keys(MRE_CATS).map(c => {
+    const l = myMre().flatMap(a=>a.costs).filter(x=>x[0]===c);
+    return { label:MRE_CATS[c], b:l.reduce((t,x)=>t+x[3]*x[4],0),
+             d:l.reduce((t,x)=>t+(x[5]||0),0) };
+  }).filter(x=>x.b);
+  const tone = e => e===null?"":e>110?"bad":e>95?"warn":"ok";
+  return `<div class="note info">La dépense est saisie <b>ligne de budget par ligne de budget</b>.
+      Une ligne sans dépense n'est pas une dépense nulle : elle est <b>non engagée</b> et reste
+      hors du calcul d'exécution — sinon toute l'année à venir afficherait une sous-consommation.</div>`
+    + `<div class="stats">
+      ${stat("Activités engagées", fmt(eng.length)+" / "+fmt(myMre().length))}
+      ${stat("Budget engagé", fmt(Math.round(b))+" USD")}
+      ${stat("Dépense constatée", fmt(Math.round(d))+" USD")}
+      ${stat("Exécution budgétaire", (b?Math.round(d/b*1000)/10:0)+" %","",tone(b?Math.round(d/b*1000)/10:null))}
+    </div>`
+    + card(`Exécution budgétaire ${YEAR}`, `${eng.length} activité(s) engagée(s)`,
+        table([["Réf."],["Activité"],["Bureau"],["Budget","n"],["Dépensé","n"],["Écart","n"],["Exécution"],["Statut"]],
+          eng.map(a=>{ const bu=mreBudget(a), sp=mreSpent(a), ex=Math.round(sp/bu*1000)/10;
+            return [`<span style="color:var(--t2);font-size:11.5px">${esc(a.ref)}</span>`,
+              `<b>${esc(a.title)}</b>`, esc(a.office || "Plan national"),
+              fmt(Math.round(bu)), `<b>${fmt(Math.round(sp))}</b>`,
+              `<span style="${bu-sp<0?"color:var(--bad);font-weight:600":""}">${fmt(Math.round(bu-sp))}</span>`,
+              `<div style="display:flex;align-items:center;gap:8px">${bar(ex, tone(ex))}
+                <span style="font-size:11.5px">${ex} %</span></div>`,
+              `<span class="badge ${MRE_STATUT[a.statut][1]}">${esc(MRE_STATUT[a.statut][0])}</span>`]; })
+            .concat([[`<b>Total engagé</b>`,"","",`<b>${fmt(Math.round(b))}</b>`,
+              `<b>${fmt(Math.round(d))}</b>`,`<b>${fmt(Math.round(b-d))}</b>`,"",""]])), 1)
+    + card("Écart par catégorie de coût","Où le plan dérape, et de combien",
+        table([["Catégorie"],["Budget","n"],["Dépensé","n"],["Écart","n"],["Exécution"]],
+          parCat.map(x=>{ const ex = x.b ? Math.round(x.d/x.b*1000)/10 : null;
+            return [esc(x.label), fmt(Math.round(x.b)), x.d?fmt(Math.round(x.d)):"—",
+              `<span style="${x.b-x.d<0?"color:var(--bad);font-weight:600":""}">${fmt(Math.round(x.b-x.d))}</span>`,
+              `<div style="display:flex;align-items:center;gap:8px">${bar(ex||0, tone(ex))}
+                <span style="font-size:11.5px">${ex===null?"—":ex+" %"}</span></div>`]; })), 1);
+}
+
+V["suivi:mre"] = () => head("Plan MRE et budget",
+    "Monitoring, Review and Evaluation : ce que l'unité entreprend dans l'année, et ce que cela coûte. Le budget est toujours la somme de ses lignes — jamais un montant saisi.",
+    btn("Exporter","")+" "+btn("Ajouter une activité","edit",1))
+  + volet("mre", "Plan et budget", "Exécution budgétaire", { plan: PLAN_mre, reel: REEL_mre });
+
+/* ── Bureaux ───────────────────────────────────────────────────────── */
+V["settings:offices"] = () => head("Bureaux",
+    "Un bureau porte les sites, les comptes, les paramètres de couverture et le plan de distribution. Son mode de périmètre décide de ce que ses comptes non administrateurs peuvent voir.",
+    btn("Ajouter un bureau","admin",1))
+  + `<div class="note info">Le <b>bureau pays</b> est déclaré à périmètre <b>national</b> : ses
+      staffs voient tous les sites <i>sans</i> droit d'administration. Le rôle dit ce qu'un compte
+      peut faire, le périmètre dit où — les passer administrateurs pour régler la visibilité leur
+      aurait donné au passage la gestion des comptes.</div>`
+  + card("Bureaux et antennes",
+      `${OFFICE_CFG.length} bureau(x) · ${OFFICE_CFG.filter(o=>o.active).length} actifs · ${OFFICE_CFG.filter(o=>o.mode==="national").length} à périmètre national`,
+      table([["Bureau"],["Code"],["Nature"],["Périmètre"],["Antennes"],["Responsable"],["Sites","n"],["État"],["Actions"]],
+        OFFICE_CFG.map(o=>[
+          `<b>${esc(o.name)}</b>`,
+          `<span style="color:var(--t2);font-size:11.5px">${esc(o.code)}</span>`,
+          o.kind==="hq" ? '<span class="badge b">bureau pays</span>' : '<span class="badge">terrain</span>',
+          o.mode==="national" ? '<span class="badge b">national — tous les sites</span>'
+            : `<span class="badge g">périmètre déclaré</span>`,
+          o.antennes.join(", ") || "—", esc(o.manager), o.sites || "—",
+          '<span class="badge g">actif</span>',
+          btn("Modifier","admin")+" "+btn("Supprimer","del")])), 1)
+  + card(null,null,`<div class="note warn">
+      <b>La liste des bureaux n'était pas persistée.</b> L'écran de configuration proposait de
+      modifier une liste de noms dérivée de la table à chaque chargement et jamais renvoyée au
+      serveur : la saisie était perdue au rechargement. Un bureau référencé ne peut plus être
+      supprimé — le schéma détacherait les sites en silence — seulement désactivé.</div>`);
+
 /* ── Volet Prévu / Réalisé ────────────────────────────────────────────
    La navigation dupliquait chaque sujet : le prévu dans « Planning », le réalisé
    dans « Actual Data ». Rien n'indiquait lequel des deux ouvrir. Le prévu et le
@@ -1291,7 +1558,7 @@ function renderWho(){
     <button data-logout="1" style="display:block;width:100%;text-align:left;padding:10px 16px;
       border:0;background:none;cursor:pointer;font-size:13px">Se déconnecter</button>`;
   $("footOrg").textContent = `Bureau pays Madagascar — Unité suivi et évaluation`;
-  $("footYear").textContent = `MEMS · démonstration · exercice ${YEAR}`;
+  $("footYear").textContent = `démonstration · exercice ${YEAR}`;
 }
 
 function render(){ renderNav(); renderWho(); renderView(); }

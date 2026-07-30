@@ -265,6 +265,76 @@ n'a aucune présence enregistrée — la question que le modèle plat ne savait 
 > et se retrouvait tronqué à 4 000 lignes. L'interface interroge `/api/geo/levels` niveau
 > par niveau, au fur et à mesure de ce qu'elle affiche.
 
+### Plan MRE et budgétisation
+
+MRE — *Monitoring, Review and Evaluation* — est le plan annuel d'activités de suivi, de
+revue et d'évaluation de l'unité, avec son coût. L'application savait planifier des
+**visites de site** et des **rounds d'indicateur** ; elle ne savait pas dire ce que
+l'unité entreprend dans l'année, ni ce que cela coûte. Ce sont les deux questions posées
+à chaque exercice budgétaire, et la seule réponse disponible était un classeur tenu à
+part — donc jamais rapproché de ce que l'outil mesure.
+
+Deux tables, parce que ce sont deux choses de nature différente :
+
+| Table | Ce qu'elle porte |
+|---|---|
+| `mre_activity` | ce qu'on entreprend : nature, question posée, méthode, portée, calendrier, statut, échantillon |
+| `mre_cost` | ce que cela coûte : catégorie, unité, quantité, coût unitaire, **et la dépense constatée** |
+
+Six natures d'activité (`suivi`, `revue`, `evaluation`, `enquete`, `etude`, `capacite`) et
+dix catégories de coût, toutes **fermées** : un budget dont les lignes sont libellées
+librement ne s'agrège pas, et « combien coûtent les enquêteurs sur l'année » doit avoir
+une réponse.
+
+**Le budget n'est jamais saisi ; il est calculé** — Σ quantité × coût unitaire. Aucun champ
+« budget total » n'existe, à aucun niveau. Un montant global saisi à côté de ses lignes
+finit par ne plus leur correspondre, et c'est le total qu'on présente au bailleur. Les
+agrégats (par nature, par catégorie, par mois) sont calculés **une seule fois côté
+serveur**, pour l'écran comme pour l'export : trois calculs séparés donneraient trois
+totaux.
+
+La **dépense** est saisie ligne à ligne. `spent` vaut `NULL` tant que rien n'est constaté —
+« pas encore dépensé » et « dépense nulle » sont deux états différents dans un suivi
+budgétaire, et les confondre afficherait une sous-consommation sur toute l'année à venir.
+L'exécution budgétaire ne porte donc que sur les activités **engagées**.
+
+Le plan de trésorerie repose sur une convention, énoncée à l'écran : une ligne de coût
+datée est imputée à son mois ; une ligne sans date est **répartie sur la durée de son
+activité**. Poser toute la ligne sur le mois de début — ce que faisait la première
+version — mettait 80 % de l'année en janvier pour un suivi continu : un graphique faux,
+pas une approximation. L'arrondi mensuel utilise la méthode du plus fort reste, pour que
+la somme des douze mois soit exactement le budget affiché à côté.
+
+Côté périmètre, un bureau voit **son plan et le plan national** (activités sans bureau),
+mais n'écrit que sur le sien. Lui cacher le plan national lui laisserait croire qu'aucune
+évaluation ne porte sur sa zone alors qu'elle est portée par Tana.
+
+*Suivi-évaluation → Plan MRE et budget*, avec la bascule habituelle **Plan et budget /
+Exécution budgétaire**.
+
+### Bureaux
+
+`offices` n'avait que le strict nécessaire — nom, code, nature — et **aucune route
+d'écriture**. L'écran *Paramètres → Général* proposait pourtant de modifier la liste des
+bureaux : il écrivait dans `db.lists.offices`, une liste de chaînes dérivée de la table à
+chaque chargement et jamais renvoyée au serveur. Toute saisie était perdue au
+rechargement — même famille de défaut que le panneau API corrigé plus tôt.
+
+`/api/offices` expose désormais un CRUD complet, avec le **périmètre effectif calculé**
+pour chaque bureau (origine, nombre de communes couvertes, données hors périmètre) et le
+décompte de ce qui le référence. Trois garde-fous :
+
+- La **suppression** est refusée si le bureau est référencé, au lieu d'accepter le
+  `ON DELETE SET NULL` du schéma qui détacherait silencieusement des sites — des sites
+  sans bureau, invisibles de tous les filtres. La désactivation conserve l'historique.
+- La **désactivation** est refusée si des comptes actifs en dépendent : ils resteraient
+  rattachés à un bureau absent des filtres, sans que personne ne le voie.
+- Le **verrouillage optimiste** par `rev`, comme les douze autres collections modifiables.
+
+Les **antennes** sont un tableau JSON sur le bureau, pas une table : ce ne sont pas des
+bureaux — pas de comptes, pas de périmètre propre — seulement des lieux de rattachement
+des visites.
+
 ### Saisir par fichier Excel
 
 Le besoin est simple à énoncer — « remplir dans Excel, puis téléverser » — et
@@ -366,6 +436,11 @@ elles exigent un jeton — en-tête `Authorization: Bearer …` ou cookie `httpO
 | GET | `/geo/scope` | connecté | périmètre de chaque bureau, et son origine |
 | PUT | `/geo/scope/:officeId` | `admin` | attribue les unités couvertes par un bureau |
 | POST | `/geo/bulk` | `admin` | import : le serveur reconstruit l'arbre en une transaction |
+| GET | `/mre` | connecté | plan MRE de l'année, avec ses budgets et ses agrégats calculés |
+| POST/PUT/DELETE | `/mre`, `/mre/:id` | `edit` / `del` | activités du plan, avec verrouillage par `rev` |
+| PUT | `/mre/:id/costs` | `edit` | lignes de budget d'une activité, remplacées en bloc |
+| GET | `/offices` | connecté | bureaux, leur configuration et leur périmètre effectif |
+| POST/PUT/DELETE | `/offices`, `/offices/:id` | `admin` | configuration des bureaux |
 | GET/POST/PUT/DELETE | `/users` | `admin` | gestion des comptes |
 | GET | `/analytics/map` | connecté | points cartographiques filtrés |
 | GET | `/analytics/coverage` | connecté | couverture mensuelle agrégée en SQL |
@@ -444,6 +519,30 @@ Cela marchait, mais trois choses en découlaient :
 - Le périmètre n'était ni visible ni vérifiable : il changeait à chaque site ajouté, sans
   que personne ne l'ait décidé.
 
+#### Le cas du bureau pays
+
+Le bureau central a des staffs rattachés à Tana qui doivent voir **tous** les sites. La
+règle ci-dessus les en empêchait, et la tentation était de les passer administrateurs —
+ce qui leur aurait donné au passage la gestion des comptes. C'est l'autre axe : on ne
+règle pas un problème de périmètre en changeant le rôle.
+
+Chaque bureau porte donc un **mode de périmètre** (`offices.scope_mode`) :
+
+| Mode | Effet sur les comptes du bureau |
+|---|---|
+| `geo` (défaut) | bornés aux unités déclarées pour le bureau |
+| `national` | **aucune borne géographique**, sans changement de rôle |
+
+Le mode est porté par le bureau, pas par le compte : le répéter sur chaque compte le
+ferait diverger d'une arrivée à l'autre. Il se règle dans *Paramètres → Bureaux*, et
+`lib/scope.js` en tient compte à un seul endroit — `scopeOf` renvoie `unbounded` et
+`officeBound` renvoie `null`. Toute valeur inattendue retombe sur `geo`, c'est-à-dire le
+périmètre le plus restreint : une donnée abîmée ne doit jamais élargir un accès.
+
+> Deux copies locales de cette règle traînaient encore dans `routes/sites.js` et
+> `routes/analytics.js`. Elles auraient ignoré le bureau pays — un compte de Tana aurait
+> vu tous les sites dans `/state` et aucun sur la carte. Elles sont supprimées.
+
 La déduction subsiste **en repli** : tant qu'un bureau n'a rien de déclaré, son périmètre
 est déduit comme avant. Sans ce repli, appliquer la migration priverait d'un coup tous les
 comptes de terrain de leur accès. *Paramètres → Périmètre des bureaux* affiche l'origine
@@ -480,16 +579,18 @@ les deux métiers réellement distincts :
 
 ```
 Accueil
-Suivi-évaluation   Résumé · Suivi des sites [Plan | Réalisé] · Couverture et MMR
-                   Cartographie · Registre des sites · Paramètres de couverture
+Suivi-évaluation   Résumé · Suivi des sites [Plan | Réalisé]
+                   Plan MRE et budget [Plan et budget | Exécution budgétaire]
+                   Couverture et MMR · Cartographie · Registre des sites
+                   Paramètres de couverture
 Programme          Distributions [Plan | Réalisé] · Population et outputs
                    Résultats [Calendrier | Mesures] · Import Excel · Sources
 Analyses           Jeux de données · Scripts · Visualisations
 Rapports           Extraction ODK · Générateur
-Paramètres         9 sous-onglets de configuration
+Paramètres         10 sous-onglets de configuration, dont Bureaux
 ```
 
-**14 destinations → 11**, et plus aucun sujet en double. Les tâches urgentes de l'accueil
+**14 destinations → 11** au moment de la fusion, et plus aucun sujet en double. Les tâches urgentes de l'accueil
 sont devenues cliquables : elles mènent à l'écran qui les résout, au lieu d'en décrire le
 chemin.
 
@@ -559,10 +660,21 @@ le serveur Node — c'est-à-dire en production, comme le décrit le §7 — l'a
 s'affichait **sans aucune mise en forme**. Un bureau de terrain à la connexion
 intermittente n'aurait rien vu non plus.
 
+Les **polices** suivaient le même chemin : `index.html` chargeait Open Sans depuis
+`fonts.googleapis.com`, et la feuille de style l'importait une seconde fois. Le titre de
+cette section était donc faux. Trois conséquences, toutes réelles : un bureau sur liaison
+satellite attendait un aller-retour vers un domaine tiers avant d'avoir son texte à la
+bonne fonte et le voyait changer sous ses yeux ; hors ligne, la fonte système
+s'appliquait de toute façon ; et la politique de sécurité devait ouvrir deux exceptions
+pour cela. L'application assume désormais la **fonte système**, et les deux exceptions
+(`fonts.googleapis.com` dans `style-src`, `fonts.gstatic.com` dans `font-src`) ont été
+retirées de l'en-tête CSP.
+
 Pour vérifier qu'aucune ressource externe n'est requise :
 
 ```bash
-grep -o 'https://[^"]*' web/dist/index.html    # ne doit renvoyer que des polices, facultatives
+grep -o 'https://[^"]*' web/dist/index.html    # ne doit rien renvoyer
+grep -c fonts.googleapis web/dist/assets/*.js  # doit renvoyer 0
 ```
 
 ### Vérification rapide avant mise en ligne
@@ -689,7 +801,7 @@ jamais un fichier déjà appliqué en production.
 ### Tests
 
 ```bash
-npm test              # 50 tests d'API puis 10 tests de bout en bout
+npm test              # 69 tests d'API puis 12 tests de bout en bout
 cd server && npm test # API seule
 cd web && npm test    # interface seule, contre un serveur réellement démarré
 ```
@@ -697,7 +809,8 @@ cd web && npm test    # interface seule, contre un serveur réellement démarré
 Le test de bout en bout démarre un vrai serveur, amorce une vraie base, empaquette le code
 de l'application tel qu'il est livré, le rend dans un DOM simulé et le pilote : connexion,
 changement de mot de passe imposé, navigation, cartographie avec filtres et clic, écriture
-avec contrôle d'intégrité, déconnexion.
+avec contrôle d'intégrité, plan MRE (le total affiché doit être la somme des budgets de
+la colonne), configuration des bureaux, déconnexion.
 
 ---
 
