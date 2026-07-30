@@ -20,18 +20,29 @@ import { Shell } from "./views/Shell.jsx";
 const SYNCED = ["params","outputs","indicators","outcomes","population","pdd",
                 "reportTemplates","dashboards","datasets","scripts","odkForms","settings"];
 
+/* Les projections vers le serveur conservent `rev` : c'est la révision lue, que le
+   serveur compare à la sienne pour détecter qu'un collègue a modifié la même ligne. */
 const SHAPERS = {
   outputs: (rows, db) => rows.map(o => ({ ...o, year: db.year })),
   outcomes: (rows, db) => rows.map(o => ({
-    id:o.id, indicator_id: o.indicator_id || (db.indicators.find(i=>i.id===o.indicator)||{}).key,
+    id:o.id, rev:o.rev,
+    indicator_id: o.indicator_id || (db.indicators.find(i=>i.id===o.indicator)||{}).key,
     adm1:o.adm1, round_label:o.round, planned:o.planned, value:o.value,
     collected_at:o.date, sample:o.sample })).filter(o => o.indicator_id),
-  indicators: (rows) => rows.map(i => ({ id:i.key, code:i.id, name:i.name, basket:i.basket,
-    unit:i.unit, target:i.target, direction:i.dir, method:i.method, frequency:i.freq })),
-  params: (rows) => rows.map(p => ({ id:p.id, csp:p.csp, office_id:p.office_id,
+  indicators: (rows) => rows.map(i => ({ id:i.key, rev:i.rev, code:i.id, name:i.name,
+    basket:i.basket, unit:i.unit, target:i.target, direction:i.dir,
+    method:i.method, frequency:i.freq })),
+  params: (rows) => rows.map(p => ({ id:p.id, rev:p.rev, csp:p.csp, office_id:p.office_id,
     category_id:p.category_id, tag:p.tag, duration:p.duration,
     riskLevel:p.riskLevel, feasiblePerMonth:p.feasiblePerMonth })).filter(p => p.office_id),
   pdd: (rows, db) => rows.map(p => ({ ...p, year: p.year || db.year })),
+};
+
+/* Les identifiants d'une collection, tels que le serveur les connaît. La projection
+   `indicators` renomme la clé : on la traverse pour comparer sur le même terrain. */
+const idsOf = (name, rows, db) => {
+  const shaped = SHAPERS[name] ? SHAPERS[name](rows || [], db) : (rows || []);
+  return new Set(shaped.map(r => r.id).filter(Boolean));
 };
 
 const DEV_ADMIN_CREDENTIALS = import.meta.env?.DEV ? {
@@ -81,14 +92,6 @@ export default function App(){
     notify("Session expirée, reconnectez-vous", "warn");
   }); }, [notify]);
 
-  useEffect(() => {
-    queue.current = createSyncQueue({ onStatus: (s) => {
-      setSync(s);
-      if(s.state === "error" && s.failures >= 3)
-        notify(`Enregistrement impossible (${s.collection}) : ${s.message}`, "err");
-    }});
-  }, [notify]);
-
   const hydrate = useCallback((state) => ({
     ...state,
     lists: {
@@ -111,6 +114,22 @@ export default function App(){
     const d = hydrate(await api.state());
     prevDb.current = d; setDb(d); return d;
   }, [hydrate]);
+
+  useEffect(() => {
+    queue.current = createSyncQueue({
+      onStatus: (s) => {
+        setSync(s);
+        if(s.state === "error" && s.failures >= 3)
+          notify(`Enregistrement impossible (${s.collection}) : ${s.message}`, "err");
+      },
+      /* Écriture concurrente : insister écraserait le travail de l'autre. On prévient
+         et on repart de la version à jour. */
+      onConflict: async (name, message) => {
+        notify(message || "Cette donnée a été modifiée par ailleurs — rechargement", "warn");
+        try{ await loadState(); }catch(e){}
+      },
+    });
+  }, [notify, loadState]);
 
   useEffect(() => { (async () => {
     try{ await api.health(); }
@@ -152,7 +171,15 @@ export default function App(){
         if(before[name] === next[name]) continue;
         if(JSON.stringify(before[name]) === JSON.stringify(next[name])) continue;
         const shaper = SHAPERS[name];
-        queue.current?.push(name, shaper ? shaper(next[name], next) : next[name]);
+        /* Ce que CE client a retiré, et rien d'autre. Le serveur ne déduit plus les
+           suppressions : sans cela, enregistrer effaçait les lignes ajoutées entre-temps
+           par un collègue, que ce client n'avait jamais reçues. */
+        let deletes = [];
+        if(name !== "settings" && Array.isArray(before[name]) && Array.isArray(next[name])){
+          const apres = idsOf(name, next[name], next);
+          deletes = [...idsOf(name, before[name], before)].filter(id => !apres.has(id));
+        }
+        queue.current?.push(name, shaper ? shaper(next[name], next) : next[name], deletes);
       }
       prevDb.current = next;
       return next;

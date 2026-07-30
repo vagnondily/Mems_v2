@@ -224,7 +224,7 @@ r.put("/", requireCap("edit"), (req, res) => {
     (id,geo_pcode,level,year,month,activity_tag,population,households,targeted,targeted_hh,source,note)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
   const upd = db.prepare(`UPDATE caseload SET level=?, population=?, households=?, targeted=?,
-    targeted_hh=?, source=?, note=?, updated_at=datetime('now') WHERE id=?`);
+    targeted_hh=?, source=?, note=?, rev=rev+1, updated_at=datetime('now') WHERE id=?`);
 
   tx(() => {
     for(const x of ok){

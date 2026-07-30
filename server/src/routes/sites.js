@@ -90,10 +90,18 @@ r.put("/:id", requireCap("edit"), validate(schemas.site), (req, res) => {
   assertScope(req, cur);
   const b = applyGeo(req.body); const scope = scopeOf(req.user);
   if(scope) b.office_id = scope;
+  /* Révision : si le client renvoie celle qu'il a lue et qu'elle a changé depuis,
+     quelqu'un d'autre a modifié ce site pendant sa saisie. On refuse plutôt que
+     d'écraser en silence, et on rend la version courante pour qu'il puisse comparer. */
+  if(b.rev !== undefined && Number(b.rev) !== cur.rev)
+    return res.status(409).json({
+      error:"ce site a été modifié pendant votre saisie. Rechargez pour repartir de la version à jour.",
+      revEnvoyee:Number(b.rev), revCourante:cur.rev, courant:cur });
+  delete b.rev;
   const dup = db.prepare("SELECT id FROM sites WHERE code=? AND id<>?").get(b.code, cur.id);
   if(dup) return res.status(409).json({ error:"un autre site porte déjà ce code" });
   const cols = Object.keys(b).filter(k=>k!=="id");
-  db.prepare(`UPDATE sites SET ${cols.map(k=>k+"=?").join(",")}, updated_at=datetime('now') WHERE id=?`)
+  db.prepare(`UPDATE sites SET ${cols.map(k=>k+"=?").join(",")}, rev=rev+1, updated_at=datetime('now') WHERE id=?`)
     .run(...cols.map(k=>b[k]), cur.id);
   audit(req, "update", cur.id, `Site modifié — ${b.name}`);
   res.json({ site: db.prepare("SELECT * FROM sites WHERE id=?").get(cur.id) });

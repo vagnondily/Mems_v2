@@ -104,41 +104,76 @@ const COLLECTIONS = {
       ...(x.token ? { token_enc: encrypt(x.token) } : {}) }) },
 };
 
+/* Synchronisation d'une collection.
+
+   Deux différences essentielles avec la version précédente :
+
+   — Les lignes absentes du corps ne sont PLUS supprimées. La suppression doit
+     être demandée explicitement (`deletes`). Sans cela, un client qui n'avait
+     jamais vu la ligne ajoutée par un collègue l'effaçait en enregistrant.
+
+   — Chaque ligne peut porter la révision qu'elle avait à la lecture (`rev`).
+     Si elle a changé depuis, l'écriture est refusée avec la valeur courante :
+     le second à enregistrer est averti au lieu d'écraser en silence. */
 r.put("/collections/:name", (req, res, next) => {
   const def = COLLECTIONS[req.params.name];
   if(!def) return res.status(404).json({ error:"collection inconnue" });
   if(!can(req.user, def.cap))
     return res.status(403).json({ error:`droit « ${def.cap} » requis` });
-  const parsed = z.object({ rows: z.array(def.schema).max(60000) }).safeParse(req.body);
+
+  const withRev = def.schema.and(z.object({ rev: z.coerce.number().int().min(1).optional() }));
+  const parsed = z.object({
+    rows: z.array(withRev).max(60000),
+    deletes: z.array(z.string().max(64)).max(60000).default([]),
+  }).safeParse(req.body);
   if(!parsed.success) return res.status(422).json({ error:"données invalides",
     details: parsed.error.issues.slice(0,10).map(i=>({ champ:i.path.join("."), message:i.message })) });
 
-  const rows = parsed.data.rows;
-  const keep = new Set();
+  const { rows, deletes } = parsed.data;
   let created = 0, updated = 0, removed = 0;
+  const conflits = [];
+
+  /* Les conflits se détectent avant d'écrire : soit l'ensemble passe, soit rien. */
+  const existing = new Map(db.prepare(`SELECT id, rev FROM ${def.table}`).all().map(x => [x.id, x.rev]));
+  for(const raw of rows){
+    if(!raw.id || !existing.has(raw.id)) continue;
+    const courante = existing.get(raw.id);
+    if(raw.rev !== undefined && raw.rev !== courante)
+      conflits.push({ id:raw.id, revEnvoyee:raw.rev, revCourante:courante });
+  }
+  if(conflits.length){
+    const qui = db.prepare(`SELECT user_label, at FROM audit
+      WHERE entity=? AND action='sync' ORDER BY at DESC LIMIT 1`).get(req.params.name);
+    return res.status(409).json({
+      error: `cette collection a été modifiée${qui?.user_label ? ` par ${qui.user_label}` : ""} `
+        + "pendant votre saisie. Rechargez pour repartir de la version à jour.",
+      conflits: conflits.slice(0, 20),
+      /* Le client peut ainsi afficher ce qui a changé sans recharger tout l'état. */
+      courant: conflits.slice(0, 20).map(c =>
+        db.prepare(`SELECT * FROM ${def.table} WHERE id=?`).get(c.id)),
+    });
+  }
+
   try{
     tx(() => {
       for(const raw of rows){
         const cols = def.map(raw);
-        const id = raw.id && db.prepare(`SELECT 1 FROM ${def.table} WHERE id=?`).get(raw.id)
-          ? raw.id : null;
-        if(id){
-          const keys = Object.keys(cols);
-          db.prepare(`UPDATE ${def.table} SET ${keys.map(k=>k+"=?").join(",")} WHERE id=?`)
-            .run(...keys.map(k=>cols[k]), id);
-          keep.add(id); updated++;
+        const keys = Object.keys(cols);
+        if(raw.id && existing.has(raw.id)){
+          db.prepare(`UPDATE ${def.table} SET ${keys.map(k=>k+"=?").join(",")}, rev=rev+1
+                      WHERE id=?`).run(...keys.map(k=>cols[k]), raw.id);
+          updated++;
         } else {
           const nid = raw.id || newId(req.params.name.slice(0,4));
-          const keys = Object.keys(cols);
           db.prepare(`INSERT INTO ${def.table} (id,${keys.join(",")})
                       VALUES (?,${keys.map(()=>"?").join(",")})`)
             .run(nid, ...keys.map(k=>cols[k]));
-          keep.add(nid); created++;
+          created++;
         }
       }
-      const all = db.prepare(`SELECT id FROM ${def.table}`).all().map(x=>x.id);
+      /* Suppressions demandées, et elles seules. */
       const del = db.prepare(`DELETE FROM ${def.table} WHERE id=?`);
-      for(const id of all) if(!keep.has(id)){ del.run(id); removed++; }
+      for(const id of deletes) if(existing.has(id)){ del.run(id); removed++; }
     })();
   }catch(e){
     if(/FOREIGN KEY/.test(e.message))
@@ -147,10 +182,12 @@ r.put("/collections/:name", (req, res, next) => {
       return res.status(409).json({ error:"doublon : une contrainte d'unicité est violée" });
     return next(e);
   }
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
-              VALUES (?,?,?,'plan',?,'sync',?)`)
-    .run(newId("aud"), req.user.id, req.user.first_name, req.params.name,
-         `${req.params.name} : ${created} créé(s), ${updated} modifié(s), ${removed} supprimé(s)`);
+  /* Une synchronisation qui ne change rien n'a pas à polluer le journal. */
+  if(created || updated || removed)
+    db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
+                VALUES (?,?,?,'plan',?,'sync',?)`)
+      .run(newId("aud"), req.user.id, req.user.first_name, req.params.name,
+           `${req.params.name} : ${created} créé(s), ${updated} modifié(s), ${removed} supprimé(s)`);
   res.json({ created, updated, removed });
 });
 

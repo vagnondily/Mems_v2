@@ -81,7 +81,9 @@ export const api = {
   saveMonth:   (id, m)       => call("PUT", `/sites/${encodeURIComponent(id)}/months`, m),
   bulkSites:   (ids, field, value) => call("POST", "/sites/bulk", { ids, field, value }),
 
-  syncCollection: (name, rows) => call("PUT", `/collections/${encodeURIComponent(name)}`, { rows }),
+  /* Les suppressions sont explicites : le serveur ne déduit plus ce qui manque. */
+  syncCollection: (name, rows, deletes = []) =>
+    call("PUT", `/collections/${encodeURIComponent(name)}`, { rows, deletes }),
   saveSettings:   (obj)        => call("PUT", "/settings", obj),
   setVisitStatus: (id, status) => call("PUT", `/visits/${encodeURIComponent(id)}/status`, { status }),
 
@@ -117,26 +119,34 @@ export const api = {
 
 /* File d'écriture : les collections modifiées sont poussées par lot, avec réessai.
    Une seule requête par collection est en vol à la fois : le serveur reste l'arbitre. */
-export function createSyncQueue({ onStatus = () => {}, delay = 900 } = {}){
-  const pending = new Map();          /* collection -> dernières lignes connues */
+export function createSyncQueue({ onStatus = () => {}, onConflict = null, delay = 900 } = {}){
+  const pending = new Map();          /* collection -> { rows, deletes } */
   const timers = new Map();
   let inflight = 0, failures = 0;
 
   async function flushOne(name){
-    const rows = pending.get(name);
-    if(rows === undefined) return;
+    const job = pending.get(name);
+    if(job === undefined) return;
     pending.delete(name);
     inflight++; onStatus({ state:"saving", inflight, failures });
     try{
-      if(name === "settings") await api.saveSettings(rows);
-      else await api.syncCollection(name, rows);
+      if(name === "settings") await api.saveSettings(job.rows);
+      else await api.syncCollection(name, job.rows, job.deletes);
       failures = 0;
     }catch(e){
+      /* 409 : quelqu'un d'autre a modifié la même ligne. Réessayer écraserait son
+         travail — on remonte le conflit pour que l'appelant recharge, et on n'insiste pas. */
+      if(e.status === 409){
+        inflight--;
+        onStatus({ state: inflight ? "saving" : "saved", inflight, failures:0 });
+        if(onConflict) onConflict(name, e.message, e.details);
+        return;
+      }
       failures++;
       onStatus({ state:"error", inflight, failures, message:e.message, collection:name });
       if(e.status >= 500 || e.status === 0){
         /* Erreur transitoire : on remet en file avec un délai croissant, plafonné. */
-        if(!pending.has(name)) pending.set(name, rows);
+        if(!pending.has(name)) pending.set(name, job);
         setTimeout(() => flushOne(name), Math.min(30000, 1500 * 2 ** Math.min(failures, 4)));
       }
       inflight--; return;
@@ -146,8 +156,12 @@ export function createSyncQueue({ onStatus = () => {}, delay = 900 } = {}){
   }
 
   return {
-    push(name, rows){
-      pending.set(name, rows);
+    push(name, rows, deletes = []){
+      /* Une écriture chassée par une autre avant son envoi ne doit pas perdre les
+         suppressions déjà demandées : on les cumule. */
+      const prev = pending.get(name);
+      const cumul = prev ? [...new Set([...prev.deletes, ...deletes])] : deletes;
+      pending.set(name, { rows, deletes: cumul });
       clearTimeout(timers.get(name));
       timers.set(name, setTimeout(() => flushOne(name), delay));
       onStatus({ state:"dirty", inflight, failures });

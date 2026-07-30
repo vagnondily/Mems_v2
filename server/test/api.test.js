@@ -141,10 +141,26 @@ test("collections : la synchronisation crée, met à jour et supprime en une tra
   const total = db.prepare("SELECT COUNT(*) c FROM report_templates").get().c;
   assert.equal(total, rows.length);
 
-  /* Retirer une ligne du corps doit la supprimer en base. */
-  const r2 = await request(app).put("/api/collections/reportTemplates")
-    .set("Authorization", `Bearer ${adminToken}`).send({ rows: rows.slice(0, 1) });
-  assert.equal(r2.body.removed, rows.length - 1);
+  /* Les révisions ont changé : un client relit l'état avant d'écrire à nouveau. */
+  const frais = (await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`))
+    .body.reportTemplates;
+
+  /* Retirer une ligne du corps ne la supprime plus : il faut le demander.
+     C'est ce qui empêche d'effacer les lignes qu'un collègue a ajoutées entre-temps. */
+  const implicite = await request(app).put("/api/collections/reportTemplates")
+    .set("Authorization", `Bearer ${adminToken}`).send({ rows: frais.slice(0, 1) });
+  assert.equal(implicite.body.removed, 0, "aucune suppression déduite");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM report_templates").get().c, rows.length);
+
+  /* Suppression explicite. */
+  const aSupprimer = db.prepare("SELECT id FROM report_templates").all()
+    .map(x => x.id).slice(1);
+  const dernier = (await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`))
+    .body.reportTemplates;
+  const explicite = await request(app).put("/api/collections/reportTemplates")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ rows: dernier.slice(0, 1), deletes: aSupprimer });
+  assert.equal(explicite.body.removed, aSupprimer.length);
 });
 
 test("collections : une référence inexistante renvoie un conflit, pas une erreur serveur", async () => {
@@ -791,4 +807,115 @@ test("import : le périmètre du bureau est appliqué ligne à ligne", async () 
   assert.equal(prev.status, 200);
   assert.ok(prev.body.rejets.some(x => /hors du périmètre/.test(x.message || "")),
     "l'unité d'un autre bureau est rejetée : un fichier est une entrée utilisateur comme une autre");
+});
+
+/* ── Concurrence ──────────────────────────────────────────────────────
+   Deux pertes de données silencieuses existaient. Ces tests les verrouillent. */
+
+test("concurrence : enregistrer n'efface plus la ligne ajoutée par un collègue", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+
+  /* Bureau A charge l'état. */
+  const vueDeA = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`))
+    .body.reportTemplates.map(x => ({ ...x }));
+
+  /* Bureau B ajoute une ligne, que A n'a jamais reçue. Il n'envoie QUE sa ligne :
+     depuis que les suppressions sont explicites, un corps partiel est légitime. */
+  const ajoutB = await request(app).put("/api/collections/reportTemplates")
+    .set("Authorization", `Bearer ${t}`)
+    .send({ rows: [{ name:"Modèle du bureau B", blocks:["kpi"], intro:"ajouté par B" }] });
+  assert.equal(ajoutB.body.created, 1);
+  const apresB = db.prepare("SELECT COUNT(*) c FROM report_templates").get().c;
+
+  /* A enregistre sa propre modification, à partir de sa vue périmée.
+     Avant, la ligne de B disparaissait ici même, sans aucun signal. */
+  const modifA = vueDeA.map((x,i) => i === 0 ? { ...x, intro:"modifié par A" } : x);
+  const ecritureA = await request(app).put("/api/collections/reportTemplates")
+    .set("Authorization", `Bearer ${t}`).send({ rows: modifA });
+  assert.equal(ecritureA.status, 200);
+  assert.equal(ecritureA.body.removed, 0, "A ne supprime rien : il n'a rien retiré");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM report_templates").get().c, apresB,
+    "la ligne du bureau B a survécu à l'enregistrement du bureau A");
+  assert.ok(db.prepare("SELECT 1 FROM report_templates WHERE name=?").get("Modèle du bureau B"),
+    "la ligne du bureau B est toujours là, nommément");
+});
+
+test("concurrence : modifier la même ligne à deux est refusé, pas écrasé", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const etat = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`)).body;
+  const cible = etat.indicators[0];
+  assert.ok(cible.rev, "la révision de ligne est renvoyée par /state");
+
+  /* A et B ont tous deux lu la révision `cible.rev`. */
+  const ligne = (nom) => ({ id:cible.key, rev:cible.rev, code:cible.id, name:nom,
+    basket:cible.basket, unit:cible.unit, target:cible.target,
+    direction:cible.dir, method:cible.method, frequency:cible.freq });
+
+  /* B enregistre le premier : accepté, la révision passe à rev+1. */
+  const premier = await request(app).put("/api/collections/indicators")
+    .set("Authorization", `Bearer ${t}`)
+    .send({ rows: [ligne("Intitulé posé par B")] });
+  assert.equal(premier.status, 200);
+  assert.equal(db.prepare("SELECT rev FROM indicators WHERE id=?").get(cible.key).rev,
+    cible.rev + 1, "la révision est incrémentée");
+
+  /* A enregistre ensuite, avec la révision qu'il avait lue : refusé. */
+  const second = await request(app).put("/api/collections/indicators")
+    .set("Authorization", `Bearer ${t}`)
+    .send({ rows: [ligne("Intitulé posé par A")] });
+  assert.equal(second.status, 409, "l'écriture par-dessus une révision plus récente est refusée");
+  assert.ok(/modifiée.*pendant votre saisie/.test(second.body.error), second.body.error);
+  assert.equal(second.body.conflits[0].id, cible.key);
+  assert.equal(second.body.conflits[0].revEnvoyee, cible.rev);
+  assert.equal(second.body.conflits[0].revCourante, cible.rev + 1);
+  /* Le serveur rend la valeur courante : l'interface peut montrer ce qui a changé. */
+  assert.equal(second.body.courant[0].name, "Intitulé posé par B");
+
+  /* Le travail de B est intact : rien n'a été écrasé. */
+  assert.equal(db.prepare("SELECT name FROM indicators WHERE id=?").get(cible.key).name,
+    "Intitulé posé par B");
+
+  /* Avec la révision à jour, A peut enregistrer. */
+  const rejoue = await request(app).put("/api/collections/indicators")
+    .set("Authorization", `Bearer ${t}`)
+    .send({ rows: [{ ...ligne("Intitulé final de A"), rev: cible.rev + 1 }] });
+  assert.equal(rejoue.status, 200);
+  assert.equal(db.prepare("SELECT name FROM indicators WHERE id=?").get(cible.key).name,
+    "Intitulé final de A");
+});
+
+test("concurrence : un client qui n'envoie pas de révision reste accepté", async () => {
+  /* Compatibilité : la révision est facultative. Sans elle, on retombe sur le
+     comportement « dernier écrivain gagne », mais sans suppression implicite. */
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const ind = db.prepare("SELECT * FROM indicators LIMIT 1").get();
+  const r = await request(app).put("/api/collections/indicators")
+    .set("Authorization", `Bearer ${t}`)
+    .send({ rows: [{ id:ind.id, code:ind.code, name:"Sans révision", unit:ind.unit,
+                     target:ind.target, direction:ind.direction }] });
+  assert.equal(r.status, 200);
+  assert.equal(db.prepare("SELECT name FROM indicators WHERE id=?").get(ind.id).name, "Sans révision");
+});
+
+test("concurrence : un site modifié à deux mains est refusé avec sa version courante", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const cree = await request(app).post("/api/sites").set("Authorization", `Bearer ${t}`)
+    .send({ code:"CONC-001", name:"Site témoin", beneficiaries:100 });
+  assert.equal(cree.status, 201);
+  const site = cree.body.site;
+  assert.equal(site.rev, 1);
+
+  const premier = await request(app).put(`/api/sites/${site.id}`).set("Authorization", `Bearer ${t}`)
+    .send({ code:"CONC-001", name:"Nommé par B", rev:1 });
+  assert.equal(premier.status, 200);
+  assert.equal(premier.body.site.rev, 2, "la révision du site est incrémentée");
+
+  const second = await request(app).put(`/api/sites/${site.id}`).set("Authorization", `Bearer ${t}`)
+    .send({ code:"CONC-001", name:"Nommé par A", rev:1 });
+  assert.equal(second.status, 409);
+  assert.equal(second.body.revCourante, 2);
+  assert.equal(second.body.courant.name, "Nommé par B", "la valeur courante accompagne le refus");
+  assert.equal(db.prepare("SELECT name FROM sites WHERE id=?").get(site.id).name, "Nommé par B");
+
+  await request(app).delete(`/api/sites/${site.id}`).set("Authorization", `Bearer ${t}`);
 });

@@ -52,6 +52,8 @@ export const schemas = {
     issue_report: z.coerce.number().int().min(0).max(2).default(0),
     issue_cfm: z.coerce.number().int().min(0).max(2).default(0),
     fraud: z.coerce.number().int().min(0).max(2).default(0),
+    /* Révision lue par le client, pour détecter l'écriture concurrente. */
+    rev: z.coerce.number().int().min(1).optional(),
   }),
   siteMonth: z.object({
     month: z.coerce.number().int().min(0).max(11),

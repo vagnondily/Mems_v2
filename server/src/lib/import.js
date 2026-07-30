@@ -91,7 +91,7 @@ const caseload = {
       (id,geo_pcode,level,year,month,activity_tag,population,households,targeted,targeted_hh,source)
       VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
     const upd = db.prepare(`UPDATE caseload SET population=?, households=?, targeted=?,
-      targeted_hh=?, source=?, updated_at=datetime('now') WHERE id=?`);
+      targeted_hh=?, source=?, rev=rev+1, updated_at=datetime('now') WHERE id=?`);
     let crees = 0, modifies = 0;
     for(const x of rows){
       const cur = find.get(x.geo_pcode, x.year, x.activity_tag, x.month);
@@ -195,7 +195,7 @@ const pdd = {
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
     const upd = db.prepare(`UPDATE pdd SET bureau=?, commodity=?, days=?, benef_planned=?,
       households=?, tonnage=?, amount=?, benef_actual=?, received=?, distributed=?, status=?,
-      updated_at=datetime('now') WHERE id=?`);
+      rev=rev+1, updated_at=datetime('now') WHERE id=?`);
     let crees = 0, modifies = 0;
     for(const x of rows){
       const cur = find.get(x.geo_pcode, x.year, x.month, x.act_type, x.modality);

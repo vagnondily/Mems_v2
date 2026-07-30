@@ -6,7 +6,7 @@ analyse des données ODK Central, cartographie et restitution.
 
 - **Frontend** : React 18 + Vite, sans framework de composants imposé
 - **Backend** : Node 20 + Express + SQLite (WAL), schéma relationnel avec clés étrangères
-- **Tests** : 40 tests d'API + 10 tests de bout en bout pilotant l'interface réelle
+- **Tests** : 44 tests d'API + 10 tests de bout en bout pilotant l'interface réelle
 
 ---
 
@@ -56,6 +56,7 @@ mems/
 │  ├─ migrations/003_sites_geo.sql rattachement des sites et du PDD au référentiel
 │  ├─ migrations/004_caseload.sql  population, ménages et personnes ciblées
 │  ├─ migrations/005_import.sql    lots d'import : analyse, diff, confirmation
+│  ├─ migrations/006_revisions.sql révisions de ligne pour l'écriture concurrente
 │  ├─ src/
 │  │  ├─ index.js              montage Express, sécurité, service du frontend compilé
 │  │  ├─ config.js             lecture et contrôle des variables d'environnement
@@ -70,7 +71,7 @@ mems/
 │  │  ├─ link-geo.js           rapprochement des données existantes vers le référentiel
 │  │  ├─ lib/logger.js         journal avec masquage des secrets
 │  │  └─ routes/               auth, state, sites, geo, users, analytics, collections
-│  └─ test/api.test.js         40 tests d'intégration
+│  └─ test/api.test.js         44 tests d'intégration
 └─ web/                        interface
    ├─ src/
    │  ├─ App.jsx               racine : session, file d'écriture, routage des onglets
@@ -361,23 +362,53 @@ elles exigent un jeton — en-tête `Authorization: Bearer …` ou cookie `httpO
 | GET | `/analytics/map` | connecté | points cartographiques filtrés |
 | GET | `/analytics/coverage` | connecté | couverture mensuelle agrégée en SQL |
 | GET | `/analytics/summary` | connecté | indicateurs de tête |
-| PUT | `/collections/:name` | variable | synchronisation d'une collection entière |
+| PUT | `/collections/:name` | variable | écriture d'une collection : suppressions explicites, révisions vérifiées |
 | PUT | `/settings` | `admin` | réglages |
 | PUT | `/visits/:id/status` | `validate` | validation d'une soumission |
 | GET | `/audit` | `admin` | journal |
 
-### Le point le plus discutable, expliqué
+### Écriture concurrente
 
-`PUT /collections/:name` reçoit la collection **entière** : le serveur insère, met à jour
-et supprime dans une seule transaction. C'est un compromis assumé. L'interface travaille
-sur un objet en mémoire et pousse ce qui change ; le serveur reste l'arbitre — validation
-Zod, contraintes de la base, droits, journal.
+`PUT /collections/:name` recevait la collection entière et **supprimait tout ce qui
+n'était pas dans le corps**. Deux pertes de données silencieuses en découlaient.
 
-Ce que cela implique : **le dernier écrivain gagne**. À deux personnes modifiant la même
-collection en même temps, la seconde écrase la première. Les sites, la grille mensuelle
-et les comptes échappent à ce mécanisme et passent par des routes ligne à ligne. Si le
-travail simultané sur les mêmes tables devient courant, la suite consiste à généraliser
-ces routes ligne à ligne et à ajouter un jeton de version optimiste (`updated_at`).
+**① La ligne effacée sans que personne ne la supprime.** Le bureau A charge dix
+indicateurs. Le bureau B en ajoute un onzième. A enregistre — et le onzième disparaît.
+A n'avait jamais reçu cette ligne : il n'avait aucune raison de la supprimer.
+
+→ **Les suppressions sont désormais explicites.** Le client envoie `deletes: [ids]` :
+ce qu'il a retiré, et rien d'autre. Une ligne absente du corps est laissée intacte.
+Corollaire utile : un corps **partiel** devient légitime — on peut n'envoyer qu'une ligne.
+
+**② La modification écrasée en silence.** A et B modifient la même ligne. Le second
+écrivait par-dessus le premier, sans aucun signal.
+
+→ **Chaque ligne porte une révision.** `/state` la renvoie, le client la rend, et le
+serveur refuse d'écrire par-dessus une révision plus récente :
+
+```json
+409  {
+  "error": "cette collection a été modifiée par Tiana pendant votre saisie.
+            Rechargez pour repartir de la version à jour.",
+  "conflits": [{ "id": "ind_01J…", "revEnvoyee": 3, "revCourante": 4 }],
+  "courant":  [{ "id": "ind_01J…", "name": "Intitulé posé par Tiana", … }]
+}
+```
+
+La valeur courante accompagne le refus : l'interface peut montrer ce qui a changé sans
+recharger tout l'état. Les conflits sont détectés **avant d'écrire** — soit l'ensemble
+passe, soit rien.
+
+Côté client, la file d'envoi ne réessaie **pas** sur un 409 : insister écraserait le
+travail de l'autre. Elle prévient et recharge.
+
+La révision est **facultative** : un client qui ne l'envoie pas reste accepté, avec le
+comportement « dernier écrivain gagne » — mais sans suppression implicite, qui était le
+plus dangereux des deux défauts.
+
+`sites` et `caseload` portent la même révision. Population, ciblage et distributions
+passent en outre par des écritures ligne à ligne (§ import et § population), où la
+question ne se pose plus.
 
 ### Rôles
 
@@ -563,7 +594,7 @@ jamais un fichier déjà appliqué en production.
 ### Tests
 
 ```bash
-npm test              # 40 tests d'API puis 10 tests de bout en bout
+npm test              # 44 tests d'API puis 10 tests de bout en bout
 cd server && npm test # API seule
 cd web && npm test    # interface seule, contre un serveur réellement démarré
 ```
