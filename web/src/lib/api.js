@@ -119,6 +119,9 @@ export const api = {
   geoVersions:  (pays)            => call("GET", `/geo/versions${pays?`?country=${encodeURIComponent(pays)}`:""}`),
   geoCoverage:  (q="")            => call("GET", `/geo/coverage${q}`),
   geoScope:     ()                => call("GET", "/geo/scope"),
+  /* Le découpage, les coordonnées et les listes ne se parlent que par le p-code.
+     Ce contrôle dit si ce fil tient encore, poste par poste. */
+  geoCoherence: ()                => call("GET", "/geo/coherence"),
   /* Rattachement par les coordonnées : on demande les propositions, on applique
      ensuite ce qui a été retenu. */
   geoLocate:    (lat, lon)        => call("POST", "/geo/locate", { lat, lon }),

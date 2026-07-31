@@ -415,6 +415,51 @@ test("plan de distribution : on ne génère pas hors de son périmètre", async 
   assert.equal(db.prepare("SELECT COUNT(*) c FROM pdd WHERE act_type=?").get("GD_HORS").c, 0);
 });
 
+test("cohérence géographique : le contrôle voit ce qui casse le fil du p-code", async () => {
+  /* Le découpage, les coordonnées et les listes ne se parlent que par le p-code.
+     Qu'il casse quelque part — un réimport de découpage suffit — et rien ne se voit :
+     les écrans continuent d'afficher des nombres, simplement ils n'additionnent plus
+     les mêmes choses. Un contrôle qui ne trouverait jamais rien ne vaudrait rien ; on
+     lui donne donc de vrais défauts à trouver. */
+  const sain = await request(app).get("/api/geo/coherence")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(sain.status, 200);
+  assert.ok(sain.body.version, "un découpage courant est chargé dans le jeu d'essai");
+  assert.ok(sain.body.constats.length >= 10, "tous les postes de contrôle sont rendus");
+
+  const trouve = (cle) => sain.body.constats.find(c => c.cle === cle);
+  for(const cle of ["sites_pcode_inconnu","sites_sans_rattachement","sites_libelles_contredits",
+                    "sites_point_hors_unite","pdd_sans_rattachement","caseload_pcode_inconnu"])
+    assert.ok(trouve(cle), `le contrôle « ${cle} » existe`);
+
+  /* On casse, on vérifie que c'est vu, on remet en état. */
+  const site = db.prepare("SELECT * FROM sites WHERE geo_pcode IS NOT NULL LIMIT 1").get();
+  const autre = db.prepare("SELECT * FROM sites WHERE geo_pcode IS NOT NULL AND id<>? LIMIT 1").get(site.id);
+  const ligne = db.prepare("SELECT * FROM pdd WHERE geo_pcode IS NOT NULL LIMIT 1").get();
+  db.prepare("UPDATE sites SET geo_pcode='XX_DISPARU' WHERE id=?").run(site.id);
+  db.prepare("UPDATE sites SET adm2='District Inventé' WHERE id=?").run(autre.id);
+  if(ligne) db.prepare("UPDATE pdd SET geo_pcode=NULL WHERE id=?").run(ligne.id);
+
+  const casse = await request(app).get("/api/geo/coherence")
+    .set("Authorization", `Bearer ${adminToken}`);
+  const c = (cle) => casse.body.constats.find(x => x.cle === cle);
+  assert.ok(c("sites_pcode_inconnu").n >= 1, "le rattachement vers une unité disparue est vu");
+  assert.ok(c("sites_pcode_inconnu").exemples.length, "et nommé, pour qu'on puisse le retrouver");
+  assert.ok(c("sites_libelles_contredits").n >= 1,
+    "un libellé qui contredit le découpage est vu — les filtres par texte et par carte divergeraient");
+  if(ligne) assert.ok(c("pdd_sans_rattachement").n >= 1,
+    "une ligne de plan détachée est vue : elle n'entre dans aucun total par commune");
+  assert.ok(casse.body.ecarts > sain.body.ecarts, "le total d'écarts a monté");
+
+  db.prepare("UPDATE sites SET geo_pcode=? WHERE id=?").run(site.geo_pcode, site.id);
+  db.prepare("UPDATE sites SET adm2=? WHERE id=?").run(autre.adm2, autre.id);
+  if(ligne) db.prepare("UPDATE pdd SET geo_pcode=? WHERE id=?").run(ligne.geo_pcode, ligne.id);
+
+  const remis = await request(app).get("/api/geo/coherence")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(remis.body.ecarts, sain.body.ecarts, "tout est revenu à l'état initial");
+});
+
 test("cloisonnement : visites, distributions, paramètres et journal suivent le bureau", async () => {
   const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
   const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;

@@ -476,4 +476,191 @@ r.put("/scope/:officeId", requireCap("admin"), (req, res) => {
     communes: unitsIn(sc, "adm3").length, source:sc.source });
 });
 
+/* ══════════════════ La chaîne géographique tient-elle ? ══════════════════
+
+   Le découpage, les coordonnées et les listes ne se parlent que par un fil très fin :
+   le p-code. Un site porte le p-code d'une commune, une ligne de plan aussi, un
+   périmètre de bureau également. Que ce fil casse quelque part et rien ne se voit :
+   les écrans continuent d'afficher des nombres, simplement ils n'additionnent plus
+   les mêmes choses.
+
+   Les ruptures possibles ne sont pas nombreuses, et chacune se contrôle :
+
+     — un p-code qui ne figure pas dans le millésime courant. Arrive après un
+       réimport du découpage : les codes changent, les rattachements pointent dans
+       le vide, et les totaux par zone tombent silencieusement à zéro ;
+
+     — un enregistrement sans rattachement du tout. Il existe, il s'affiche dans sa
+       liste, et il n'entre dans aucun total par district ni dans aucune couverture ;
+
+     — un libellé qui contredit le p-code — « district : Bekily » sur un point rattaché
+       à Tsihombe. L'un des deux est faux, et les filtres textuels et géographiques
+       donneront des réponses différentes sur la même question ;
+
+     — un point GPS qui ne tombe pas dans le polygone de l'unité à laquelle il est
+       rattaché. C'est le contrôle le plus sévère, et le seul qui prouve vraiment que
+       la carte et le registre parlent du même endroit.
+
+   On ne corrige rien ici : on constate, on chiffre, et on nomme trois exemples. Une
+   correction automatique sur des données de terrain serait une décision, pas un
+   diagnostic. */
+r.get("/coherence", (req, res) => {
+  const v = currentVersion();
+  if(!v) return res.json({ version:null,
+    message:"aucun découpage administratif n'est chargé pour ce pays" });
+
+  const unites = db.prepare(
+    "SELECT pcode, path, level, name FROM geo_unit WHERE version_id=?").all(v.id);
+  const parCode = Object.fromEntries(unites.map(u => [u.pcode, u]));
+  const connu = (p) => !!parCode[p];
+
+  /* Les noms des ancêtres d'une unité, par niveau : c'est à eux que se comparent les
+     libellés recopiés dans les tables. */
+  const nomsDe = (pcode) => {
+    const u = parCode[pcode]; if(!u) return {};
+    const out = {};
+    for(const p of (u.path || "").split("/").filter(Boolean))
+      if(parCode[p]) out[parCode[p].level] = parCode[p].name;
+    return out;
+  };
+
+  const constats = [];
+  const ajoute = (cle, titre, quoi, lignes, exemples = []) => constats.push({
+    cle, titre, quoi, n:lignes, exemples: exemples.slice(0, 3) });
+
+  /* ── Sites ── */
+  const sites = db.prepare("SELECT * FROM sites").all();
+  const inconnus = sites.filter(s => s.geo_pcode && !connu(s.geo_pcode));
+  ajoute("sites_pcode_inconnu", "Sites rattachés à une unité qui n'existe plus",
+    "Leur p-code ne figure pas dans le découpage courant : ils ne remontent dans aucun total par zone.",
+    inconnus.length, inconnus.map(s => `${s.code} — ${s.name}`));
+
+  const orphelins = sites.filter(s => !s.geo_pcode);
+  const rattrapables = orphelins.filter(s => s.lat != null && s.lon != null);
+  ajoute("sites_sans_rattachement", "Sites sans rattachement au découpage",
+    rattrapables.length
+      ? `${rattrapables.length} d'entre eux portent des coordonnées : le rattachement peut être retrouvé automatiquement.`
+      : "Sans coordonnées, le rattachement doit être saisi à la main.",
+    orphelins.length, orphelins.map(s => `${s.code} — ${s.name}`));
+
+  ajoute("sites_sans_coordonnees", "Sites sans coordonnées",
+    "Ils ne peuvent apparaître sur la carte ni être localisés automatiquement.",
+    sites.filter(s => s.lat == null || s.lon == null).length,
+    sites.filter(s => s.lat == null || s.lon == null).map(s => `${s.code} — ${s.name}`));
+
+  const horsPlage = sites.filter(s => s.lat != null && s.lon != null &&
+    (Math.abs(s.lat) > 90 || Math.abs(s.lon) > 180));
+  ajoute("sites_coordonnees_invalides", "Coordonnées hors plage WGS 84",
+    "Attendues en degrés décimaux : latitude entre -90 et 90, longitude entre -180 et 180.",
+    horsPlage.length, horsPlage.map(s => `${s.code} — ${s.lat}, ${s.lon}`));
+
+  const desaccord = [];
+  for(const s of sites){
+    if(!s.geo_pcode || !connu(s.geo_pcode)) continue;
+    const noms = nomsDe(s.geo_pcode);
+    for(const lvl of LEVELS.slice(1)){
+      if(s[lvl] && noms[lvl] && s[lvl] !== noms[lvl]){
+        desaccord.push(`${s.code} — ${lvl} « ${s[lvl]} » au lieu de « ${noms[lvl]} »`);
+        break;
+      }
+    }
+  }
+  ajoute("sites_libelles_contredits", "Libellés en désaccord avec le rattachement",
+    "Le nom recopié dans le site contredit le découpage : les filtres par texte et par carte ne donneront pas la même réponse.",
+    desaccord.length, desaccord);
+
+  /* Le contrôle le plus sévère : le point tombe-t-il vraiment dans son unité ?
+     Il suppose des contours chargés ; sans eux, on le déclare non vérifiable plutôt
+     que réussi — dire « aucun écart » quand on n'a rien pu vérifier serait pire que
+     de ne rien dire. */
+  const contours = db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=?").get(v.id).c;
+  let verifies = 0; const ailleurs = [];
+  if(contours){
+    for(const s of sites){
+      if(!s.geo_pcode || s.lat == null || s.lon == null) continue;
+      /* Un rattachement vers une unité disparue est déjà signalé plus haut ; le
+         répéter ici, sous un nom introuvable, embrouillerait au lieu d'informer. */
+      if(!connu(s.geo_pcode)) continue;
+      const t = locate(Number(s.lat), Number(s.lon), { versionId:v.id });
+      if(t.error || t.methode !== "contour") continue;
+      verifies++;
+      if(t.pcode !== s.geo_pcode)
+        ailleurs.push(`${s.code} — rattaché à « ${parCode[s.geo_pcode]?.name} », tombe dans « ${t.name} »`);
+    }
+  }
+  ajoute("sites_point_hors_unite", "Points GPS tombant hors de leur unité",
+    contours
+      ? `Contrôle géométrique effectué sur ${verifies} site(s) — c'est le seul qui prouve que la carte et le registre parlent du même endroit.`
+      : "Non vérifiable : aucun contour n'est chargé pour ce découpage.",
+    ailleurs.length, ailleurs);
+
+  /* ── Plan de distribution ── */
+  const pdd = db.prepare("SELECT * FROM pdd").all();
+  ajoute("pdd_sans_rattachement", "Lignes de plan sans rattachement",
+    "Elles n'entrent dans aucun total par commune, ni dans le rapprochement avec le ciblage.",
+    pdd.filter(p => !p.geo_pcode).length,
+    pdd.filter(p => !p.geo_pcode).map(p => `${p.commune || "(sans commune)"} — ${p.act_type}`));
+  ajoute("pdd_pcode_inconnu", "Lignes de plan rattachées à une unité qui n'existe plus",
+    "Même effet qu'un rattachement absent, en plus difficile à repérer.",
+    pdd.filter(p => p.geo_pcode && !connu(p.geo_pcode)).length,
+    pdd.filter(p => p.geo_pcode && !connu(p.geo_pcode)).map(p => `${p.commune} — ${p.act_type}`));
+
+  const pddDes = [];
+  for(const p of pdd){
+    if(!p.geo_pcode || !connu(p.geo_pcode)) continue;
+    const noms = nomsDe(p.geo_pcode);
+    if((p.commune && noms.adm3 && p.commune !== noms.adm3) ||
+       (p.district && noms.adm2 && p.district !== noms.adm2) ||
+       (p.region && noms.adm1 && p.region !== noms.adm1))
+      pddDes.push(`${p.commune} / ${p.district} — rattaché à « ${noms.adm3 || noms.adm2} »`);
+  }
+  ajoute("pdd_libelles_contredits", "Lignes de plan dont les libellés contredisent le rattachement",
+    "Commune, district ou région recopiés ne correspondent pas au p-code porté par la ligne.",
+    pddDes.length, pddDes);
+
+  /* ── Ciblage et périmètres ── */
+  const cl = db.prepare("SELECT * FROM caseload").all();
+  ajoute("caseload_pcode_inconnu", "Lignes de ciblage rattachées à une unité qui n'existe plus",
+    "Les personnes ciblées ne se rapprochent plus d'aucune commune du découpage courant.",
+    cl.filter(c => !connu(c.geo_pcode)).length,
+    cl.filter(c => !connu(c.geo_pcode)).map(c => `${c.geo_pcode} — ${c.year}`));
+
+  const sc = db.prepare("SELECT * FROM office_scope").all();
+  ajoute("perimetre_pcode_inconnu", "Périmètres de bureau pointant une unité qui n'existe plus",
+    "Le bureau ne couvre alors plus rien, et ses comptes ne voient plus leurs propres données.",
+    sc.filter(x => !connu(x.geo_pcode)).length,
+    sc.filter(x => !connu(x.geo_pcode)).map(x => x.geo_pcode));
+
+  /* Un bureau national n'a pas de périmètre, et c'est normal : il les couvre tous.
+     Un bureau de terrain sans périmètre, en revanche, est un bureau dont les comptes
+     voient tout — l'inverse de ce qu'on a voulu. */
+  const bureaux = db.prepare("SELECT id, name, kind FROM offices").all();
+  const declares = new Set(sc.map(x => x.office_id));
+  const sansPerimetre = bureaux.filter(o => o.kind === "field" && !declares.has(o.id));
+  ajoute("bureaux_sans_perimetre", "Bureaux de terrain sans périmètre déclaré",
+    "Faute de périmètre, leurs comptes voient l'ensemble du pays au lieu de leur zone.",
+    sansPerimetre.length, sansPerimetre.map(o => o.name));
+
+  /* Ce qui pourrait être réparé tout de suite, sans décision humaine. */
+  let parContour = 0, parProximite = 0;
+  for(const s of rattrapables){
+    const t = locate(Number(s.lat), Number(s.lon), { versionId:v.id });
+    if(t.error) continue;
+    if(t.methode === "contour") parContour++; else parProximite++;
+  }
+
+  res.json({
+    version: { id:v.id, label:v.label },
+    niveaux: db.prepare(
+      "SELECT level, COUNT(*) c FROM geo_unit WHERE version_id=? GROUP BY level").all(v.id),
+    contours: db.prepare(
+      "SELECT level, COUNT(*) c FROM geo_geom WHERE version_id=? GROUP BY level").all(v.id),
+    volumes: { sites:sites.length, pdd:pdd.length, caseload:cl.length, perimetres:sc.length },
+    constats,
+    ecarts: constats.reduce((t, c) => t + c.n, 0),
+    reparable: { contour:parContour, proximite:parProximite },
+  });
+});
+
 export default r;

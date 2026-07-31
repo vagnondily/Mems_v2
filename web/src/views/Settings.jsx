@@ -33,7 +33,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload, go }){
       {sub==="lists" && <Listes db={db} notify={notify} can={can} reload={reload} go={go} />}
       {sub==="about" && <SetAbout db={db} />}
       {sub==="sites" && <SitesModule db={db} set={set} me={me} notify={notify} can={can} context="settings" />}
-      {sub==="scope" && <SetScope db={db} notify={notify} can={can} />}
+      {sub==="scope" && <><SetScope db={db} notify={notify} can={can} /><CoherenceGeo notify={notify} /></>}
       {sub==="indicators" && <SetIndicators db={db} set={set} notify={notify} can={can} />}
       {sub==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
       {sub==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} />}
@@ -832,6 +832,60 @@ function OfficeModal({ open, office, busy, onClose, onSave, db }){
           et {office.usage.pdd} ligne(s) de plan de distribution. Le renommer met à jour
           l'ensemble ; il ne peut pas être supprimé.</Note>)}
     </Modal>);
+}
+
+/* ── La chaîne géographique tient-elle ? ──────────────────────
+   Le découpage, les coordonnées et les listes ne se parlent que par un fil très fin :
+   le p-code. Qu'il casse quelque part et rien ne se voit — les écrans continuent
+   d'afficher des nombres, simplement ils n'additionnent plus les mêmes choses. Un
+   réimport de découpage suffit à détacher trois cents sites en silence.
+
+   Ce panneau constate et chiffre. Il ne répare pas : une correction automatique sur
+   des données de terrain serait une décision, pas un diagnostic. Il indique en
+   revanche ce qui SERAIT réparable — les sites dont le point GPS tombe dans un
+   contour — et renvoie vers l'écran qui le fait, où l'on valide chaque proposition. */
+function CoherenceGeo({ notify }){
+  const [d,setD] = useState({ loading:true });
+  const charger = () => { setD({ loading:true });
+    api.geoCoherence().then(r => setD({ ...r, loading:false }))
+      .catch(e => setD({ loading:false, err:e.message })); };
+  useEffect(charger, []);
+
+  if(d.loading) return <Card title="Cohérence géographique"><Note>Contrôle en cours…</Note></Card>;
+  if(d.err) return <Card title="Cohérence géographique"><Note tone="warn">{d.err}</Note></Card>;
+  if(!d.version) return <Card title="Cohérence géographique">
+    <Empty title="Aucun découpage chargé" text={d.message} /></Card>;
+
+  const ecarts = d.constats.filter(c => c.n > 0);
+  return (
+    <Card flush title="Cohérence géographique"
+      subtitle={`Millésime « ${d.version.label} » · ${fmt(d.volumes.sites)} sites, ${fmt(d.volumes.pdd)} lignes de plan, ${fmt(d.volumes.caseload)} lignes de ciblage`}
+      right={<Btn size="sm" kind="sec" icon={RefreshCw} onClick={charger}>Recontrôler</Btn>}>
+      <div className="p-5 pb-0">
+        {!ecarts.length
+          ? <Note tone="ok"><b>Rien à signaler.</b> Chaque site, chaque ligne de plan et chaque
+              ligne de ciblage pointe vers une unité qui existe, les libellés recopiés s'accordent
+              avec le découpage, et les points GPS tombent bien dans leur unité.</Note>
+          : <Note tone="warn"><b>{fmt(d.ecarts)} écart(s)</b> sur {ecarts.length} contrôle(s).
+              {d.reparable.contour > 0 && <> {fmt(d.reparable.contour)} site(s) peuvent être rattachés
+              automatiquement : leur point GPS tombe dans un contour connu — voir Paramètres →
+              Pays et découpage.</>}</Note>}
+      </div>
+      <TableWrap max="mh420">
+        <thead><tr><Th /><Th>Contrôle</Th><Th num>Écarts</Th><Th>Exemples</Th></tr></thead>
+        <tbody>{d.constats.map(c => (
+          <tr key={c.cle} className={clsx("border-t border-slate-100", c.n && "bg-amber-50/40")}>
+            <Td>{c.n
+              ? <AlertTriangle size={14} className="text-amber-600" />
+              : <Check size={14} className="text-lime-600" />}</Td>
+            <Td><div className="font-medium text-slate-800">{c.titre}</div>
+              <div className="f105 text-slate-500 whitespace-normal mw420">{c.quoi}</div></Td>
+            <Td num className="tabular-nums font-semibold">{c.n || "—"}</Td>
+            <Td className="f105 text-slate-500 whitespace-normal mw420">
+              {c.exemples.length ? c.exemples.join(" · ") : "—"}</Td>
+          </tr>))}</tbody>
+      </TableWrap>
+    </Card>);
 }
 
 function SetScope({ db, notify, can }){
