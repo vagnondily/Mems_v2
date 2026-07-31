@@ -68,7 +68,7 @@ const COLS_LABEL = [
    questions. Les empiler avec les autres fausse toute détection automatique du
    champ « site » ou « date » : le premier candidat d'un formulaire réel est un
    begin_group, pas une question. */
-const TYPES_STRUCTURE = /^(begin[ _](group|repeat)|end[ _](group|repeat)|note|calculate)$/i;
+export const TYPES_STRUCTURE = /^(begin[ _](group|repeat)|end[ _](group|repeat)|note|calculate)$/i;
 
 export function lireClasseur(wb){
   const settingsWs = wb.getWorksheet("settings");

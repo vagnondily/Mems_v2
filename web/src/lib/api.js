@@ -162,6 +162,27 @@ export const api = {
   setCountry:     (code)         => call("PUT", `/country/${encodeURIComponent(code)}/current`),
   deleteCountry:  (code)         => call("DELETE", `/country/${encodeURIComponent(code)}`),
 
+  /* Connecteurs et correspondance des variables.
+
+     `connectorChamps` rend le registre des champs MEMS et le jeu fermé des
+     transformations. L'écran n'en tient AUCUNE copie : une seconde liste dans le
+     navigateur divergerait de celle que le serveur valide, et l'utilisateur
+     verrait des champs que l'enregistrement refuse. */
+  connectors:         ()             => call("GET", "/connectors"),
+  connectorChamps:    ()             => call("GET", "/connectors/champs"),
+  createConnector:    (c)            => call("POST", "/connectors", c),
+  updateConnector:    (id, c)        => call("PUT", `/connectors/${encodeURIComponent(id)}`, c),
+  deleteConnector:    (id)           => call("DELETE", `/connectors/${encodeURIComponent(id)}`),
+  connectorMappings:  (id, entity)   => call("GET", `/connectors/${encodeURIComponent(id)}/mappings`
+                                          + (entity ? `?entity=${encodeURIComponent(entity)}` : "")),
+  saveConnectorMappings: (id, entity, mappings) =>
+                                        call("PUT", `/connectors/${encodeURIComponent(id)}/mappings`,
+                                          { entity, mappings }),
+  /* L'aperçu accepte des correspondances non encore enregistrées : on vérifie
+     avant d'écrire, jamais l'inverse. */
+  connectorApercu:    (id, corps)    => call("POST", `/connectors/${encodeURIComponent(id)}/apercu`, corps),
+  connectorSuggestions:(id, corps)   => call("POST", `/connectors/${encodeURIComponent(id)}/suggestions`, corps),
+
   offices:      ()           => call("GET", "/offices"),
   createOffice: (o)          => call("POST", "/offices", o),
   updateOffice: (id, o)      => call("PUT", `/offices/${encodeURIComponent(id)}`, o),

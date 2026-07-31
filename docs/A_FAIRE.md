@@ -872,7 +872,14 @@ L229). C'est la matière de « les coordonnées GPS qui ressortiront des data se
 
 ### Travail
 
-- **O1** — Créer la table `submissions`, qui n'existe pas (migration 016) : `id`, `form_id`,
+> **Fait depuis :** la couche générique de correspondance des variables est livrée
+> (migration **016**, `lib/champs.js`, `lib/mapping.js`, `routes/connectors.js`,
+> Paramètres → Connecteurs). L'entité `submission` du registre décrit déjà exactement les
+> colonnes prévues par O1 : la migration à venir n'a rien à réapprendre, mais elle prend
+> le **numéro 017** et non 016. Ce qui reste : créer la table, brancher l'import (la chaîne
+> s'arrête aujourd'hui à l'aperçu) et écrire le résolveur O3.
+
+- **O1** — Créer la table `submissions`, qui n'existe pas (migration **017**) : `id`, `form_id`,
   `instance_id` UNIQUE, `submitted_at`, `svy_date`, `site_code_raw`, `site_id` (nullable),
   `geo_pcode`, `lat`, `lon`, `gps_accuracy`, `office_code`, `cp_code`. · **L**
 - **O2** — Ajouter à `sites` un code externe ODK indexé : `sites.code` porte des valeurs

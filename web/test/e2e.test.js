@@ -281,6 +281,41 @@ test("bureaux : l'écran de configuration liste les bureaux et leur périmètre"
   assert.equal(ctx.errors.length, 0, "aucune erreur sur l'écran des bureaux");
 });
 
+test("connecteurs : la table de correspondance est bâtie sur le registre servi par le serveur", async () => {
+  /* Le point vérifié ici n'est pas cosmétique : les champs MEMS et les
+     transformations affichés ne sont écrits nulle part dans le navigateur. S'ils
+     apparaissent, c'est qu'ils viennent de GET /api/connectors/champs — donc du
+     même registre que celui contre lequel l'enregistrement est validé. */
+  const onglet = all("main button").filter(b => b.className.includes("-mb-px"))
+    .find(b => b.textContent.trim() === "Connecteurs");
+  await click(onglet, "sous-onglet Connecteurs");
+  await flush(); await flush();
+
+  assert.ok(document.body.textContent.includes("Une correspondance, pas du code"),
+    "l'écran explique ce qu'il fait");
+  assert.ok(byText("h4", "Aucun connecteur"), "aucun connecteur n'est déclaré au départ");
+
+  await click(byText("button", "Nouveau"), "nouveau connecteur"); await flush();
+  const champs = all(".z60 input");
+  await type(champs[0], "Réceptions du partenaire");
+  await click(byText(".z60 button", "Enregistrer"), "enregistrer le connecteur");
+  await flush(); await flush();
+
+  assert.ok(document.body.textContent.includes("Réceptions du partenaire"),
+    "le connecteur créé apparaît dans la liste");
+
+  await click(byText("main button", "Réceptions du partenaire"), "sélection du connecteur");
+  await flush(); await flush();
+
+  /* Les champs de l'entité « Site » viennent du serveur, avec leur type. */
+  assert.ok(document.body.textContent.includes("geo_pcode"), "les champs MEMS sont listés");
+  assert.ok(document.body.textContent.includes("beneficiaries"));
+  const transformations = all("main option").map(o => o.textContent.trim());
+  assert.ok(transformations.includes("P-code normalisé"),
+    "le jeu fermé des transformations vient du serveur, pas d'une copie locale");
+  assert.equal(ctx.errors.length, 0, "aucune erreur sur l'écran des connecteurs");
+});
+
 test("déconnexion : la session est fermée et l'écran de connexion revient", async () => {
   const menu = all("header.sticky button").pop();
   await click(menu, "menu du compte"); await flush();

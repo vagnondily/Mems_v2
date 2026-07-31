@@ -27,6 +27,7 @@ import caseloadRoutes from "./routes/caseload.js";
 import importRoutes from "./routes/import.js";
 import xlsformRoutes from "./routes/xlsform.js";
 import odkRoutes from "./routes/odk.js";
+import connectorRoutes from "./routes/connectors.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 migrate(path.join(here, "..", "migrations"));
@@ -124,6 +125,10 @@ app.use("/api/caseload", authenticate, caseloadRoutes);
 app.use("/api/import", authenticate, importRoutes);
 app.use("/api", authenticate, odkRoutes);
 app.use("/api", authenticate, xlsformRoutes);
+/* Connecteurs et correspondance des variables : monté sous /api comme les deux
+   précédents, dont il prolonge le travail — le XLSForm dit ce que la source
+   contient, le connecteur dit ce que MEMS en retient. */
+app.use("/api", authenticate, connectorRoutes);
 app.use("/api/mre", authenticate, mreRoutes);
 app.use("/api/tpm", authenticate, tpmRoutes);
 app.use("/api", authenticate, collectionRoutes);

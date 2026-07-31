@@ -25,7 +25,8 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
      rétablis, avec « À propos » qui venait de main. */
   const items = [["general","Général"],["country","Pays"],["offices","Bureaux"],["sites","Sites"],
     ["locations","Localités"],["scope","Périmètre des bureaux"],["indicators","Indicateurs"],
-    ["calc","Calculs"],["rations","Rations"],["odk","ODK Central"],["templates","Modèles de rapport"],
+    ["calc","Calculs"],["rations","Rations"],["odk","ODK Central"],["connectors","Connecteurs"],
+    ["templates","Modèles de rapport"],
     ["api","API"],["users","Utilisateurs"],["about","À propos"]];
   return (
     <div className="space-y-4">
@@ -42,6 +43,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
       {sub==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
       {sub==="rations" && <SetRations db={db} set={set} notify={notify} can={can} />}
       {sub==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} reload={reload} />}
+      {sub==="connectors" && <SetConnectors notify={notify} can={can} />}
       {sub==="templates" && <SetTemplates db={db} set={set} notify={notify} can={can} />}
       {sub==="api" && <SetApi db={db} notify={notify} />}
       {sub==="users" && <SetUsers db={db} set={set} me={me} notify={notify} />}
@@ -1773,6 +1775,407 @@ function OdkModal({ open, form, db, onClose, onSave, notify }){
         ) : <p className="f115 text-slate-400">Aucun libellé chargé.</p>}
       </div>
       <div className="px-3 py-2 rounded bg-slate-50 border border-slate-200 f115 text-slate-600 break-all">{url}</div>
+    </Modal>);
+}
+
+/* ══════════════════ Connecteurs et correspondance des variables ══════════════════
+
+   Cet écran répond mot pour mot à la demande : « à chaque liaison, mets en place
+   un système de mapping des variables pour correspondre à ceux utilisés par MEMS,
+   et ainsi on ne se perd pas à recoder à chaque fois. » Brancher une source ne
+   demande plus d'écrire du code : on déclare où lire, on met les variables en
+   face des champs MEMS, on vérifie sur de vraies lignes, on enregistre.
+
+   Un point de méthode, qui explique la forme de tout le fichier : la liste des
+   entités, celle de leurs champs et celle des transformations viennent du serveur
+   (GET /api/connectors/champs) et ne sont écrites NULLE PART ici. C'est le même
+   registre que celui contre lequel l'enregistrement est validé. Une copie locale
+   afficherait tôt ou tard des champs que le serveur refuse — le genre d'écart
+   qu'on ne découvre qu'au moment d'enregistrer, après avoir tout saisi. */
+
+const NATURES_CONNECTEUR = [
+  ["odk","ODK Central"], ["kobo","KoboToolbox"], ["foundry","Palantir Foundry"],
+  ["csv","Fichier ou données collées"], ["http","API HTTP (JSON ou CSV)"]];
+const NOM_NATURE = Object.fromEntries(NATURES_CONNECTEUR);
+
+/* Ni `db` ni `set` : cet écran ne passe pas par l'état global. Les connecteurs
+   ont leurs propres routes, et les faire transiter par la file de synchronisation
+   des collections exposerait le jeton au navigateur de chaque utilisateur. */
+function SetConnectors({ notify, can }){
+  const [registre,setRegistre] = useState(null);   /* { entites, transformations } — servi par le serveur */
+  const [rows,setRows]         = useState(null);
+  const [offices,setOffices]   = useState([]);
+  const [sel,setSel]           = useState("");
+  const [edit,setEdit]         = useState(null);
+  const [entity,setEntity]     = useState("");
+  const [lignes,setLignes]     = useState({});     /* champ MEMS → correspondance en cours de saisie */
+  const [vars,setVars]         = useState([]);     /* variables d'un XLSForm téléversé */
+  const [ech,setEch]           = useState("");     /* échantillon collé, en JSON */
+  const [apercu,setApercu]     = useState(null);
+  const [busy,setBusy]         = useState(false);
+
+  const charger = () => api.connectors().then(r=>setRows(r.rows||[]))
+    .catch(e=>{ notify(e.message,"err"); setRows([]); });
+
+  useEffect(()=>{
+    api.connectorChamps()
+      .then(r=>{ setRegistre(r); setEntity(p=>p || r.entites?.[0]?.cle || ""); })
+      .catch(e=>{ notify(e.message,"err"); setRegistre({ entites:[], transformations:[] }); });
+    charger();
+    api.offices().then(r=>setOffices(r.offices||[])).catch(()=>{});
+  },[]);
+
+  const conn = (rows||[]).find(x=>x.id===sel) || null;
+  const ent  = (registre?.entites||[]).find(e=>e.cle===entity) || null;
+
+  /* Les correspondances déjà enregistrées pour ce connecteur et cette entité. */
+  useEffect(()=>{
+    setApercu(null);
+    if(!sel || !entity){ setLignes({}); return; }
+    api.connectorMappings(sel, entity).then(r=>{
+      const m = {};
+      for(const x of r.rows||[]) m[x.mems_field] = { source_path:x.source_path||"",
+        transform:x.transform||"brut", required:!!x.required, default_value:x.default_value||"" };
+      setLignes(m);
+    }).catch(e=>notify(e.message,"err"));
+  },[sel,entity]);
+
+  /* L'échantillon collé sert deux fois : à proposer des correspondances, et à
+     montrer l'aperçu. Une saisie encore incomplète ne doit pas crier à l'erreur :
+     on signale seulement, sans bloquer. */
+  const echantillon = useMemo(()=>{
+    if(!ech.trim()) return [];
+    try{ const p = JSON.parse(ech); const a = Array.isArray(p) ? p : [p];
+      return a.filter(x => x && typeof x === "object" && !Array.isArray(x)); }
+    catch(e){ return []; }
+  },[ech]);
+  const echIllisible = !!ech.trim() && !echantillon.length;
+  const clesEch = useMemo(()=>[...new Set(echantillon.flatMap(x=>Object.keys(x)))],[echantillon]);
+
+  /* Les variables proposées dans les listes déroulantes : celles du XLSForm quand
+     il a été joint, sinon les clés de l'échantillon. Les lignes de structure du
+     XLSForm (begin_group, note, calculate) sont écartées — ce ne sont pas des
+     questions, et les laisser remonter fait proposer un groupe comme champ site. */
+  const variablesSource = useMemo(()=>
+    vars.length ? vars.filter(v=>!v.structure) : clesEch.map(k=>({ name:k, type:"", label:"" })),
+    [vars, clesEch]);
+
+  /* Toute modification périme l'aperçu : le laisser affiché ferait lire des
+     valeurs produites par une correspondance qui n'est plus celle de l'écran. */
+  const maj = (champ, patch) => { setApercu(null);
+    setLignes(p=>({ ...p, [champ]: { source_path:"", transform:"brut",
+      required:false, default_value:"", ...(p[champ]||{}), ...patch } })); };
+  /* Changer la variable à la main efface le score de la proposition : il portait
+     sur l'ancienne variable, l'afficher encore serait un mensonge poli. */
+  const majSource = (champ, v) => maj(champ, { source_path:v, score:undefined, motif:undefined });
+
+  /* Seules les lignes réellement renseignées partent : une ligne vide n'est pas une
+     correspondance, et l'enregistrer encombrerait la table sans rien décrire. */
+  const aEnvoyer = () => Object.entries(lignes)
+    .filter(([,v]) => (v.source_path||"").trim() || (v.default_value||"").trim())
+    .map(([champ,v],i) => ({ entity, mems_field:champ, source_path:(v.source_path||"").trim()||null,
+      transform:v.transform||"brut", required:!!v.required,
+      default_value:(v.default_value||"").trim()||null, position:i }));
+
+  const joindreXlsform = async (file) => {
+    setBusy(true);
+    try{
+      const r = await api.xlsformParse(file);
+      setVars(r.vars||[]);
+      notify(`${(r.vars||[]).filter(v=>!v.structure).length} variables lues dans ${file.name}`,"ok");
+    }catch(e){ notify("Lecture du XLSForm impossible : "+e.message,"err"); }
+    setBusy(false);
+  };
+
+  const proposer = async () => {
+    if(!variablesSource.length){ notify("Joignez le XLSForm ou collez un échantillon avant de proposer","warn"); return; }
+    setBusy(true);
+    try{
+      const r = await api.connectorSuggestions(sel, { entity,
+        ...(vars.length ? { variables: vars.map(v=>({ name:v.name, type:v.type||"",
+            label:v.label||"", structure:!!v.structure })) } : { cles: clesEch }) });
+      setLignes(p=>{
+        const m = { ...p };
+        for(const s of r.suggestions||[]){
+          if(!s.source_path) continue;
+          m[s.mems_field] = { source_path:s.source_path, transform:s.transform,
+            required:m[s.mems_field]?.required||false, default_value:m[s.mems_field]?.default_value||"",
+            score:s.score, motif:s.motif };
+        }
+        return m;
+      });
+      /* Un avertissement, pas une confirmation : rien n'est enregistré, et un
+         rapprochement de noms se vérifie. Une proposition acceptée sans regarder
+         est exactement la façon dont « planned » finit par alimenter « atteints ». */
+      notify("Propositions remplies — vérifiez chaque ligne, puis enregistrez","warn");
+    }catch(e){ notify(e.message,"err"); }
+    setBusy(false);
+  };
+
+  const voirApercu = async () => {
+    setBusy(true);
+    try{
+      const corps = { entity, mappings: aEnvoyer(), limite:5 };
+      if(echantillon.length) corps.echantillon = echantillon.slice(0,5);
+      const r = await api.connectorApercu(sel, corps);
+      setApercu(r);
+      if(!r.ok) notify(`${r.manquants.length} champ(s) obligatoire(s) sans valeur : cette correspondance ne passera pas`,"warn");
+    }catch(e){ notify(e.message,"err"); setApercu(null); }
+    setBusy(false);
+  };
+
+  const enregistrer = async () => {
+    setBusy(true);
+    try{
+      const r = await api.saveConnectorMappings(sel, entity, aEnvoyer());
+      notify(`${r.enregistrees} correspondance(s) enregistrée(s)`,"ok");
+      await charger();
+    }catch(e){ notify(e.message + (e.details ? " — " + e.details.map(d=>d.message).join(" ; ") : ""),"err"); }
+    setBusy(false);
+  };
+
+  const supprimer = async (c) => {
+    if(!confirm(`Supprimer « ${c.name} » et ses ${c.mappings} correspondance(s) ?`)) return;
+    try{ await api.deleteConnector(c.id); if(sel===c.id) setSel(""); await charger();
+      notify("Connecteur supprimé","ok"); }
+    catch(e){ notify(e.message,"err"); }
+  };
+
+  const enregistrerConnecteur = async (f) => {
+    setBusy(true);
+    const payload = { name:(f.name||"").trim(), kind:f.kind||"csv",
+      base_url:(f.base_url||"").trim()||null, config:f.config||{},
+      office_id:f.office_id||null, active:f.active!==false };
+    /* Le jeton n'est envoyé que s'il a été saisi : laissé vide, celui qui est
+       déjà chiffré en base est conservé — le serveur ne le renvoie jamais, on ne
+       pourrait donc pas le réémettre à chaque modification. */
+    if((f.secret||"").trim()) payload.secret = f.secret.trim();
+    if(f.id) payload.rev = f.rev;
+    try{
+      const r = f.id ? await api.updateConnector(f.id, payload) : await api.createConnector(payload);
+      setEdit(null); await charger();
+      setSel(r.connector.id);
+      notify("Connecteur enregistré","ok");
+    }catch(e){ notify(e.message,"err"); }
+    setBusy(false);
+  };
+
+  if(registre === null || rows === null) return <Empty icon={Link2} title="Chargement des connecteurs…" />;
+
+  const transformations = registre.transformations || [];
+  const apres0 = apercu?.lignes?.[0]?.apres || null;
+
+  return (
+    <>
+      <Note tool>
+        <b>Une correspondance, pas du code.</b> Un connecteur dit <b>où</b> lire ; les correspondances
+        disent <b>quelle variable de la source alimente quel champ MEMS</b>, et par quelle transformation.
+        Brancher une source de plus est alors un acte de configuration. La liste des champs et celle des
+        transformations viennent du serveur : c'est exactement celle contre laquelle l'enregistrement est
+        vérifié. Le bouton <b>Proposer</b> rapproche les noms et donne un score — il ne décide rien,
+        chaque ligne se relit. Le jeton d'accès est chiffré côté serveur et n'est jamais renvoyé.
+      </Note>
+      <div className="grid gap-4" style={{gridTemplateColumns:"320px 1fr"}}>
+        <Card flush title="Connecteurs" subtitle={`${rows.length} source(s) déclarée(s)`}
+          right={can("admin") && <Btn size="sm" icon={Plus}
+            onClick={()=>setEdit({ name:"", kind:"csv", base_url:"", config:{}, office_id:"", active:true, secret:"" })}>
+            Nouveau</Btn>}>
+          {rows.length ? (
+            <div className="divide-y divide-slate-100">
+              {rows.map(c=>(
+                <div key={c.id} className={clsx("px-4 py-3 hover:bg-slate-50 flex items-start gap-2", sel===c.id&&"bg-sky-50")}>
+                  <button onClick={()=>setSel(c.id)} className="text-left min-w-0 flex-1">
+                    <div className="f13 font-semibold text-slate-800 truncate">{c.name}</div>
+                    <div className="f115 text-slate-500 truncate">{NOM_NATURE[c.kind]||c.kind}
+                      {c.base_url ? ` — ${c.base_url.replace(/^https?:\/\//,"")}` : ""}</div>
+                    <div className="flex gap-1 mt-1.5 flex-wrap">
+                      <Badge tone={c.mappings?"g":"y"}>{c.mappings} correspondance(s)</Badge>
+                      <Badge tone={c.hasSecret?"g":"n"}>{c.hasSecret?"jeton présent":"sans jeton"}</Badge>
+                      {!c.active && <Badge tone="r">inactif</Badge>}
+                    </div>
+                  </button>
+                  {can("admin") && <div className="shrink-0">
+                    <button onClick={()=>setEdit({ ...c, secret:"" })} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>
+                    <button onClick={()=>supprimer(c)} className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>
+                  </div>}
+                </div>))}
+            </div>
+          ) : <Empty icon={Link2} title="Aucun connecteur"
+                text="Déclarez une source — ODK Central, KoboToolbox, un dataset Foundry, un export CSV — puis mettez ses variables en face des champs MEMS." />}
+        </Card>
+
+        {!conn ? (
+          <Card title="Correspondance des variables">
+            <Empty icon={Link2} title="Choisissez un connecteur"
+              text="La table de correspondance s'affiche ici : une ligne par champ MEMS, avec en face la variable de la source." />
+          </Card>
+        ) : (
+          <div className="space-y-4">
+            <Card title="Variables de la source" subtitle="Ce dont les listes déroulantes ci-dessous seront remplies"
+              right={<div className="flex items-center gap-2">
+                {!!vars.length && <Badge tone="g">{variablesSource.length} variables du XLSForm</Badge>}
+                {!vars.length && !!clesEch.length && <Badge tone="b">{clesEch.length} clés de l'échantillon</Badge>}
+                <label>
+                  <input type="file" accept=".xlsx,.xls" className="hidden" disabled={busy}
+                    onChange={e=>e.target.files[0]&&joindreXlsform(e.target.files[0])} />
+                  <span className="inline-flex items-center gap-1.5 border rounded font-semibold px-2.5 py-1 f11 m-btn-sec cursor-pointer">
+                    <Upload size={13} /> {busy?"Lecture…":"Joindre le XLSForm"}</span></label>
+              </div>}>
+              <p className="f115 text-slate-500 leading-relaxed mb-2">
+                Le XLSForm est lu <b>par le serveur</b> : il en tire le nom, le type et le libellé de chaque question.
+                À défaut, collez quelques enregistrements de la source en JSON — un objet ou un tableau d'objets —
+                pour renseigner les listes et voir l'aperçu sur de vraies lignes.
+              </p>
+              <textarea value={ech} onChange={e=>setEch(e.target.value)} rows={4}
+                placeholder='[{"DPName":"MG23209050001","SvyDate":"2026-03-01","HHCoord":"-23.35 43.66 12 5.2"}]'
+                className={clsx(inputCls,"font-mono f115")} />
+              {echIllisible && <p className="f115 text-amber-700 mt-1">
+                Cet échantillon n'est pas du JSON lisible : un objet, ou un tableau d'objets.</p>}
+            </Card>
+
+            <Card flush title="Correspondance des variables"
+              subtitle={ent ? ent.note : ""}
+              right={<div className="flex items-center gap-2 flex-wrap">
+                <Select value={entity} onChange={e=>setEntity(e.target.value)}
+                  options={(registre.entites||[]).map(e=>[e.cle, e.label])} className="w-44" />
+                <Btn size="sm" kind="sec" icon={Target} disabled={busy||!variablesSource.length} onClick={proposer}>
+                  Proposer automatiquement</Btn>
+                <Btn size="sm" kind="sec" icon={Search} disabled={busy} onClick={voirApercu}>Aperçu</Btn>
+                {can("admin") && <Btn size="sm" icon={Save} disabled={busy} onClick={enregistrer}>Enregistrer</Btn>}
+              </div>}>
+              <TableWrap max="mh440">
+                <thead><tr>
+                  <Th>Champ MEMS</Th><Th>Type</Th><Th>Variable source</Th><Th>Transformation</Th>
+                  <Th>Valeur par défaut</Th><Th>Aperçu</Th>
+                </tr></thead>
+                <tbody>
+                  {(ent?.champs||[]).map(ch=>{
+                    const l = lignes[ch.nom] || {};
+                    const manque = (apercu?.manquants||[]).find(m=>m.champ===ch.nom);
+                    return (
+                      <tr key={ch.nom} className="hover:bg-sky-50 align-top">
+                        <Td>
+                          <div className="font-medium text-slate-800">{ch.nom}
+                            {ch.obligatoire && <span className="text-rose-600 ml-1" title="Champ obligatoire">*</span>}</div>
+                          <div className="f105 text-slate-500 whitespace-normal mw320">{ch.note}</div>
+                        </Td>
+                        <Td className="f115 text-slate-500">{ch.type}</Td>
+                        <Td>
+                          {variablesSource.length ? (
+                            <Select value={l.source_path||""} onChange={e=>majSource(ch.nom, e.target.value)}
+                              empty="—" options={variablesSource.map(v=>[v.name, v.label ? `${v.name} — ${String(v.label).slice(0,40)}` : v.name])} />
+                          ) : (
+                            <Input value={l.source_path||""} onChange={e=>majSource(ch.nom, e.target.value)}
+                              placeholder="nom de la variable" />
+                          )}
+                          {l.score !== undefined && l.source_path &&
+                            <div className="mt-1"><Badge tone={l.score>=0.9?"g":l.score>=0.6?"y":"r"}>
+                              proposé {Math.round(l.score*100)} %</Badge></div>}
+                          {l.motif && <div className="f105 text-slate-400 whitespace-normal mw320">{l.motif}</div>}
+                        </Td>
+                        <Td>
+                          <Select value={l.transform||"brut"} onChange={e=>maj(ch.nom,{ transform:e.target.value })}
+                            options={transformations.map(t=>[t.cle, t.label])} />
+                        </Td>
+                        <Td><Input value={l.default_value||""} onChange={e=>maj(ch.nom,{ default_value:e.target.value })}
+                          placeholder="—" className="w-28" /></Td>
+                        <Td className="f115">
+                          {manque ? <span className="text-rose-700" title={manque.motif}>manquant</span>
+                            : apres0 && apres0[ch.nom] !== undefined
+                              ? <span className="text-slate-800">{String(apres0[ch.nom])}</span>
+                              : <span className="text-slate-300">—</span>}
+                        </Td>
+                      </tr>);
+                  })}
+                </tbody>
+              </TableWrap>
+            </Card>
+
+            {apercu && (
+              <Card title="Aperçu" subtitle={`${apercu.lignesLues} ligne(s) — ${apercu.provenance}`}>
+                {apercu.ok
+                  ? <Note tone="ok">Tous les champs obligatoires sont alimentés sur les lignes examinées.</Note>
+                  : <Note tone="err"><b>Cette correspondance ne passera pas.</b>
+                      <ul className="mt-1.5 ml-4 list-disc">
+                        {apercu.manquants.map(m=>(<li key={m.champ}><b>{m.champ}</b> — {m.motif}</li>))}
+                      </ul></Note>}
+                <TableWrap max="mh300">
+                  <thead><tr><Th>#</Th><Th>Avant (source)</Th><Th>Après (MEMS)</Th></tr></thead>
+                  <tbody>{apercu.lignes.map((l,i)=>(
+                    <tr key={i} className="align-top">
+                      <Td className="text-slate-400">{i+1}</Td>
+                      <Td className="f105 font-mono text-slate-500 whitespace-normal mw420">{JSON.stringify(l.avant)}</Td>
+                      <Td className="f105 font-mono text-slate-800 whitespace-normal mw420">{JSON.stringify(l.apres)}</Td>
+                    </tr>))}</tbody>
+                </TableWrap>
+              </Card>)}
+          </div>)}
+      </div>
+      <ConnectorModal open={!!edit} c={edit} offices={offices} busy={busy}
+        onClose={()=>setEdit(null)} onSave={enregistrerConnecteur} />
+    </>);
+}
+
+/* La fiche d'un connecteur. Les champs de configuration dépendent de la nature de
+   la source : les afficher tous ferait un formulaire dont les trois quarts ne
+   servent jamais, et laisserait croire qu'un RID de dataset a un sens pour ODK. */
+function ConnectorModal({ open, c, offices, busy, onClose, onSave }){
+  const [f,setF] = useState({});
+  useEffect(()=>{ setF(c ? { ...c, config:{ ...(c.config||{}) }, secret:"" } : {}); },[c]);
+  if(!open) return null;
+  const u = (k,v)=>setF(p=>({ ...p, [k]:v }));
+  const uc = (k,v)=>setF(p=>({ ...p, config:{ ...(p.config||{}), [k]:v } }));
+  const reseau = ["odk","kobo","foundry","http"].includes(f.kind);
+  return (
+    <Modal open wide onClose={onClose} title={c?.id ? "Modifier le connecteur" : "Nouveau connecteur"}
+      subtitle="Nature de la source, adresse, jeton et rattachement"
+      footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
+        <Btn icon={Save} disabled={busy || !(f.name||"").trim() || (reseau && !(f.base_url||"").trim())}
+          onClick={()=>onSave(f)}>Enregistrer</Btn></>}>
+      <div className="grid grid-cols-2 gap-x-4">
+        <Field label="Nom du connecteur"><Input value={f.name||""} onChange={e=>u("name",e.target.value)}
+          placeholder="Foundry — chiffres de bénéficiaires" /></Field>
+        <Field label="Nature de la source"><Select value={f.kind||"csv"} onChange={e=>u("kind",e.target.value)}
+          options={NATURES_CONNECTEUR} /></Field>
+        {reseau && <Field label="Adresse de base" className="col-span-2"
+          hint="https obligatoire, sauf hôte explicitement autorisé par l'équipe technique (CONNECTOR_ALLOWED_HOSTS)">
+          <Input value={f.base_url||""} onChange={e=>u("base_url",e.target.value)}
+            placeholder="https://exemple.palantirfoundry.com" /></Field>}
+        <Field label="Jeton d'accès" hint={c?.hasSecret
+            ? "Un jeton est déjà enregistré, chiffré. Laissez vide pour le conserver."
+            : "Chiffré au repos, jamais renvoyé par l'API"}>
+          <Input type="password" value={f.secret||""} onChange={e=>u("secret",e.target.value)} /></Field>
+        <Field label="Bureau" hint="Un connecteur rattaché à un bureau n'est visible que par ce bureau">
+          <Select value={f.office_id||""} onChange={e=>u("office_id",e.target.value)} empty="Tous les bureaux"
+            options={offices.map(o=>[o.id, o.name])} /></Field>
+
+        {f.kind==="foundry" && <>
+          <Field label="Identifiant du jeu de données (RID)" className="col-span-2">
+            <Input value={f.config?.datasetRid||""} onChange={e=>uc("datasetRid",e.target.value)}
+              placeholder="ri.foundry.main.dataset.…" /></Field>
+          <Field label="Branche" hint="« master » par défaut">
+            <Input value={f.config?.branche||""} onChange={e=>uc("branche",e.target.value)} placeholder="master" /></Field>
+          <Field label="Chemin de lecture"
+            hint="Laisser vide pour /api/v2/datasets/{rid}/readTable — à ajuster si l'instance diffère">
+            <Input value={f.config?.chemin||""} onChange={e=>uc("chemin",e.target.value)} /></Field>
+        </>}
+        {f.kind==="http" && <>
+          <Field label="Chemin" hint="Ajouté à l'adresse de base">
+            <Input value={f.config?.chemin||""} onChange={e=>uc("chemin",e.target.value)} placeholder="/api/v1/donnees" /></Field>
+          <Field label="Pointeur vers les lignes" hint="Chemin JSON du tableau de lignes, si la réponse l'emballe">
+            <Input value={f.config?.pointeur||""} onChange={e=>uc("pointeur",e.target.value)} placeholder="data.results" /></Field>
+        </>}
+        {(f.kind==="odk"||f.kind==="kobo") && <>
+          <Field label="Projet"><Input value={f.config?.project||""} onChange={e=>uc("project",e.target.value)} placeholder="1" /></Field>
+          <Field label="Identifiant du formulaire">
+            <Input value={f.config?.formId||""} onChange={e=>uc("formId",e.target.value)} placeholder="MDG_GD_PREVMA_v2" /></Field>
+        </>}
+      </div>
+      <Sw label="Connecteur actif" hint="Un connecteur inactif reste configuré mais n'est plus proposé"
+        on={f.active!==false} onChange={v=>u("active",v)} />
+      <Note>Aucun secret ne doit figurer dans les champs de configuration ci-dessus : ils sont renvoyés
+        en clair par l'API. Le jeton a son propre champ, chiffré au repos — le serveur refuse d'ailleurs
+        toute clé de configuration dont le nom évoque un secret.</Note>
     </Modal>);
 }
 

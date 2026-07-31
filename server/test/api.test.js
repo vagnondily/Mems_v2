@@ -21,6 +21,11 @@ process.env.FORCE_SEED = "1";
    correctif A5 refuse désormais par défaut. C'est exactement le cas que la liste
    blanche existe pour couvrir : un exploitant désigne nommément son serveur interne. */
 process.env.ODK_ALLOWED_HOSTS = "127.0.0.1";
+/* Même raison pour les connecteurs sortants (Foundry, HTTP) : le faux serveur
+   Foundry plus bas tourne en http sur la boucle locale. La liste est renseignée,
+   donc elle fait seule autorité — ce qui permet aussi de vérifier qu'un hôte
+   absent de la liste est refusé, sans dépendre d'une résolution DNS réelle. */
+process.env.CONNECTOR_ALLOWED_HOSTS = "127.0.0.1";
 
 for(const f of [DB, DB+"-wal", DB+"-shm"]) if(fs.existsSync(f)) fs.unlinkSync(f);
 fs.mkdirSync(path.dirname(DB), { recursive:true });
@@ -2565,4 +2570,390 @@ test("pays : la configuration est réservée aux administrateurs, la lecture ouv
     const r = await request(app)[m](chemin).set("Authorization", `Bearer ${te}`).send({ name:"X" });
     assert.equal(r.status, 403, `${m.toUpperCase()} ${chemin}`);
   }
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Connecteurs et correspondance des variables (chantier « mapping générique »)
+
+   Ce que ces tests verrouillent est exactement ce que la demande visait : une
+   source se branche par de la configuration, la correspondance se vérifie AVANT
+   tout import, le registre des champs ne vit qu'à un seul endroit, et le jeton
+   d'accès ne ressort jamais.
+
+   Faute d'instance Palantir Foundry — et cet environnement n'a pas d'accès
+   réseau sortant libre — le connecteur Foundry est éprouvé contre un serveur
+   simulé en mémoire : il prouve l'URL construite, l'en-tête d'autorisation, la
+   lecture CSV et la traduction des erreurs, pas le comportement d'un vrai
+   Foundry. C'est dit ici pour que personne ne lise l'inverse dans un test vert.
+   ═══════════════════════════════════════════════════════════════════════ */
+let foundryMock, foundryUrl, foundryRequetes;
+{
+  foundryRequetes = [];
+  foundryMock = http.createServer((req, res) => {
+    foundryRequetes.push({ url: req.url, auth: req.headers.authorization });
+    if(/dataset\.refuse/.test(req.url)){
+      res.statusCode = 403; res.setHeader("Content-Type", "application/json"); return res.end("{}");
+    }
+    if(/readTable/.test(req.url)){
+      res.setHeader("Content-Type", "text/csv");
+      /* Deux lignes de chiffres de bénéficiaires, avec un millier séparé par une
+         espace et un p-code écrit en minuscules espacées : le cas réel d'un
+         export, pas une donnée déjà propre. */
+      return res.end("pcode,annee,mois,planifie,atteint\n"
+        + "mg 232 09050001,2026,3,\"1 200\",1150\n"
+        + "MG23209050002,2026,3,900,880\n");
+    }
+    res.statusCode = 404; res.end("{}");
+  });
+  await new Promise(r => foundryMock.listen(0, "127.0.0.1", r));
+  foundryUrl = `http://127.0.0.1:${foundryMock.address().port}`;
+  after(() => foundryMock.close());
+}
+
+const creerConnecteur = async (corps, jeton = adminToken) =>
+  request(app).post("/api/connectors").set("Authorization", `Bearer ${jeton}`).send(corps);
+
+test("connecteurs : le registre des champs MEMS est servi par le serveur, pas recopié dans l'écran", async () => {
+  const r = await request(app).get("/api/connectors/champs")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200);
+
+  const cles = r.body.entites.map(e => e.cle);
+  for(const e of ["site", "submission", "beneficiaire", "reception"])
+    assert.ok(cles.includes(e), `l'entité ${e} est déclarée`);
+
+  const benef = r.body.entites.find(e => e.cle === "beneficiaire");
+  assert.ok(benef.champs.find(c => c.nom === "geo_pcode").obligatoire,
+    "un chiffre de bénéficiaires sans p-code ne se rattache à rien");
+  assert.ok(benef.champs.some(c => c.nom === "atteints"));
+  assert.ok(r.body.entites.find(e => e.cle === "reception").champs.some(c => c.nom === "tonnage_recu"));
+  assert.ok(r.body.entites.every(e => e.champs.every(c => c.note && c.note.length > 10)),
+    "chaque champ porte son explication : c'est ce qui rend l'écran utilisable sans documentation");
+
+  const transformations = r.body.transformations.map(t => t.cle);
+  for(const t of ["brut", "texte", "nombre", "entier", "booleen", "date_iso", "majuscules",
+                  "minuscules", "trim", "pcode", "geopoint_lat", "geopoint_lon"])
+    assert.ok(transformations.includes(t), `la transformation ${t} est servie`);
+});
+
+test("connecteurs : création, et le jeton est chiffré au repos sans jamais ressortir de l'API", async () => {
+  const c = await creerConnecteur({
+    name: "Foundry — bénéficiaires", kind: "foundry", base_url: foundryUrl,
+    config: { datasetRid: "ri.foundry.main.dataset.benef" },
+    secret: "jeton-foundry-tres-secret", active: true });
+  assert.equal(c.status, 201, JSON.stringify(c.body));
+  assert.equal(c.body.connector.hasSecret, true);
+  assert.ok(!/jeton-foundry-tres-secret/.test(JSON.stringify(c.body)));
+
+  const stocke = db.prepare("SELECT secret_enc FROM connector WHERE id=?").get(c.body.connector.id);
+  assert.ok(stocke.secret_enc && !stocke.secret_enc.includes("jeton-foundry"),
+    "le jeton est chiffré en base, comme celui des sources ODK");
+
+  const liste = await request(app).get("/api/connectors").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(liste.status, 200);
+  assert.ok(!/jeton-foundry-tres-secret/.test(JSON.stringify(liste.body)),
+    "la liste n'expose que la présence du jeton");
+  assert.equal(liste.body.rows.find(x => x.id === c.body.connector.id).hasSecret, true);
+
+  /* Modifier sans redonner le jeton ne l'efface pas : sinon toute correction de
+     libellé obligerait à ressaisir un secret que personne n'a sous la main. */
+  const maj = await request(app).put(`/api/connectors/${c.body.connector.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ name: "Foundry — bénéficiaires (national)", kind: "foundry", base_url: foundryUrl,
+            config: { datasetRid: "ri.foundry.main.dataset.benef" }, active: true, rev: 1 });
+  assert.equal(maj.status, 200, JSON.stringify(maj.body));
+  assert.equal(maj.body.connector.hasSecret, true);
+
+  /* Un secret glissé dans la configuration ressortirait en clair : refusé. */
+  const fuite = await creerConnecteur({ name: "Fuite", kind: "http",
+    base_url: "https://exemple.org", config: { apiKey: "abc" } });
+  assert.equal(fuite.status, 422);
+  assert.match(fuite.body.error, /secrets/);
+});
+
+test("connecteurs : les correspondances sont validées contre le registre, puis enregistrées", async () => {
+  const c = (await creerConnecteur({ name: "Soumissions GD_PREVMA", kind: "odk",
+    base_url: "https://odk.exemple.org", config: { project: "1", formId: "GD_PREVMA" } })).body.connector;
+
+  const champInconnu = await request(app).put(`/api/connectors/${c.id}/mappings`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ entity: "submission", mappings: [
+      { entity: "submission", mems_field: "colonne_inventee", source_path: "X" }] });
+  assert.equal(champInconnu.status, 422);
+  assert.match(JSON.stringify(champInconnu.body.details), /champ inconnu/);
+
+  const transfoInconnue = await request(app).put(`/api/connectors/${c.id}/mappings`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ entity: "submission", mappings: [
+      { entity: "submission", mems_field: "site_code", source_path: "DPName", transform: "formule_maison" }] });
+  assert.equal(transfoInconnue.status, 422);
+  assert.match(JSON.stringify(transfoInconnue.body.details), /transformation inconnue/);
+
+  const entiteInconnue = await request(app).put(`/api/connectors/${c.id}/mappings`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ entity: "menage", mappings: [{ entity: "menage", mems_field: "code", source_path: "X" }] });
+  assert.equal(entiteInconnue.status, 422);
+
+  const bon = await request(app).put(`/api/connectors/${c.id}/mappings`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ entity: "submission", mappings: [
+      { entity: "submission", mems_field: "instance_id", source_path: "__id", transform: "texte" },
+      { entity: "submission", mems_field: "form_id", source_path: "form_id", transform: "texte" },
+      { entity: "submission", mems_field: "site_code", source_path: "DPName", transform: "pcode" }] });
+  assert.equal(bon.status, 200, JSON.stringify(bon.body));
+  assert.equal(bon.body.enregistrees, 3);
+
+  const relu = await request(app).get(`/api/connectors/${c.id}/mappings`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(relu.status, 200);
+  assert.equal(relu.body.rows.length, 3);
+  assert.equal(relu.body.rows.find(m => m.mems_field === "site_code").transform, "pcode");
+
+  /* Un champ déclaré deux fois se départagerait par l'ordre d'écriture, c'est-à-dire par hasard. */
+  const doublon = await request(app).put(`/api/connectors/${c.id}/mappings`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ entity: "submission", mappings: [
+      { entity: "submission", mems_field: "site_code", source_path: "DPName" },
+      { entity: "submission", mems_field: "site_code", source_path: "POIName" }] });
+  assert.equal(doublon.status, 422);
+  assert.match(JSON.stringify(doublon.body.details), /deux fois/);
+});
+
+test("connecteurs : l'aperçu applique les transformations — geopoint découpé, nombre à la française", async () => {
+  const c = (await creerConnecteur({ name: "Aperçu soumissions", kind: "odk",
+    base_url: "https://odk.exemple.org", config: {} })).body.connector;
+
+  await request(app).put(`/api/connectors/${c.id}/mappings`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ entity: "submission", mappings: [
+      { entity: "submission", mems_field: "instance_id", source_path: "__id", transform: "texte" },
+      { entity: "submission", mems_field: "form_id", source_path: "form_id", transform: "texte" },
+      { entity: "submission", mems_field: "site_code", source_path: "DPName", transform: "pcode" },
+      { entity: "submission", mems_field: "svy_date", source_path: "SvyDate", transform: "date_iso" },
+      { entity: "submission", mems_field: "lat", source_path: "HHCoord", transform: "geopoint_lat" },
+      { entity: "submission", mems_field: "lon", source_path: "HHCoord", transform: "geopoint_lon" },
+      { entity: "submission", mems_field: "gps_accuracy", source_path: "precision", transform: "nombre" }] });
+
+  const r = await request(app).post(`/api/connectors/${c.id}/apercu`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ entity: "submission", echantillon: [{
+      __id: "uuid:9f2c", form_id: "MDG_GD_PREVMA_v2",
+      DPName: "mg 232 09050001", SvyDate: "2026-03-01T08:12:00Z",
+      /* La forme réelle d'un geopoint ODK : latitude, longitude, altitude, précision. */
+      HHCoord: "-23.354871 43.667201 12.0 5.2", precision: "5,2" }] });
+
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.ok, true, JSON.stringify(r.body.manquants));
+  assert.equal(r.body.lignesLues, 1);
+  const apres = r.body.lignes[0].apres;
+  assert.equal(apres.site_code, "MG23209050001", "le p-code est normalisé, pas recopié");
+  assert.equal(apres.svy_date, "2026-03-01");
+  assert.equal(apres.lat, -23.354871);
+  assert.equal(apres.lon, 43.667201);
+  assert.equal(apres.gps_accuracy, 5.2, "« 5,2 » est un nombre, pas du texte");
+  /* L'avant est rendu tel quel : c'est ce qui permet de comparer sans deviner. */
+  assert.equal(r.body.lignes[0].avant.HHCoord, "-23.354871 43.667201 12.0 5.2");
+});
+
+test("connecteurs : l'aperçu refuse quand un champ obligatoire reste vide, et dit lequel", async () => {
+  const c = (await creerConnecteur({ name: "Aperçu incomplet", kind: "csv", config: {} })).body.connector;
+
+  /* Correspondances fournies dans la demande : on vérifie AVANT d'enregistrer. */
+  const r = await request(app).post(`/api/connectors/${c.id}/apercu`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ entity: "submission",
+      mappings: [
+        { entity: "submission", mems_field: "instance_id", source_path: "__id", transform: "texte" },
+        { entity: "submission", mems_field: "site_code", source_path: "DPName", transform: "pcode" }],
+      echantillon: [{ __id: "uuid:1", DPName: "   " }] });
+
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ok, false, "une correspondance incomplète ne doit pas se déclarer bonne");
+  const champsManquants = r.body.manquants.map(m => m.champ);
+  assert.ok(champsManquants.includes("site_code"),
+    "le p-code réduit à des espaces est vu comme manquant, pas comme une chaîne vide");
+  assert.ok(champsManquants.includes("form_id"),
+    "un obligatoire jamais branché est signalé lui aussi");
+  assert.ok(r.body.manquants.every(m => m.motif && m.motif.length > 10),
+    "chaque manque est motivé : sans le motif, on cherche pendant une heure");
+  assert.deepEqual(r.body.lignes[0].apres.site_code, undefined,
+    "un champ manquant est absent, jamais posé à null — un null écraserait l'existant à l'import");
+});
+
+test("connecteurs : les suggestions proposent avec un score, et n'enregistrent rien", async () => {
+  const c = (await creerConnecteur({ name: "Suggestions", kind: "odk",
+    base_url: "https://odk.exemple.org", config: {} })).body.connector;
+
+  const r = await request(app).post(`/api/connectors/${c.id}/suggestions`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ entity: "submission", variables: [
+      { name: "Technical_module", type: "begin_group", label: "Module technique" },
+      { name: "SvyDate", type: "date", label: "Date de l'enquête" },
+      { name: "DPName", type: "select_one dp", label: "Point de distribution" },
+      { name: "HHCoord", type: "geopoint", label: "Coordonnées GPS" },
+      { name: "EnuName", type: "text", label: "Enquêteur" }] });
+
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.applique, false, "la route propose, elle n'écrit pas");
+  const par = Object.fromEntries(r.body.suggestions.map(s => [s.mems_field, s]));
+  assert.equal(par.svy_date.source_path, "SvyDate");
+  assert.equal(par.svy_date.transform, "date_iso");
+  assert.ok(par.svy_date.score >= 0.9);
+  assert.equal(par.site_code.source_path, "DPName");
+  assert.equal(par.lat.source_path, "HHCoord");
+  assert.equal(par.lat.transform, "geopoint_lat", "un geopoint ne se lit pas comme un nombre");
+  assert.equal(par.lon.transform, "geopoint_lon");
+  assert.ok(r.body.suggestions.every(s => s.motif && s.motif.length > 5),
+    "chaque proposition dit sur quoi elle se fonde");
+  /* Rien n'a été enregistré : c'est la garantie que l'humain garde la main. */
+  const mappings = await request(app).get(`/api/connectors/${c.id}/mappings`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(mappings.body.rows.length, 0);
+  /* Les lignes de structure d'un XLSForm ne sont jamais des candidates. */
+  assert.ok(!JSON.stringify(r.body.suggestions).includes("Technical_module"));
+});
+
+test("connecteurs : la liste est cloisonnée par bureau, comme le reste", async () => {
+  const bureau = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
+  const autre = db.prepare("SELECT id FROM offices WHERE id<>? LIMIT 1").get(bureau.id);
+
+  const mien = (await creerConnecteur({ name: "Réceptions du bureau", kind: "csv",
+    config: {}, office_id: bureau.id })).body.connector;
+  const sien = (await creerConnecteur({ name: "Réceptions d'ailleurs", kind: "csv",
+    config: {}, office_id: autre.id })).body.connector;
+
+  const te = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  const liste = await request(app).get("/api/connectors").set("Authorization", `Bearer ${te}`);
+  assert.equal(liste.status, 200);
+  const vus = liste.body.rows.map(x => x.id);
+  assert.ok(vus.includes(mien.id), "le compte voit le connecteur de son bureau");
+  assert.ok(!vus.includes(sien.id), "et aucun de ceux des autres bureaux");
+  assert.ok(!vus.some(id => liste.body.rows.find(x => x.id === id).office_id !== bureau.id),
+    "y compris les connecteurs sans bureau, comme pour l'écriture des collections");
+
+  /* Nommer l'identifiant ne suffit pas non plus. */
+  assert.equal((await request(app).get(`/api/connectors/${sien.id}/mappings`)
+    .set("Authorization", `Bearer ${te}`)).status, 404);
+
+  /* L'écriture — et l'aperçu, qui déchiffre le jeton et rend les lignes source —
+     restent réservés à l'administration. */
+  for(const appel of [
+    () => request(app).post("/api/connectors").set("Authorization", `Bearer ${te}`)
+      .send({ name: "Tentative", kind: "csv", config: {} }),
+    () => request(app).put(`/api/connectors/${mien.id}`).set("Authorization", `Bearer ${te}`)
+      .send({ name: "Tentative", kind: "csv", config: {} }),
+    () => request(app).put(`/api/connectors/${mien.id}/mappings`).set("Authorization", `Bearer ${te}`)
+      .send({ entity: "reception", mappings: [] }),
+    () => request(app).post(`/api/connectors/${mien.id}/apercu`).set("Authorization", `Bearer ${te}`)
+      .send({ entity: "reception", echantillon: [{}] }),
+    () => request(app).delete(`/api/connectors/${mien.id}`).set("Authorization", `Bearer ${te}`),
+  ]) assert.equal((await appel()).status, 403);
+});
+
+test("connecteur Foundry : le dataset est lu, mappé, et les chiffres arrivent en nombres", async () => {
+  const c = (await creerConnecteur({ name: "Foundry — chiffres", kind: "foundry",
+    base_url: foundryUrl, config: { datasetRid: "ri.foundry.main.dataset.chiffres", branche: "master" },
+    secret: "jeton-foundry-lecture" })).body.connector;
+
+  await request(app).put(`/api/connectors/${c.id}/mappings`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ entity: "beneficiaire", mappings: [
+      { entity: "beneficiaire", mems_field: "geo_pcode", source_path: "pcode", transform: "pcode" },
+      { entity: "beneficiaire", mems_field: "annee", source_path: "annee", transform: "entier" },
+      { entity: "beneficiaire", mems_field: "mois", source_path: "mois", transform: "entier" },
+      { entity: "beneficiaire", mems_field: "planifies", source_path: "planifie", transform: "entier" },
+      { entity: "beneficiaire", mems_field: "atteints", source_path: "atteint", transform: "entier" }] });
+
+  const avant = foundryRequetes.length;
+  const r = await request(app).post(`/api/connectors/${c.id}/apercu`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ entity: "beneficiaire", limite: 5 });
+
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.match(r.body.provenance, /lecture distante/);
+  assert.equal(r.body.lignesLues, 2);
+  assert.equal(r.body.ok, true, JSON.stringify(r.body.manquants));
+  assert.equal(r.body.lignes[0].apres.geo_pcode, "MG23209050001");
+  assert.equal(r.body.lignes[0].apres.planifies, 1200, "« 1 200 » est un entier, pas une chaîne");
+  assert.equal(r.body.lignes[1].apres.atteints, 880);
+
+  const appel = foundryRequetes[avant];
+  assert.ok(appel, "le serveur est bien allé lire la source");
+  assert.equal(appel.auth, "Bearer jeton-foundry-lecture", "le jeton part en en-tête, jamais dans l'URL");
+  assert.match(appel.url, /\/api\/v2\/datasets\/ri\.foundry\.main\.dataset\.chiffres\/readTable/);
+  assert.match(appel.url, /rowLimit=5/);
+  assert.match(appel.url, /branchName=master/);
+
+  /* Un refus de la source est une erreur de configuration, pas une panne du serveur. */
+  const refuse = (await creerConnecteur({ name: "Foundry — refusé", kind: "foundry",
+    base_url: foundryUrl, config: { datasetRid: "ri.foundry.main.dataset.refuse" },
+    secret: "mauvais-jeton" })).body.connector;
+  const rr = await request(app).post(`/api/connectors/${refuse.id}/apercu`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ entity: "beneficiaire", mappings: [
+      { entity: "beneficiaire", mems_field: "geo_pcode", source_path: "pcode" }] });
+  assert.equal(rr.status, 422);
+  assert.match(rr.body.error, /refusé/);
+});
+
+test("connecteurs : une adresse hors liste blanche n'est jamais appelée (SSRF)", async () => {
+  const c = (await creerConnecteur({ name: "Métadonnées de l'hébergeur", kind: "foundry",
+    base_url: "http://169.254.169.254", config: { datasetRid: "peu-importe" },
+    secret: "x" })).body.connector;
+  const r = await request(app).post(`/api/connectors/${c.id}/apercu`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ entity: "beneficiaire", mappings: [
+      { entity: "beneficiaire", mems_field: "geo_pcode", source_path: "pcode" }] });
+  assert.equal(r.status, 422);
+  assert.match(r.body.error, /CONNECTOR_ALLOWED_HOSTS/);
+});
+
+test("connecteurs : supprimer un connecteur emporte ses correspondances", async () => {
+  const c = (await creerConnecteur({ name: "Éphémère", kind: "csv", config: {} })).body.connector;
+  await request(app).put(`/api/connectors/${c.id}/mappings`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ entity: "reception", mappings: [
+      { entity: "reception", mems_field: "geo_pcode", source_path: "pcode", transform: "pcode" },
+      { entity: "reception", mems_field: "tonnage_recu", source_path: "mt", transform: "nombre" }] });
+
+  const del = await request(app).delete(`/api/connectors/${c.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(del.status, 200);
+  assert.equal(del.body.mappingsSupprimees, 2);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM connector_mapping WHERE connector_id=?")
+    .get(c.id).c, 0);
+  assert.equal((await request(app).get(`/api/connectors/${c.id}/mappings`)
+    .set("Authorization", `Bearer ${adminToken}`)).status, 404);
+});
+
+test("connecteurs : la valeur par défaut passe par la même transformation que la valeur lue", async () => {
+  const c = (await creerConnecteur({ name: "Réceptions collées", kind: "csv", config: {} })).body.connector;
+  const r = await request(app).post(`/api/connectors/${c.id}/apercu`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ entity: "reception",
+      mappings: [
+        { entity: "reception", mems_field: "geo_pcode", source_path: "code", transform: "pcode" },
+        /* L'année n'est pas dans le fichier : elle vaut celle de la campagne. */
+        { entity: "reception", mems_field: "annee", source_path: "annee", transform: "entier",
+          default_value: "2026" },
+        { entity: "reception", mems_field: "mois", source_path: "mois", transform: "entier" },
+        { entity: "reception", mems_field: "tonnage_recu", source_path: "recu", transform: "nombre" }],
+      echantillon: [{ code: "mg 232-090 50001", mois: "3", recu: "12,5" }] });
+
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.ok, true, JSON.stringify(r.body.manquants));
+  const apres = r.body.lignes[0].apres;
+  assert.equal(apres.annee, 2026, "le défaut arrive en entier, pas en texte : sinon deux lignes du "
+    + "même import n'auraient pas le même type");
+  assert.equal(apres.geo_pcode, "MG23209050001");
+  assert.equal(apres.tonnage_recu, 12.5);
+
+  /* Une transformation hors du jeu fermé est refusée à l'aperçu comme à
+     l'enregistrement : un aperçu plus permissif enverrait travailler pour rien. */
+  const zzz = await request(app).post(`/api/connectors/${c.id}/apercu`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ entity: "reception", echantillon: [{ code: "X" }],
+      mappings: [{ entity: "reception", mems_field: "geo_pcode", source_path: "code",
+        transform: "regex_maison" }] });
+  assert.equal(zzz.status, 422);
+  assert.match(JSON.stringify(zzz.body.details), /transformation inconnue/);
 });

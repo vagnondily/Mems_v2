@@ -59,6 +59,15 @@ export const config = {
      publique » ; voir lib/odkClient.js pour la règle complète et son pourquoi. */
   odkAllowedHosts: (process.env.ODK_ALLOWED_HOSTS || "")
     .split(",").map(s => s.trim().toLowerCase()).filter(Boolean),
+  /* Hôtes que les connecteurs sortants (Foundry, HTTP générique) ont le droit de
+     joindre. Même logique et même raison que ODK_ALLOWED_HOSTS, pour une famille
+     de sources différente : l'adresse d'un connecteur est saisie par un
+     administrateur, donc venue de l'extérieur, donc jamais suivie telle quelle.
+     Vide — le cas par défaut — signifie « tout serveur https dont l'adresse est
+     publique » ; voir lib/foundry.js. Une instance Foundry d'entreprise porte un
+     nom public, elle n'a normalement pas besoin d'y figurer. */
+  connectorAllowedHosts: (process.env.CONNECTOR_ALLOWED_HOSTS || "")
+    .split(",").map(s => s.trim().toLowerCase()).filter(Boolean),
   bootstrapEmail: process.env.BOOTSTRAP_EMAIL || "admin@mems.local",
   bootstrapPassword: process.env.BOOTSTRAP_PASSWORD || "",
   logLevel: process.env.LOG_LEVEL || "info",

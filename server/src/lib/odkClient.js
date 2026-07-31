@@ -60,8 +60,13 @@ const MAX_ROWS = 20_000;
 const refus = (message) => { const e = new Error(message); e.code = "ODK_URL"; return e; };
 
 /* Le motif pour lequel une adresse est refusée, ou null si elle est publique.
-   On nomme le motif : « refusé » sans dire pourquoi envoie chercher pendant une heure. */
-function motifPrive(ip){
+   On nomme le motif : « refusé » sans dire pourquoi envoie chercher pendant une heure.
+
+   Exportée depuis l'ajout des connecteurs (lib/foundry.js) : la règle « quelles
+   adresses le serveur refuse de joindre » ne doit exister qu'à un seul endroit.
+   La recopier pour une seconde source sortante, c'est se garantir qu'un jour
+   l'une des deux copies oubliera une plage — et une plage oubliée est une SSRF. */
+export function motifPrive(ip){
   if(net.isIPv4(ip)){
     const [a, b] = ip.split(".").map(Number);
     if(a === 127) return "bouclage (127.0.0.0/8)";
