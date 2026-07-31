@@ -55,7 +55,12 @@ const NAV = [
   { id:"analytics", label:"Analyses", icon:BarChart3, sub:[
     ["datasets","Jeux de données","Constitution et apurement des jeux issus des sources."],
     ["scripts","Scripts d'analyse","Traitements R ou SPSS appliqués aux jeux de données."],
-    ["viz","Visualisations","Tableaux de bord composés à partir des jeux apurés."]] },
+    ["viz","Visualisations","Tableaux de bord composés à partir des jeux apurés."],
+    /* La carte figure aussi sous Suivi-évaluation. Ce n'est pas un doublon d'écran —
+       c'est le même — mais un doublon d'ENTRÉE : on y vient pour planifier des visites,
+       ou pour analyser une répartition, et ces deux gestes ne se cherchent pas au même
+       endroit. */
+    ["map","Cartographie","Où sont les sites et ce qu'ils couvrent, sur le fond de carte et le découpage."]] },
   { id:"reports", label:"Rapports", icon:FileText, sub:[
     ["extract","Extraction ODK","Extraction filtrée des soumissions, prête à exporter."],
     ["build","Générateur de rapport","Composition d'un rapport à partir des données brutes ou apurées."]] },

@@ -383,7 +383,7 @@ export default function App(){
           setSub={setSub("suivi")} notify={notify} can={can} go={setTab} />}
         {view==="programme" && <Programme db={db} set={set} me={me} sub={subs.programme} reload={loadState}
           setSub={setSub("programme")} notify={notify} can={can} go={setTab} />}
-        {view==="analytics" && <Analytics db={db} set={set} sub={subs.analytics}
+        {view==="analytics" && <Analytics db={db} set={set} me={me} go={setTab} sub={subs.analytics}
           setSub={setSub("analytics")} notify={notify} can={can} />}
         {view==="reports" && <Reports db={db} set={set} sub={subs.reports}
           setSub={setSub("reports")} notify={notify} can={can} />}

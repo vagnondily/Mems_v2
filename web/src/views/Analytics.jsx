@@ -1,17 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
+import MapView from "./MapView.jsx";
 import { Activity, BarChart3, Code2, Database, Download, Filter, Pencil, Plus, Save, Trash2, Upload } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
-import { RULE_TYPES, applyRules, fmt, n, pct, profileColumn, r1, siteScore, uid } from "../lib/calc.js";
+import { RULE_TYPES, applyRules, clsx, fmt, n, pct, profileColumn, r1, siteScore, uid } from "../lib/calc.js";
 import { C, MONTHS, SERIES } from "../lib/constants.js";
 
 /* ══════════════════ Analyses ══════════════════ */
-function Analytics({ db, set, sub, setSub, notify, can }){
+function Analytics({ db, set, sub, setSub, me, notify, can, go }){
   return (
     <div className="space-y-4">
       {sub==="datasets" && <Datasets db={db} set={set} notify={notify} can={can} />}
       {sub==="scripts" && <Scripts db={db} set={set} notify={notify} can={can} />}
       {sub==="viz" && <Viz db={db} set={set} notify={notify} can={can} />}
+      {/* La MÊME carte que sous Suivi-évaluation, et non une copie : une seconde
+          implémentation divergerait au premier correctif. On la regarde depuis deux
+          entrées parce qu'on y vient pour deux raisons — planifier des visites, ou
+          analyser une répartition. */}
+      {sub==="map" && <MapView db={db} me={me} notify={notify} go={go} />}
     </div>);
 }
 
@@ -299,9 +305,30 @@ function aggregate(db, source, dim, measure){
 }
 function Viz({ db, set, notify, can }){
   const [active,setActive] = useState(db.dashboards[0]?.id); const [edit,setEdit] = useState(null);
+  const [renomme,setRenomme] = useState(null);
   const dash = db.dashboards.find(d=>d.id===active) || db.dashboards[0];
   const addDash = () => { const d = { id:uid("db"), name:"Nouvel onglet", widgets:[] };
-    set(x=>{ x.dashboards.push(d); return x; }); setActive(d.id); };
+    set(x=>{ x.dashboards.push(d); return x; }); setActive(d.id); setRenomme(d.id); };
+
+  /* Un onglet se créait et ne se défaisait plus : ni renommer, ni supprimer. « Nouvel
+     onglet » le restait donc pour toujours, et une fausse manœuvre laissait un onglet
+     vide que rien ne permettait d'ôter. C'est le genre de cul-de-sac qui décourage
+     d'essayer — or un tableau de bord se construit justement en essayant. */
+  const renommer = (id, nom) => set(x => {
+    const d = x.dashboards.find(y => y.id === id);
+    if(d) d.name = nom.trim() || "Sans titre";
+    return x; });
+  const supprimer = (id) => {
+    const d = db.dashboards.find(y => y.id === id);
+    /* On ne demande confirmation que s'il y a quelque chose à perdre : confirmer la
+       suppression d'un onglet vide n'apprend rien à personne. */
+    if(d?.widgets?.length && !window.confirm(
+      `Supprimer « ${d.name} » et ses ${d.widgets.length} visualisation(s) ?`)) return;
+    const restants = db.dashboards.filter(y => y.id !== id);
+    set(x => { x.dashboards = x.dashboards.filter(y => y.id !== id); return x; });
+    setActive(restants[0]?.id);
+    notify("Onglet supprimé", "ok");
+  };
   const saveW = (w) => { set(x=>{ const d=x.dashboards.find(y=>y.id===active);
       const i=d.widgets.findIndex(y=>y.id===w.id);
       if(i>=0) d.widgets[i]=w; else d.widgets.push({...w,id:uid("w")}); return x; });
@@ -309,7 +336,20 @@ function Viz({ db, set, notify, can }){
   return (
     <>
       <div className="flex items-center gap-2 mb-3">
-        <Tabs className="flex-1" items={db.dashboards.map(d=>[d.id,d.name])} value={active} onChange={setActive} />
+        {renomme
+          ? <input autoFocus defaultValue={db.dashboards.find(d=>d.id===renomme)?.name || ""}
+              onBlur={e=>{ renommer(renomme, e.target.value); setRenomme(null); }}
+              onKeyDown={e=>{ if(e.key==="Enter") e.currentTarget.blur();
+                              if(e.key==="Escape") setRenomme(null); }}
+              className={clsx(inputCls, "mi-py1 max-w-[16rem]")} />
+          : <Tabs className="flex-1" items={db.dashboards.map(d=>[d.id,d.name])}
+              value={active} onChange={setActive} />}
+        {can("edit") && dash && !renomme && (<>
+          <button onClick={()=>setRenomme(active)} title="Renommer cet onglet"
+            className="p-1.5 text-slate-400 hover:text-slate-700"><Pencil size={14} /></button>
+          <button onClick={()=>supprimer(active)} title="Supprimer cet onglet"
+            className="p-1.5 text-slate-400 hover:text-rose-600"><Trash2 size={14} /></button>
+        </>)}
         {can("edit") && <Btn kind="sec" size="sm" icon={Plus} onClick={addDash}>Onglet</Btn>}
         {can("edit") && <Btn size="sm" icon={Plus} onClick={()=>setEdit({ type:"bar", source:"sites", dim:"subOffice", measure:"count", title:"" })}>Visualisation</Btn>}
       </div>
@@ -320,7 +360,11 @@ function Viz({ db, set, notify, can }){
             onDelete={can("edit")?()=>set(x=>{ const d=x.dashboards.find(y=>y.id===active);
               d.widgets=d.widgets.filter(y=>y.id!==w.id); return x; }):null} />)}
         </div>
-      ) : <Card><Empty icon={BarChart3} title="Onglet vide" text="Ajoutez une visualisation en choisissant une source, une dimension et une mesure."
+      ) : !db.dashboards.length
+        ? <Card><Empty icon={BarChart3} title="Aucun onglet"
+            text="Un onglet regroupe des visualisations. Créez-en un pour commencer."
+            action={can("edit") && <Btn icon={Plus} onClick={addDash}>Créer un onglet</Btn>} /></Card>
+        : <Card><Empty icon={BarChart3} title="Onglet vide" text="Ajoutez une visualisation en choisissant une source, une dimension et une mesure."
             action={can("edit") && <Btn icon={Plus} onClick={()=>setEdit({ type:"bar", source:"sites", dim:"subOffice", measure:"count", title:"" })}>Ajouter</Btn>} /></Card>}
       <WidgetModal open={!!edit} w={edit} db={db} onClose={()=>setEdit(null)} onSave={saveW} />
     </>);
