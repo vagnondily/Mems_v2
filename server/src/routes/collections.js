@@ -97,7 +97,12 @@ const COLLECTIONS = {
       formId:z.string().min(1).max(120), project:S(40), token:S(400),
       kind:z.enum(["process","output","outcome","sites"]).default("process"),
       tag:S(20), siteField:S(120), dateField:S(120),
-      labels:z.record(z.string().max(500)).default({}) }),
+      /* Une question ODK peut porter un libellé long — texte de consentement,
+         note d'instruction au préambule d'un module — bien au-delà d'un intitulé
+         de question ordinaire. Un XLSForm réel en a dépassé 2000 caractères ; la
+         limite précédente (500) rejetait la source entière au premier
+         enregistrement, sans avertissement clair côté écran. */
+      labels:z.record(z.string().max(4000)).default({}) }),
     map: (x) => ({ name:x.name, form_id:x.formId, project:x.project,
       kind:x.kind, activity_tag:x.tag, site_field:x.siteField, date_field:x.dateField,
       labels:JSON.stringify(x.labels),

@@ -184,6 +184,25 @@ test("jetons de source externe : chiffrés au repos, jamais renvoyés", async ()
   assert.equal(after.body.odkForms[0].hasToken, true);
 });
 
+/* Régression : un XLSForm réel porte des libellés de plusieurs milliers de
+   caractères (texte de consentement, note d'instruction en préambule d'un
+   module) — bien au-delà d'un intitulé de question ordinaire. La limite à
+   500 caractères rejetait la source entière au premier enregistrement. */
+test("XLSForm associé : un libellé long (texte de consentement) est accepté", async () => {
+  const consentement = "My name is ________ and I work with an independent entity. ".repeat(30);
+  assert.ok(consentement.length > 500 && consentement.length < 4000);
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  const forms = st.body.odkForms.map(f => ({ ...f }));
+  forms.push({ name:"Formulaire à libellé long", formId:"long_label_form", kind:"process",
+    labels: { consent: consentement } });
+  const w = await request(app).put("/api/collections/odkForms")
+    .set("Authorization", `Bearer ${adminToken}`).send({ rows: forms });
+  assert.equal(w.status, 200, JSON.stringify(w.body));
+  const after = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  const f = after.body.odkForms.find(x => x.formId === "long_label_form");
+  assert.equal(f.labels.consent, consentement);
+});
+
 /* ── Tirage ODK Central (serveur) ──────────────────────────────────────
    Sans serveur ODK Central réel à disposition, ces tests en simulent un en
    mémoire : deux pages de soumissions, une variable de groupe aplatie, un

@@ -100,19 +100,37 @@ désormais. Le circuit de validation à trois niveaux et l'éditeur de zones/
 lignes d'un plan ont aussi été ouverts en tant qu'administrateur : aucune
 erreur, budget cohérent avec le barème contractuel.
 
-## Chantier 3 — xlsx (SheetJS) : finaliser côté environnement avec accès réseau
+## Chantier 3 — xlsx (SheetJS) : dépendance vulnérable — FAIT
 
-`web/package.json` pointe encore `xlsx` sur l'ancienne version vulnérable (le
-changement vers le tarball CDN a été reverti de la PR #5 — le bac à sable de
-développement ne peut pas atteindre `cdn.sheetjs.com`). À faire depuis un poste
-ou un Codespace avec accès réseau complet :
+**Décision** : pas de tarball CDN. `xlsx` (SheetJS) n'a plus de correctif publié
+sur le registre npm depuis ses CVE (pollution de prototype, ReDoS) — seul un
+tarball signé sur `cdn.sheetjs.com` les corrige, ce qui aurait fait dépendre
+chaque `npm ci` (y compris en CI) d'un hôte hors du registre npm. Remplacé
+l'unique usage réel — la lecture, dans le navigateur, de la feuille `survey`
+d'un XLSForm joint à une source ODK Central, pour en tirer les libellés de
+question (`Paramètres → ODK Central`, `web/src/views/Settings.jsx`,
+`attachXls`) — par [`read-excel-file`](https://www.npmjs.com/package/read-excel-file)
+(export `/universal`, sans worker à empaqueter), publié sur le registre npm,
+sans dépendance transitive vulnérable (`npm audit` : plus aucune entrée sur
+`xlsx` après le remplacement). `exceljs` — déjà utilisé côté serveur — a été
+essayé en premier mais écarté : sa dépendance à `archiver` pour l'écriture
+(inutile ici, on ne lit qu'en lecture) introduisait 13 vulnérabilités
+transitives (`glob`, `minimatch`, `brace-expansion`…), un échange perdant.
 
-```bash
-cd web
-npm install https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
-npm test
-git add package.json package-lock.json && git commit -m "xlsx: paquet corrigé SheetJS"
-```
+Vérifié avec les cinq vrais XLSForms MDG de ce dépôt (jusqu'à 2000+ caractères
+de libellé, texte de consentement compris) : extraction identique à l'ancienne
+bibliothèque, `npm run build` compile, et un défaut réel découvert au passage
+a été corrigé — voir remarque ci-dessous.
+
+**Remarque relevée en testant** : la limite de longueur d'un libellé de
+question (`server/src/routes/collections.js`, schéma `odkForms`) était de 500
+caractères. Un XLSForm réel dépasse cette limite dès qu'une question porte un
+texte de consentement ou une note d'instruction — la source entière était
+alors refusée (422) au premier enregistrement, avec un message d'échec facile
+à manquer (le bandeau « Source enregistrée » s'affiche de façon optimiste,
+avant que la synchronisation vers le serveur n'ait confirmé quoi que ce soit —
+même défaut de fond que le rattachement `tpm_id` du chantier 2). Portée à
+4000 caractères, avec un test de régression.
 
 ## Fait (pour mémoire, PR #4 et #5 fusionnées dans main)
 

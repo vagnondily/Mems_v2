@@ -12,7 +12,7 @@ export default defineConfig({
         manualChunks: {
           react: ["react", "react-dom"],
           charts: ["recharts"],
-          sheets: ["xlsx"],
+          sheets: ["read-excel-file/universal"],
         },
       },
     },
