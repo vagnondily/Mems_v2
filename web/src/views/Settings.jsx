@@ -39,7 +39,11 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload, go }){
       {sub==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} />}
       {sub==="templates" && <SetTemplates db={db} set={set} notify={notify} can={can} />}
       {sub==="api" && <><MiseAJour me={me} notify={notify} /><Sauvegarde db={db} notify={notify} /><SetApi db={db} notify={notify} /></>}
-      {sub==="users" && <SetUsers db={db} set={set} me={me} notify={notify} />}
+      {sub==="users" && <>
+        <OptionDemande db={db} set={set} />
+        <DemandesAcces db={db} set={set} notify={notify} reload={reload} />
+        <SetUsers db={db} set={set} me={me} notify={notify} />
+      </>}
     </div>);
 }
 
@@ -1662,6 +1666,183 @@ Accept: application/json`}</pre></div>
 }
 
 /* ── Utilisateurs ── */
+/* ── Les demandes d'accès ─────────────────────────────────────
+   Une demande n'est pas un compte : c'est une déclaration en attente de décision. Ce
+   qui se joue ici est exactement ce que le demandeur ne pouvait pas décider — le rôle,
+   le bureau, les destinations. L'écran met donc la déclaration à gauche et la décision
+   à droite, pour qu'on lise l'une en remplissant l'autre.
+
+   L'acceptation rend un mot de passe initial UNE SEULE FOIS. L'application n'envoie
+   pas de courriel : c'est à l'administrateur de le transmettre, il doit donc le voir,
+   et il ne le reverra jamais. On le montre en grand, avec de quoi le copier, et on
+   dit qu'il ne reviendra pas. */
+/* L'option elle-même. Elle est fermée par défaut, et l'écran dit ce qu'elle ouvre :
+   une porte publique, sur laquelle n'importe qui peut frapper. C'est sans danger tant
+   que frapper ne fait qu'annoncer — mais on préfère l'écrire que le sous-entendre. */
+function OptionDemande({ db, set }){
+  const s = db.settings || {};
+  const u = (k, v) => set(d => { d.settings[k] = v; return d; });
+  const ouvert = s.selfRegistration === true;
+  return (
+    <Card title="Demande d'accès"
+      subtitle="Permettre à quelqu'un de demander un compte depuis l'écran de connexion">
+      <Sw label="Ouvrir la demande d'accès"
+        hint="Un lien « Demander un accès » apparaît sur l'écran de connexion. Une demande ne crée aucun compte : elle attend votre décision."
+        on={ouvert} onChange={v=>u("selfRegistration", v)} />
+      {ouvert && <Field label="Domaines acceptés"
+        hint="Séparés par des virgules — par exemple wfp.org. Laisser vide accepte toute adresse.">
+        <Input value={s.selfRegistrationDomains || ""} placeholder="wfp.org"
+          onChange={e=>u("selfRegistrationDomains", e.target.value)} /></Field>}
+      {ouvert && <Note>Le rôle ne peut pas être demandé : il n'existe ni dans le formulaire
+        ni dans la table des demandes. Il se décide ici, à l'acceptation, et nulle part ailleurs.</Note>}
+    </Card>);
+}
+
+function DemandesAcces({ db, set, notify, reload }){
+  const [d, setD] = useState({ rows:[], loading:true });
+  const [sel, setSel] = useState(null);
+  const [decision, setDecision] = useState({ role:"viewer", office_id:"", tabs:[], note:"" });
+  const [busy, setBusy] = useState(false);
+  const [motDePasse, setMotDePasse] = useState(null);
+  const [voir, setVoir] = useState("pending");
+
+  const charger = () => { setD(x => ({ ...x, loading:true }));
+    api.demandes(voir === "toutes" ? "" : `?status=${voir}`)
+      .then(r => setD({ ...r, loading:false }))
+      .catch(e => setD({ rows:[], loading:false, err:e.message })); };
+  useEffect(charger, [voir]);
+
+  const ouvrir = (r) => {
+    setSel(r); setMotDePasse(null);
+    /* L'entité déclarée propose les destinations de son métier : c'est à cela qu'elle
+       sert, et cela évite de cocher douze cases à l'aveugle. Tout reste modifiable. */
+    const e = D_ENTITIES[r.entity];
+    setDecision({ role:"viewer", office_id:r.office_id || "",
+      tabs: e ? [...e.tabs] : ["home"], note:"" });
+  };
+
+  const accepter = async () => {
+    setBusy(true);
+    try{
+      const r = await api.accepterDemande(sel.id, decision);
+      setMotDePasse(r);
+      notify(`Compte créé pour ${r.email}`, "ok");
+      charger(); if(reload) await reload();
+    }catch(e){ notify(e.message, "err"); }
+    finally{ setBusy(false); }
+  };
+  const refuser = async () => {
+    setBusy(true);
+    try{ await api.refuserDemande(sel.id, decision.note);
+      notify("Demande refusée", "ok"); setSel(null); charger(); }
+    catch(e){ notify(e.message, "err"); }
+    finally{ setBusy(false); }
+  };
+
+  const enAttente = d.rows.filter(r => r.status === "pending").length;
+  const TONE = { pending:"b", approved:"g", rejected:"r" };
+  const MOT  = { pending:"en attente", approved:"acceptée", rejected:"refusée" };
+
+  return (<>
+    <Card flush title="Demandes d'accès"
+      subtitle={d.loading ? "Lecture…"
+        : enAttente ? `${enAttente} demande(s) à examiner` : "Aucune demande en attente"}
+      right={<>
+        <Select value={voir} onChange={e=>setVoir(e.target.value)} className="mi-py1 mi-xs mi-wauto"
+          options={[["pending","En attente"],["approved","Acceptées"],
+                    ["rejected","Refusées"],["toutes","Toutes"]]} />
+        <Btn size="sm" kind="sec" icon={RefreshCw} onClick={charger}>Rafraîchir</Btn></>}>
+      {d.err && <div className="p-5"><Note tone="warn">{d.err}</Note></div>}
+      {!d.loading && !d.rows.length && <Empty title="Rien à examiner"
+        text="Les demandes déposées depuis l'écran de connexion apparaissent ici, dans votre pays." />}
+      {!!d.rows.length && <TableWrap max="mh340">
+        <thead><tr><Th>Personne</Th><Th>Service</Th><Th>Bureau souhaité</Th>
+          <Th>Déposée le</Th><Th>État</Th><Th /></tr></thead>
+        <tbody>{d.rows.map(r => (
+          <tr key={r.id} className="border-t border-slate-100 hover:bg-sky-50">
+            <Td><div className="font-medium text-slate-800">{r.first_name} {r.last_name}</div>
+              <div className="f105 text-slate-500">{r.email}{r.title ? ` · ${r.title}` : ""}</div></Td>
+            <Td className="f115">{D_ENTITIES[r.entity]?.label || <span className="text-slate-400">—</span>}</Td>
+            <Td className="f115 text-slate-600">{r.office || <span className="text-slate-400">à décider</span>}</Td>
+            <Td className="f105 text-slate-500">{new Date(r.created_at).toLocaleDateString("fr-FR")}</Td>
+            <Td><Badge tone={TONE[r.status]}>{MOT[r.status]}</Badge></Td>
+            <Td className="text-right">{r.status === "pending"
+              ? <Btn size="sm" onClick={()=>ouvrir(r)}>Examiner</Btn>
+              : <span className="f105 text-slate-400">{r.decidedBy}</span>}</Td>
+          </tr>))}</tbody>
+      </TableWrap>}
+    </Card>
+
+    <Modal open={!!sel} onClose={()=>{ setSel(null); setMotDePasse(null); }} wide
+      title={motDePasse ? "Compte créé" : "Examiner la demande"}
+      subtitle={motDePasse ? undefined : "Le demandeur a déclaré qui il est ; vous décidez de ce qu'il pourra faire"}
+      footer={motDePasse
+        ? <Btn onClick={()=>{ setSel(null); setMotDePasse(null); }}>J'ai noté le mot de passe</Btn>
+        : <><Btn kind="sec" onClick={()=>setSel(null)}>Annuler</Btn>
+            <Btn kind="danger" disabled={busy} onClick={refuser}>Refuser</Btn>
+            <Btn icon={Check} disabled={busy} onClick={accepter}>
+              {busy ? "Création…" : "Accepter et créer le compte"}</Btn></>}>
+      {motDePasse ? (
+        <div>
+          <Note tone="warn"><b>Ce mot de passe n'est affiché qu'une fois.</b> Il n'est
+            conservé nulle part en clair et aucun écran ne le redonnera. Transmettez-le
+            par un canal sûr ; il devra être changé à la première connexion.</Note>
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-5 text-center">
+            <div className="f11 uppercase tracking-wide font-bold text-slate-500">{motDePasse.email}</div>
+            <div className="font-mono text-2xl text-slate-900 mt-2 select-all">{motDePasse.motDePasse}</div>
+          </div>
+        </div>
+      ) : sel && (
+        <div className="grid gap-5" style={{gridTemplateColumns:"1fr 1fr"}}>
+          <div>
+            <div className="f10 uppercase tracking-wide font-bold text-slate-500 mb-2">Ce qui a été déclaré</div>
+            <div className="space-y-2 f13">
+              <div><span className="text-slate-500">Nom </span>
+                <b>{sel.first_name} {sel.last_name}</b></div>
+              <div><span className="text-slate-500">Adresse </span>{sel.email}</div>
+              <div><span className="text-slate-500">Poste </span>{sel.title || "—"}</div>
+              <div><span className="text-slate-500">Service </span>
+                {D_ENTITIES[sel.entity]?.label || "—"}</div>
+              <div><span className="text-slate-500">Bureau souhaité </span>{sel.office || "—"}</div>
+              <div><span className="text-slate-500">Pays </span>{sel.country_code || "—"}</div>
+            </div>
+            {sel.motif && <div className="mt-4">
+              <div className="f10 uppercase tracking-wide font-bold text-slate-500 mb-1">Motif</div>
+              <p className="f115 text-slate-600 whitespace-pre-wrap leading-relaxed">{sel.motif}</p></div>}
+            <Note>Une déclaration n'engage que celui qui la fait. Vérifiez auprès du bureau
+              concerné avant d'accorder un accès à des données de bénéficiaires.</Note>
+          </div>
+
+          <div>
+            <div className="f10 uppercase tracking-wide font-bold text-slate-500 mb-2">Ce que vous décidez</div>
+            <Field label="Rôle" hint="Le rôle, et lui seul, accorde des droits. Il n'a pas pu être demandé.">
+              <Select value={decision.role}
+                onChange={e=>setDecision(x=>({ ...x, role:e.target.value }))}
+                options={[["viewer","Lecture seule"],["editor","Éditeur"],
+                          ["validator","Validateur"],["admin","Administrateur"]]} /></Field>
+            <Field label="Bureau">
+              <Select value={decision.office_id} empty="Aucun — voit tout le pays"
+                onChange={e=>setDecision(x=>({ ...x, office_id:e.target.value }))}
+                options={(db.offices||[]).map(o=>[o.id, o.name])} /></Field>
+            <Field label="Destinations ouvertes">
+              <div className="grid grid-cols-2 gap-1">
+                {TABS_ALL.map(([t,l])=>(
+                  <label key={t} className="flex items-center gap-1.5 f115 cursor-pointer">
+                    <input type="checkbox" checked={decision.tabs.includes(t)}
+                      onChange={e=>setDecision(x=>({ ...x,
+                        tabs: e.target.checked ? [...new Set([...x.tabs, t])] : x.tabs.filter(y=>y!==t) }))} />
+                    {l}</label>))}
+              </div></Field>
+            <Field label="Note de décision" hint="Conservée au journal, et visible ici ensuite.">
+              <Input value={decision.note}
+                onChange={e=>setDecision(x=>({ ...x, note:e.target.value }))} /></Field>
+          </div>
+        </div>
+      )}
+    </Modal>
+  </>);
+}
+
 function SetUsers({ db, set, me, notify }){
   const [edit,setEdit] = useState(null);
   /* Les comptes vivent côté serveur : le navigateur ne calcule aucun condensat

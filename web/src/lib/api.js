@@ -94,6 +94,15 @@ export const api = {
   logout:      ()            => call("POST", "/auth/logout", {}),
   me:          ()            => call("GET", "/auth/me"),
   changePassword: (current, next) => call("POST", "/auth/password", { current, next }),
+
+  /* Demande d'accès. La première est publique — c'est tout l'objet — les suivantes
+     exigent le droit d'administrer. Aucune ne porte de rôle : il se décide à
+     l'acceptation, et nulle part ailleurs. */
+  demandeOptions: ()        => call("GET", "/requests/options"),
+  demanderAcces:  (b)       => call("POST", "/requests", b),
+  demandes:       (q="")    => call("GET", `/requests${q}`),
+  accepterDemande:(id, b)   => call("POST", `/requests/${encodeURIComponent(id)}/approve`, b),
+  refuserDemande: (id, note)=> call("POST", `/requests/${encodeURIComponent(id)}/reject`, { note }),
   /* L'exercice voyage avec la demande d'état : le serveur ne sert que les lignes
      datées de cette année-là. Sans argument, il retombe sur l'année en cours. */
   state:       (annee)       => call("GET", `/state${annee ? `?year=${encodeURIComponent(annee)}` : ""}`),

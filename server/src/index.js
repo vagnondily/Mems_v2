@@ -25,6 +25,7 @@ import mreRoutes from "./routes/mre.js";
 import pddRoutes from "./routes/pdd.js";
 import backupRoutes from "./routes/backup.js";
 import updateRoutes from "./routes/update.js";
+import requestRoutes from "./routes/requests.js";
 import officeRoutes from "./routes/offices.js";
 import partnerRoutes from "./routes/partners.js";
 import userRoutes from "./routes/users.js";
@@ -104,6 +105,9 @@ app.get("/api/health", (req, res) => {
 });
 
 app.use("/api/auth", authRoutes);
+/* La demande d'accès porte sa propre authentification : sa première route est
+   publique par nature, les suivantes exigent le droit d'administrer. */
+app.use("/api/requests", requestRoutes);
 
 /* ── Contexte de pays ────────────────────────────────────────────────
    Une instance sert plusieurs pays. Chaque requête authentifiée porte donc son

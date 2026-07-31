@@ -568,6 +568,105 @@ test("mise à jour : fermée par défaut, et rien ne vient de la requête", asyn
   assert.match(r.body.error, /super/i);
 });
 
+test("demande d'accès : fermée par défaut, et le rôle ne se demande pas", async () => {
+  /* Un compte ne pouvait naître que de la main d'un administrateur — sûr, mais goulot :
+     la personne recrutée lundi attend, et travaille sur un tableur en attendant. La
+     forme juste tient en deux verbes : elle DEMANDE, l'administrateur DÉCIDE.
+
+     Encore faut-il que ce ne soit pas une porte dérobée. Trois choses le garantissent,
+     et ce sont elles qu'on éprouve ici. */
+  db.prepare("DELETE FROM settings WHERE key LIKE 'selfRegistration%'").run();
+  db.prepare("DELETE FROM account_request").run();
+
+  /* 1. Fermée par défaut. */
+  assert.equal((await request(app).get("/api/requests/options")).body.ouverte, false);
+  const fermee = await request(app).post("/api/requests")
+    .send({ email:"quelquun@example.org", first_name:"Quelquun" });
+  assert.equal(fermee.status, 404);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM account_request").get().c, 0);
+
+  await request(app).put("/api/settings").set("Authorization", `Bearer ${adminToken}`)
+    .send({ selfRegistration:true });
+  assert.equal((await request(app).get("/api/requests/options")).body.ouverte, true);
+
+  /* 2. Le rôle ne se demande pas. On l'envoie quand même, pour voir. */
+  const dep = await request(app).post("/api/requests").send({
+    email:"Nouvelle.Recrue@example.org", first_name:"Nouvelle", last_name:"Recrue",
+    title:"Agent de suivi", entity:"se", motif:"Prise de poste",
+    role:"super", tabs:["settings"], active:true });
+  assert.equal(dep.status, 202);
+  assert.equal(dep.body.recue, true);
+  const dem = db.prepare("SELECT * FROM account_request WHERE email='nouvelle.recrue@example.org'").get();
+  assert.ok(dem, "la demande est enregistrée");
+  assert.equal(dem.status, "pending");
+  assert.ok(!("role" in dem),
+    "il n'existe aucune colonne « role » : le rôle ne peut donc pas être demandé");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM users WHERE email='nouvelle.recrue@example.org'").get().c,
+    0, "une demande ne crée aucun compte");
+
+  /* 3. La réponse ne dit jamais si l'adresse est connue — sinon ce formulaire serait
+     un outil d'énumération de comptes offert à qui passe. */
+  const reponses = [];
+  for(const email of ["nouvelle.recrue@example.org",   /* déjà en attente */
+                      "admin@test.local",              /* compte existant */
+                      "inconnu.total@example.org"]){   /* inconnue */
+    const r = await request(app).post("/api/requests").send({ email, first_name:"Essai" });
+    reponses.push(`${r.status}|${JSON.stringify(r.body)}`);
+  }
+  assert.equal(new Set(reponses).size, 1,
+    "les trois cas doivent être indiscernables de l'extérieur");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM account_request WHERE status='pending'").get().c, 2,
+    "un doublon ne crée pas une seconde demande en attente");
+});
+
+test("demande d'accès : c'est l'administrateur qui décide, et lui seul", async () => {
+  const dem = db.prepare(
+    "SELECT * FROM account_request WHERE email='nouvelle.recrue@example.org'").get();
+  assert.ok(dem);
+
+  /* Personne d'autre ne voit ni ne décide. */
+  const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  assert.equal((await request(app).get("/api/requests").set("Authorization", `Bearer ${t}`)).status, 403);
+  assert.equal((await request(app).post(`/api/requests/${dem.id}/approve`)
+    .set("Authorization", `Bearer ${t}`).send({ role:"editor" })).status, 403);
+  assert.equal((await request(app).get("/api/requests")).status, 401);
+
+  /* « super » ne s'accorde pas par ce chemin : il donne le contrôle total, y compris
+     la mise à jour du code. Il se pose à la main, en connaissance de cause. */
+  const trop = await request(app).post(`/api/requests/${dem.id}/approve`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ role:"super" });
+  assert.equal(trop.status, 422);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM users WHERE email=?").get(dem.email).c, 0);
+
+  /* L'acceptation crée le compte avec le rôle CHOISI PAR L'ADMINISTRATEUR, et rend le
+     mot de passe initial une seule fois. */
+  const ok = await request(app).post(`/api/requests/${dem.id}/approve`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ role:"editor", tabs:["home","suivi"], note:"Confirmé par le chef de bureau" });
+  assert.equal(ok.status, 201, ok.body.error);
+  assert.ok(ok.body.motDePasse && ok.body.motDePasse.length >= 12);
+  const u = db.prepare("SELECT * FROM users WHERE email=?").get(dem.email);
+  assert.equal(u.role, "editor", "le rôle est celui de l'administrateur, pas du demandeur");
+  assert.equal(u.must_change_pw, 1, "le mot de passe initial devra être changé");
+  assert.ok(u.pw_hash && u.pw_hash !== ok.body.motDePasse,
+    "seule l'empreinte est conservée, jamais le mot de passe");
+
+  /* Le mot de passe rendu fonctionne réellement — un identifiant qu'on transmet et qui
+     n'ouvre rien serait pire que pas d'identifiant du tout. */
+  const co = await login(dem.email, ok.body.motDePasse);
+  assert.equal(co.status, 200);
+  assert.equal(co.body.user.must_change_pw, true);
+
+  /* Et l'on ne rejoue pas une décision. */
+  const rejeu = await request(app).post(`/api/requests/${dem.id}/approve`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ role:"admin" });
+  assert.equal(rejeu.status, 409);
+
+  db.prepare("DELETE FROM users WHERE email LIKE '%example.org'").run();
+  db.prepare("DELETE FROM account_request").run();
+  db.prepare("DELETE FROM settings WHERE key LIKE 'selfRegistration%'").run();
+});
+
 test("cloisonnement : visites, distributions, paramètres et journal suivent le bureau", async () => {
   const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
   const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;

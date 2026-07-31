@@ -1,6 +1,11 @@
-import React, { useState } from "react";
-import { Lock, Eye, EyeOff } from "lucide-react";
-import { C } from "../lib/constants.js";
+import React, { useEffect, useState } from "react";
+import { Check, Lock, Eye, EyeOff } from "lucide-react";
+import { C, D_ENTITIES } from "../lib/constants.js";
+
+/* Les libellés des services, tels que l'écran des comptes les nomme déjà : deux
+   vocabulaires pour la même chose obligeraient l'administrateur à traduire. */
+const ENTITES = Object.fromEntries(
+  Object.entries(D_ENTITIES).map(([k, v]) => [k, v.label || k]));
 import { clsx } from "../lib/calc.js";
 import { Btn, BrandMark, Field, inputCls } from "../components/ui.jsx";
 import { api, setToken } from "../lib/api.js";
@@ -10,6 +15,105 @@ const DEV_ADMIN_INFO = import.meta.env?.DEV ? {
 } : null;
 /* Aucun identifiant n'apparaît sur cet écran : les comptes se créent côté serveur
    et le mot de passe initial n'est communiqué qu'au moment de l'amorçage. */
+/* ── Demander un accès ────────────────────────────────────────
+   Ce que la personne remplit est une DÉCLARATION, pas une décision. Elle dit qui elle
+   est, pour quel pays et quel bureau elle pense travailler, et pourquoi. Elle ne dit
+   pas — et ne peut pas dire — ce qu'elle pourra faire : le rôle n'est pas dans ce
+   formulaire, il n'est pas non plus dans la table, et il se décide à l'acceptation.
+
+   Le formulaire ne dit jamais si l'adresse est déjà connue. Répondre « ce compte
+   existe déjà » offrirait à qui passe un moyen d'énumérer les personnes qui
+   travaillent ici, adresse par adresse. La réponse est donc la même dans tous les cas,
+   y compris quand la demande n'a rien créé. */
+function DemandeAcces({ options, champ, onRetour }){
+  const [f, setF] = useState({ email:"", first_name:"", last_name:"", title:"",
+    entity:"", country_code: options?.pays?.[0]?.code || "", office_id:"", motif:"" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr]   = useState("");
+  const [envoye, setEnvoye] = useState(null);
+  const u = (k, v) => setF(p => ({ ...p, [k]:v }));
+
+  const bureaux = (options?.bureaux || [])
+    .filter(b => !f.country_code || !b.country_code || b.country_code === f.country_code);
+
+  const envoyer = async () => {
+    setErr(""); setBusy(true);
+    try{ setEnvoye((await api.demanderAcces(f)).message); }
+    catch(e){ setErr(e.message); }
+    finally{ setBusy(false); }
+  };
+
+  if(envoye) return (
+    <div className="text-center py-4">
+      <div className="w-12 h-12 rounded-full bg-lime-50 border border-lime-200 grid place-items-center mx-auto mb-4">
+        <Check size={22} className="text-lime-700" /></div>
+      <h2 className="text-[20px] font-semibold text-slate-900">Demande transmise</h2>
+      <p className="f13 text-slate-500 mt-2 leading-relaxed">{envoye}</p>
+      <Btn kind="sec" className="mt-6" onClick={onRetour}>Revenir à la connexion</Btn>
+    </div>);
+
+  const pret = f.email.includes("@") && f.first_name.trim().length >= 2;
+  return (<>
+    <h2 className="text-[22px] font-semibold text-slate-900 tracking-tight">Demander un accès</h2>
+    <p className="f13 text-slate-500 mt-1.5 mb-6">
+      Votre demande sera examinée par l'administrateur de votre pays. Vos identifiants
+      vous seront transmis une fois qu'elle aura été acceptée.</p>
+
+    {err && <div className="mb-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 f13 text-rose-800"
+      role="alert">{err}</div>}
+
+    <div className="grid grid-cols-2 gap-x-3">
+      <Field label="Prénom">
+        <input value={f.first_name} autoFocus className={champ}
+          onChange={e=>u("first_name", e.target.value)} /></Field>
+      <Field label="Nom">
+        <input value={f.last_name} className={champ}
+          onChange={e=>u("last_name", e.target.value)} /></Field>
+    </div>
+
+    <Field label="Adresse électronique professionnelle"
+      hint={options?.domaines?.length
+        ? `Seules les adresses ${options.domaines.map(d => "@" + d).join(", ")} sont acceptées.`
+        : undefined}>
+      <input type="email" value={f.email} className={champ}
+        onChange={e=>u("email", e.target.value)} /></Field>
+
+    <Field label="Intitulé de poste">
+      <input value={f.title} className={champ} placeholder="Agent de suivi et évaluation"
+        onChange={e=>u("title", e.target.value)} /></Field>
+
+    <div className="grid grid-cols-2 gap-x-3">
+      <Field label="Pays">
+        <select value={f.country_code} className={champ}
+          onChange={e=>{ u("country_code", e.target.value); u("office_id", ""); }}>
+          {(options?.pays || []).map(p => <option key={p.code} value={p.code}>{p.name}</option>)}
+        </select></Field>
+      <Field label="Service">
+        <select value={f.entity} className={champ} onChange={e=>u("entity", e.target.value)}>
+          <option value="">À préciser</option>
+          {(options?.entites || []).map(x => <option key={x} value={x}>{ENTITES[x] || x}</option>)}
+        </select></Field>
+    </div>
+
+    <Field label="Bureau" hint="L'administrateur pourra en décider autrement.">
+      <select value={f.office_id} className={champ} onChange={e=>u("office_id", e.target.value)}>
+        <option value="">À préciser</option>
+        {bureaux.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+      </select></Field>
+
+    <Field label="Motif de la demande"
+      hint="Ce que vous aurez à faire dans MEMS. C'est ce qui permet de vous accorder les bons accès.">
+      <textarea value={f.motif} rows={3} className={clsx(champ, "resize-none")}
+        onChange={e=>u("motif", e.target.value)} /></Field>
+
+    <Btn onClick={envoyer} disabled={!pret || busy} className="w-full justify-center py-2.5 mt-1">
+      {busy ? "Envoi…" : "Envoyer la demande"}</Btn>
+    <button onClick={onRetour}
+      className="f115 text-slate-500 hover:text-slate-800 mt-4 block mx-auto">
+      Revenir à la connexion</button>
+  </>);
+}
+
 export function Login({ onLogin, notify }){
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
@@ -17,6 +121,13 @@ export function Login({ onLogin, notify }){
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [mustChange, setMustChange] = useState(null);
+  /* La demande d'accès n'apparaît que si l'instance l'a ouverte. Proposer un lien qui
+     mène à un refus serait pire que de ne rien proposer. */
+  const [demande, setDemande] = useState(null);   /* null = fermé ou pas encore su */
+  const [ecran, setEcran]     = useState("connexion");
+  useEffect(() => { api.demandeOptions()
+    .then(o => { if(o.ouverte) setDemande(o); })
+    .catch(() => {}); }, []);
   const [next1, setNext1] = useState("");
   const [next2, setNext2] = useState("");
 
@@ -95,7 +206,10 @@ export function Login({ onLogin, notify }){
 
       <div className="w-full max-w-[26.5rem] bg-white rounded-3xl border border-slate-200/70
                       px-9 py-8 sm:px-10" style={ombre}>
-        {!mustChange ? (<>
+        {ecran === "demande"
+          ? <DemandeAcces options={demande} champ={champ}
+              onRetour={()=>setEcran("connexion")} />
+          : !mustChange ? (<>
           <h2 className="text-[22px] font-semibold text-slate-900 tracking-tight">Connexion</h2>
           <p className="f13 text-slate-500 mt-1.5 mb-6">
             Avec l'adresse professionnelle déclarée pour vous.</p>
@@ -125,6 +239,13 @@ export function Login({ onLogin, notify }){
           <Btn onClick={submit} disabled={busy || !pw || !email}
             className="w-full justify-center py-2.5 mt-2" icon={Lock}>
             {busy ? "Connexion en cours…" : "Se connecter"}</Btn>
+
+          {demande && (
+            <p className="f115 text-slate-500 text-center mt-6">
+              Pas encore de compte ?{" "}
+              <button onClick={()=>{ setErr(""); setEcran("demande"); }}
+                className="font-semibold text-sky-700 hover:underline">Demander un accès</button>
+            </p>)}
 
           {DEV_ADMIN_INFO && (
             <div className="mt-7 rounded-xl border border-dashed border-slate-300 bg-slate-50/80 px-4 py-3">
