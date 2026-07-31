@@ -44,9 +44,12 @@ export const config = {
      TILE_HOSTS vers un serveur de tuiles interne est la bonne réponse dès que
      l'usage dépasse la politique d'usage d'OSM ; le vider ferme la carte à
      toute image tierce, au prix du fond (contours et points restent). */
-  tileHosts: (process.env.TILE_HOSTS
-    || "https://*.tile.openstreetmap.org https://tile.openstreetmap.org")
-    .split(/[,\s]+/).map(s => s.trim()).filter(Boolean),
+  tileHosts: (process.env.TILE_HOSTS || [
+    "https://*.tile.openstreetmap.org", "https://tile.openstreetmap.org",
+    "https://*.tile.openstreetmap.fr",
+    "https://*.basemaps.cartocdn.com",
+    "https://server.arcgisonline.com",
+  ].join(" ")).split(/[,\s]+/).map(s => s.trim()).filter(Boolean),
   trustProxy: bool(process.env.TRUST_PROXY, false),
   rateLoginMax: int(process.env.RATE_LOGIN_MAX, 10),
   rateApiMax: int(process.env.RATE_API_MAX, 600),

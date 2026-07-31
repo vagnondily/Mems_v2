@@ -8,6 +8,7 @@ import { Analytics } from "./views/Analytics.jsx";
 import { Home } from "./views/Home.jsx";
 import { Login } from "./views/Login.jsx";
 import { Programme, Suivi } from "./views/Merged.jsx";
+import MapView from "./views/MapView.jsx";
 import { Reports } from "./views/Reports.jsx";
 import { SettingsView } from "./views/Settings.jsx";
 import { Shell } from "./views/Shell.jsx";
@@ -217,6 +218,7 @@ export default function App(){
           setSub={setSub("suivi")} notify={notify} can={can} go={setTab} />}
         {view==="programme" && <Programme db={db} set={set} me={me} sub={subs.programme}
           setSub={setSub("programme")} notify={notify} can={can} go={setTab} />}
+        {view==="map" && <MapView db={db} me={me} notify={notify} go={setTab} />}
         {view==="analytics" && <Analytics db={db} set={set} sub={subs.analytics}
           setSub={setSub("analytics")} notify={notify} can={can} />}
         {view==="reports" && <Reports db={db} set={set} sub={subs.reports}

@@ -159,11 +159,11 @@ test("navigation : les cinq onglets s'ouvrent sans erreur", async () => {
 });
 
 test("cartographie : points projetés, filtres actifs, fiche au clic", async () => {
+  /* La cartographie est une destination de premier niveau depuis qu'elle est
+     sortie de « Suivi-évaluation » : elle s'ouvre d'un seul clic, sans passer
+     par un menu. */
   const nav = (l) => all("header nav button").find(b => b.textContent.trim().startsWith(l));
-  await click(nav("Suivi-évaluation"), "Suivi-évaluation"); await flush();
-  const sousOnglet = all("main button").filter(b => b.className.includes("-mb-px"))
-    .find(b => b.textContent.trim() === "Cartographie");
-  await click(sousOnglet, "sous-onglet Cartographie");
+  await click(nav("Cartographie"), "destination Cartographie");
   await flush(); await flush();
 
   assert.ok(byText("h3", "Cartographie des sites"), "la carte est en place");

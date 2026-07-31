@@ -3,7 +3,6 @@ import { CalendarRange, Check } from "lucide-react";
 import { Tabs } from "../components/ui.jsx";
 import { clsx } from "../lib/calc.js";
 import { PageHead } from "./Shell.jsx";
-import MapView from "./MapView.jsx";
 import { CoveragePlan, DistributionActual, DistributionPlan, OutcomePlan, Overreaching,
          ProcessPlan } from "./Planning.jsx";
 import { ActualSummary, ImportView, OutcomeData, OutputData, ProcessData,
@@ -56,7 +55,7 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
   const [volet, setVolet] = useVolet();
   const items = [["summary","Résumé global"],["monitoring","Suivi des sites"],
     ["mre","Plan MRE et budget"],["tpm","Suivi tiers"],
-    ["coverage","Couverture et MMR"],["map","Cartographie"],
+    ["coverage","Couverture et MMR"],
     ["sites","Registre des sites"],["params","Paramètres de couverture"]];
   return (
     <div className="space-y-4">
@@ -84,7 +83,6 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
       {/* La couverture rapproche par nature le prévu et le réalisé : elle n'a pas
           de volet, les deux colonnes sont côte à côte. */}
       {sub==="coverage" && <CoveragePlan db={db} set={set} me={me} notify={notify} can={can} />}
-      {sub==="map"      && <MapView db={db} me={me} notify={notify} go={go} />}
       {sub==="sites"    && <SitesModule db={db} set={set} me={me} notify={notify} can={can} context="actual" />}
       {sub==="params"   && <Overreaching db={db} set={set} notify={notify} can={can} />}
     </div>);

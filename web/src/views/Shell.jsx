@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BarChart3, CalendarRange, ChevronDown, Cog, Database, FileText, LayoutDashboard, LogOut } from "lucide-react";
+import { BarChart3, CalendarRange, ChevronDown, Cog, Database, FileText, LayoutDashboard, LogOut, MapPin } from "lucide-react";
 import { Badge, BrandMark } from "../components/ui.jsx";
 import { clsx } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
@@ -12,11 +12,13 @@ const NAV = [
   { id:"suivi", label:"Suivi-évaluation", icon:CalendarRange,
     sub:[["summary","Résumé global"],["monitoring","Suivi des sites"],
          ["mre","Plan MRE et budget"],["tpm","Suivi tiers"],
-         ["coverage","Couverture et MMR"],["map","Cartographie"],
+         ["coverage","Couverture et MMR"],
          ["sites","Registre des sites"],["params","Paramètres de couverture"]] },
   { id:"programme", label:"Programme", icon:Database,
     sub:[["distribution","Distributions"],["population","Population et outputs"],
          ["results","Résultats"],["import","Import Excel"],["sources","Sources de données"]] },
+  /* Destination à part entière, sans sous-onglets : la carte est un seul écran. */
+  { id:"map", label:"Cartographie", icon:MapPin },
   { id:"analytics", label:"Analyses", icon:BarChart3,
     sub:[["datasets","Jeux de données"],["scripts","Scripts d'analyse"],["viz","Visualisations"]] },
   { id:"reports", label:"Rapports", icon:FileText,

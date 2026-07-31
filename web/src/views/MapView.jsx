@@ -25,8 +25,26 @@ import { niveau, niveaux } from "../lib/levels.js";
    L'URL est surchargeable dans les réglages (`settings.tileUrl`) pour
    pointer vers un serveur de tuiles interne, ce qui est la bonne réponse
    dès que l'usage dépasse la politique d'usage d'OSM. */
-const TUILES_DEFAUT = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
-const ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
+/* Plusieurs fonds, tous libres et sans clé, parce qu'un seul ne suffit pas.
+   OpenStreetMap applique une politique d'usage qui limite — et parfois refuse —
+   le trafic venant d'un centre de données : une instance hébergée dans le nuage
+   (un Codespace, par exemple) reçoit alors une grille vide sans la moindre
+   explication. Proposer d'autres fournisseurs est la seule réponse qui ne
+   dépende pas de l'hébergement, et le premier de la liste est celui qui tient
+   le mieux dans ce cas. */
+const FONDS = [
+  ["carto",  "Carto (clair)",   "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>, &copy; <a href="https://carto.com/attributions">CARTO</a>'],
+  ["osm",    "OpenStreetMap",   "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'],
+  ["osmfr",  "OSM France",      "https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png",
+   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> France'],
+  ["esri",   "Esri — routier",  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+   "Esri, HERE, Garmin, &copy; OpenStreetMap contributors"],
+  ["sat",    "Esri — satellite","https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+   "Esri, Maxar, Earthstar Geographics"],
+  ["aucun",  "Aucun fond",      "", ""],
+];
 
 const COLOR_MODES = [
   ["coverage", "Couverture des visites"],
@@ -77,7 +95,13 @@ export default function MapView({ db, me, notify, go }){
   const [geoLevel, setGeoLevel] = useState("adm2");
   const [shapes, setShapes] = useState({ features:[], extent:null, tronque:false, loading:false });
   const [selShape, setSelShape] = useState(null);
-  const [fond, setFond] = useState(true);
+  /* Le fond retenu est mémorisé dans les réglages : le choix est propre à
+     l'instance (selon d'où elle est hébergée), pas à la session de chacun. */
+  const [fond, setFond] = useState(() => db.settings?.tileProvider || "carto");
+  /* État de chargement des tuiles, pour pouvoir DIRE que le fond n'arrive pas
+     au lieu d'afficher un damier vide. C'est le défaut qu'avait la première
+     version : silencieuse, elle laissait croire à un bogue de l'application. */
+  const [tuiles, setTuiles] = useState({ ok:0, ko:0 });
   const GEO_LEVELS = niveaux(db, { from:"adm1", to:"adm4" });
 
   const load = async () => {
@@ -179,6 +203,54 @@ export default function MapView({ db, me, notify, go }){
     return { par, val, max, absent };
   }, [fillMode, shapes.features, filtered]);
 
+  /* ── Synthèse affichée quand rien n'est sélectionné ────────────────
+     Un panneau vide n'apprend rien. Tant qu'aucun site n'est choisi, la place
+     sert à ce que la carte ne sait pas dire : les volumes du programme sur le
+     périmètre affiché. Tout est calculé sur `filtered`, donc sur les filtres
+     actifs — la synthèse suit la carte au lieu de parler d'autre chose. */
+  const global = useMemo(() => {
+    const an = db.year;
+    const pdd = (db.pdd || []).filter(p => !an || String(p.year) === String(an));
+    const nb = (v) => n(v ?? 0);
+    /* Le plan de distribution nomme ses champs différemment selon qu'il vient
+       du serveur ou d'une saisie encore locale : on accepte les deux plutôt que
+       d'afficher zéro sur une différence de casse. */
+    const benefPdd = pdd.reduce((t,p) => t + nb(p.benefPlanned ?? p.benef_planned), 0);
+    const recu     = pdd.reduce((t,p) => t + nb(p.benefActual ?? p.benef_actual), 0);
+    const tonnage  = pdd.reduce((t,p) => t + nb(p.tonnage), 0);
+    const tonnageR = pdd.reduce((t,p) => t + nb(p.tonnageActual ?? p.tonnage_actual), 0);
+
+    /* Ciblés par activité : le plan de distribution porte l'activité, la carte
+       porte les sites. On croise les deux pour que la ligne « URT » dise à la
+       fois combien de personnes et combien de sites. */
+    const parAct = {};
+    for(const p of pdd){
+      const k = p.activity || p.activity_tag || "—";
+      (parAct[k] = parAct[k] || { act:k, benef:0, tonnage:0, lignes:0 });
+      parAct[k].benef += nb(p.benefPlanned ?? p.benef_planned);
+      parAct[k].tonnage += nb(p.tonnage);
+      parAct[k].lignes++;
+    }
+    for(const s of filtered){
+      const k = s.activity_tag || "—";
+      (parAct[k] = parAct[k] || { act:k, benef:0, tonnage:0, lignes:0 });
+      parAct[k].sites = (parAct[k].sites || 0) + 1;
+      parAct[k].planifies = (parAct[k].planifies || 0) + nb(s.planned);
+      parAct[k].visites = (parAct[k].visites || 0) + nb(s.done);
+    }
+    const activites = Object.values(parAct)
+      .sort((a,b) => (b.benef || 0) - (a.benef || 0)).slice(0, 8);
+
+    /* Performance du suivi de processus : la part des visites prévues qui ont
+       réellement eu lieu. C'est la question que pose l'écran de couverture,
+       posée ici sur le périmètre cartographié. */
+    const planifies = filtered.reduce((t,s) => t + nb(s.planned), 0);
+    const visites   = filtered.reduce((t,s) => t + nb(s.done), 0);
+
+    return { benefPdd, recu, tonnage, tonnageR, lignes: pdd.length, activites,
+             planifies, visites, perf: pct(visites, planifies), an };
+  }, [db.pdd, db.year, filtered]);
+
   const byRegion = useMemo(() => {
     const m = {};
     filtered.forEach(s => { const k = s.adm1 || "—";
@@ -262,11 +334,25 @@ export default function MapView({ db, me, notify, go }){
     const map = mapRef.current;
     if(!map) return;
     if(tuilesRef.current){ map.removeLayer(tuilesRef.current); tuilesRef.current = null; }
-    if(!fond) return;
-    const url = db.settings?.tileUrl || TUILES_DEFAUT;
-    tuilesRef.current = L.tileLayer(url, { attribution: ATTRIBUTION, maxZoom: 19,
-      crossOrigin: true }).addTo(map);
-    tuilesRef.current.bringToBack();
+    setTuiles({ ok:0, ko:0 });
+    if(fond === "aucun") return;
+    /* Une URL posée dans les réglages l'emporte sur la liste : c'est ainsi
+       qu'une instance pointe un serveur de tuiles interne. */
+    const perso = db.settings?.tileUrl;
+    const choix = FONDS.find(f => f[0] === fond) || FONDS[0];
+    const url = perso || choix[2];
+    const couche = L.tileLayer(url, {
+      attribution: perso ? "Fond de carte interne" : choix[3],
+      maxZoom: 19, crossOrigin: true,
+      /* Les fournisseurs qui ne répartissent pas par sous-domaine ignorent
+         simplement cette liste ; ceux qui le font en ont besoin. */
+      subdomains: /\{s\}/.test(url) ? ["a","b","c"] : [""],
+    });
+    couche.on("tileload",  () => setTuiles(t => ({ ...t, ok: t.ok + 1 })));
+    couche.on("tileerror", () => setTuiles(t => ({ ...t, ko: t.ko + 1 })));
+    couche.addTo(map);
+    couche.bringToBack();
+    tuilesRef.current = couche;
   }, [fond, db.settings?.tileUrl, pret]);
 
   /* Cadrage : seulement quand le périmètre change réellement, sinon chaque
@@ -396,15 +482,28 @@ export default function MapView({ db, me, notify, go }){
           <label className="flex items-center gap-1.5 f115 text-slate-600">
             <input type="checkbox" checked={sizeByBenef} onChange={e=>setSizeByBenef(e.target.checked)} />
             taille selon les bénéficiaires</label>
-          <label className="flex items-center gap-1.5 f115 text-slate-600">
-            <input type="checkbox" checked={fond} onChange={e=>setFond(e.target.checked)} />
-            fond de carte</label>
+          <Select value={fond} onChange={e=>setFond(e.target.value)}
+            options={FONDS.map(f => [f[0], f[1]])} className="mi-py1 mi-xs mi-wauto" />
           <div className="ml-auto">
             <Btn size="sm" kind="ghost" onClick={recentrer}>Recentrer</Btn>
           </div>
         </div>
 
         {error ? <Note tone="err">{error}</Note> : null}
+        {/* Un fond qui n'arrive pas ne doit pas se traduire par un damier vide
+            sans explication : c'est ce qui fait croire à un défaut de
+            l'application alors que le refus vient du fournisseur de tuiles.
+            OpenStreetMap, en particulier, limite le trafic venant d'un centre
+            de données — donc de toute instance hébergée dans le nuage. */}
+        {fond !== "aucun" && tuiles.ko >= 4 && tuiles.ok === 0 ? (
+          <Note tone="warn">
+            Le fond de carte « {(FONDS.find(f=>f[0]===fond)||[])[1]} » n'a pas pu être chargé
+            ({tuiles.ko} tuiles refusées). Les contours et les points, eux, s'affichent
+            normalement. Essayez un autre fond dans la liste ci-dessus — leurs conditions
+            d'accès diffèrent, et OpenStreetMap refuse le trafic venant d'un hébergement en
+            nuage. Pour une instance sans accès à l'internet, choisissez « Aucun fond », ou
+            renseignez l'adresse d'un serveur de tuiles interne dans les réglages.
+          </Note>) : null}
         {sansCoord ? (
           <Note tone="warn">Aucun des {fmt(rows.length)} sites de cette sélection ne porte de
             coordonnées. Renseignez la latitude et la longitude dans le registre des sites, ou
@@ -544,9 +643,64 @@ export default function MapView({ db, me, notify, go }){
                 </div>
               </>
             ) : (
-              <p className="f115 text-slate-500 leading-relaxed">
-                Choisissez un site dans la liste de gauche ou cliquez un point sur la carte.
-                Le fond de carte peut être masqué pour travailler hors ligne.</p>
+              <>
+                <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">
+                  Vue d'ensemble{global.an ? ` · ${global.an}` : ""}</div>
+                <div className="border border-slate-200 rounded p-3 mb-3">
+                  <dl className="space-y-1 f115">
+                    {[["Population couverte", fmt(stats.benef)],
+                      ["Ciblés au plan", fmt(global.benefPdd)],
+                      ["Atteints", global.recu ? fmt(global.recu) : "non renseigné"],
+                      ["Lignes de distribution", fmt(global.lignes)],
+                      ["Tonnage prévu", global.tonnage ? `${fmt(r2(global.tonnage))} t` : "—"],
+                      ["Tonnage reçu", global.tonnageR ? `${fmt(r2(global.tonnageR))} t` : "non renseigné"],
+                    ].map(([k,v]) => (
+                      <div key={k} className="flex justify-between gap-2">
+                        <dt className="text-slate-500">{k}</dt>
+                        <dd className="font-medium tabular-nums">{v}</dd></div>))}
+                  </dl>
+                </div>
+
+                <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">
+                  Suivi de processus</div>
+                <div className="border border-slate-200 rounded p-3 mb-3">
+                  <div className="flex justify-between f115 text-slate-600 mb-1">
+                    <span>Visites réalisées</span>
+                    <b className="tabular-nums">{fmt(global.visites)} / {fmt(global.planifies)}</b></div>
+                  <Bar2 value={global.perf} tone={global.perf >= 80 ? "ok" : global.perf >= 40 ? "warn" : "bad"} />
+                  <div className="f105 text-slate-500 mt-1">
+                    {global.perf} % du plan · {fmt(stats.never)} site(s) jamais visité(s)</div>
+                </div>
+
+                {!!global.activites.length && (<>
+                  <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">
+                    Performance par activité</div>
+                  <ul className="space-y-2 mb-3">
+                    {global.activites.map(a => {
+                      const p = pct(a.visites || 0, a.planifies || 0);
+                      return (
+                        <li key={a.act} className="border border-slate-200 rounded p-2">
+                          <div className="flex justify-between gap-2 f115">
+                            <b className="text-slate-800 truncate" title={a.act}>{a.act}</b>
+                            <span className="text-slate-500 tabular-nums shrink-0">
+                              {a.sites ? `${fmt(a.sites)} site(s)` : "—"}</span></div>
+                          <div className="f105 text-slate-500 tabular-nums">
+                            {a.benef ? `${fmt(a.benef)} ciblés` : "aucun plan"}
+                            {a.tonnage ? ` · ${fmt(r2(a.tonnage))} t` : ""}</div>
+                          {!!a.planifies && (<>
+                            <Bar2 value={p} tone={p >= 80 ? "ok" : p >= 40 ? "warn" : "bad"} />
+                            <div className="f105 text-slate-400 tabular-nums">
+                              {fmt(a.visites || 0)} / {fmt(a.planifies)} visites · {p} %</div>
+                          </>)}
+                        </li>);
+                    })}
+                  </ul>
+                </>)}
+
+                <p className="f105 text-slate-500 leading-relaxed">
+                  Choisissez un site dans la liste de gauche ou cliquez un point sur la carte
+                  pour ouvrir sa fiche détaillée.</p>
+              </>
             )}
           </aside>
         </div>

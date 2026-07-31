@@ -54,28 +54,34 @@ const Logo = ({ width="100%", height="100%", className }) => {
 const BrandMark = ({ size = 40, className, tone = "dark" }) => {
   const id = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const clair = tone === "light";
-  const arc  = clair ? "#FFFFFF" : `url(#humGrad${id})`;
-  const g1   = clair ? "rgba(255,255,255,.92)" : "#0284C7";
-  const g2   = clair ? "rgba(255,255,255,.8)" : "#059669";
+  /* Sur fond sombre (l'en-tête bleu), la tuile s'inverse : carré blanc et M
+     bleu. Sans cela le signe se confondrait avec son support et disparaîtrait
+     à moitié — le défaut qu'avait déjà l'ancien logotype. */
+  const fondTuile = clair ? "#FFFFFF" : `url(#tuile${id})`;
+  const traitM    = clair ? "#0B77C2" : "#FFFFFF";
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140" width={size} height={size} className={className}>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140" width={size} height={size}
+         className={className} role="img" aria-label="MEMS">
       <defs>
-        <linearGradient id={`humGrad${id}`} x1="0%" y1="100%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor="#0284C7" />
-          <stop offset="60%" stopColor="#059669" />
-          <stop offset="100%" stopColor="#10B981" />
-        </linearGradient>
-        <linearGradient id={`targetGrad${id}`} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#F59E0B" />
-          <stop offset="100%" stopColor="#D97706" />
+        <linearGradient id={`tuile${id}`} x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#38BDF8" />
+          <stop offset="55%" stopColor="#0B77C2" />
+          <stop offset="100%" stopColor="#075E93" />
         </linearGradient>
       </defs>
-      <path d="M 20 80 A 40 40 0 1 1 100 80" fill="none" stroke={arc} strokeWidth="10" strokeLinecap="round" />
-      <path d="M 40 75 Q 40 50 50 40 Q 50 65 40 75 Z" fill={g1} />
-      <path d="M 76 75 Q 76 40 66 30 Q 66 60 76 75 Z" fill={g2} />
-      <rect x="55" y="25" width="6" height="40" rx="3" fill={arc} />
-      <circle cx="63" cy="15" r="8" fill={clair ? "#FBBF24" : `url(#targetGrad${id})`} />
-      <circle cx="63" cy="15" r="3" fill={clair ? "#0B4F72" : "#FFFFFF"} />
+      {/* La tuile : rayon volontairement large, pour tenir aussi bien en
+          favicon de 16 px qu'en signe de 96 px sur l'écran de connexion. */}
+      <rect x="6" y="6" width="128" height="128" rx="34" fill={fondTuile} />
+      {/* Le M en un seul tracé : une lettre dessinée ne dépend d'aucune fonte
+          installée, là où un <text> se rendrait différemment d'un poste à
+          l'autre — et sur une marque, ce n'est pas acceptable. */}
+      <path d="M 40 101 L 40 45 L 70 82 L 100 45 L 100 101"
+            fill="none" stroke={traitM} strokeWidth="15"
+            strokeLinecap="round" strokeLinejoin="round" />
+      {/* Le point : le seul accent de la marque. Il tient la place du suivi —
+          le relevé qu'on pose sur la carte. */}
+      <circle cx="104" cy="40" r="13" fill={clair ? "#FFFFFF" : "#84CC16"}
+              stroke={clair ? "#84CC16" : "#FFFFFF"} strokeWidth={clair ? 5 : 4} />
     </svg>
   );
 };

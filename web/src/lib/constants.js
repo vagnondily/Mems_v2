@@ -125,8 +125,12 @@ const D_INDICATORS = [
 
 /* Le prévu et le réalisé ne sont pas deux sujets mais deux vues du même sujet :
    le premier niveau suit désormais les deux métiers réellement distincts. */
+/* La cartographie est sortie de « Suivi-évaluation » : ce n'est pas une vue de
+   plus du suivi, c'est une lecture transversale — elle montre aussi bien le
+   plan de distribution que la couverture. L'enfouir sous un sous-onglet la
+   rendait introuvable à qui n'ouvrait pas ce menu. */
 const TABS_ALL = [["home","Accueil"],["suivi","Suivi-évaluation"],["programme","Programme"],
-  ["analytics","Analyses"],["reports","Rapports"],["settings","Paramètres"]];
+  ["map","Cartographie"],["analytics","Analyses"],["reports","Rapports"],["settings","Paramètres"]];
 const D_ROLES = {
   super:  { label:"Super-utilisateur", tabs:TABS_ALL.map(t=>t[0]), edit:true, del:true, validate:true, admin:true, sync:true },
   admin:  { label:"Administrateur",    tabs:TABS_ALL.map(t=>t[0]), edit:true, del:true, validate:true, admin:true, sync:true },
