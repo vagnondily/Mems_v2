@@ -77,7 +77,17 @@ before(async () => {
 });
 
 after(async () => {
-  child?.kill("SIGTERM");
+  /* Attendre la sortie effective, pas seulement l'envoi du signal : un enfant qui
+     traîne garde ses tubes stdio ouverts, et le processus de test ne se termine
+     alors jamais tout seul (voir le correctif de lib/api.js — un réessai programmé
+     contre un serveur mort produit exactement ce symptôme). */
+  if(child){
+    await new Promise((resolve) => {
+      const timer = setTimeout(() => { try{ child.kill("SIGKILL"); }catch(e){} }, 3000);
+      child.once("exit", () => { clearTimeout(timer); resolve(); });
+      child.kill("SIGTERM");
+    });
+  }
   for(const f of [DB, DB+"-wal", DB+"-shm"]) if(fs.existsSync(f)) fs.unlinkSync(f);
   if(fs.existsSync("test/_app.mjs")) fs.unlinkSync("test/_app.mjs");
 });
