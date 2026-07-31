@@ -317,6 +317,104 @@ test("exercice : /state sert l'année demandée, et l'année en cours par défau
   }
 });
 
+test("plan de distribution : il se dérive du ciblage au lieu de se saisir ligne à ligne", async () => {
+  /* Le plan se SAISISSAIT : une ligne par commune, par mois, par activité, dans une
+     fenêtre de vingt champs. Pour quelques centaines de communes sur douze mois, cela
+     fait des milliers de lignes à taper puis à retaper l'année suivante — autant dire
+     que le travail se ferait dans un tableur, et l'application ne servirait plus.
+
+     Il se dérive maintenant du ciblage déjà connu commune par commune. */
+  const an = new Date().getFullYear();
+
+  const zones = await request(app).get(`/api/pdd/zones?year=${an}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(zones.status, 200);
+  assert.ok(zones.body.rows.length, "des communes sont proposées dans le périmètre");
+  const z = zones.body.rows[0];
+  for(const champ of ["pcode","name","targeted","office_id","bureau"])
+    assert.ok(champ in z, `la zone annonce « ${champ} »`);
+  assert.ok(zones.body.rows.some(x => x.office_id),
+    "le bureau responsable est résolu depuis le découpage — sinon les lignes naîtraient orphelines");
+
+  const pcodes = zones.body.rows.filter(x => x.targeted > 0).map(x => x.pcode).slice(0, 4);
+  assert.ok(pcodes.length, "le jeu d'essai porte un ciblage");
+  const params = { year:an, months:[9,10], pcodes, actType:"GD_TEST", tag:"URT",
+    actMain:"Distribution générale (test)", wbs:"URT1", modality:"Food", commodity:"Riz",
+    days:30, source:"ciblage", couverture:50 };
+
+  /* L'aperçu chiffre sans écrire : un plan de plusieurs centaines de lignes ne se
+     crée pas à l'aveugle. */
+  const vu = await request(app).post("/api/pdd/preview")
+    .set("Authorization", `Bearer ${adminToken}`).send(params);
+  assert.equal(vu.status, 200, vu.body.error);
+  assert.equal(vu.body.lignes, pcodes.length * 2, "communes × mois");
+  assert.ok(vu.body.beneficiaires > 0, "les bénéficiaires viennent du ciblage");
+  assert.ok(vu.body.tonnage > 0, "le tonnage découle de la ration");
+  const avant = db.prepare("SELECT COUNT(*) c FROM pdd WHERE act_type=?").get("GD_TEST").c;
+  assert.equal(avant, 0, "l'aperçu n'a rien écrit");
+
+  const gen = await request(app).post("/api/pdd/generate")
+    .set("Authorization", `Bearer ${adminToken}`).send(params);
+  assert.equal(gen.status, 201, gen.body.error);
+  assert.equal(gen.body.creees, pcodes.length * 2);
+  const creees = db.prepare("SELECT * FROM pdd WHERE act_type=?").all("GD_TEST");
+  assert.equal(creees.length, pcodes.length * 2);
+  assert.ok(creees.every(l => l.geo_pcode),
+    "chaque ligne est rattachée au découpage — sans quoi elle ne remonte dans aucun total par zone");
+  assert.ok(creees.every(l => l.office_id), "et rattachée à un bureau");
+
+  /* Rejouer ne doit pas empiler des doublons en silence. */
+  const rejeu = await request(app).post("/api/pdd/generate")
+    .set("Authorization", `Bearer ${adminToken}`).send(params);
+  assert.equal(rejeu.status, 409);
+  assert.equal(rejeu.body.ignorees, pcodes.length * 2);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM pdd WHERE act_type=?").get("GD_TEST").c,
+    pcodes.length * 2, "rien n'a été ajouté");
+
+  /* Reprendre un mois vers d'autres, avec un ajustement de volume. */
+  const rep = await request(app).post("/api/pdd/duplicate")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:an, fromMonth:9, toMonths:[11], actType:"GD_TEST", facteur:0.5 });
+  assert.equal(rep.status, 201, rep.body.error);
+  assert.equal(rep.body.creees, pcodes.length);
+  const source = db.prepare(
+    "SELECT SUM(benef_planned) s FROM pdd WHERE act_type=? AND month=9").get("GD_TEST").s;
+  const copie = db.prepare(
+    "SELECT SUM(benef_planned) s FROM pdd WHERE act_type=? AND month=11").get("GD_TEST").s;
+  assert.ok(Math.abs(copie - source / 2) <= pcodes.length,
+    "les volumes suivent le facteur demandé");
+  assert.equal(db.prepare(
+    "SELECT SUM(benef_actual) s FROM pdd WHERE act_type=? AND month=11").get("GD_TEST").s, 0,
+    "les réalisations ne se recopient jamais : elles n'ont pas eu lieu");
+
+  db.prepare("DELETE FROM pdd WHERE act_type=?").run("GD_TEST");
+});
+
+test("plan de distribution : on ne génère pas hors de son périmètre", async () => {
+  /* Le générateur écrit en masse ; c'est précisément là qu'un défaut de cloisonnement
+     coûterait le plus cher. Un compte de terrain ne doit pas pouvoir semer six cents
+     lignes dans les communes d'un autre bureau. */
+  const an = new Date().getFullYear();
+  const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  const toutes = (await request(app).get(`/api/pdd/zones?year=${an}`)
+    .set("Authorization", `Bearer ${adminToken}`)).body.rows;
+  const siennes = (await request(app).get(`/api/pdd/zones?year=${an}`)
+    .set("Authorization", `Bearer ${t}`)).body.rows;
+  assert.ok(siennes.length < toutes.length,
+    "le compte de terrain ne voit qu'une partie des communes");
+
+  const codesSiens = new Set(siennes.map(z => z.pcode));
+  const etrangere = toutes.find(z => !codesSiens.has(z.pcode));
+  assert.ok(etrangere, "le jeu d'essai comporte une commune hors de son périmètre");
+
+  const r = await request(app).post("/api/pdd/generate").set("Authorization", `Bearer ${t}`)
+    .send({ year:an, months:[5], pcodes:[etrangere.pcode], actType:"GD_HORS",
+            tag:"URT", modality:"Food", days:30 });
+  assert.equal(r.status, 422);
+  assert.match(r.body.error, /périmètre/i);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM pdd WHERE act_type=?").get("GD_HORS").c, 0);
+});
+
 test("cloisonnement : visites, distributions, paramètres et journal suivent le bureau", async () => {
   const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
   const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;

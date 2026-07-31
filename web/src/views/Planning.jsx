@@ -603,7 +603,318 @@ function seedPDD(){
   return out;
 }
 
-function DistributionPlan({ db, set, me, notify, can }){
+/* ══════════════════ Concevoir le plan de distribution ══════════════════
+
+   Le plan ne se concevait pas, il se SAISISSAIT : une ligne par commune, par mois,
+   par activité, ajoutée une à une dans une fenêtre de vingt champs. Pour quelques
+   centaines de communes sur douze mois, cela fait des milliers de lignes à taper,
+   puis à retaper l'année suivante. Personne ne fait cela — on le fait dans un
+   tableur, et l'application cesse de servir.
+
+   Or le plan n'est pas une saisie, c'est une DÉRIVATION. On sait déjà, commune par
+   commune, combien de personnes sont ciblées. Le reste en découle : les communes
+   retenues, les mois retenus, un taux de couverture, une ration. Ce qui demande un
+   jugement humain — quelles communes, quel taux, quels mois — se décide ici en six
+   choix ; ce qui est mécanique se calcule.
+
+   L'écran garde trois promesses :
+
+     il MONTRE le ciblage de chaque commune avant qu'on la retienne, parce que
+     planifier une commune sans ciblage produit une ligne à zéro bénéficiaire ;
+
+     il CHIFFRE avant d'écrire — combien de lignes, de bénéficiaires, de tonnes —
+     car un plan de six cents lignes ne se crée pas à l'aveugle ;
+
+     il ne DOUBLONNE jamais en silence : ce qui existe déjà pour la même commune et
+     le même mois est annoncé, et l'on choisit de le passer ou de le remplacer. */
+function ConcevoirPdd({ db, notify, onFini, onQuitter }){
+  const [act,setAct]       = useState("GD");
+  const [tag,setTag]       = useState("URT");
+  const [actMain,setMain]  = useState("Distribution générale");
+  const [wbs,setWbs]       = useState("URT1");
+  const [mod,setMod]       = useState("Food");
+  const [denree,setDenree] = useState("Riz");
+  const [jours,setJours]   = useState(30);
+  const [partner,setPartner] = useState("");
+  const [mois,setMois]     = useState([]);
+  const [source,setSource] = useState("ciblage");
+  const [couv,setCouv]     = useState(80);
+  const [fixe,setFixe]     = useState(0);
+  const [ration,setRation] = useState(0.6);
+  const [transfert,setTransfert] = useState(1600);
+  const [conflits,setConflits]   = useState("ignorer");
+  const [sel,setSel]       = useState(() => new Set());
+  const [zones,setZones]   = useState({ rows:[], loading:true });
+  const [filtre,setFiltre] = useState({ adm1:"", adm2:"" });
+  const [apercu,setApercu] = useState(null);
+  const [busy,setBusy]     = useState("");
+
+  /* Le ciblage dépend de l'activité : changer d'activité change les nombres, il faut
+     donc relire — et repartir d'une sélection vide plutôt que de garder des communes
+     retenues sur des chiffres qui ne sont plus les leurs. */
+  useEffect(() => { let vivant = true;
+    setZones(z => ({ ...z, loading:true }));
+    api.pddZones(`?year=${db.year}&tag=${encodeURIComponent(tag)}`)
+      .then(r => { if(!vivant) return; setZones({ rows:r.rows || [], loading:false, info:r });
+                   setSel(new Set()); setApercu(null); })
+      .catch(e => { if(vivant) setZones({ rows:[], loading:false, err:e.message }); });
+    return () => { vivant = false; };
+  }, [db.year, tag]);
+
+  const rows = (zones.rows || []).filter(z =>
+    (!filtre.adm1 || z.adm1 === filtre.adm1) && (!filtre.adm2 || z.adm2 === filtre.adm2));
+  const regions   = [...new Set((zones.rows||[]).map(z=>z.adm1).filter(Boolean))].sort();
+  const districts = [...new Set((zones.rows||[]).filter(z=>!filtre.adm1||z.adm1===filtre.adm1)
+                     .map(z=>z.adm2).filter(Boolean))].sort();
+
+  const retenues = rows.filter(z => sel.has(z.pcode));
+  const cibleTotale = retenues.reduce((t,z) => t + (source==="fixe" ? n(fixe) : Math.round(z.targeted*n(couv)/100)), 0);
+  const lignesPrevues = retenues.length * mois.length;
+
+  const basculer = (pcode) => setSel(s => { const c = new Set(s);
+    c.has(pcode) ? c.delete(pcode) : c.add(pcode); return c; });
+  const toutes = () => setSel(s => rows.every(z=>s.has(z.pcode))
+    ? new Set() : new Set(rows.map(z=>z.pcode)));
+  const avecCiblage = () => setSel(new Set(rows.filter(z=>z.targeted>0).map(z=>z.pcode)));
+
+  const corps = () => ({ year:db.year, months:mois, pcodes:[...sel],
+    actType:act, tag, actMain, wbs, modality:mod, commodity: mod==="Food" ? denree : "",
+    days:n(jours), partner_id: partner || null,
+    source, couverture:n(couv), fixe:n(fixe),
+    rationKg:n(ration), transfertJour:n(transfert), conflits });
+
+  const voir = async () => {
+    setBusy("apercu"); setApercu(null);
+    try{ setApercu(await api.pddPreview(corps())); }
+    catch(e){ notify(e.message, "err"); }
+    finally{ setBusy(""); }
+  };
+  const ecrire = async () => {
+    setBusy("gen");
+    try{
+      const r = await api.pddGenerate(corps());
+      notify(`${r.creees} ligne(s) créée(s)` +
+        (r.remplacees ? `, ${r.remplacees} remplacée(s)` : "") +
+        (r.ignorees ? `, ${r.ignorees} déjà présente(s)` : ""), "ok");
+      await onFini();
+    }catch(e){ notify(e.message, "err"); }
+    finally{ setBusy(""); }
+  };
+
+  const pret = retenues.length > 0 && mois.length > 0;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <Btn kind="sec" size="sm" onClick={onQuitter}>← Revenir au plan</Btn>
+        <div className="f115 text-slate-500">
+          Exercice {db.year} · le plan est dérivé du ciblage déjà saisi, commune par commune.</div>
+      </div>
+
+      <div className="grid gap-4" style={{gridTemplateColumns:"minmax(340px,1fr) minmax(420px,1.4fr)"}}>
+        <div className="space-y-4">
+          <Card title="① Ce que l'on distribue">
+            <div className="grid grid-cols-2 gap-x-3">
+              <Field label="Type d'activité">
+                <Select value={act} options={PDD_ACTS} onChange={e=>setAct(e.target.value)} /></Field>
+              <Field label="Code d'activité" hint="Celui du ciblage : il décide des nombres lus">
+                <Select value={tag} options={db.lists.tags.map(t=>[t.code, `${t.code} — ${t.label}`])}
+                  empty="Total dédoublonné" onChange={e=>setTag(e.target.value)} /></Field>
+            </div>
+            <Field label="Intitulé de l'activité">
+              <Input value={actMain} onChange={e=>setMain(e.target.value)} /></Field>
+            <div className="grid grid-cols-2 gap-x-3">
+              <Field label="Ligne budgétaire (WBS)"><Input value={wbs} onChange={e=>setWbs(e.target.value)} /></Field>
+              <Field label="Partenaire d'exécution">
+                <Select value={partner} empty="À désigner plus tard"
+                  options={(db.partners||[]).filter(p=>p.active!==false).map(p=>[p.id, p.name])}
+                  onChange={e=>setPartner(e.target.value)} /></Field>
+            </div>
+            <div className="grid grid-cols-2 gap-x-3">
+              <Field label="Modalité">
+                <Select value={mod} options={PDD_MODALITIES} onChange={e=>setMod(e.target.value)} /></Field>
+              <Field label="Jours de ration">
+                <Input type="number" value={jours} onChange={e=>setJours(e.target.value)} /></Field>
+            </div>
+            {mod==="Food"
+              ? <div className="grid grid-cols-2 gap-x-3">
+                  <Field label="Denrée">
+                    <Select value={denree} options={PDD_COMMODITIES} onChange={e=>setDenree(e.target.value)} /></Field>
+                  <Field label="Ration" hint="kg par personne et par jour">
+                    <Input type="number" step="0.01" value={ration} onChange={e=>setRation(e.target.value)} /></Field>
+                </div>
+              : <Field label="Transfert" hint={`${db.settings?.currency || "MGA"} par personne et par jour`}>
+                  <Input type="number" value={transfert} onChange={e=>setTransfert(e.target.value)} /></Field>}
+          </Card>
+
+          <Card title="② Quand" subtitle={mois.length ? `${mois.length} mois retenus` : "Aucun mois retenu"}>
+            <div className="flex flex-wrap gap-1.5">
+              {MONTHS_L.map((m,i)=>(
+                <button key={i} onClick={()=>setMois(x => x.includes(i) ? x.filter(y=>y!==i) : [...x,i].sort((a,b)=>a-b))}
+                  className={clsx("px-2.5 py-1 rounded border f115 font-semibold transition-colors",
+                    mois.includes(i) ? "bd-brand bg-sky-50 text-sky-900" : "border-slate-200 text-slate-600 hover:bg-slate-50")}>
+                  {m.slice(0,4)}</button>))}
+            </div>
+            <div className="flex gap-2 mt-3">
+              <Btn size="sm" kind="ghost" onClick={()=>setMois([0,1,2,3,4,5,6,7,8,9,10,11])}>Toute l'année</Btn>
+              <Btn size="sm" kind="ghost" onClick={()=>setMois([])}>Aucun</Btn>
+            </div>
+          </Card>
+
+          <Card title="③ Combien de bénéficiaires">
+            <Field label="Origine des nombres">
+              <Select value={source} onChange={e=>setSource(e.target.value)}
+                options={[["ciblage","À partir du ciblage saisi"],["fixe","Un nombre fixe par commune"]]} /></Field>
+            {source==="ciblage"
+              ? <Field label="Taux de couverture" hint="Part des personnes ciblées effectivement servies ce mois-là">
+                  <Input type="number" value={couv} onChange={e=>setCouv(e.target.value)} /></Field>
+              : <Field label="Bénéficiaires par commune et par mois">
+                  <Input type="number" value={fixe} onChange={e=>setFixe(e.target.value)} /></Field>}
+            <Field label="Lignes déjà présentes">
+              <Select value={conflits} onChange={e=>setConflits(e.target.value)}
+                options={[["ignorer","Les laisser telles quelles"],
+                          ["remplacer","Les remplacer par les nouvelles"]]} /></Field>
+          </Card>
+        </div>
+
+        <div className="space-y-4">
+          <Card flush title="④ Où" subtitle={
+            zones.loading ? "Lecture du ciblage…"
+              : `${retenues.length} commune(s) retenue(s) sur ${rows.length}`}
+            right={<div className="flex gap-1.5">
+              <Btn size="sm" kind="ghost" onClick={avecCiblage}>Celles qui ont un ciblage</Btn>
+              <Btn size="sm" kind="sec" onClick={toutes}>
+                {rows.length && rows.every(z=>sel.has(z.pcode)) ? "Aucune" : "Toutes"}</Btn></div>}>
+            <div className="flex flex-wrap gap-2 px-4 py-3 border-b border-slate-100 bg-slate-50">
+              <Select value={filtre.adm1} onChange={e=>setFiltre({ adm1:e.target.value, adm2:"" })}
+                empty="Toutes les régions" options={regions} className="mi-py1 mi-xs mi-wauto" />
+              <Select value={filtre.adm2} onChange={e=>setFiltre(f=>({ ...f, adm2:e.target.value }))}
+                empty="Tous les districts" options={districts} className="mi-py1 mi-xs mi-wauto" />
+            </div>
+            {zones.err && <Note tone="warn">{zones.err}</Note>}
+            {!zones.loading && !rows.length && <Empty title="Aucune commune dans votre périmètre"
+              text="Chargez un découpage administratif et déclarez le périmètre des bureaux pour planifier ici." />}
+            {!!rows.length && <TableWrap max="mh420">
+              <thead><tr><Th /><Th>Commune</Th><Th>District</Th><Th>Bureau</Th>
+                <Th num>Ciblés</Th><Th num>Prévu / mois</Th><Th>Déjà planifié</Th></tr></thead>
+              <tbody>{rows.map(z => { const on = sel.has(z.pcode);
+                const prevu = source==="fixe" ? n(fixe) : Math.round(z.targeted * n(couv) / 100);
+                return (
+                <tr key={z.pcode} onClick={()=>basculer(z.pcode)}
+                  className={clsx("cursor-pointer", on ? "bg-sky-50" : "hover:bg-slate-50")}>
+                  <Td><input type="checkbox" checked={on} readOnly /></Td>
+                  <Td className="font-medium">{z.name}</Td>
+                  <Td className="f115 text-slate-500">{z.adm2 || "—"}</Td>
+                  <Td>{z.bureau ? <Badge>{z.bureau}</Badge>
+                     : <span className="f10 text-amber-700">hors périmètre</span>}</Td>
+                  <Td num className={clsx("tabular-nums", !z.targeted && "text-amber-700")}>
+                    {z.targeted ? fmt(z.targeted) : "aucun"}</Td>
+                  <Td num className="tabular-nums">{prevu ? fmt(prevu) : "—"}</Td>
+                  <Td className="f105 text-slate-500">
+                    {z.dejaPlanifie ? `${z.dejaPlanifie.mois.length} mois · ${fmt(z.dejaPlanifie.benef)} bénéf.` : "—"}</Td>
+                </tr>); })}</tbody>
+            </TableWrap>}
+          </Card>
+
+          <Card title="⑤ Vérifier, puis écrire"
+            subtitle={pret ? `${fmt(lignesPrevues)} ligne(s) — ${retenues.length} commune(s) × ${mois.length} mois`
+                           : "Retenez au moins une commune et un mois"}>
+            {pret && <StatRow>
+              <Stat label="Lignes à créer" value={fmt(lignesPrevues)} icon={ClipboardList} />
+              <Stat label="Bénéficiaires par mois" value={fmt(cibleTotale)} icon={Users} />
+              <Stat label={mod==="Food" ? "Tonnage par mois" : "Transferts par mois"}
+                value={mod==="Food"
+                  ? fmt(Math.round(cibleTotale * n(jours) * n(ration) / 1000)) + " t"
+                  : fmt(cibleTotale * n(jours) * n(transfert))} icon={Layers} />
+            </StatRow>}
+            {apercu && <div className="mt-3">
+              <Note tone={apercu.sansBenef ? "warn" : "info"}>
+                <b>{fmt(apercu.lignes)} ligne(s)</b> seront écrites : {fmt(apercu.beneficiaires)} bénéficiaires
+                sur l'ensemble des mois, {fmt(apercu.menages)} ménages
+                {apercu.tonnage ? `, ${fmt(apercu.tonnage)} t` : ""}
+                {apercu.montant ? `, ${fmt(apercu.montant)} ${db.settings?.currency || "MGA"}` : ""}.
+                {apercu.ignorees ? ` ${apercu.ignorees} ligne(s) existent déjà et seront laissées telles quelles.` : ""}
+                {apercu.remplacees ? ` ${apercu.remplacees} ligne(s) existantes seront remplacées.` : ""}
+                {apercu.sansBenef ? ` ${apercu.sansBenef} commune(s) n'ont aucun ciblage : leurs lignes naîtront à zéro bénéficiaire.` : ""}
+                {apercu.sansBureau ? ` ${apercu.sansBureau} commune(s) ne relèvent d'aucun bureau.` : ""}
+              </Note>
+            </div>}
+            <div className="flex gap-2 mt-3">
+              <Btn kind="sec" disabled={!pret || busy==="apercu"} onClick={voir}>
+                {busy==="apercu" ? "Calcul…" : "Vérifier ce qui sera créé"}</Btn>
+              <Btn icon={Check} disabled={!pret || !apercu || busy==="gen"} onClick={ecrire}>
+                {busy==="gen" ? "Écriture…" : `Créer ${fmt(apercu?.lignes || lignesPrevues)} ligne(s)`}</Btn>
+            </div>
+            {!apercu && pret && <div className="f105 text-slate-400 mt-2">
+              L'aperçu est obligatoire : il dit ce qui existe déjà, ce qui n'a pas de ciblage
+              et ce qui ne relève d'aucun bureau — trois choses qu'on ne veut pas découvrir après coup.</div>}
+          </Card>
+        </div>
+      </div>
+    </div>);
+}
+
+/* Reprendre un mois vers d'autres : un plan de soudure se répète, avec des volumes
+   qui varient peu. Le recopier à la main est exactement ce qu'une machine doit faire. */
+function ReprendreMois({ db, notify, onFini, onFermer }){
+  const [de,setDe] = useState(new Date().getMonth());
+  const [vers,setVers] = useState([]);
+  const [facteur,setFacteur] = useState(100);
+  const [act,setAct] = useState("");
+  const [conflits,setConflits] = useState("ignorer");
+  const [busy,setBusy] = useState(false);
+  const dispo = [...new Set((db.pdd||[]).map(l=>l.month))].sort((a,b)=>a-b);
+  const nSource = (db.pdd||[]).filter(l => l.month===de && (!act || l.actType===act)).length;
+
+  const lancer = async () => {
+    setBusy(true);
+    try{
+      const r = await api.pddDuplicate({ year:db.year, fromMonth:de, toMonths:vers,
+        actType: act || undefined, conflits, facteur: n(facteur)/100 });
+      notify(`${r.creees} ligne(s) reprises` + (r.ignorees ? `, ${r.ignorees} déjà présentes` : ""), "ok");
+      await onFini(); onFermer();
+    }catch(e){ notify(e.message, "err"); }
+    finally{ setBusy(false); }
+  };
+
+  return (
+    <Modal open onClose={onFermer} title="Reprendre un mois vers d'autres"
+      subtitle="Les réalisations ne sont jamais recopiées : elles n'ont pas eu lieu"
+      footer={<><Btn kind="sec" onClick={onFermer}>Annuler</Btn>
+        <Btn disabled={!vers.length || !nSource || busy} onClick={lancer}>
+          {busy ? "Reprise…" : `Reprendre ${nSource} ligne(s) vers ${vers.length} mois`}</Btn></>}>
+      <div className="grid grid-cols-2 gap-x-3">
+        <Field label="Mois d'origine" hint={`${nSource} ligne(s) dans ce mois`}>
+          <Select value={String(de)} onChange={e=>setDe(+e.target.value)}
+            options={MONTHS_L.map((m,i)=>[String(i), m + (dispo.includes(i) ? "" : " — vide")])} /></Field>
+        <Field label="Activité" >
+          <Select value={act} empty="Toutes" options={PDD_ACTS} onChange={e=>setAct(e.target.value)} /></Field>
+      </div>
+      <Field label="Mois de destination">
+        <div className="flex flex-wrap gap-1.5">
+          {MONTHS_L.map((m,i)=>(
+            <button key={i} disabled={i===de}
+              onClick={()=>setVers(x => x.includes(i) ? x.filter(y=>y!==i) : [...x,i].sort((a,b)=>a-b))}
+              className={clsx("px-2.5 py-1 rounded border f115 font-semibold disabled:opacity-30",
+                vers.includes(i) ? "bd-brand bg-sky-50 text-sky-900" : "border-slate-200 text-slate-600 hover:bg-slate-50")}>
+              {m.slice(0,4)}</button>))}
+        </div></Field>
+      <div className="grid grid-cols-2 gap-x-3">
+        <Field label="Ajustement des volumes" hint="100 % reprend à l'identique">
+          <Input type="number" value={facteur} onChange={e=>setFacteur(e.target.value)} /></Field>
+        <Field label="Lignes déjà présentes">
+          <Select value={conflits} onChange={e=>setConflits(e.target.value)}
+            options={[["ignorer","Les laisser"],["remplacer","Les remplacer"]]} /></Field>
+      </div>
+    </Modal>);
+}
+
+function DistributionPlan({ db, set, me, notify, can, reload }){
+  /* La conception occupe l'écran entier plutôt qu'une fenêtre : on y choisit des
+     communes dans une liste de plusieurs centaines, et une fenêtre modale sur ce
+     travail-là revient à travailler par le trou d'une serrure. */
+  const [mode,setMode] = useState("liste");
+  const [reprise,setReprise] = useState(false);
   const [q,setQ] = useState(""); const [fMonth,setFMonth] = useState(""); const [fBureau,setFBureau] = useState("");
   const [fAct,setFAct] = useState(""); const [fMod,setFMod] = useState(""); const [fDistrict,setFDistrict] = useState("");
   const [edit,setEdit] = useState(null); const [sel,setSel] = useState(new Set()); const [bulk,setBulk] = useState(false);
@@ -659,8 +970,16 @@ function DistributionPlan({ db, set, me, notify, can }){
     ["partner","Partenaire",db.lists.partners],["days","Jours de ration",[["15","15 jours"],["30","30 jours"]]],
     ["month","Mois du PDD",MONTHS_L.map((m,i)=>[String(i),m])],["status","Statut",PDD_STATUS]];
 
+  /* Les lignes sont écrites par le serveur, pas par la file de synchronisation :
+     on relit l'état pour les voir. */
+  const relire = async () => { setMode("liste"); if(reload) await reload(); };
+
+  if(mode === "concevoir")
+    return <ConcevoirPdd db={db} notify={notify} onFini={relire} onQuitter={()=>setMode("liste")} />;
+
   return (
     <>
+      {reprise && <ReprendreMois db={db} notify={notify} onFini={relire} onFermer={()=>setReprise(false)} />}
       <StatRow>
         <Stat label="Lignes de plan" value={fmt(rows.length)} sub={`${bureaux.length} bureaux de terrain`} icon={ClipboardList} />
         <Stat label="Bénéficiaires planifiés" value={fmt(agg.benefPlanned)} sub={`${fmt(agg.benefActual)} servis`} icon={Users} />
@@ -691,7 +1010,9 @@ function DistributionPlan({ db, set, me, notify, can }){
             <Btn size="sm" kind="sec" icon={Download} onClick={exportPDD}>Exporter</Btn>
             {can("edit") && <Btn size="sm" kind={bulk?"primary":"sec"} icon={Layers}
               onClick={()=>{setBulk(b=>!b);setSel(new Set());}}>{bulk?"Quitter la sélection":"Modification groupée"}</Btn>}
-            {can("edit") && <Btn size="sm" icon={Plus} onClick={()=>setEdit({ month:new Date().getMonth(), year:db.year,
+            {can("edit") && <Btn size="sm" kind="sec" icon={RefreshCw} onClick={()=>setReprise(true)}>Reprendre un mois</Btn>}
+            {can("edit") && <Btn size="sm" icon={Target} onClick={()=>setMode("concevoir")}>Concevoir le plan</Btn>}
+            {can("edit") && <Btn size="sm" kind="ghost" icon={Plus} onClick={()=>setEdit({ month:new Date().getMonth(), year:db.year,
               wbs:"URT1", actType:"GD", tag:"URT_GD", actMain:"", bureau:bureaux[0]||"", region:"", district:"", commune:"",
               partner:db.lists.partners[0], modality:"Food", commodity:"Riz", days:15, benefPlanned:0, households:0,
               tonnage:0, amount:0, benefActual:0, received:0, distributed:0, status:"planned" })}>Ajouter une ligne</Btn>}

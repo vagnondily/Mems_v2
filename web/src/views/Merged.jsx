@@ -89,7 +89,7 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
    Ce que le programme distribue et obtient : plan de distribution et
    réalisations, population ciblée, indicateurs de résultat, et les entrées
    de données qui les alimentent. */
-export function Programme({ db, set, me, sub, setSub, notify, can, go }){
+export function Programme({ db, set, me, sub, setSub, notify, can, go, reload }){
   const [voletD, setVoletD] = useVolet();
   const [voletR, setVoletR] = useVolet();
   return (
@@ -99,7 +99,7 @@ export function Programme({ db, set, me, sub, setSub, notify, can, go }){
         <Volet value={voletD} onChange={setVoletD}
           gauche="Plan de distribution" droite="Réalisations" />
         {voletD==="plan"
-          ? <DistributionPlan db={db} set={set} me={me} notify={notify} can={can} />
+          ? <DistributionPlan db={db} set={set} me={me} notify={notify} can={can} reload={reload} />
           : <DistributionActual db={db} set={set} notify={notify} can={can} />}
       </>)}
 

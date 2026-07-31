@@ -126,6 +126,13 @@ export const api = {
   geoAttach:    (body)            => call("POST", "/geo/attach", body),
   setGeoScope:  (officeId, pcodes)=> call("PUT", `/geo/scope/${encodeURIComponent(officeId)}`, { pcodes }),
   caseload:     (q="")            => call("GET", `/caseload${q}`),
+
+  /* Concevoir le plan de distribution plutôt que le saisir : les communes du
+     périmètre avec leur ciblage, un aperçu chiffré, puis l'écriture en une fois. */
+  pddZones:     (q="")            => call("GET", `/pdd/zones${q}`),
+  pddPreview:   (b)               => call("POST", "/pdd/preview", b),
+  pddGenerate:  (b)               => call("POST", "/pdd/generate", b),
+  pddDuplicate: (b)               => call("POST", "/pdd/duplicate", b),
   caseloadTags: (year)            => call("GET", `/caseload/tags?year=${year}`),
   saveCaseload: (rows)            => call("PUT", "/caseload", { rows }),
 
