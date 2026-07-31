@@ -90,7 +90,10 @@ function Overreaching({ db, set, notify, can }){
       <Card flush title="Paramètres par bureau et activité"
         subtitle={`${rows.length} lignes · le nombre de sites est compté en direct dans le registre`}
         right={can("edit") && <Btn size="sm" icon={Plus} onClick={()=>setEdit({ id:null, csp:"",
-          office:db.lists.offices[0], tag:db.lists.tags[0].code, duration:12, riskLevel:2, feasiblePerMonth:0 })}>Ajouter</Btn>}>
+          /* Les deux listes peuvent être vides sur une instance neuve : lire `[0].code`
+             levait alors une erreur et l'écran entier disparaissait. */
+          office:db.lists.offices[0] || "", tag:db.lists.tags[0]?.code || "",
+          duration:12, riskLevel:2, feasiblePerMonth:0 })}>Ajouter</Btn>}>
         <TableWrap>
           <thead><tr>{["N°","Bureau","Activité"].map(h=><Th key={h}>{h}</Th>)}
             {["Durée","Sites","Risque","Interv. min.","Fréq. min.","Cible/mois","Faisable/mois","Ratio","Fréq. ajustée","Interv. ajusté"].map(h=><Th key={h} num>{h}</Th>)}

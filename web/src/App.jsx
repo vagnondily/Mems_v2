@@ -17,7 +17,8 @@ import { Shell } from "./views/Shell.jsx";
    Les sites et leur grille mensuelle passent par des routes dédiées : elles portent
    des règles métier — création de visite, cloisonnement par bureau — que le serveur applique. */
 const SYNCED = ["params","outputs","indicators","outcomes","population","pdd",
-                "reportTemplates","dashboards","datasets","scripts","odkForms","settings"];
+                "reportTemplates","dashboards","datasets","scripts","odkForms",
+                "activityCategories","poiSubtypes","settings"];
 
 /* Les projections vers le serveur conservent `rev` : c'est la révision lue, que le
    serveur compare à la sienne pour détecter qu'un collègue a modifié la même ligne. */
@@ -36,6 +37,63 @@ const SHAPERS = {
     riskLevel:p.riskLevel, feasiblePerMonth:p.feasiblePerMonth })).filter(p => p.office_id),
   pdd: (rows, db) => rows.map(p => ({ ...p, year: p.year || db.year })),
 };
+
+/* Ce que l'interface lit partout, dérivé de ce que le serveur détient.
+
+   `lists.tags` et `actCategories` sont deux vues des CATÉGORIES D'ACTIVITÉ, et
+   `lists.offices`/`lists.partners` des vues des bureaux et des partenaires. Elles
+   étaient calculées une seule fois, au chargement, puis modifiées sur place par
+   l'écran de configuration — qui croyait ainsi tenir la liste alors qu'il n'écrivait
+   que dans la projection. Rien ne repartait vers le serveur : la catégorie ajoutée
+   disparaissait au rechargement suivant, sans message.
+
+   On les recalcule donc à chaque modification, à partir de la source. Ce sont des
+   vues : on ne les édite pas, on édite ce dont elles découlent. */
+function projeter(d){
+  const cats = (d.activityCategories || []).filter(c => c && c.name);
+  const actifs = cats.filter(c => c.active !== 0 && c.active !== false);
+  const tags = [];
+  for(const c of (actifs.length ? actifs : cats)){
+    if(!c.tag || tags.some(t => t.code === c.tag)) continue;
+    tags.push({ code:c.tag, label:c.name });
+  }
+  return { ...d,
+    lists: {
+      offices: (d.offices || []).map(o => o.name),
+      partners: (d.partners || []).map(p => p.name),
+      poiSub: d.poiSubtypes || [],
+      tags,
+    },
+    actCategories: cats.length ? cats.map(c => c.name) : [...ACT_CATEGORIES],
+    /* `categories` est le nom sous lequel le serveur les rend et sous lequel plusieurs
+       écrans les lisent encore. Un seul contenu, deux noms : sans cette ligne, ajouter
+       une catégorie ne la rendait pas trouvable là où le rattachement d'un site la
+       cherche. */
+    categories: d.activityCategories || [],
+  };
+}
+
+/* Une ligne qu'on vient d'ajouter est vide le temps qu'on la remplisse. L'envoyer
+   ferait refuser TOUT le lot par le serveur — nom trop court, code manquant — et la
+   liste entière cesserait de s'enregistrer sans qu'on comprenne pourquoi. On garde
+   donc la ligne à l'écran et on ne l'envoie qu'une fois renseignée. */
+const COMPLET = {
+  activityCategories: (c) => (c.name || "").trim().length >= 2 && !!(c.tag || "").trim(),
+  poiSubtypes: (p) => (p.label || "").trim().length >= 1,
+};
+
+/* Ce qui part réellement dans les réglages. Le barème de priorité, les formules de
+   couverture et les coefficients trimestriels n'ont pas de table à eux : ils vivent
+   dans le dictionnaire clé-valeur. L'interface les lit à la racine parce que tout le
+   code de calcul les y attend ; la conversion se fait ici, dans les deux sens (voir
+   `hydrate` pour l'autre). */
+const chargeReglages = (d) => ({ ...(d.settings || {}),
+  scoring:d.scoring, formulas:d.formulas, mmr:d.mmr });
+
+/* Le champ qui porte l'identifiant CÔTÉ SERVEUR dans les lignes locales. Il coïncide
+   partout avec `id`, sauf pour les indicateurs : l'écran les désigne par leur code
+   (« OUT-1 »), et la clé technique vit dans `key`. */
+const REV_KEY = { indicators: "key" };
 
 /* Les identifiants d'une collection, tels que le serveur les connaît. La projection
    `indicators` renomme la clé : on la traverse pour comparer sur le même terrain. */
@@ -92,36 +150,85 @@ export default function App(){
     setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4600);
   }, []);
 
+  /* Un 401 ne veut pas toujours dire « session expirée ».
+
+     Au tout premier chargement, l'application demande /auth/me pour savoir si un
+     cookie de session traîne. Sans session — le cas de quiconque ouvre l'adresse
+     pour la première fois — le serveur répond 401, ce qui est la réponse NORMALE, et
+     l'écran de connexion s'affichait accompagné de « Session expirée,
+     reconnectez-vous ». C'est faux et inquiétant : rien n'a expiré, et l'on croit
+     avoir perdu quelque chose avant même d'avoir commencé.
+
+     Le message n'est donc dit que si une session avait bel et bien été ouverte. */
+  const connecte = useRef(false);
   useEffect(() => { setUnauthorizedHandler(() => {
+    const avaitUneSession = connecte.current;
+    connecte.current = false;
     setMe(null); setDb(null); setPhase("login");
-    notify("Session expirée, reconnectez-vous", "warn");
+    if(avaitUneSession) notify("Session expirée, reconnectez-vous", "warn");
   }); }, [notify]);
 
-  const hydrate = useCallback((state) => ({
-    ...state,
-    lists: {
-      offices: state.offices.map(o => o.name),
-      partners: state.partners.map(p => p.name),
-      modalities: ["Espèces","Coupons","Vivres","Renforcement de capacités","Mixte"],
-      poiSub: state.poiSubtypes || [],
-      tags: [...new Set(state.categories.map(c => c.tag))].map(t => ({
-        code:t, label:(state.categories.find(c=>c.tag===t)||{}).name || t })),
-    },
-    actCategories: state.categories.length ? state.categories.map(c => c.name) : [...ACT_CATEGORIES],
-    roles: D_ROLES, weights: D_WEIGHTS, scoring: D_SCORING, formulas: D_FORMULAS, mmr: D_MMR,
-    settings: { org:"Bureau pays", unit:"Unité suivi et évaluation", logo:"", currency:"MGA",
+  const hydrate = useCallback((state) => {
+    const reglages = { org:"Bureau pays", unit:"Unité suivi et évaluation", logo:"", currency:"MGA",
       dateFmt:"DD/MM/YYYY", pageSize:25, syncInterval:30, notifications:true,
       odkBase:"https://odk-central.example.org", apiEnabled:false, opSize:"Large",
-      ...(state.settings || {}) },
-  }), []);
+      ...(state.settings || {}) };
+    /* Les trois réglages de calcul sont conservés dans le dictionnaire des réglages —
+       ils n'ont pas de table à eux — mais l'interface les lit à la racine, où tout le
+       code les attend. On les en détache ici pour n'avoir qu'un seul exemplaire. */
+    const detache = (cle, defaut) => {
+      const v = reglages[cle]; delete reglages[cle];
+      const rempli = Array.isArray(v) ? v.length : (v && typeof v === "object" && Object.keys(v).length);
+      return rempli ? v : JSON.parse(JSON.stringify(defaut));
+    };
+    return projeter({
+      ...state,
+      /* Les catégories d'activité et les sous-types de point d'intérêt portent leur
+         propre nom, comme les collections qu'ils sont désormais. `lists` n'en garde que
+         la projection d'affichage, recalculée à chaque modification. */
+      activityCategories: state.categories || [],
+      poiSubtypes: state.poiSubtypes || [],
+      /* La matrice des rôles n'est pas conservée : le serveur en tient une, seule
+         faisant foi. Celle-ci ne sert qu'à masquer ce qu'il refuserait. */
+      roles: D_ROLES, weights: D_WEIGHTS,
+      scoring: detache("scoring", D_SCORING),
+      formulas: detache("formulas", D_FORMULAS),
+      mmr: detache("mmr", D_MMR),
+      settings: reglages,
+    });
+  }, []);
 
   const loadState = useCallback(async () => {
     const d = hydrate(await api.state());
     prevDb.current = d; setDb(d); return d;
   }, [hydrate]);
 
+  /* Après un enregistrement réussi, le serveur rend les révisions telles qu'elles sont
+     désormais. On les recopie dans l'état local, et dans la référence de comparaison
+     du même mouvement : sans le second, la prochaine modification renverrait la
+     collection entière au seul motif que ces jetons ont changé — et sans le premier,
+     le prochain enregistrement de la même ligne serait rejeté comme un conflit avec
+     soi-même, ce qui rendait toute deuxième correction impossible sans recharger. */
+  const appliquerRevisions = useCallback((name, revisions) => {
+    if(!revisions || !Object.keys(revisions).length) return;
+    const cle = REV_KEY[name] || "id";
+    setDb(prev => {
+      if(!prev || !Array.isArray(prev[name])) return prev;
+      let change = false;
+      const lignes = prev[name].map(r => {
+        const v = revisions[r[cle]];
+        if(v === undefined || r.rev === v) return r;
+        change = true; return { ...r, rev:v };
+      });
+      if(!change) return prev;
+      if(prevDb.current) prevDb.current = { ...prevDb.current, [name]:lignes };
+      return { ...prev, [name]:lignes };
+    });
+  }, []);
+
   useEffect(() => {
     queue.current = createSyncQueue({
+      onSaved: appliquerRevisions,
       onStatus: (s) => {
         setSync(s);
         if(s.state === "error" && s.failures >= 3)
@@ -134,7 +241,7 @@ export default function App(){
         try{ await loadState(); }catch(e){}
       },
     });
-  }, [notify, loadState]);
+  }, [notify, loadState, appliquerRevisions]);
 
   useEffect(() => { (async () => {
     try{ await api.health(); }
@@ -142,12 +249,14 @@ export default function App(){
       setFatal("Le serveur ne répond pas. Vérifiez qu'il est démarré et que l'adresse de l'API est correcte.");
       setPhase("fatal"); return;
     }
-    try{ const { user } = await api.me(); setMe(normalizeMe(user)); await loadState(); setPhase("ready"); }
+    try{ const { user } = await api.me(); setMe(normalizeMe(user)); connecte.current = true;
+         await loadState(); setPhase("ready"); }
     catch(e){
       if(DEV_ADMIN_CREDENTIALS){
         try{
           const r = await api.login(DEV_ADMIN_CREDENTIALS.email, DEV_ADMIN_CREDENTIALS.password);
-          setToken(r.token); setMe(normalizeMe(r.user)); await loadState(); setPhase("ready");
+          setToken(r.token); setMe(normalizeMe(r.user)); connecte.current = true;
+          await loadState(); setPhase("ready");
           notify(`Bienvenue ${r.user.first_name}`, "ok");
           return;
         }catch(loginError){}
@@ -157,7 +266,8 @@ export default function App(){
   })(); }, [loadState, notify]);
 
   const onLogin = async (user, token) => {
-    setToken(token); setMe(normalizeMe(user)); await loadState(); setPhase("ready");
+    setToken(token); setMe(normalizeMe(user)); connecte.current = true;
+    await loadState(); setPhase("ready");
     notify(`Bienvenue ${user.first_name}`, "ok");
   };
   const onLogout = async () => {
@@ -166,6 +276,7 @@ export default function App(){
        le compte suivant n'a pas à hériter du pays choisi par le précédent — le serveur
        l'ignorerait s'il est borné, mais un autre compte non borné le reprendrait. */
     setWorkingCountry(null);
+    connecte.current = false;
     setToken(null); setMe(null); setDb(null); setTabState("home"); setPhase("login");
   };
 
@@ -174,11 +285,20 @@ export default function App(){
     setDb(prev => {
       if(!prev) return prev;
       const copy = JSON.parse(JSON.stringify(prev));
-      const next = fn(copy) || copy;
+      /* Les vues sont recalculées ici, et nulle part ailleurs : ajouter une catégorie
+         doit rafraîchir les listes déroulantes qui en découlent dans le même geste. */
+      const next = projeter(fn(copy) || copy);
       const before = prevDb.current || prev;
       for(const name of SYNCED){
-        if(before[name] === next[name]) continue;
-        if(JSON.stringify(before[name]) === JSON.stringify(next[name])) continue;
+        /* Les réglages partent avec les trois blocs de calcul qui y sont conservés :
+           barème de priorité, formules de couverture et coefficients trimestriels.
+           Ils s'éditaient déjà et ne repartaient nulle part — modifier une formule,
+           recharger, et retrouver la formule d'origine, sans un message. */
+        const avant = name === "settings" ? chargeReglages(before) : before[name];
+        const apresVal = name === "settings" ? chargeReglages(next) : next[name];
+        if(avant === apresVal) continue;
+        if(JSON.stringify(avant) === JSON.stringify(apresVal)) continue;
+        if(name === "settings"){ queue.current?.push(name, apresVal, []); continue; }
         const shaper = SHAPERS[name];
         /* Ce que CE client a retiré, et rien d'autre. Le serveur ne déduit plus les
            suppressions : sans cela, enregistrer effaçait les lignes ajoutées entre-temps
@@ -188,7 +308,12 @@ export default function App(){
           const apres = idsOf(name, next[name], next);
           deletes = [...idsOf(name, before[name], before)].filter(id => !apres.has(id));
         }
-        queue.current?.push(name, shaper ? shaper(next[name], next) : next[name], deletes);
+        /* Les suppressions, elles, se calculent sur la liste ENTIÈRE : une ligne
+           incomplète n'est pas une ligne retirée, et l'exclure des deux côtés évite
+           de supprimer sur le serveur ce que quelqu'un est en train d'écrire. */
+        const charge = shaper ? shaper(next[name], next) : next[name];
+        queue.current?.push(name,
+          COMPLET[name] ? charge.filter(COMPLET[name]) : charge, deletes);
       }
       prevDb.current = next;
       return next;

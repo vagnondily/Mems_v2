@@ -173,6 +173,11 @@ r.get("/state", (req, res) => {
     year, me: { id:u.id, role:u.role, office_id:u.office_id,
       country_code:u.country_code || null },
     offices, partners, categories: cats, sites, params, visits, indicators, outcomes,
+    /* Les sous-types de point d'intérêt : la table existait, le semis la remplissait,
+       et l'état ne la rendait pas. L'écran de configuration montrait donc une liste
+       vide alors que les sites en portaient déjà les valeurs. */
+    poiSubtypes: db.prepare("SELECT * FROM poi_subtypes ORDER BY label").all().map(p => ({
+      id:p.id, rev:p.rev, label:p.label, code:p.code || "", note:p.note || "" })),
     outputs, population, pdd, geoVersion, country, countries, odkForms, settings, basemap,
     outcomePlan: Object.fromEntries(
       Object.entries(db.prepare("SELECT * FROM outcome_plan WHERE year=?").all(year)

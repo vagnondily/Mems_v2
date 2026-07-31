@@ -163,6 +163,73 @@ test("collections : la synchronisation crée, met à jour et supprime en une tra
   assert.equal(explicite.body.removed, aSupprimer.length);
 });
 
+test("listes de référence : une catégorie d'activité ajoutée survit au rechargement", async () => {
+  /* Les catégories d'activité et les sous-types de point d'intérêt s'éditaient dans
+     Paramètres → Général sans jamais être enregistrés : l'écran modifiait une
+     projection en mémoire, aucune route ne les recevait. On ajoutait une catégorie,
+     elle apparaissait dans toutes les listes déroulantes, et elle avait disparu au
+     rechargement suivant. Le sous-type allait plus loin : l'état ne rendait même pas
+     la table, si bien que l'écran affichait une liste vide sur des données présentes. */
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  assert.ok(Array.isArray(st.body.poiSubtypes), "les sous-types de point d'intérêt sont rendus par /state");
+  assert.ok(st.body.poiSubtypes.length, "et le semis en a chargé");
+
+  const id = "cat-test-" + Date.now();
+  const cree = await request(app).put("/api/collections/activityCategories")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ rows: [...st.body.categories, { id, name:"Cantines scolaires (test)", tag:"SFT",
+                                            program_area:"Nutrition", active:true }] });
+  assert.equal(cree.status, 200, cree.body.error);
+  assert.equal(cree.body.created, 1);
+
+  const relu = (await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`)).body;
+  const posee = relu.categories.find(c => c.id === id);
+  assert.ok(posee, "la catégorie est bien là après relecture de l'état");
+  assert.equal(posee.tag, "SFT");
+
+  /* Rien ne la référence encore : elle se supprime. */
+  const oter = await request(app).put("/api/collections/activityCategories")
+    .set("Authorization", `Bearer ${adminToken}`).send({ rows: relu.categories.filter(c=>c.id!==id),
+      deletes: [id] });
+  assert.equal(oter.body.removed, 1);
+});
+
+test("listes de référence : une catégorie portée par des sites ne se supprime pas", async () => {
+  /* Le schéma détacherait les sites en silence (ON DELETE SET NULL) : des sites sans
+     catégorie, hors de tous les filtres et de tous les totaux par activité. On refuse,
+     et l'écran propose de désactiver — ce qui les retire des choix sans rien détacher. */
+  const utilisee = db.prepare(
+    `SELECT category_id id, COUNT(*) c FROM sites WHERE category_id IS NOT NULL
+     GROUP BY category_id ORDER BY c DESC LIMIT 1`).get();
+  assert.ok(utilisee, "le semis rattache des sites à une catégorie");
+
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  const r = await request(app).put("/api/collections/activityCategories")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ rows: st.body.categories.filter(c => c.id !== utilisee.id), deletes: [utilisee.id] });
+  assert.equal(r.status, 409);
+  assert.match(r.body.error, /référencée|désactivez/i);
+  assert.equal(r.body.bloquees[0].usage.sites, utilisee.c);
+  assert.ok(db.prepare("SELECT 1 FROM activity_categories WHERE id=?").get(utilisee.id),
+    "la catégorie est intacte");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM sites WHERE category_id=?").get(utilisee.id).c,
+    utilisee.c, "aucun site n'a été détaché");
+});
+
+test("réglages : le barème et les formules de couverture sont conservés", async () => {
+  /* Le barème de priorité, les formules de couverture et les coefficients trimestriels
+     s'éditaient à l'écran et ne repartaient nulle part : ils étaient reconstruits
+     depuis les constantes à chaque chargement. On modifiait une formule, on rechargeait,
+     et l'on retrouvait celle d'origine — sans un message. */
+  const formules = [{ id:"minInterval", label:"Intervalle minimal", expr:"duration / riskLevel", core:true }];
+  const r = await request(app).put("/api/settings").set("Authorization", `Bearer ${adminToken}`)
+    .send({ formulas: formules, scoring: { medium:{ value:3 }, high:{ value:5 } } });
+  assert.equal(r.status, 200);
+  const relu = (await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`)).body;
+  assert.equal(relu.settings.formulas[0].expr, "duration / riskLevel");
+  assert.equal(relu.settings.scoring.high.value, 5);
+});
+
 test("collections : une référence inexistante renvoie un conflit, pas une erreur serveur", async () => {
   const r = await request(app).put("/api/collections/outcomes")
     .set("Authorization", `Bearer ${adminToken}`)
@@ -882,6 +949,62 @@ test("concurrence : modifier la même ligne à deux est refusé, pas écrasé", 
   assert.equal(rejoue.status, 200);
   assert.equal(db.prepare("SELECT name FROM indicators WHERE id=?").get(cible.key).name,
     "Intitulé final de A");
+});
+
+test("concurrence : deux corrections d'affilée sur la même ligne passent", async () => {
+  /* Le verrou optimiste n'a de sens que si le serveur rend AUSSI le nouveau jeton.
+     Sans cela, le client gardait la révision lue, le serveur venait de l'incrémenter,
+     et le deuxième enregistrement d'affilée entrait en conflit avec sa propre écriture :
+     « cette collection a été modifiée par Administrateur pendant votre saisie » —
+     Administrateur étant soi-même. Corriger deux fois de suite était impossible sans
+     recharger la page, et le message accusait un collègue.
+
+     C'est le geste le plus banal de tous : on saisit, on se relit, on corrige. */
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const etat = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`)).body;
+  const cible = etat.indicators[0];
+  const ligne = (nom, rev) => ({ id:cible.key, rev, code:cible.id, name:nom,
+    basket:cible.basket, unit:cible.unit, target:cible.target,
+    direction:cible.dir, method:cible.method, frequency:cible.freq });
+
+  const un = await request(app).put("/api/collections/indicators")
+    .set("Authorization", `Bearer ${t}`).send({ rows: [ligne("Première saisie", cible.rev)] });
+  assert.equal(un.status, 200);
+  assert.equal(un.body.revisions[cible.key], cible.rev + 1,
+    "la réponse porte la révision telle qu'elle est après écriture");
+
+  /* Le client rejoue avec ce que le serveur vient de lui rendre — pas avec ce qu'il
+     avait lu. C'est exactement ce que fait la file d'écriture de l'interface. */
+  const deux = await request(app).put("/api/collections/indicators")
+    .set("Authorization", `Bearer ${t}`)
+    .send({ rows: [ligne("Correction juste après", un.body.revisions[cible.key])] });
+  assert.equal(deux.status, 200, deux.body.error);
+  assert.equal(db.prepare("SELECT name FROM indicators WHERE id=?").get(cible.key).name,
+    "Correction juste après");
+  assert.equal(deux.body.revisions[cible.key], cible.rev + 2);
+});
+
+test("concurrence : une ligne créée annonce sa révision de départ", async () => {
+  /* Une ligne neuve naît à la révision 1. Sans la rendre, la première correction qui
+     suit sa création serait refusée — le cas de quiconque ajoute une ligne puis
+     s'aperçoit d'une faute de frappe. */
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const id = "rt-neuf-" + Date.now();
+  const cree = await request(app).put("/api/collections/reportTemplates")
+    .set("Authorization", `Bearer ${t}`)
+    .send({ rows: [{ id, name:"Modèle neuf", blocks:["couverture"], intro:"" }] });
+  assert.equal(cree.status, 200);
+  assert.equal(cree.body.created, 1);
+  assert.equal(cree.body.revisions[id], 1);
+
+  const corrige = await request(app).put("/api/collections/reportTemplates")
+    .set("Authorization", `Bearer ${t}`)
+    .send({ rows: [{ id, rev: cree.body.revisions[id], name:"Modèle neuf corrigé",
+                     blocks:["couverture"], intro:"" }] });
+  assert.equal(corrige.status, 200, corrige.body.error);
+  assert.equal(corrige.body.revisions[id], 2);
+  await request(app).put("/api/collections/reportTemplates")
+    .set("Authorization", `Bearer ${t}`).send({ rows: [], deletes: [id] });
 });
 
 test("concurrence : un client qui n'envoie pas de révision reste accepté", async () => {

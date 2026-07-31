@@ -613,19 +613,30 @@ function OutcomeModal({ open, row, db, onClose, onSave }){
     </Modal>);
 }
 
-/* ── Sources de données ── */
+/* ── Sources de données ────────────────────────────────────
+   Le bouton « Extraire » ne lisait rien. Il ajoutait un nombre AU HASARD au compteur
+   d'enregistrements du formulaire, inscrivait « Extraction ODK Central » au journal,
+   et annonçait « Extraction lancée ». Le compteur montait, la date de dernière
+   extraction se mettait à jour, et l'on repartait convaincu que les soumissions du
+   terrain étaient entrées — alors qu'aucun appel n'avait été émis et qu'aucune donnée
+   n'existait derrière ces nombres.
+
+   C'est la pire espèce de défaut : non pas une commande sans effet, qu'on remarque,
+   mais une commande qui simule le succès. Un chiffre inventé qui se retrouve dans un
+   rapport ne se distingue plus d'un chiffre mesuré.
+
+   La déclaration des sources reste — c'est de la vraie configuration, enregistrée et
+   utilisée par les écrans d'analyse. L'extraction, elle, n'est pas branchée : on le
+   dit, au lieu d'en jouer la pantomime. */
 function Sources({ db, set, notify, can }){
-  const pull = (f) => { set(d => { const x = d.odkForms.find(y=>y.id===f.id);
-      if(x){ x.last = new Date().toLocaleString("fr-FR"); x.records += Math.floor(Math.random()*40); }
-      d.audit.unshift({ id:uid("a"), at:new Date().toISOString(), user:"session", office:"Bureau central",
-        kind:"odk", text:`Extraction ODK Central — ${f.name}` }); return d; });
-    notify(`Extraction lancée sur ${f.name}`,"ok"); };
   return (
     <>
-      <Note tone="warn"><b>Lecture des données.</b> Les jeux sont appelés sur ODK Central via
-        <code className="bg-white px-1.5 py-0.5 rounded mx-1 f115">{db.settings.odkBase}/v1/projects/&#123;projet&#125;/forms/&#123;formulaire&#125;.svc/Submissions</code>
-        avec un jeton porté par l'en-tête d'autorisation. Depuis un navigateur, l'appel n'aboutit que si le serveur
-        autorise l'origine de cette page. La configuration complète se fait dans Paramètres → ODK Central.</Note>
+      <Note tone="warn"><b>Extraction non branchée.</b> Les sources se déclarent ici et servent aux
+        écrans d'analyse, mais aucune soumission n'est encore lue depuis ODK Central : la lecture
+        suppose un appel côté serveur, avec pagination et jeton, qui reste à écrire. En attendant,
+        les réalisations entrent par Programme → Import de fichiers, qui lui fonctionne de bout en bout.
+        L'adresse d'appel prévue est
+        <code className="bg-white px-1.5 py-0.5 rounded mx-1 f115">{db.settings.odkBase}/v1/projects/&#123;projet&#125;/forms/&#123;formulaire&#125;.svc/Submissions</code>.</Note>
       <Card flush title="Formulaires connectés" subtitle="Chaque formulaire alimente une partie de l'application">
         <TableWrap max="mh420">
           <thead><tr><Th>Formulaire</Th><Th>Identifiant</Th><Th>Type de données</Th><Th>Champ site</Th>
@@ -637,7 +648,7 @@ function Sources({ db, set, notify, can }){
               <Td className="f115 text-slate-500">{f.siteField || "auto"}</Td>
               <Td>{f.xlsform ? <Badge tone="g">{f.xlsform.name} · {Object.keys(f.labels||{}).length} libellés</Badge> : <Badge>Non joint</Badge>}</Td>
               <Td num>{fmt(f.records)}</Td><Td className="text-slate-500">{f.last || "—"}</Td>
-              <Td className="text-right">{can("sync") && <Btn size="sm" kind="ghost" icon={Download} onClick={()=>pull(f)}>Extraire</Btn>}</Td>
+              <Td className="text-right f105 text-slate-400">déclarée</Td>
             </tr>))}</tbody>
         </TableWrap>
       </Card>

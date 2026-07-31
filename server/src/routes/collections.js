@@ -69,6 +69,32 @@ const COLLECTIONS = {
       households:x.households, tonnage:x.tonnage, amount:x.amount, benef_actual:x.benefActual,
       received:x.received, distributed:x.distributed, status:x.status, note:x.note }) },
 
+  /* Les deux listes de référence de la configuration générale. Elles s'éditaient sans
+     jamais être enregistrées : l'écran modifiait une projection de l'état, et rien ne
+     revenait au serveur. Ce sont des listes courtes, mais elles nomment ce que tout le
+     reste classe — la catégorie porte l'« activity tag » de tous les écrans. */
+  activityCategories: { table:"activity_categories", cap:"admin",
+    schema: z.object({ id:S(64), name:z.string().trim().min(2).max(160),
+      tag:z.string().trim().min(1).max(20), program_area:S(120),
+      active:z.union([z.boolean(), z.number(), z.string()]).default(true).transform(v =>
+        (v===false || v===0 || v==="0" || v==="false") ? 0 : 1) }),
+    map: (x) => ({ name:x.name, tag:x.tag, program_area:x.program_area, active:x.active }),
+    /* Les sites et les paramètres de couverture y font référence, et le schéma les
+       détacherait en silence (ON DELETE SET NULL) : des sites sans catégorie, hors de
+       tous les filtres et de tous les totaux par activité. On refuse, et l'écran
+       propose de désactiver — ce qui retire la catégorie des choix sans toucher à
+       l'historique. */
+    guard: (id) => {
+      const u = { sites: db.prepare("SELECT COUNT(*) c FROM sites WHERE category_id=?").get(id).c,
+        params: db.prepare("SELECT COUNT(*) c FROM coverage_params WHERE category_id=?").get(id).c };
+      return (u.sites || u.params) ? u : null;
+    } },
+
+  poiSubtypes: { table:"poi_subtypes", cap:"admin",
+    schema: z.object({ id:S(64), label:z.string().trim().min(1).max(120),
+      code:z.string().trim().max(20).default(""), note:S(300) }),
+    map: (x) => ({ label:x.label, code:x.code, note:x.note }) },
+
   reportTemplates: { table:"report_templates", cap:"edit",
     schema: z.object({ id:S(64), name:z.string().min(1).max(160),
       blocks:z.array(z.string().max(40)).max(40).default([]), intro:S(4000) }),
@@ -167,6 +193,16 @@ r.put("/collections/:name", (req, res, next) => {
       lignes: hors.slice(0, 20) });
   }
 
+  /* Une suppression qui détacherait des lignes ailleurs est refusée en bloc, avant
+     toute écriture, avec le décompte de ce qui l'empêche. */
+  if(def.guard && deletes.length){
+    const bloquees = [];
+    for(const id of deletes){ const u = def.guard(id); if(u) bloquees.push({ id, usage:u }); }
+    if(bloquees.length) return res.status(409).json({
+      error: `${bloquees.length} entrée(s) sont référencées ailleurs ; désactivez-les plutôt que de les supprimer`,
+      bloquees });
+  }
+
   /* Les conflits se détectent avant d'écrire : soit l'ensemble passe, soit rien. */
   const existing = new Map(db.prepare(`SELECT id, rev FROM ${def.table}`).all().map(x => [x.id, x.rev]));
   for(const raw of rows){
@@ -188,6 +224,16 @@ r.put("/collections/:name", (req, res, next) => {
     });
   }
 
+  /* Les révisions telles qu'elles sont APRÈS l'écriture.
+
+     Sans elles, le client gardait celles qu'il avait lues, alors que le serveur venait
+     de les incrémenter : le deuxième enregistrement d'affilée se heurtait à sa propre
+     écriture et rendait « cette collection a été modifiée par Administrateur pendant
+     votre saisie ». Modifier deux fois de suite la même ligne était donc impossible
+     sans recharger, et le message accusait un collègue de ce qu'on venait de faire
+     soi-même. Le verrou optimiste n'a de sens que si l'on rend aussi le nouveau jeton. */
+  const revisions = {};
+
   try{
     tx(() => {
       for(const raw of rows){
@@ -196,12 +242,14 @@ r.put("/collections/:name", (req, res, next) => {
         if(raw.id && existing.has(raw.id)){
           db.prepare(`UPDATE ${def.table} SET ${keys.map(k=>k+"=?").join(",")}, rev=rev+1
                       WHERE id=?`).run(...keys.map(k=>cols[k]), raw.id);
+          revisions[raw.id] = existing.get(raw.id) + 1;
           updated++;
         } else {
           const nid = raw.id || newId(req.params.name.slice(0,4));
           db.prepare(`INSERT INTO ${def.table} (id,${keys.join(",")})
                       VALUES (?,${keys.map(()=>"?").join(",")})`)
             .run(nid, ...keys.map(k=>cols[k]));
+          revisions[nid] = 1;
           created++;
         }
       }
@@ -222,7 +270,7 @@ r.put("/collections/:name", (req, res, next) => {
                 VALUES (?,?,?,'plan',?,'sync',?)`)
       .run(newId("aud"), req.user.id, req.user.first_name, req.params.name,
            `${req.params.name} : ${created} créé(s), ${updated} modifié(s), ${removed} supprimé(s)`);
-  res.json({ created, updated, removed });
+  res.json({ created, updated, removed, revisions });
 });
 
 /* Le plan de suivi d'un indicateur : les moyens de vérification du cadre de

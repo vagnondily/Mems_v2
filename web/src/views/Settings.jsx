@@ -27,7 +27,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload, go }){
      rétablis, avec « À propos » qui venait de main. */
   return (
     <div className="space-y-4">
-      {sub==="general" && <SetGeneral db={db} set={set} />}
+      {sub==="general" && <SetGeneral db={db} set={set} can={can} />}
       {sub==="country" && <PaysEtDecoupage db={db} notify={notify} can={can} reload={reload} />}
       {sub==="offices" && <SetOffices db={db} notify={notify} can={can} reload={reload} />}
       {sub==="lists" && <Listes db={db} notify={notify} can={can} reload={reload} go={go} />}
@@ -43,8 +43,9 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload, go }){
     </div>);
 }
 
-function SetGeneral({ db, set }){
+function SetGeneral({ db, set, can }){
   const s = db.settings; const u = (k,v)=>set(d=>{ d.settings[k]=v; return d; });
+  const modifiable = can ? can("admin") : true;
   /* Les bureaux ne figurent plus ici. Ils étaient présentés comme une liste de noms
      modifiable, mais cette liste est dérivée de la table `offices` à chaque
      chargement et n'était jamais renvoyée au serveur : toute saisie était perdue.
@@ -55,7 +56,10 @@ function SetGeneral({ db, set }){
      chargement et n'était jamais renvoyée au serveur : la saisie était perdue au
      rechargement. Même défaut que les bureaux avant leur écran propre, et même
      correction — voir Paramètres → Listes de référence. */
-  const LISTS = [["modalities","Types de modalité"]];
+  /* « Types de modalité » ne figure plus ici. Cette liste n'était lue par aucun écran :
+     le plan de distribution travaille sur les trois modalités que le serveur accepte
+     (vivres, espèces, coupons). On la présentait comme configurable, elle ne pilotait
+     rien, et sa saisie n'était de toute façon jamais enregistrée. */
   return (
     <div className="grid gap-4" style={{gridTemplateColumns:"repeat(auto-fit,minmax(330px,1fr))"}}>
       <Card title="Identité et affichage">
@@ -74,36 +78,7 @@ function SetGeneral({ db, set }){
             retirés : aucun code ne les lisait. Les rétablir suppose de les brancher
             réellement (formatage des montants et des dates, cadence de la file d'envoi). */}
       </Card>
-      {LISTS.map(([k,label])=>(
-        <Card key={k} title={label} subtitle={`${db.lists[k].length} entrées`}>
-          <div className="space-y-1.5 mh240 overflow-auto pr-1">
-            {db.lists[k].map((v,i)=>(<div key={i} className="flex gap-1.5">
-              <input value={v} onChange={e=>set(d=>{ d.lists[k][i]=e.target.value; return d; })} className={clsx(inputCls,"mi-py1")} />
-              <button onClick={()=>set(d=>{ d.lists[k].splice(i,1); return d; })} className="px-2 text-slate-400 hover:text-rose-600"><X size={14}/></button>
-            </div>))}
-          </div>
-          <Btn size="sm" kind="sec" icon={Plus} className="mt-3" onClick={()=>set(d=>{ d.lists[k].push(""); return d; })}>Ajouter</Btn>
-        </Card>))}
-      <Card title="Sous-types de point d'intérêt" subtitle="Libellé et code de codification">
-        <div className="space-y-1.5 mh240 overflow-auto pr-1">
-          {db.lists.poiSub.map((v,i)=>(<div key={i} className="flex gap-1.5">
-            <input value={v.label} onChange={e=>set(d=>{ d.lists.poiSub[i].label=e.target.value; return d; })} className={clsx(inputCls,"mi-py1")} />
-            <input value={v.code} onChange={e=>set(d=>{ d.lists.poiSub[i].code=e.target.value; return d; })} className={clsx(inputCls,"mi-py1 w-24")} />
-            <button onClick={()=>set(d=>{ d.lists.poiSub.splice(i,1); return d; })} className="px-2 text-slate-400 hover:text-rose-600"><X size={14}/></button>
-          </div>))}
-        </div>
-        <Btn size="sm" kind="sec" icon={Plus} className="mt-3" onClick={()=>set(d=>{ d.lists.poiSub.push({label:"",code:""}); return d; })}>Ajouter</Btn>
-      </Card>
-      <Card title="Activity tags" subtitle="Code et intitulé de l'activité">
-        <div className="space-y-1.5 mh240 overflow-auto pr-1">
-          {db.lists.tags.map((v,i)=>(<div key={i} className="flex gap-1.5">
-            <input value={v.code} onChange={e=>set(d=>{ d.lists.tags[i].code=e.target.value; return d; })} className={clsx(inputCls,"mi-py1 w-20")} />
-            <input value={v.label} onChange={e=>set(d=>{ d.lists.tags[i].label=e.target.value; return d; })} className={clsx(inputCls,"mi-py1")} />
-            <button onClick={()=>set(d=>{ d.lists.tags.splice(i,1); return d; })} className="px-2 text-slate-400 hover:text-rose-600"><X size={14}/></button>
-          </div>))}
-        </div>
-        <Btn size="sm" kind="sec" icon={Plus} className="mt-3" onClick={()=>set(d=>{ d.lists.tags.push({code:"",label:""}); return d; })}>Ajouter</Btn>
-      </Card>
+      <CategoriesActivite db={db} set={set} modifiable={modifiable} />
       <Card title="Barème de priorité de suivi" subtitle="Reprend la logique du plan de suivi : quatre sous-scores, puis leur somme arrondie">
         <Note>Priorité = drapeaux urgents + critère nouveau partenaire et ancienneté + moyenne des critères.
           La moyenne porte sur les problèmes du suivi interne, des rapports partenaire et du mécanisme de plainte,
@@ -142,16 +117,94 @@ function SetGeneral({ db, set }){
                 {db.sites.filter(x=>sitePriority(x,db).level===lv).length}</div></div>))}
         </div>
       </Card>
-      <Card title="Catégories d'activité" subtitle="Liste de référence du plan de suivi">
-        <div className="space-y-1.5 mh300 overflow-auto pr-1">
-          {(db.actCategories||[]).map((v,i)=>(<div key={i} className="flex gap-1.5">
-            <input value={v} onChange={e=>set(d=>{ d.actCategories[i]=e.target.value; return d; })} className={clsx(inputCls,"mi-py1 f115")} />
-            <button onClick={()=>set(d=>{ d.actCategories.splice(i,1); return d; })} className="px-2 text-slate-400 hover:text-rose-600"><X size={14}/></button>
-          </div>))}
-        </div>
-        <Btn size="sm" kind="sec" icon={Plus} className="mt-3" onClick={()=>set(d=>{ d.actCategories.push(""); return d; })}>Ajouter</Btn>
-      </Card>
+      <SousTypesPoi db={db} set={set} modifiable={modifiable} />
     </div>);
+}
+
+/* ── Catégories d'activité ───────────────────────────────────
+   Elles étaient présentées en DEUX cartes — « Activity tags » et « Catégories
+   d'activité » — qui modifiaient chacune une projection différente de la même table,
+   sans jamais rien enregistrer. On y ajoutait une catégorie, elle apparaissait dans
+   les listes déroulantes, et elle disparaissait au rechargement suivant.
+
+   Une seule carte, une seule source : le nom, le code d'activité qui le désigne
+   partout ailleurs, et le domaine programmatique. Ce que la catégorie classe
+   réellement est affiché en regard — c'est ce qui fait sentir la liaison entre cette
+   liste et le reste, et c'est aussi ce qui interdit de la supprimer à la légère. */
+function CategoriesActivite({ db, set, modifiable }){
+  const cats = db.activityCategories || [];
+  const maj = (i, champ, v) => set(d => { d.activityCategories[i][champ] = v; return d; });
+  const compte = (id) => ({
+    sites:  db.sites.filter(s => s.category_id === id).length,
+    params: (db.params || []).filter(p => p.category_id === id).length,
+  });
+  return (
+    <Card title="Catégories d'activité"
+      subtitle="Le code d'activité de chaque catégorie sert de filtre dans tout le suivi"
+      right={modifiable && <Btn size="sm" kind="sec" icon={Plus} onClick={()=>set(d=>{
+        d.activityCategories = [...(d.activityCategories||[]),
+          { id:uid("cat"), name:"", tag:"", program_area:"", active:1 }]; return d; })}>Ajouter</Btn>}>
+      {!cats.length && <Empty title="Aucune catégorie"
+        text="Les catégories d'activité nomment ce que l'on suit : distribution générale, nutrition, cantines scolaires…" />}
+      {!!cats.length && <TableWrap max="mh340">
+          <thead><tr><Th>Intitulé</Th><Th>Code</Th><Th>Domaine</Th><Th>Utilisée par</Th>
+            <Th>Active</Th><Th/></tr></thead>
+          <tbody>
+            {cats.map((c, i) => { const usage = compte(c.id); const lie = usage.sites + usage.params;
+              return (<tr key={c.id || i} className="border-t border-slate-100">
+                <Td><input value={c.name || ""} disabled={!modifiable} placeholder="Distribution générale"
+                  onChange={e=>maj(i,"name",e.target.value)} className={clsx(inputCls,"mi-py1")} /></Td>
+                <Td><input value={c.tag || ""} disabled={!modifiable} placeholder="GD"
+                  onChange={e=>maj(i,"tag",e.target.value.toUpperCase())} className={clsx(inputCls,"mi-py1 w-20")} /></Td>
+                <Td><Select value={c.program_area || ""} disabled={!modifiable} empty="—"
+                  options={PROG_AREAS} onChange={e=>maj(i,"program_area",e.target.value)}
+                  className="mi-py1 mi-wauto" /></Td>
+                <Td className="text-slate-500 f115">
+                  {lie ? `${usage.sites} site(s) · ${usage.params} paramètre(s)` : "—"}</Td>
+                <Td><button disabled={!modifiable} onClick={()=>maj(i,"active", c.active ? 0 : 1)}
+                  className={clsx("px-2 py-0.5 rounded f10 uppercase tracking-wide font-bold border",
+                    c.active !== 0 && c.active !== false
+                      ? "bg-lime-50 text-lime-800 border-lime-200"
+                      : "bg-slate-50 text-slate-500 border-slate-200")}>
+                  {c.active !== 0 && c.active !== false ? "active" : "retirée"}</button></Td>
+                <Td>{modifiable && (lie
+                  ? <span className="f10 text-slate-400" title="Retirez-la des choix en la désactivant : l'historique reste lisible">référencée</span>
+                  : <button onClick={()=>set(d=>{ d.activityCategories.splice(i,1); return d; })}
+                      className="px-2 text-slate-400 hover:text-rose-600"><X size={14}/></button>)}</Td>
+              </tr>); })}
+          </tbody>
+      </TableWrap>}
+      <Note>Une catégorie déjà portée par des sites ou des paramètres de couverture ne se
+        supprime pas : la désactiver la retire des listes déroulantes sans détacher ce qui
+        s'y rattache.</Note>
+    </Card>);
+}
+
+/* ── Sous-types de point d'intérêt ────────────────────────
+   La table existait, le semis la remplissait, et l'état ne la rendait pas : l'écran
+   montrait une liste vide alors que les sites en portaient déjà les valeurs. */
+function SousTypesPoi({ db, set, modifiable }){
+  const rows = db.poiSubtypes || [];
+  const maj = (i, champ, v) => set(d => { d.poiSubtypes[i][champ] = v; return d; });
+  return (
+    <Card title="Sous-types de point d'intérêt"
+      subtitle="Ce qu'est le lieu suivi : école, centre de santé, marché…"
+      right={modifiable && <Btn size="sm" kind="sec" icon={Plus} onClick={()=>set(d=>{
+        d.poiSubtypes = [...(d.poiSubtypes||[]), { id:uid("poi"), label:"", code:"", note:"" }];
+        return d; })}>Ajouter</Btn>}>
+      {!rows.length && <Empty title="Aucun sous-type"
+        text="Le sous-type sert à comparer ce qui est comparable : une école ne se visite pas comme un marché." />}
+      <div className="space-y-1.5 mh300 overflow-auto pr-1">
+        {rows.map((v, i) => (<div key={v.id || i} className="flex gap-1.5">
+          <input value={v.label || ""} disabled={!modifiable} placeholder="École"
+            onChange={e=>maj(i,"label",e.target.value)} className={clsx(inputCls,"mi-py1")} />
+          <input value={v.code || ""} disabled={!modifiable} placeholder="SCH"
+            onChange={e=>maj(i,"code",e.target.value.toUpperCase())} className={clsx(inputCls,"mi-py1 w-24")} />
+          {modifiable && <button onClick={()=>set(d=>{ d.poiSubtypes.splice(i,1); return d; })}
+            className="px-2 text-slate-400 hover:text-rose-600"><X size={14}/></button>}
+        </div>))}
+      </div>
+    </Card>);
 }
 
 function SetAbout({ db }){
@@ -1080,13 +1133,24 @@ function SetOdk({ db, set, notify, can }){
         le champ qui identifie le site, et peut recevoir son XLSForm pour restituer les libellés des questions
         à la place des noms techniques.</Note>
       <div className="grid gap-4" style={{gridTemplateColumns:"340px 1fr"}}>
+        {/* Deux commandes ont disparu d'ici, et c'est un gain.
+
+            « Tester la connexion » ne testait rien : elle affichait un message et
+            s'arrêtait là. Un bouton qui prétend éprouver quelque chose et ne l'éprouve
+            pas est pire que son absence — on le presse, il ne se plaint pas, et l'on
+            en conclut que le serveur répond.
+
+            « Jeton général » était refusé côté serveur, en silence : le dictionnaire
+            des réglages n'accepte aucun secret en clair, et la clé était simplement
+            ignorée à l'enregistrement. On saisissait un jeton, le champ semblait le
+            retenir, et il n'existait nulle part au rechargement. Le jeton se porte par
+            SOURCE, où il est chiffré — c'est le seul chemin qui fonctionne. */}
         <Card title="Serveur">
           <Field label="Adresse du serveur"><Input value={s.odkBase} onChange={e=>u("odkBase",e.target.value)} placeholder="https://odk-central.example.org" /></Field>
-          <Field label="Jeton général" hint="Repris par les sources qui n'ont pas de jeton propre">
-            <Input type="password" value={s.odkToken||""} onChange={e=>u("odkToken",e.target.value)} /></Field>
           <Field label="Identifiant de projet par défaut"><Input value={s.odkProject||""} onChange={e=>u("odkProject",e.target.value)} placeholder="1" /></Field>
-          <Btn size="sm" kind="sec" icon={Link2}
-            onClick={()=>notify("Configuration enregistrée. L'appel réel exige un serveur autorisant cette origine.","warn")}>Tester la connexion</Btn>
+          <Note>Le jeton d'accès se déclare source par source, dans la fiche du formulaire :
+            il y est chiffré avant d'être conservé et n'est jamais renvoyé à l'écran. Le
+            dictionnaire des réglages, lui, n'accepte aucun secret.</Note>
         </Card>
         <Card flush title="Sources de données" subtitle={`${db.odkForms.length} formulaires déclarés`}
           right={can("edit") && <Btn size="sm" icon={Plus} onClick={()=>setEdit({ name:"", formId:"", project:s.odkProject||"",
@@ -1101,7 +1165,7 @@ function SetOdk({ db, set, notify, can }){
                 <Td><Badge tone="b">{ {process:"Suivi de processus", output:"Output", outcome:"Outcome", sites:"Registre des sites"}[f.kind] }</Badge></Td>
                 <Td>{f.tag ? <Badge>{f.tag}</Badge> : <span className="text-slate-400">—</span>}</Td>
                 <Td className="f115">{f.siteField || <span className="text-amber-700">à définir</span>}</Td>
-                <Td>{(f.token||s.odkToken) ? <Badge tone="g">présent</Badge> : <Badge tone="r">manquant</Badge>}</Td>
+                <Td>{f.token ? <Badge tone="g">présent</Badge> : <Badge tone="r">manquant</Badge>}</Td>
                 <Td>{f.xlsform ? <Badge tone="g">{Object.keys(f.labels||{}).length} libellés</Badge> : <Badge>non joint</Badge>}</Td>
                 <Td num>{fmt(f.records)}</Td>
                 <Td className="text-right">
@@ -1372,23 +1436,32 @@ function SetUsers({ db, set, me, notify }){
             </tr>))}</tbody>
         </TableWrap>
       </Card>
-      <Card flush title="Rôles et niveaux d'accès" subtitle="Onglets ouverts par défaut et actions permises">
+      {/* Cette matrice était présentée comme modifiable : on décochait « Modifier »
+          pour le rôle éditeur, la case restait décochée à l'écran, et rien ne
+          changeait — ni sur le serveur, qui tient la sienne et reste seul arbitre, ni
+          au rechargement suivant, où la case revenait cochée. Une case à cocher qui
+          ne coche rien vaut moins qu'un tableau qui dit la vérité : la voici en
+          lecture, telle que le serveur l'applique. Ce qui se règle par compte —
+          les destinations ouvertes — se règle dans sa fiche, et cela fonctionne. */}
+      <Card flush title="Rôles et niveaux d'accès"
+        subtitle="Ce que chaque rôle permet, tel que le serveur l'applique">
         <TableWrap max="mh300">
-          <thead><tr><Th>Rôle</Th><Th>Onglets accessibles</Th>
+          <thead><tr><Th>Rôle</Th><Th>Destinations ouvertes par défaut</Th>
             {["Modifier","Supprimer","Valider","Administrer"].map(h=><Th key={h} className="mi-tc">{h}</Th>)}</tr></thead>
           <tbody>{Object.entries(db.roles).map(([k,r])=>(
             <tr key={k}><Td><b>{r.label}</b></Td>
-              <Td className="whitespace-normal mw420">{TABS_ALL.map(([t,l])=>(
-                <label key={t} className="inline-flex items-center gap-1 mr-3 f115">
-                  <input type="checkbox" checked={r.tabs.includes(t)} disabled={k==="super"}
-                    onChange={e=>set(d=>{ const rr=d.roles[k];
-                      rr.tabs = e.target.checked ? [...new Set([...rr.tabs,t])] : rr.tabs.filter(x=>x!==t); return d; })} />
-                  {l}</label>))}</Td>
+              <Td className="whitespace-normal mw420 f115 text-slate-600">
+                {TABS_ALL.filter(([t]) => r.tabs.includes(t)).map(([,l])=>l).join(" · ") || "aucune"}</Td>
               {["edit","del","validate","admin"].map(fl=>(
-                <Td key={fl} className="mi-tc"><input type="checkbox" checked={!!r[fl]} disabled={k==="super"}
-                  onChange={e=>set(d=>{ d.roles[k][fl]=e.target.checked; return d; })} /></Td>))}
+                <Td key={fl} className="mi-tc">{r[fl]
+                  ? <Check size={14} className="inline text-lime-600" />
+                  : <span className="text-slate-300">—</span>}</Td>))}
             </tr>))}</tbody>
         </TableWrap>
+        <Note>Les droits d'un rôle ne se modifient pas depuis l'application : le serveur
+          les applique à chaque appel et refuserait ce que cet écran laisserait passer.
+          Pour ouvrir ou fermer des destinations à quelqu'un en particulier, ouvrez sa
+          fiche — ce réglage-là est bien enregistré.</Note>
       </Card>
       <UserModal open={!!edit} user={edit} db={db} me={me} onClose={()=>setEdit(null)} onSave={save} />
     </>);

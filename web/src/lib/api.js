@@ -220,7 +220,8 @@ export const api = {
 
 /* File d'écriture : les collections modifiées sont poussées par lot, avec réessai.
    Une seule requête par collection est en vol à la fois : le serveur reste l'arbitre. */
-export function createSyncQueue({ onStatus = () => {}, onConflict = null, delay = 900 } = {}){
+export function createSyncQueue({ onStatus = () => {}, onConflict = null,
+                                  onSaved = null, delay = 900 } = {}){
   const pending = new Map();          /* collection -> { rows, deletes } */
   const timers = new Map();
   let inflight = 0, failures = 0;
@@ -232,7 +233,13 @@ export function createSyncQueue({ onStatus = () => {}, onConflict = null, delay 
     inflight++; onStatus({ state:"saving", inflight, failures });
     try{
       if(name === "settings") await api.saveSettings(job.rows);
-      else await api.syncCollection(name, job.rows, job.deletes);
+      else {
+        const r = await api.syncCollection(name, job.rows, job.deletes);
+        /* Les révisions rendues par le serveur remplacent celles que l'on tenait :
+           sans cela, le prochain enregistrement présenterait un jeton périmé par notre
+           propre écriture, et se ferait refuser comme un conflit avec un collègue. */
+        if(onSaved && r?.revisions) onSaved(name, r.revisions);
+      }
       failures = 0;
     }catch(e){
       /* 409 : quelqu'un d'autre a modifié la même ligne. Réessayer écraserait son

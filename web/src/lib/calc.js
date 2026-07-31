@@ -49,16 +49,135 @@ const LEVELS = { 1:{label:"Faible", cls:"bg-lime-50 text-lime-800 border-lime-20
 
 const FNS = ["max","min","round","abs","sqrt","floor","ceil"];
 const SAFE_CHARS = /^[a-zA-Z0-9_+\-*/() ,.]*$/;
+/* ═══════════════════════════════════════════════════════════════════════
+   Évaluation des formules de couverture.
+
+   Ces expressions sont écrites par l'utilisateur dans Paramètres → Calculs : elles
+   décident de l'intervalle minimal entre deux visites, de la fréquence requise et de
+   la faisabilité du plan. C'est le cœur de la planification fondée sur le risque.
+
+   Elles étaient évaluées par `new Function(...)`. Cela fonctionnait en développement
+   et NE FONCTIONNAIT PAS EN PRODUCTION : la politique de sécurité du contenu
+   n'autorise que les scripts de même origine, sans `unsafe-eval`, et le navigateur
+   refuse donc de construire une fonction depuis une chaîne. L'erreur était attrapée,
+   et chaque formule rendait 0.
+
+   Conséquence, invisible parce que silencieuse : l'exigence minimale de suivi
+   affichait « 0 visite requise » et « 0 % » quelles que soient les données, les
+   paramètres de couverture montraient des colonnes de zéros, et le plan de visites
+   n'était fondé sur rien. Le seul indice était un écran qui semblait mal renseigné.
+
+   On n'ajoute évidemment pas `unsafe-eval` pour faire marcher un calcul : ce serait
+   ouvrir l'exécution de code arbitraire dans toute l'application pour six formules
+   d'arithmétique. On écrit donc l'interpréteur — une descente récursive de trente
+   lignes, qui ne peut rien faire d'autre que du calcul.
+
+   Grammaire, du moins prioritaire au plus :
+
+     expression := terme (('+' | '-') terme)*
+     terme      := facteur (('*' | '/') facteur)*
+     facteur    := ('-' | '+')? primaire
+     primaire   := nombre | variable | fonction '(' expression (',' expression)* ')'
+                 | '(' expression ')'
+   ═══════════════════════════════════════════════════════════════════════ */
+
+const FN_IMPL = { max:Math.max, min:Math.min, round:Math.round, abs:Math.abs,
+                  sqrt:Math.sqrt, floor:Math.floor, ceil:Math.ceil };
+
+/* Découpage en éléments : nombres, identifiants, opérateurs. Tout le reste a déjà
+   été refusé par le contrôle des caractères autorisés. */
+function lexer(expr){
+  const out = []; let i = 0;
+  while(i < expr.length){
+    const c = expr[i];
+    if(c === " "){ i++; continue; }
+    if(/[0-9.]/.test(c)){
+      let j = i; while(j < expr.length && /[0-9.]/.test(expr[j])) j++;
+      const v = Number(expr.slice(i, j));
+      if(!Number.isFinite(v)) throw new Error(`nombre invalide : ${expr.slice(i, j)}`);
+      out.push({ t:"num", v }); i = j; continue;
+    }
+    if(/[a-zA-Z_]/.test(c)){
+      let j = i; while(j < expr.length && /[a-zA-Z0-9_]/.test(expr[j])) j++;
+      out.push({ t:"id", v:expr.slice(i, j) }); i = j; continue;
+    }
+    if("+-*/(),".includes(c)){ out.push({ t:c }); i++; continue; }
+    throw new Error(`caractère inattendu : ${c}`);
+  }
+  return out;
+}
+
+function parser(tokens, scope){
+  let k = 0;
+  const suivant = () => tokens[k];
+  const avaler = (t) => {
+    if(!tokens[k] || (t && tokens[k].t !== t)) throw new Error(`« ${t} » attendu`);
+    return tokens[k++];
+  };
+
+  function expression(){
+    let v = terme();
+    while(suivant() && (suivant().t === "+" || suivant().t === "-")){
+      const op = avaler().t;
+      const d = terme();
+      v = op === "+" ? v + d : v - d;
+    }
+    return v;
+  }
+  function terme(){
+    let v = facteur();
+    while(suivant() && (suivant().t === "*" || suivant().t === "/")){
+      const op = avaler().t;
+      const d = facteur();
+      /* Une division par zéro rendrait l'infini, qui se propage en silence dans
+         tous les totaux. On la refuse : une formule impossible doit se voir. */
+      if(op === "/" && d === 0) throw new Error("division par zéro");
+      v = op === "*" ? v * d : v / d;
+    }
+    return v;
+  }
+  function facteur(){
+    if(suivant()?.t === "-"){ avaler("-"); return -facteur(); }
+    if(suivant()?.t === "+"){ avaler("+"); return facteur(); }
+    return primaire();
+  }
+  function primaire(){
+    const t = suivant();
+    if(!t) throw new Error("expression incomplète");
+    if(t.t === "num"){ avaler("num"); return t.v; }
+    if(t.t === "("){ avaler("("); const v = expression(); avaler(")"); return v; }
+    if(t.t === "id"){
+      avaler("id");
+      if(suivant()?.t === "("){
+        const fn = FN_IMPL[t.v];
+        if(!fn) throw new Error(`fonction inconnue : ${t.v}`);
+        avaler("(");
+        const args = [expression()];
+        while(suivant()?.t === ","){ avaler(","); args.push(expression()); }
+        avaler(")");
+        return fn(...args);
+      }
+      if(!(t.v in scope)) throw new Error(`variable inconnue : ${t.v}`);
+      return Number(scope[t.v]) || 0;
+    }
+    throw new Error("expression invalide");
+  }
+
+  const v = expression();
+  if(k !== tokens.length) throw new Error("expression mal formée");
+  return v;
+}
+
 function evalFormula(expr, scope){
   if(!expr || !SAFE_CHARS.test(expr)) return { ok:false, value:0, err:"Caractère non autorisé dans l'expression" };
+  /* Les contrôles d'origine restent : ils rejettent tôt, avec un message clair, ce
+     que l'interpréteur rejetterait de toute façon. */
   if(/\.\s*[a-zA-Z_]/.test(expr)) return { ok:false, value:0, err:"L'accès aux propriétés est interdit" };
-  const keys = Object.keys(scope);
-  const allowed = new Set([...keys, ...FNS]);
+  const allowed = new Set([...Object.keys(scope), ...FNS]);
   const bad = (expr.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || []).find(t => !allowed.has(t));
   if(bad) return { ok:false, value:0, err:`Variable inconnue : ${bad}` };
   try{
-    const fn = new Function(...keys, ...FNS, `"use strict"; return (${expr});`);
-    const v = fn(...keys.map(k=>scope[k]), Math.max, Math.min, Math.round, Math.abs, Math.sqrt, Math.floor, Math.ceil);
+    const v = parser(lexer(expr), scope);
     return Number.isFinite(v) ? { ok:true, value:v } : { ok:false, value:0, err:"Résultat non numérique" };
   }catch(e){ return { ok:false, value:0, err:e.message }; }
 }
