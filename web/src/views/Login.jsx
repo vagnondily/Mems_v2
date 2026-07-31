@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Lock, Eye, EyeOff, Target, CalendarRange, Activity, Database } from "lucide-react";
 import { C } from "../lib/constants.js";
 import { clsx } from "../lib/calc.js";
-import { Btn, Field, BrandMark, inputCls } from "../components/ui.jsx";
+import { Btn, Field, Logo, inputCls } from "../components/ui.jsx";
 import { api, setToken } from "../lib/api.js";
 const DEV_ADMIN_INFO = import.meta.env?.DEV ? {
   email: "admin@mems.local",
@@ -52,94 +52,147 @@ export function Login({ onLogin, notify }){
     }catch(e){ setErr(e.message); setBusy(false); }
   };
 
+  /* Le verrouillage des majuscules est la première cause de « mot de passe incorrect »
+     sur un écran de connexion, et personne ne le voit tant qu'on ne le dit pas. */
+  const [majuscules, setMajuscules] = useState(false);
+  const guetterMaj = (e) => {
+    try{ setMajuscules(e.getModifierState && e.getModifierState("CapsLock")); }catch(_){}
+  };
+
+  const champ = clsx(inputCls, "bg-white border-slate-300 py-2.5");
+
   return (
     <div className="min-h-screen flex flex-col lg:flex-row" style={{ background:C.bg }}>
-      <div className="hidden lg:flex flex-col justify-between w-2/5 p-12 text-white"
-        style={{ background:`linear-gradient(160deg, ${C.brandD} 0%, ${C.navy} 55%, #02243a 100%)` }}>
-        <div>
-          {/* Même parti que dans l'en-tête : le signe posé sur le fond, sans
-              cadre translucide qui l'aurait réduit à une pastille grise. */}
-          <div className="flex items-center gap-3 mb-10">
-            <BrandMark size={36} tone="light" />
-            <div className="leading-tight">
-              <div className="f15 font-bold tr14">MEMS</div>
-              <div className="f11 opacity-70">Monitoring and Evaluation Management System</div>
-            </div>
-          </div>
-          <h1 className="text-4xl xl:text-5xl font-semibold leading-tight mb-6">
-            Une plateforme moderne pour piloter le suivi et l’évaluation terrain.</h1>
-          <p className="f13 text-slate-100 opacity-85 max-w-lg leading-relaxed mb-8">
-            Planifiez vos visites, suivez les sites et visualisez les performances avec une interface pensée pour les équipes M&E.</p>
-          <ul className="space-y-4 f13 opacity-90">
-            {[["Indicateurs opérationnels", Target],
-              ["Planification des visites", CalendarRange],
-              ["Tableaux de bord visuels", Activity],
-              ["Connexion aux formulaires ODK", Database]].map(([t, I], i) => (
-              <li key={i} className="flex items-start gap-3">
-                <span className="mt-0.5 text-slate-200"><I size={18} /></span>
-                <span>{t}</span>
-              </li>))}
-          </ul>
+      {/* ── Le panneau de gauche ──────────────────────────────────────
+          Il portait un argumentaire — « une plateforme moderne pour piloter le suivi »,
+          quatre puces vantant des fonctionnalités. C'est du texte de brochure, et il
+          s'adresse à quelqu'un qui hésiterait à acheter. Or personne n'arrive ici par
+          hasard : on y arrive parce qu'on travaille dans cette unité et qu'on a un mot
+          de passe. Ce qu'il faut à ce moment-là, ce n'est pas d'être convaincu, c'est
+          de reconnaître l'outil, de savoir à quoi il sert et de savoir que l'accès est
+          tracé. Le reste est du bruit devant une porte. */}
+      <div className="hidden lg:flex flex-col justify-between w-[38%] xl:w-[34%] p-12 text-white"
+        style={{ background:`linear-gradient(155deg, ${C.brandD} 0%, ${C.navy} 58%, #06253a 100%)` }}>
+        <Logo size={44} tone="light" />
+
+        <div className="max-w-md">
+          {/* `text-balance` répartit les lignes plutôt que de laisser un mot orphelin
+              sur la dernière — le titre change de largeur selon la fenêtre. */}
+          <h1 className="text-3xl xl:text-4xl font-semibold leading-snug text-balance max-w-[20ch]">
+            Suivi et évaluation des opérations de terrain.</h1>
+          <p className="f13 text-white/70 mt-5 leading-relaxed">
+            Registre des sites, plan de visites fondé sur le risque, plan de distribution
+            par commune, couverture et indicateurs — sur un seul référentiel géographique.
+          </p>
+
+          <dl className="mt-8 grid grid-cols-2 gap-y-5 gap-x-4">
+            {[[Target, "Sites suivis", "priorité calculée, visites planifiées"],
+              [CalendarRange, "Exercices", "l'année en cours, et celles d'avant"],
+              [Activity, "Couverture", "réalisé rapporté au requis"],
+              [Database, "Un seul découpage", "du pays au fokontany"]].map(([I, titre, texte], i) => (
+              <div key={i}>
+                <dt className="flex items-center gap-2 f125 font-semibold text-white/90">
+                  <I size={15} className="text-white/60 shrink-0" />{titre}</dt>
+                <dd className="f105 text-white/55 mt-0.5 leading-snug">{texte}</dd>
+              </div>))}
+          </dl>
         </div>
-        <p className="f11 text-slate-200 opacity-75 leading-relaxed">
-          Accès réservé aux équipes autorisées. Chaque connexion est tracée et sécurisée pour garantir vos données terrain.</p>
+
+        <p className="f105 text-white/45 leading-relaxed max-w-md">
+          Accès réservé aux personnes autorisées. Chaque connexion, chaque modification et
+          chaque tentative infructueuse sont enregistrées dans le journal d'audit.</p>
       </div>
 
+      {/* ── Le formulaire ───────────────────────────────────────────── */}
       <div className="flex-1 flex items-center justify-center p-6">
-        <div className="w-full max-w-md bg-white border border-slate-200 shadow-[0_25px_75px_rgba(15,23,42,0.08)] rounded-[2rem] p-8">
-          <div className="flex flex-col items-center gap-2 mb-8 text-center">
-            <BrandMark size={40} />
-            <div>
-              <div className="text-slate-900 f19 font-bold tr14">MEMS</div>
-              <div className="f115 text-slate-500 mt-0.5">Monitoring and Evaluation Management System</div>
-            </div>
+        <div className="w-full max-w-[26rem]">
+          {/* Sur petit écran, le panneau de gauche disparaît : la marque revient ici,
+              sinon l'écran s'ouvrirait sur un formulaire sans nom. */}
+          <div className="lg:hidden mb-8 flex justify-center"><Logo size={44} /></div>
+
+          <div className="bg-white border border-slate-200 rounded-2xl shadow-[0_20px_60px_rgba(15,23,42,0.07)] p-8">
+            {!mustChange ? (<>
+              <h2 className="text-2xl font-semibold text-slate-900">Connexion</h2>
+              <p className="f13 text-slate-500 mt-1.5 mb-6">
+                Avec l'adresse professionnelle qui vous a été déclarée.</p>
+
+              {err && <div className="mb-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 f13 text-rose-800"
+                role="alert">{err}</div>}
+
+              <Field label="Adresse électronique">
+                <input type="email" value={email} autoComplete="username" autoFocus className={champ}
+                  onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} /></Field>
+
+              <Field label="Mot de passe">
+                <div className="relative">
+                  <input type={show?"text":"password"} value={pw} autoComplete="current-password"
+                    onChange={e=>setPw(e.target.value)}
+                    onKeyUp={guetterMaj} onKeyDown={e=>{ guetterMaj(e); if(e.key==="Enter") submit(); }}
+                    className={clsx(champ, "pr-11")} />
+                  <button type="button" onClick={()=>setShow(s=>!s)} tabIndex={-1}
+                    aria-label={show ? "Masquer le mot de passe" : "Afficher le mot de passe"}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700">
+                    {show ? <EyeOff size={16}/> : <Eye size={16}/>}</button>
+                </div></Field>
+
+              {majuscules && <div className="f115 text-amber-700 -mt-1 mb-3">
+                Le verrouillage des majuscules est actif.</div>}
+
+              <Btn onClick={submit} disabled={busy || !pw || !email}
+                className="w-full justify-center py-2.5 mt-1" icon={Lock}>
+                {busy ? "Connexion en cours…" : "Se connecter"}</Btn>
+
+              <p className="f105 text-slate-400 mt-6 leading-relaxed">
+                Après plusieurs tentatives infructueuses, le compte est verrouillé quelques
+                minutes. Il n'existe pas de récupération par courriel — demandez à un
+                administrateur de réinitialiser votre accès.</p>
+
+              {DEV_ADMIN_INFO && (
+                <div className="mt-6 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-3">
+                  <div className="f10 font-bold uppercase tracking-wide text-slate-500 mb-1.5">
+                    Développement — compte de démonstration</div>
+                  <div className="f115 text-slate-600 font-mono">{DEV_ADMIN_INFO.email}</div>
+                  <div className="f115 text-slate-600 font-mono">{DEV_ADMIN_INFO.password}</div>
+                </div>)}
+            </>) : (<>
+              <h2 className="text-2xl font-semibold text-slate-900">Nouveau mot de passe</h2>
+              <p className="f13 text-slate-500 mt-1.5 mb-6">
+                Ce compte utilise encore le mot de passe qui lui a été attribué. Choisissez-en
+                un avant de continuer.</p>
+
+              {err && <div className="mb-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 f13 text-rose-800"
+                role="alert">{err}</div>}
+
+              <Field label="Nouveau mot de passe">
+                <input type="password" value={next1} autoComplete="new-password" autoFocus className={champ}
+                  onChange={e=>setNext1(e.target.value)} /></Field>
+
+              {/* Les exigences sont montrées et cochées à mesure : les énoncer dans une
+                  note sous le champ oblige à deviner laquelle manque. */}
+              <ul className="f115 -mt-1 mb-4 space-y-0.5">
+                {[[next1.length >= 12, "au moins 12 caractères"],
+                  [/[a-z]/.test(next1), "une minuscule"],
+                  [/[A-Z]/.test(next1), "une majuscule"],
+                  [/[0-9]/.test(next1), "un chiffre"]].map(([ok, texte], i) => (
+                  <li key={i} className={ok ? "text-lime-700" : "text-slate-400"}>
+                    {ok ? "✓" : "○"} {texte}</li>))}
+              </ul>
+
+              <Field label="Confirmation">
+                <input type="password" value={next2} autoComplete="new-password" className={champ}
+                  onChange={e=>setNext2(e.target.value)}
+                  onKeyDown={e=>e.key==="Enter"&&changeAndEnter()} /></Field>
+              {next2 && next1 !== next2 && <div className="f115 text-amber-700 -mt-1 mb-3">
+                Les deux saisies ne correspondent pas.</div>}
+
+              <Btn onClick={changeAndEnter} className="w-full justify-center py-2.5 mt-1" icon={Lock}
+                disabled={busy || next1.length < 12 || next1 !== next2}>
+                {busy ? "Enregistrement…" : "Enregistrer et entrer"}</Btn>
+            </>)}
           </div>
-          {!mustChange ? (<>
-            <h2 className="text-3xl font-semibold text-slate-900">Connexion</h2>
-            <p className="f13 text-slate-500 mt-2 mb-6">Connectez-vous avec vos identifiants pour accéder au tableau de bord MEMS.</p>
-            {err && <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-rose-800">{err}</div>}
-            <Field label="Adresse électronique">
-              <input type="email" value={email} autoComplete="username" className={clsx(inputCls, "bg-slate-50 border-slate-200")}
-                onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} /></Field>
-            <Field label="Mot de passe">
-              <div className="relative">
-                <input type={show?"text":"password"} value={pw} autoComplete="current-password"
-                  onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()}
-                  className={clsx(inputCls, "pr-11 bg-slate-50 border-slate-200")} />
-                <button type="button" onClick={()=>setShow(s=>!s)}
-                  aria-label={show ? "Masquer le mot de passe" : "Afficher le mot de passe"}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700">
-                  {show ? <EyeOff size={16}/> : <Eye size={16}/>}</button>
-              </div></Field>
-            <Btn onClick={submit} disabled={busy || !pw || !email}
-              className="w-full justify-center mt-4" icon={Lock}>
-              {busy ? "Connexion en cours…" : "Se connecter"}</Btn>
-            <p className="f11 text-slate-500 mt-6 leading-relaxed">
-              Après plusieurs tentatives infructueuses, le compte est temporairement verrouillé.
-              Contactez l'administrateur si vous avez besoin d'une réinitialisation.</p>
-            {DEV_ADMIN_INFO && (
-              <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-4 text-slate-700">
-                <div className="f11 font-semibold text-slate-800 mb-2">Identifiants admin provisoires</div>
-                <div className="grid gap-2 text-sm">
-                  <div><span className="font-semibold">Email :</span> {DEV_ADMIN_INFO.email}</div>
-                  <div><span className="font-semibold">Mot de passe :</span> {DEV_ADMIN_INFO.password}</div>
-                </div>
-              </div>)}
-          </>) : (<>
-            <h2 className="text-3xl font-semibold text-slate-900">Nouveau mot de passe</h2>
-            <p className="f13 text-slate-500 mt-2 mb-6">
-              Vous devez définir un nouveau mot de passe pour continuer.</p>
-            {err && <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-rose-800">{err}</div>}
-            <Field label="Nouveau mot de passe" hint="Au moins 12 caractères, une majuscule, une minuscule et un chiffre.">
-              <input type="password" value={next1} autoComplete="new-password" className={inputCls}
-                onChange={e=>setNext1(e.target.value)} /></Field>
-            <Field label="Confirmation">
-              <input type="password" value={next2} autoComplete="new-password" className={inputCls}
-                onChange={e=>setNext2(e.target.value)} onKeyDown={e=>e.key==="Enter"&&changeAndEnter()} /></Field>
-            <Btn onClick={changeAndEnter} disabled={busy || next1.length < 12}
-              className="w-full justify-center mt-4" icon={Lock}>
-              {busy ? "Enregistrement…" : "Enregistrer et entrer"}</Btn>
-          </>)}
+
+          <p className="lg:hidden f105 text-slate-400 text-center mt-6 leading-relaxed">
+            Accès réservé aux personnes autorisées. Chaque connexion est enregistrée.</p>
         </div>
       </div>
     </div>

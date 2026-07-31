@@ -17,66 +17,69 @@ const Card = ({ title, subtitle, right, children, className, flush }) => (
     <div className={flush ? "" : "p-5"}>{children}</div>
   </section>
 );
-const Logo = ({ width="100%", height="100%", className }) => {
-  const id = useId().replace(/[^a-zA-Z0-9_-]/g, "");
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 160" width={width} height={height} className={className}>
-      <defs>
-        <linearGradient id={`humGrad${id}`} x1="0%" y1="100%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor="#0284C7" />
-          <stop offset="60%" stopColor="#059669" />
-          <stop offset="100%" stopColor="#10B981" />
-        </linearGradient>
-        <linearGradient id={`targetGrad${id}`} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#F59E0B" />
-          <stop offset="100%" stopColor="#D97706" />
-        </linearGradient>
-      </defs>
-      <g transform="translate(15, 10)">
-        <path d="M 25 95 A 50 50 0 1 1 115 95" fill="none" stroke={`url(#humGrad${id})`} strokeWidth="9" strokeLinecap="round" />
-        <path d="M 52 90 Q 52 65 62 55 Q 62 80 52 90 Z" fill="#0284C7" />
-        <path d="M 88 90 Q 88 55 78 45 Q 78 75 88 90 Z" fill="#059669" />
-        <rect x="67" y="35" width="6" height="55" rx="3" fill={`url(#humGrad${id})`} />
-        <circle cx="70" cy="20" r="10" fill={`url(#targetGrad${id})`} />
-        <circle cx="70" cy="20" r="4" fill="#FFFFFF" />
-      </g>
-      <text x="165" y="84" fontFamily="System-UI, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" fontSize="58" fontWeight="800" letterSpacing="2" fill="#0F172A">MEMS</text>
-      <circle cx="370" cy="74" r="6" fill="#D97706" />
-      <text x="167" y="112" fontFamily="System-UI, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" fontSize="11.5" fontWeight="700" letterSpacing="1.5" fill="#475569">Monitoring Evaluation Management System</text>
-    </svg>
-  );
-};
-/* Le signe, avec sa version inversée.
-   Le dégradé bleu-vert d'origine est fait pour un fond clair ; posé sur le bleu
-   sombre de l'en-tête, il s'y confondait et le signe disparaissait à moitié.
-   Un logotype a besoin d'une version pour fond sombre — ici l'arc et les
-   silhouettes en blanc, la cible ambre conservée comme unique accent. */
+/* ══════════════════ La marque ══════════════════
+
+   L'ancien signe était un arc surmonté de deux silhouettes, d'une tige et d'une cible,
+   le tout en dégradés. Cinq éléments distincts, dessinés pour être regardés grands, et
+   affichés à trente pixels dans l'en-tête : à cette taille l'arc devenait une bavure
+   grise, les silhouettes disparaissaient, et il ne restait qu'une tache indistincte
+   qu'on ne reconnaissait pas d'un écran à l'autre.
+
+   Un signe se dessine pour sa PLUS PETITE utilisation. Ici, c'est vingt-huit pixels
+   dans une barre bleu sombre. Ce qui survit à cette taille, c'est une silhouette pleine
+   et une forme intérieure très contrastée — autrement dit une tuile et une lettre.
+
+   D'où : une tuile aux angles arrondis, un M géométrique évidé en blanc, et le point
+   ambre conservé de l'identité précédente — le seul élément qu'on reconnaissait
+   vraiment. Il est posé en haut à droite, comme le relevé qu'on vient de prendre.
+
+   Deux versions, parce qu'un fond sombre et un fond clair ne pardonnent pas les mêmes
+   choses : sur le bleu de l'en-tête, la tuile devient blanche et la lettre bleue. La
+   silhouette, elle, ne change pas — c'est elle qu'on reconnaît. */
+const MARQUE_M = "M22 74 L22 26 L35 26 L50 49 L65 26 L78 26 L78 74 L66 74 L66 45 L50 68 L34 45 L34 74 Z";
+
 const BrandMark = ({ size = 40, className, tone = "dark" }) => {
   const id = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const clair = tone === "light";
-  const arc  = clair ? "#FFFFFF" : `url(#humGrad${id})`;
-  const g1   = clair ? "rgba(255,255,255,.92)" : "#0284C7";
-  const g2   = clair ? "rgba(255,255,255,.8)" : "#059669";
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140" width={size} height={size} className={className}>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"
+      width={size} height={size} className={className} role="img" aria-label="MEMS">
       <defs>
-        <linearGradient id={`humGrad${id}`} x1="0%" y1="100%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor="#0284C7" />
-          <stop offset="60%" stopColor="#059669" />
-          <stop offset="100%" stopColor="#10B981" />
-        </linearGradient>
-        <linearGradient id={`targetGrad${id}`} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#F59E0B" />
-          <stop offset="100%" stopColor="#D97706" />
+        <linearGradient id={`tuile${id}`} x1="0%" y1="0%" x2="100%" y2="100%">
+          {clair
+            ? (<><stop offset="0%" stopColor="#FFFFFF" /><stop offset="100%" stopColor="#DCEEF8" /></>)
+            : (<><stop offset="0%" stopColor="#0A6FA8" /><stop offset="55%" stopColor="#007DBC" />
+                 <stop offset="100%" stopColor="#0FA37F" /></>)}
         </linearGradient>
       </defs>
-      <path d="M 20 80 A 40 40 0 1 1 100 80" fill="none" stroke={arc} strokeWidth="10" strokeLinecap="round" />
-      <path d="M 40 75 Q 40 50 50 40 Q 50 65 40 75 Z" fill={g1} />
-      <path d="M 76 75 Q 76 40 66 30 Q 66 60 76 75 Z" fill={g2} />
-      <rect x="55" y="25" width="6" height="40" rx="3" fill={arc} />
-      <circle cx="63" cy="15" r="8" fill={clair ? "#FBBF24" : `url(#targetGrad${id})`} />
-      <circle cx="63" cy="15" r="3" fill={clair ? "#0B4F72" : "#FFFFFF"} />
+      {/* La tuile porte tout : c'est elle qui reste lisible quand le reste ne l'est plus. */}
+      <rect x="2" y="2" width="96" height="96" rx="26" fill={`url(#tuile${id})`} />
+      <path d={MARQUE_M} fill={clair ? "#0A6FA8" : "#FFFFFF"} />
+      {/* Le relevé. Détouré par un liseré de la couleur de la tuile pour rester net
+          même lorsque deux pixels seulement le séparent du bord. */}
+      <circle cx="76" cy="24" r="12" fill={clair ? "#FFFFFF" : "url(#tuile" + id + ")"} />
+      <circle cx="76" cy="24" r="8.5" fill="#F59E0B" />
     </svg>
+  );
+};
+
+/* Le logotype complet : le signe, le nom, et ce que le nom veut dire. Il sert là où
+   l'on a la place de tout lire — écran de connexion, pied de page, en-tête de rapport —
+   et jamais dans une barre de navigation, où seul le signe tient. */
+const Logo = ({ size = 40, className, tone = "dark", sansTagline = false }) => {
+  const clair = tone === "light";
+  return (
+    <div className={clsx("flex items-center gap-3", className)}>
+      <BrandMark size={size} tone={tone} />
+      <div className="leading-tight min-w-0">
+        <div className={clsx("font-bold tracking-[0.18em]", clair ? "text-white" : "text-slate-900")}
+          style={{ fontSize: Math.round(size * 0.44) }}>MEMS</div>
+        {!sansTagline && (
+          <div className={clsx("truncate", clair ? "text-white/70" : "text-slate-500")}
+            style={{ fontSize: Math.max(9, Math.round(size * 0.235)) }}>
+            Monitoring and Evaluation Management System</div>)}
+      </div>
+    </div>
   );
 };
 const Btn = ({ kind="primary", size="md", icon:Icon, children, className, ...p }) => {
