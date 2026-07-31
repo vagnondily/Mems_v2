@@ -12,7 +12,12 @@ export function makeDom(apiBase){
   global.HTMLElement = w.HTMLElement;
   global.HTMLInputElement = w.HTMLInputElement; global.HTMLSelectElement = w.HTMLSelectElement;
   global.Node = w.Node; global.getComputedStyle = w.getComputedStyle;
-  global.requestAnimationFrame = (cb) => setTimeout(cb, 0);
+  /* recharts (ResponsiveContainer) reprogramme sa détection de redimensionnement à
+     chaque frame, indéfiniment — un vrai navigateur l'arrête à la fermeture de la page,
+     mais ici rien ne « ferme » jamais le DOM simulé entre les tests. Sans .unref(), ce
+     minuteur à zéro milliseconde retient le processus vivant pour toujours une fois les
+     tests terminés : node --test ne rend jamais la main. */
+  global.requestAnimationFrame = (cb) => { const t = setTimeout(cb, 0); t.unref?.(); return t; };
   global.cancelAnimationFrame = clearTimeout;
   global.IS_REACT_ACT_ENVIRONMENT = true; w.IS_REACT_ACT_ENVIRONMENT = true;
   w.URL.createObjectURL = () => "blob:test";

@@ -172,6 +172,13 @@ export const api = {
   audit:      (limit=100)    => call("GET", `/audit?limit=${limit}`),
 };
 
+/* Un navigateur ne rend jamais ce minuteur — seul Node (tests, rendu serveur) expose
+   .unref() sur la valeur de retour de setTimeout. Sans ce détachement, un réessai en
+   attente retient le processus vivant indéfiniment : un test qui tue le serveur pendant
+   qu'un réessai est programmé contre un serveur mort ne se termine alors jamais, chaque
+   échec reprogrammant le suivant. */
+const unref = (t) => { if(t && typeof t.unref === "function") t.unref(); return t; };
+
 /* File d'écriture : les collections modifiées sont poussées par lot, avec réessai.
    Une seule requête par collection est en vol à la fois : le serveur reste l'arbitre. */
 export function createSyncQueue({ onStatus = () => {}, onConflict = null, delay = 900 } = {}){
@@ -202,7 +209,7 @@ export function createSyncQueue({ onStatus = () => {}, onConflict = null, delay 
       if(e.status >= 500 || e.status === 0){
         /* Erreur transitoire : on remet en file avec un délai croissant, plafonné. */
         if(!pending.has(name)) pending.set(name, job);
-        setTimeout(() => flushOne(name), Math.min(30000, 1500 * 2 ** Math.min(failures, 4)));
+        unref(setTimeout(() => flushOne(name), Math.min(30000, 1500 * 2 ** Math.min(failures, 4))));
       }
       inflight--; return;
     }
@@ -218,7 +225,7 @@ export function createSyncQueue({ onStatus = () => {}, onConflict = null, delay 
       const cumul = prev ? [...new Set([...prev.deletes, ...deletes])] : deletes;
       pending.set(name, { rows, deletes: cumul });
       clearTimeout(timers.get(name));
-      timers.set(name, setTimeout(() => flushOne(name), delay));
+      timers.set(name, unref(setTimeout(() => flushOne(name), delay)));
       onStatus({ state:"dirty", inflight, failures });
     },
     async flushAll(){

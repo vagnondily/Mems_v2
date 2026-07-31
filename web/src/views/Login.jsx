@@ -4,12 +4,16 @@ import { C } from "../lib/constants.js";
 import { clsx } from "../lib/calc.js";
 import { Btn, Field, BrandMark, inputCls } from "../components/ui.jsx";
 import { api, setToken } from "../lib/api.js";
-const DEV_ADMIN_INFO = import.meta.env?.DEV ? {
-  email: "admin@mems.local",
-  password: "MemsAdmin2026",
-} : null;
 /* Aucun identifiant n'apparaît sur cet écran : les comptes se créent côté serveur
-   et le mot de passe initial n'est communiqué qu'au moment de l'amorçage. */
+   et le mot de passe initial n'est communiqué qu'au moment de l'amorçage.
+   Un encadré « identifiants admin provisoires » figurait ici, avec un mot de passe
+   figé en dur (« MemsAdmin2026 ») : il ne correspondait au compte réel que si
+   BOOTSTRAP_PASSWORD avait été forcé à cette valeur précise — le comportement par
+   défaut de `npm run seed` est de tirer un mot de passe aléatoire et de l'afficher
+   une seule fois dans la console. Dans tout autre cas, l'encadré affichait un
+   identifiant qui ne menait nulle part, ou pire : un identifiant qui fonctionnait
+   par coïncidence si quelqu'un avait justement choisi cette valeur, sans que
+   personne ne l'ait décidé consciemment. */
 export function Login({ onLogin, notify }){
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
@@ -117,14 +121,6 @@ export function Login({ onLogin, notify }){
             <p className="f11 text-slate-500 mt-6 leading-relaxed">
               Après plusieurs tentatives infructueuses, le compte est temporairement verrouillé.
               Contactez l'administrateur si vous avez besoin d'une réinitialisation.</p>
-            {DEV_ADMIN_INFO && (
-              <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-4 text-slate-700">
-                <div className="f11 font-semibold text-slate-800 mb-2">Identifiants admin provisoires</div>
-                <div className="grid gap-2 text-sm">
-                  <div><span className="font-semibold">Email :</span> {DEV_ADMIN_INFO.email}</div>
-                  <div><span className="font-semibold">Mot de passe :</span> {DEV_ADMIN_INFO.password}</div>
-                </div>
-              </div>)}
           </>) : (<>
             <h2 className="text-3xl font-semibold text-slate-900">Nouveau mot de passe</h2>
             <p className="f13 text-slate-500 mt-2 mb-6">

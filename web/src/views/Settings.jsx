@@ -36,7 +36,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
       {sub==="offices" && <SetOffices db={db} notify={notify} can={can} reload={reload} />}
       {sub==="about" && <SetAbout db={db} />}
       {sub==="sites" && <SitesModule db={db} set={set} me={me} notify={notify} can={can} context="settings" />}
-      {sub==="locations" && <SetLocations db={db} notify={notify} can={can} />}
+      {sub==="locations" && <SetLocations db={db} notify={notify} can={can} reload={reload} />}
       {sub==="scope" && <SetScope db={db} notify={notify} can={can} />}
       {sub==="indicators" && <SetIndicators db={db} set={set} notify={notify} can={can} />}
       {sub==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
@@ -1047,7 +1047,7 @@ function SetScope({ db, notify, can }){
    (région → district → commune → fokontany) chargé par millésime. Sites, population
    et distributions s'y raccrochent, donc il ne se modifie pas à la main — on importe
    un nouveau millésime, et l'ancien reste disponible. */
-function SetLocations({ db, notify, can }){
+function SetLocations({ db, notify, can, reload }){
   const [draft,setDraft] = useState(null); const [status,setStatus] = useState(null);
   const [map,setMap] = useState({}); const [label,setLabel] = useState("");
   const [depth,setDepth] = useState("adm4"); const [busy,setBusy] = useState(false);
@@ -1069,6 +1069,13 @@ function SetLocations({ db, notify, can }){
   const loadVersions = () => api.geoVersions().then(r=>setVersions(r.rows||[])).catch(()=>{});
   useEffect(()=>{ loadVersions(); },[]);
 
+  /* Un import ou un changement de millésime courant remplacent les données que sert
+     le serveur sans forcément changer le filtre affiché (sel/q/page restent à leurs
+     valeurs déjà courantes) : rien ne redéclenchait alors la requête, et le répertoire
+     continuait d'afficher l'ancien millésime jusqu'au prochain filtre touché à la
+     main — ou un rechargement complet de la page. `refresh` force le nouvel appel
+     même quand aucune de ces valeurs n'a changé. */
+  const [refresh,setRefresh] = useState(0);
   /* Le parent le plus profond réellement choisi borne la requête. */
   const parent = geo.codes.adm3 || geo.codes.adm2 || geo.codes.adm1 || "";
   useEffect(()=>{
@@ -1082,7 +1089,7 @@ function SetLocations({ db, notify, can }){
         .catch(e => { if(alive) setDir({ rows:[], total:0, version:null, loading:false, error:e.message }); });
     }, q ? 280 : 0);                       /* la recherche attend la fin de la frappe */
     return () => { alive = false; clearTimeout(id); };
-  }, [parent, q, page]);
+  }, [parent, q, page, refresh]);
   useEffect(()=>{ setPage(0); }, [parent, q]);
 
   const onFile = async (file) => {
@@ -1139,7 +1146,12 @@ function SetLocations({ db, notify, can }){
       const r = await api.importGeo(rows, label.trim() || `Import du ${new Date().toISOString().slice(0,10)}`,
         draft.src || null);
       resetGeoCache(); setDraft(null); setSel({ adm1:"", adm2:"", adm3:"" }); setPage(0);
+      setRefresh(x=>x+1);
       await loadVersions();
+      /* db.geoVersion (carte « Référentiel courant ») vient de l'état global, chargé
+         une fois au démarrage : sans ce rechargement, elle continue d'afficher
+         l'ancien millésime bien après que le nouveau soit devenu courant. */
+      if(reload) await reload();
       const c = r.counts || {};
       setStatus({ kind:"ok", text:`${r.imported.toLocaleString("fr-FR")} unités enregistrées — `
         + [["adm1","régions"],["adm2","districts"],["adm3","communes"],["adm4","fokontany"]]
@@ -1155,7 +1167,8 @@ function SetLocations({ db, notify, can }){
 
   const activate = async (id, lb) => {
     try{ await api.setGeoVersion(id); resetGeoCache();
-      setSel({ adm1:"", adm2:"", adm3:"" }); setPage(0); await loadVersions();
+      setSel({ adm1:"", adm2:"", adm3:"" }); setPage(0); setRefresh(x=>x+1); await loadVersions();
+      if(reload) await reload();
       notify(`Référentiel courant : « ${lb} »`, "ok");
     }catch(e){ notify("Changement refusé : " + e.message, "err"); }
   };

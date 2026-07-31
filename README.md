@@ -25,18 +25,32 @@ echo "DATA_KEY=$(openssl rand -hex 32)"  >> .env
 
 npm run install:all
 npm run seed          # crée le schéma, les données d'exemple et le compte administrateur
-npm run dev:server    # http://localhost:4000
-npm run dev:web       # http://localhost:5173  (dans un second terminal)
+npm run dev            # API (http://localhost:4000) et interface (http://localhost:5173) ensemble
 ```
 À la fin de `npm run seed`, la console affiche **une seule fois** l'adresse et le mot de passe
 de l'administrateur initial. Notez-le : il n'est stocké nulle part en clair et n'apparaît
 jamais dans l'application. À la première connexion, l'application impose son remplacement.
 
- codespace help
-  press o + enter to open in browser
-  press c + enter to clear console
-  press q + enter to quit
+### Sur GitHub Codespaces
 
+Un `.devcontainer/devcontainer.json` fait le travail ci-dessus automatiquement à la création
+du Codespace : `.env` avec des secrets générés, dépendances des deux paquets, migration et
+amorçage de la base. Le mot de passe administrateur initial s'affiche dans le journal de
+création du Codespace (onglet « Ports »/terminal `postCreateCommand`) — cherchez le bloc
+« Compte administrateur initial », il ne réapparaît nulle part ensuite.
+
+Reste à lancer les deux serveurs — en un seul terminal :
+
+```bash
+npm run dev            # API (port 4000) et interface (port 5173) ensemble ; CTRL+C arrête les deux
+```
+
+ou séparément si vous préférez suivre les journaux indépendamment :
+
+```bash
+npm run dev:server    # API — port 4000
+npm run dev:web       # interface — port 5173, à ouvrir depuis l'onglet Ports
+```
 
 ### Avec Docker
 
@@ -64,6 +78,8 @@ Ouvrez directement `web/demo.html` dans un navigateur pour une version de prése
 
 ```
 mems/
+├─ .devcontainer/              amorçage automatique d'un Codespace (§1)
+├─ scripts/dev.sh              lance API et interface ensemble (npm run dev)
 ├─ server/                     API et base de données
 │  ├─ migrations/001_init.sql  schéma relationnel complet
 │  ├─ migrations/002_geo_unit.sql  référentiel administratif versionné

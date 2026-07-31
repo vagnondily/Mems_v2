@@ -43,11 +43,6 @@ const idsOf = (name, rows, db) => {
   return new Set(shaped.map(r => r.id).filter(Boolean));
 };
 
-const DEV_ADMIN_CREDENTIALS = import.meta.env?.DEV ? {
-  email: "admin@mems.local",
-  password: "MemsAdmin2026",
-} : null;
-
 /* Le serveur parle snake_case, l'interface camelCase. Un seul point de conversion :
    sans lui, me.firstName et me.office sont undefined partout (« Bonjour undefined »,
    avatar « ? », cloisonnement d'interface inopérant). */
@@ -136,17 +131,7 @@ export default function App(){
       setPhase("fatal"); return;
     }
     try{ const { user } = await api.me(); setMe(normalizeMe(user)); await loadState(); setPhase("ready"); }
-    catch(e){
-      if(DEV_ADMIN_CREDENTIALS){
-        try{
-          const r = await api.login(DEV_ADMIN_CREDENTIALS.email, DEV_ADMIN_CREDENTIALS.password);
-          setToken(r.token); setMe(normalizeMe(r.user)); await loadState(); setPhase("ready");
-          notify(`Bienvenue ${r.user.first_name}`, "ok");
-          return;
-        }catch(loginError){}
-      }
-      setPhase("login");
-    }
+    catch(e){ setPhase("login"); }
   })(); }, [loadState, notify]);
 
   const onLogin = async (user, token) => {
