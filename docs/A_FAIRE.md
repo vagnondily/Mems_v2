@@ -51,15 +51,54 @@ ligne n'a pas été rechargée depuis le serveur. Pré-existant, pas propre au
 chantier 1 ; à corriger séparément si l'on a besoin de `partner_id` fiable
 immédiatement après création (jointures, rapports).
 
-## Chantier 2 — Revue des écrans « budget » comme utilisateur final
+## Chantier 2 — Revue des écrans « budget » comme utilisateur final — FAIT
 
 Demande explicite : « regarde chaque écran, teste comme un end user » plutôt que
-deviner lequel est visé. Périmètre encore à couvrir en détail :
-- MRE — éditeur de budget par ligne (`Mre.jsx`, déjà relu au niveau code, pas
-  encore testé en conditions réelles avec un compte non-admin).
-- TPM — contrats, avenants, barèmes (`Tpm.jsx`), pas encore testé.
-- PDD — section « Planification » (tonnage/montant/bénéficiaires), concernée
-  aussi par le chantier 1.
+deviner lequel est visé.
+
+**MRE** (`Mre.jsx`) : testé de bout en bout au navigateur — création d'une
+activité, ajout de deux lignes de budget, total calculé (jamais saisi),
+répartitions par nature d'activité / catégorie de coût / mois, bascule vers
+« Exécution budgétaire ». Aucun défaut trouvé ; l'écran se comporte comme conçu.
+
+**PDD — section Planification** : couverte par le chantier 1 (génération par
+commune) et par un ajout manuel classique ; testée aux deux endroits, rien
+à signaler au-delà de la remarque sur `partner_id` déjà notée plus haut.
+
+**TPM** (`Tpm.jsx`) : un défaut réel et significatif trouvé en essayant de
+construire le scénario complet — un compte de prestataire qui se connecte
+lui-même pour soumettre son plan, plutôt qu'un administrateur qui agit en son
+nom :
+
+1. **`Paramètres → Utilisateurs` ne permettait pas de créer ce compte.** Le
+   serveur (`server/src/routes/users.js`, `server/src/lib/validate.js`) et
+   `TpmView` (le bandeau « Vous êtes rattaché au prestataire… », le masquage du
+   sélecteur « Tous les prestataires ») savent tous les deux ce qu'est un
+   compte `tpm_id`, mais l'écran de création/édition d'utilisateur
+   (`UserModal` dans `Settings.jsx`) n'exposait que le rattachement à un
+   bureau — aucun champ pour choisir un prestataire. Corrigé : `UserModal`
+   propose maintenant les deux rattachements, mutuellement exclusifs (choisir
+   l'un vide l'autre), désactivés pour les rôles administrateur/super, comme
+   le serveur l'exige déjà ; le tableau des comptes affiche le prestataire
+   rattaché au lieu de « Tous ».
+2. **`GET /api/state` omettait `tpm_id` de la liste des comptes**
+   (`server/src/routes/state.js`). Cette liste est rechargée à chaque
+   connexion et après chaque conflit de synchronisation — sans ce champ, le
+   client oubliait le rattachement d'un compte dès le premier rechargement,
+   et le **prochain enregistrement de ce compte** (même pour changer un champ
+   sans rapport, comme la fonction) renvoyait `tpm_id: null` au serveur,
+   détachant silencieusement le compte de son prestataire. C'est probablement
+   la cause des rattachements manquants observés. Corrigé, avec un test de
+   régression (`server/test/api.test.js`, « état : la liste des comptes porte
+   tpm_id… »).
+
+Vérifié de bout en bout : création d'un compte prestataire, connexion sous ce
+compte, bandeau de cloisonnement affiché, liste des plans limitée au bon
+prestataire (l'autre prestataire n'apparaît pas), modification d'un champ
+sans toucher au rattachement puis relecture en base — `tpm_id` survit
+désormais. Le circuit de validation à trois niveaux et l'éditeur de zones/
+lignes d'un plan ont aussi été ouverts en tant qu'administrateur : aucune
+erreur, budget cohérent avec le barème contractuel.
 
 ## Chantier 3 — xlsx (SheetJS) : finaliser côté environnement avec accès réseau
 

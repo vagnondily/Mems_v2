@@ -1869,12 +1869,18 @@ Accept: application/json`}</pre></div>
 /* ── Utilisateurs ── */
 function SetUsers({ db, set, me, notify }){
   const [edit,setEdit] = useState(null);
+  const [tpms,setTpms] = useState([]);
+  /* Les prestataires ne vivent pas dans l'état global (db) : ils sont propres à
+     l'écran Suivi tiers, et cet écran n'a besoin que de leur nom pour le
+     rattachement d'un compte. Un aller-retour dédié plutôt qu'alourdir /api/state
+     d'une collection que presque personne n'affiche. */
+  useEffect(()=>{ api.tpm().then(r=>setTpms(r.rows||[])).catch(()=>setTpms([])); },[]);
   /* Les comptes vivent côté serveur : le navigateur ne calcule aucun condensat
      et ne conserve aucun mot de passe au-delà de la saisie. */
   const save = async (u2) => {
     const payload = { email:(u2.email||"").trim(), first_name:u2.firstName || u2.first_name || "",
       last_name:u2.lastName || u2.last_name || null, title:u2.title || null,
-      office_id:u2.office_id || null, role:u2.role || "viewer",
+      office_id:u2.office_id || null, tpm_id:u2.tpm_id || null, role:u2.role || "viewer",
       tabs:u2.tabs || [], active:u2.active !== false };
     if(u2._pw) payload.password = u2._pw;
     try{
@@ -1899,7 +1905,7 @@ function SetUsers({ db, set, me, notify }){
       <Card flush title="Comptes" subtitle={`${db.users.length} comptes · ${db.users.filter(u=>u.active!==false).length} actifs`}
         right={<Btn size="sm" icon={Plus} onClick={()=>setEdit({ role:"viewer", active:true, tabs:db.roles.viewer.tabs })}>Ajouter un utilisateur</Btn>}>
         <TableWrap max="mh440">
-          <thead><tr><Th>Utilisateur</Th><Th>Fonction</Th><Th>Bureau</Th><Th>Adresse électronique</Th>
+          <thead><tr><Th>Utilisateur</Th><Th>Fonction</Th><Th>Rattachement</Th><Th>Adresse électronique</Th>
             <Th>Rôle</Th><Th>Onglets</Th><Th>Statut</Th><Th /></tr></thead>
           <tbody>{db.users.map((u2,i)=>(
             <tr key={u2.id} className="hover:bg-sky-50">
@@ -1907,7 +1913,11 @@ function SetUsers({ db, set, me, notify }){
                 <span className="w-7 h-7 rounded-full grid place-items-center f10 font-bold c-deep" style={{background:C.aqua}}>
                   {(u2.first_name?.[0]||"")+(u2.last_name?.[0]||"")}</span>
                 <b>{u2.first_name} {u2.last_name}</b></div></Td>
-              <Td className="text-slate-600">{u2.title}</Td><Td>{(db.offices.find(o=>o.id===u2.office_id)||{}).name || "Tous"}</Td>
+              <Td className="text-slate-600">{u2.title}</Td>
+              <Td>{u2.tpm_id
+                ? <span className="inline-flex items-center gap-1"><Badge tone="b">Prestataire</Badge>
+                    {(tpms.find(t=>t.id===u2.tpm_id)||{}).name || "—"}</span>
+                : (db.offices.find(o=>o.id===u2.office_id)||{}).name || "Tous"}</Td>
               <Td className="f115">{u2.email}</Td>
               <Td><Badge tone={u2.role==="super"||u2.role==="admin"?"r":u2.role==="validator"?"b":u2.role==="editor"?"g":"n"}>
                 {db.roles[u2.role]?.label}</Badge></Td>
@@ -1938,15 +1948,20 @@ function SetUsers({ db, set, me, notify }){
             </tr>))}</tbody>
         </TableWrap>
       </Card>
-      <UserModal open={!!edit} user={edit} db={db} onClose={()=>setEdit(null)} onSave={save} />
+      <UserModal open={!!edit} user={edit} db={db} tpms={tpms} onClose={()=>setEdit(null)} onSave={save} />
     </>);
 }
-function UserModal({ open, user, db, onClose, onSave }){
+function UserModal({ open, user, db, tpms, onClose, onSave }){
   const [f,setF] = useState({});
   useEffect(()=>{ setF(user ? { ...user, firstName:user.first_name, lastName:user.last_name,
     tabs:[...(user.tabs || db.roles[user.role]?.tabs || [])] } : { tabs:[], role:"viewer", active:true }); },[user]);
   if(!open) return null;
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
+  /* Un compte de prestataire n'a pas de bureau — il est cloisonné à son
+     prestataire, quel que soit son rôle (voir tpmBound côté serveur) — et
+     l'inverse tout autant : les deux champs s'excluent, comme le serveur le
+     refuse déjà silencieusement s'ils arrivent ensemble. */
+  const tpmInterdit = f.role === "admin" || f.role === "super";
   return (
     <Modal open onClose={onClose} title={user?.id?"Modifier l'utilisateur":"Nouvel utilisateur"}
       subtitle="Identité, rattachement, rôle et onglets accessibles"
@@ -1956,19 +1971,31 @@ function UserModal({ open, user, db, onClose, onSave }){
         <Field label="Prénom"><Input value={f.firstName||""} onChange={e=>u("firstName",e.target.value)} /></Field>
         <Field label="Nom"><Input value={f.lastName||""} onChange={e=>u("lastName",e.target.value)} /></Field>
         <Field label="Fonction"><Input value={f.title||""} onChange={e=>u("title",e.target.value)} /></Field>
-        <Field label="Bureau de terrain d'appartenance" hint="Restreint la vue aux sites de ce bureau, hors administrateurs">
-          <Select value={f.office_id||""} onChange={e=>u("office_id",e.target.value)} empty="Tous les bureaux"
-            options={(db.offices||[]).map(o=>[o.id,o.name])} /></Field>
         <Field label="Adresse électronique"><Input type="email" value={f.email||""} onChange={e=>u("email",e.target.value)} /></Field>
         <Field label={user?.id?"Nouveau mot de passe":"Mot de passe"} hint={user?.id?"Laisser vide pour conserver l'actuel":"Huit caractères au minimum"}>
           <Input type="password" value={f._pw||""} onChange={e=>u("_pw",e.target.value)} /></Field>
       </div>
+      <Field label="Rattachement" hint={tpmInterdit ? "Un administrateur n'est rattaché ni à un bureau ni à un prestataire" : undefined}>
+        <div className="grid grid-cols-2 gap-x-4">
+          <Select value={f.office_id||""}
+            onChange={e=>setF(p=>({...p, office_id:e.target.value||null, tpm_id:null}))}
+            empty="Bureau de terrain — tous les bureaux" options={(db.offices||[]).map(o=>[o.id,o.name])} />
+          <Select value={f.tpm_id||""} disabled={tpmInterdit}
+            onChange={e=>setF(p=>({...p, tpm_id:e.target.value||null, office_id:null}))}
+            empty="Prestataire (TPM) — aucun" options={(tpms||[]).map(t=>[t.id,t.name])} />
+        </div>
+        <div className="f11 text-slate-500 mt-1">Bureau : restreint la vue aux sites de ce bureau. Prestataire :
+          le compte ne voit que ses propres plans TPM et ne valide qu'au premier niveau du circuit. Un seul des
+          deux à la fois.</div>
+      </Field>
       <Field label="Rôle">
         <div className="grid grid-cols-1 gap-1.5">
           {Object.entries(db.roles).map(([k,r])=>(
             <label key={k} className={clsx("flex items-center gap-3 px-3 py-2 rounded border cursor-pointer",
               f.role===k?"bd-brand bg-sky-50":"border-slate-200 hover:bg-slate-50")}>
-              <input type="radio" name="role" checked={f.role===k} onChange={()=>{u("role",k);u("tabs",[...r.tabs]);}} />
+              <input type="radio" name="role" checked={f.role===k}
+                onChange={()=>{u("role",k); u("tabs",[...r.tabs]);
+                  if((k==="admin"||k==="super") && f.tpm_id) u("tpm_id",null); }} />
               <div className="flex-1"><div className="f13 font-semibold text-slate-800">{r.label}</div></div>
               <Badge tone="n">{r.tabs.length} onglets</Badge></label>))}
         </div></Field>

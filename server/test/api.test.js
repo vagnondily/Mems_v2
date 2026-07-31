@@ -1692,6 +1692,20 @@ test("TPM : le circuit se franchit dans l'ordre et par le bon acteur", async () 
   assert.ok(p3.body.plan.reviews.every(r => r.by), "chaque validation porte son auteur");
 });
 
+/* Régression : /api/state omettait tpm_id de la liste des comptes. Le client
+   relit cette liste à chaque connexion et à chaque rechargement (`reload()`,
+   déclenché par exemple après un conflit de synchronisation) ; sans ce champ,
+   modifier n'importe quel autre compte depuis Paramètres → Utilisateurs
+   renvoyait tpm_id à null au premier enregistrement suivant, détachant en
+   silence le compte prestataire de son prestataire. */
+test("état : la liste des comptes porte tpm_id, pour ne pas l'effacer au premier réenregistrement", async () => {
+  const etat = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(etat.status, 200);
+  const presta = etat.body.users.find(u => u.email === "prestataire@test.local");
+  assert.ok(presta, "le compte prestataire créé plus haut doit apparaître dans /api/state");
+  assert.equal(presta.tpm_id, tpmCtx.tpm);
+});
+
 test("TPM : un renvoi doit être motivé et rouvre le plan à la modification", async () => {
   const office = tpmCtx.office;
   const p = await request(app).post("/api/tpm/plans").set("Authorization", `Bearer ${adminToken}`)
