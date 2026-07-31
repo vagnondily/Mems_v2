@@ -513,8 +513,10 @@ Le champ existe (`method TEXT`, `001_init.sql:213`) mais **sans contrainte** —
 (`Settings.jsx:1502`), là où `direction` juste au-dessus porte un `CHECK`. D'où « Enquête
 ménage » / « enquete menages » / « HH survey » indistinguables.
 
-→ Voir **Q9**, **bloquante** : quelle est la liste exacte ? Le dépôt ne connaît que cinq valeurs
-issues du jeu de démonstration (`seed.js:44-55`).
+✅ **Q9 est fermée** par le gabarit RAM : 25 méthodes officielles + 6 fréquences (voir chantier N).
+Les cinq valeurs actuelles viennent du jeu de démonstration — `web/src/lib/constants.js:99-109`
+(`D_INDICATORS`) — et n'en recouvrent qu'une partie. Reste à trancher la **multivaluation**
+(voir chantier P).
 
 ### J3 — Aperçu de ration paramétrable, résultat en kg  · **S**
 
@@ -611,7 +613,10 @@ JSON par formulaire (`odk_forms.raw`, migration 015), **sans aucune clé vers `s
 La demande suppose donc une donnée qui n'existe pas. Il faut d'abord construire le rattachement
 soumission → site, ce qui est un chantier à part entière.
 
-→ Voir **Q15**, cinq questions toutes bloquantes.
+→ **Débloqué en grande partie par les XLSForms du 31/07/2026** : voir **chantier O**, qui
+spécifie la table `submissions`, le code site réellement présent dans chaque formulaire et le
+résolveur en trois passes. Une fois O1–O3 faits, L4 retombe à **M**. Reste ouvert : la période
+qui définit « déjà suivi » (**Q15c**).
 
 ### L5 (14a) — Affectation automatique des sites au prestataire après validation du plan  · **XL**
 
@@ -740,15 +745,300 @@ style impérative).
 
 ---
 
+# Documents de référence reçus le 31/07/2026
+
+Dix documents ont été fournis. Ils **ferment ou réduisent 8 des 23 questions bloquantes** et
+font apparaître trois chantiers qui n'existaient pas au backlog (N, O, P).
+
+| Document | Ce qu'il apporte |
+|---|---|
+| `MAHAVOTSE_BUDGET_TPM_JUILLET_2026_REVU.xlsx` | **Ferme Q1 bis.** Structure exacte du budget TPM. |
+| `RAM_Budget_MDG_CO_2G_CSP_2024‑2028.xlsx` | Gabarit institutionnel du plan MRE. **Ferme Q9.** → chantier N |
+| 4 XLSForms MDG (GD_PREVMA v2, SMP 2025‑2026, NutritionAIM, MIARO PROD) | **Ferme Q15 en grande partie.** → chantier O |
+| `20230828_Cadre_ME_activités_Résilience.xlsx` | Référentiel d'indicateurs réel. → chantier P |
+| `Guidance_note_on_RBM.pdf` (APP, juillet 2024) | Cadre corporate du **suivi fondé sur le risque**. |
+| `RBM.pptx` | Outils 1 à 4 du cadre, dont la grille de couverture. |
+| 2 sources de shapefile Madagascar | Non atteignables depuis cet environnement (403 au proxy). |
+| Capture de l'écran de connexion | Voir la note en fin de section. |
+
+Les deux PDF du PAM (*Monitoring Handbook*, *Indicator Compendium*) ont été tentés deux fois :
+**`cdn.document360.io` renvoie 403 depuis cet environnement**. Aucun contenu n'en a été lu et
+rien n'en a été déduit.
+
+> **Note sur la capture d'écran.** Le bandeau « DÉVELOPPEMENT — COMPTE DE DÉMONSTRATION /
+> admin@mems.local / MemsAdmin2026 » **n'existe plus dans le code** : il a été retiré par le
+> commit `e25b937`, qui supprime `email: "admin@mems.local"` et `password: "MemsAdmin2026"` de
+> `web/src/views/Login.jsx`. La capture provient donc d'un build antérieur. Avant le test sur
+> Codespaces, repartir de `main` à jour. Accessoirement, l'adresse saisie sur la capture
+> (`admin@dev.local`) ne correspond pas à celle du bandeau.
+
+---
+
+## Chantier N — Aligner le plan MRE sur le gabarit RAM du PAM
+
+Le classeur `RAM_Budget_MDG_CO` est le gabarit institutionnel (VAM / *Monitoring and Evaluation
+Planning and Budgeting*) rempli par le bureau pays : 13 feuilles, dont 6 masquées et 1
+`veryHidden`. La confrontation est sévère — **les énumérations de MEMS ne viennent d'aucun
+référentiel officiel.**
+
+1. **Les six « natures d'activité » de MEMS sont inventées.** `kind IN ('suivi','revue',
+   'evaluation','enquete','etude','capacite')` (`010_mre.sql:37-38`). Le référentiel réel en a
+   **huit**, plus un second niveau de **76 sous-catégories** (`Monitoring Activity List`!B :
+   EFSA, CFSVA, mVAM, ICA, CFSAM, FSOM, FSMS, JAM, IPC, SMART/SENS, Distribution Monitoring,
+   Retailer monitoring, Warehouse monitoring, PDM URT, PDM Nutrition, SABER…). MEMS ignore
+   totalement ce second niveau. · **L**
+2. **Les dix catégories de coût de MEMS ne recoupent aucune liste du classeur**
+   (`010_mre.sql:81-84`). Le classeur en a trois, emboîtées, pilotées par une « High level cost
+   category » (`transfer_cs` / `implementation` / `dsc`) qui décide quelle sous-liste s'ouvre —
+   une validation `INDIRECT(IF(...))` dans la feuille 3. · **L**
+3. **Aucun plan pluriannuel.** `mre_activity.year INTEGER NOT NULL` (`010_mre.sql:31`) et le
+   filtre `a.year = ?` (`routes/mre.js:152`) enferment tout dans une année ; le classeur couvre
+   2024‑2028. · **L**
+4. **Aucune fréquence.** Le classeur ne saisit ni budget ni durée : il saisit un **nombre
+   d'occurrences par trimestre**, et le budget en découle (`AE7=SUM(G7:AD7)`,
+   `AN7=$AE7*$AG7`). MEMS saisit quantité × coût unitaire hors calendrier. · **L**
+5. **Aucune distinction Interne / Externe**, pourtant structurante : elle sépare le budget en
+   deux totaux dans `Table for Summary Page`. · **M**
+6. **Les coûts de personnel n'existent pas comme objet.** La feuille 3 modélise 46 postes avec
+   titre, grade (43 valeurs), quatre pourcentages de temps (Monitoring / Evaluation / VAM /
+   Other), coût unitaire annuel indexé à 2 %/an et coût réparti par fonction. MEMS n'a qu'une
+   catégorie `personnel`. · **L**
+7. **Les achats n'existent pas comme objet** (article, unités par année, coût unitaire,
+   rattachement CSP et poste comptable). MEMS n'a que `category='equipement'`. · **L**
+8. **Aucun rattachement à la structure CPB** ni aux activités CSP (code `MG03.01.011.URT1`). · **M**
+9. **Suivi du financement et de l'exécution** : remplacer `funding TEXT` (`010_mre.sql:57`) par
+   des lignes portant budget requis / financement confirmé / dépense réalisée par année. · **M**
+10. **Import et export du gabarit** : ajouter un type de lot au pipeline existant pour la
+    feuille 2, et un export au même format, afin qu'un bureau pays puisse continuer à échanger
+    avec le siège. · **L**
+
+> **Q9 est fermée par ce document.** Le référentiel officiel des méthodes de collecte est
+> `MRE dropdown list`!T2:T26 — **25 valeurs** : Desk based study, PDM (general), Baseline
+> (general), PDM URT, Baseline URT, PDM School Meals (Take Home Ration), Baseline School Meals,
+> School Feeding Survey, SABER, PDM Nutrition, Baseline Nutrition, PDM Malnutrition prevention,
+> Baseline Malnutrition prevention, PDM Nutrition treatment, Baseline Nutrition treatment,
+> Nutrition survey, PDM Asset Creation/Resilience, Baseline Asset creation/Resilience, EB…
+> **Et la fréquence a elle aussi son référentiel** (`V2:V7`, 6 valeurs) : Monthly, Quarterly,
+> Twice a year, Once a year, Once every two years, Once every five years.
+> `indicators.method` **et** `indicators.frequency` (`001_init.sql:213-214`) doivent être
+> contraints sur ces deux listes.
+
+---
+
+## Chantier O — Soumissions ODK, rattachement aux sites et GPS
+
+Les 4 XLSForms permettent enfin de répondre à Q15 — et montrent que le chemin est plus long que
+prévu.
+
+### Ce que contient réellement le champ site (réponse à Q15)
+
+Le champ site n'est **jamais** du texte libre ni un identifiant interne MEMS : c'est toujours la
+valeur `name` d'un choix de la feuille `choices`, donc un **code**. Mais **pas le même code
+selon le formulaire** :
+
+| Formulaire | Champ | Forme du code | Exemple |
+|---|---|---|---|
+| GD_PREVMA v2 | `DPName` | p‑code fokontany, 13 car. | `MG23209050001` |
+| NutritionAIM | `DPName` | p‑code adm4 + n° d'ordre, 16‑17 car. | `MG23209032002001` |
+| MIARO PROD | `POIName` | p‑code adm4 + `001`, 16 car. | `MG23210070009001` |
+| **SMP 2025‑2026** | `Adm4Code_SMP` | **entier, hors référentiel p‑code** | `603140007` |
+
+**Trois obstacles à traiter, tous réels :**
+- **SMP est hors du référentiel** : ses `ADM3CODE`/`ADM4CODE` sont des entiers (91 = TSIVORY)
+  alors que ses `ADM1CODE`/`ADM2CODE` sont des p‑codes. `geo_unit.pcode` ne peut pas les
+  accueillir → une table de correspondance (1 251 codes école, 247 codes ZAP) est indispensable,
+  sans quoi **aucune soumission SMP n'est rattachable**.
+- **GD_PREVMA a des codes ambigus** : 7 codes `DPName` désignent deux points de distribution
+  différents (`MG51507010014` = « Androka Betohoke » *et* « Betsibarike »), ce que
+  `settings.allow_choice_duplicates='yes'` autorise explicitement.
+- **MIARO décrit deux sites par soumission** (`POIName` L14 et `FRSiteName` L274), chacun avec
+  son fokontany et son geopoint obligatoire.
+
+### Le GPS existe déjà dans les quatre formulaires
+
+`HHCoord` (geopoint) est présent dans les 4 : GD_PREVMA L20, SMP L20, NutritionAIM L18, MIARO
+L17 — plus des geopoints secondaires (`HHCoord_FARNE` L276, `HHCoord_wh` L411, `HHCoordWh`
+L229). C'est la matière de « les coordonnées GPS qui ressortiront des data sets ».
+
+### Trois défauts du script d'ingestion, trouvés en le confrontant aux vrais formulaires
+
+1. **`guessField` ne filtre pas le type de ligne** (`import-odk-forms.js:122`) : il empile
+   toute ligne dont `name` est non vide, y compris `begin_group`, `note` et `calculate`. Sur
+   GD_PREVMA, le premier candidat du second motif est un `begin_group`.
+2. **La détection du site sur SMP ne tient qu'à un libellé exact** : le motif `^[ée]cole$`
+   (`:75`) matche le *label* « Ecole ». Aucun *nom de variable* SMP ne matche le motif
+   principal. Le repli `^Adm4Code` sauve le cas — par chance.
+3. **MIARO : le second site est silencieusement jeté** (`:82` prend le premier candidat).
+
+### Travail
+
+- **O1** — Créer la table `submissions`, qui n'existe pas (migration 016) : `id`, `form_id`,
+  `instance_id` UNIQUE, `submitted_at`, `svy_date`, `site_code_raw`, `site_id` (nullable),
+  `geo_pcode`, `lat`, `lon`, `gps_accuracy`, `office_code`, `cp_code`. · **L**
+- **O2** — Ajouter à `sites` un code externe ODK indexé : `sites.code` porte des valeurs
+  internes générées (`L0001`, `seed.js:212`) et ne peut pas accueillir `MG23210070009001`. · **M**
+- **O3** — Écrire le résolveur soumission → site en trois passes traçables : code exact ;
+  préfixe p‑code adm4 (utilisable pour MIARO 160/163 et GD_PREVMA 179/208) ; table de
+  correspondance pour SMP. · **L**
+- **O4** — Découper la chaîne geopoint (`lat lon altitude precision`) en quatre colonnes. · **S**
+- **O5** — Corriger les trois défauts de `guessField` ci-dessus. · **M**
+- **O6** — Verser les 4 XLSForms dans `server/fixtures/xlsforms/` et écrire le test qui manque :
+  la détection doit retourner `DPName` / `Adm4Code_SMP` / `DPName` / `POIName`, et `SvyDate`
+  partout. **C'est ce qui rendrait enfin vérifiable l'affirmation « appariement des variables des
+  XLSForms MDG »** de la section « Fait pour mémoire ». · **M**
+- **O7** — Table de correspondance des codes de contexte : `Field_office` (1=Bekily,
+  2=Fort Dauphin, 3=Antananarivo, 4=Manakara, 6=Ambovombe, 7=Tsihombe, 9=Ampanihy, 10=Tulear)
+  vers `offices`, et `CPList` (3=MAHAVOTSE…) vers les partenaires. · **S**
+- **O8** — Implémenter **L4 (13d)** une fois `submissions` en place : marquer « déjà suivi » sur
+  une fenêtre paramétrable et alimenter `site_months.done` ou créer une ligne `visits`. · **M**
+  *(était XL : la table manquait ; il reste O1 à O3 en préalable)*
+
+---
+
+## Chantier P — Aligner les indicateurs sur le cadre RBM
+
+Le classeur *Cadre M&E Résilience* et le PPTX RBM montrent ce qu'un indicateur doit porter.
+`indicators` (`001_init.sql:205-215`) porte `id, code, name, basket, unit, target, direction,
+method, frequency`. Manquent :
+
+1. **Le niveau de résultat** (effet / produit / transversal) et le rattachement
+   Strategic Outcome → Activity → Output. · **L**
+2. **Un indicateur d'output n'a nulle part où aller** : `outputs` (`001_init.sql:176-187`) est
+   une table de volumétrie par `activity_tag` × année × mois, **sans colonne `indicator_id`** ;
+   seule `outcomes` référence `indicators`. Les 20 indicateurs d'output du classeur sont
+   orphelins. · **L**
+3. **Les huit indicateurs transversaux** (C.1.1 à C.4.1 — redevabilité, sécurité/dignité, genre,
+   environnement) n'ont aucun moyen d'être marqués comme tels. · **M**
+4. **`Data source` ≠ `Collection method`** : le classeur les distingue nettement (col C vs
+   col D). MEMS n'a que `method`. · **S**
+5. **Aucun responsable de collecte** (col G, 10 valeurs dont « WFP/Gov », « CPs »,
+   « JOINTLY WFP/DEFIS ») — c'est pourtant qui relancer quand une collecte manque. · **S**
+6. **Aucune valeur de référence (baseline)** ni sa date, alors que `target` est obligatoire. · **M**
+7. **Double fréquence** : le classeur exprime systématiquement deux rythmes dans une cellule
+   (« Monthly collection — Quarterly consolidation »). Le `<Select>` de MEMS n'en a qu'un. · **M**
+
+> **Deux corrections à ce document.** (a) L'ancre donnée plus haut pour les cinq méthodes de
+> démonstration est fausse : elles sont dans `web/src/lib/constants.js:99-109` (`D_INDICATORS`),
+> **pas** dans `web/src/lib/seed.js:44-55`. (b) Les 17 valeurs réelles du classeur Résilience
+> sont **composites** (« PDM/CHS », « CHS/ FGD/ Visits/ Workshop/PDM ») : une liste déroulante à
+> choix unique perdrait de l'information sur 43 % des lignes. Il faut donc trancher la
+> **multivaluation** de la méthode, pas seulement fermer la liste.
+
+> **Point favorable, vérifié.** Les six calculs de couverture de MEMS
+> (`web/src/lib/constants.js:137-144`) **sont exactement l'Outil 3 du cadre RBM**, confrontés
+> cellule par cellule à la diapositive 25 du PPTX : durée d'opération en mois, nombre de sites,
+> niveau de risque 1/2/3, intervalle minimal requis, nombre de sites ciblés par mois, nombre
+> faisable, intervalle ajusté, ratio faisable/ciblé. Ils sont donc **légitimes dans un rapport
+> RBM** — cela règle une partie de K1 : ce n'est pas un arbitrage produit, c'est une exigence du
+> cadre. L'Outil 4 exige en plus les cumuls mensuels, que `coverageRows`
+> (`constants.js:266-270`) calcule déjà mais que le générateur de rapport n'expose pas.
+
+---
+
+## Mise à jour des chantiers L et M
+
+### L8 (14d) — le budget TPM, désormais spécifié
+
+Le classeur donne la formule exacte : **`Budget = Coût unitaire × Qtté 2 × Qtté 1`**, avec un
+sous-total par équipe et un total général (9 635 000 Ar en juillet 2026).
+
+Sémantique des deux quantités, reconstituée ligne à ligne :
+- **Qtté 1 (jr)** = jours = `Jour de travail` + `Déplacement (aller-retour)` — **sauf** le
+  carburant (litres) et le forfait (jours de travail **seuls**, `C25=7` quand `C21=8`).
+- **Qtté 2 (nb)** = nombre d'unités : superviseurs, agents, véhicules, `1` pour le carburant,
+  et **superviseurs + agents** pour le forfait.
+
+**Le classeur ne contient aucune formule inter-feuilles** : les quantités de la feuille BUDGET
+sont recopiées à la main depuis les blocs d'équipe. C'est exactement ce que la demande 14d veut
+supprimer.
+
+**Excellente nouvelle, vérifiée par reconstitution** : avec le barème de `seed.js:597-603`,
+`derivedLines` (`lib/tpm.js:39-61`) reproduit **exactement** les postes 1 à 4 des quatre blocs
+(TEAM 3 : 560 000 + 480 000 + 2 400 000 + 600 000). Le total MEMS serait 9 315 000 Ar contre
+9 635 000 — **écart de 320 000 Ar, soit précisément les quatre lignes « Forfait 1st premium »**.
+
+Il ne manque donc que deux choses :
+- **L8a** — Dériver le forfait. `lib/tpm.js:45-52` exclut explicitement `driver='forfait'`
+  (« ne dérive de rien »), et `:40` ne calcule qu'un seul `jours = days + travel_days` — or le
+  forfait se calcule sur les jours de travail **seuls** et sur superviseurs + agents. · **M**
+- **L8b** — Ajouter un driver d'équipement. `011_tpm.sql:104-105` n'a aucune valeur pour un
+  équipement ; « Groupe électrogène avec carburant » (80 000) est déclaré dans les quatre blocs
+  mais **non budgété** en juillet 2026 (colonne C vide → F = 0). · **S**
+- **L8c** — Sortir la norme de carburant du code. 15 L/véhicule-jour est en dur à deux endroits
+  (`Tpm.jsx:711`, `seed.js:643`) — et les blocs 1 et 2 du classeur **ne la suivent pas** (45 et
+  60 L au lieu de 30). Elle doit être un paramètre de barème, pas une constante. · **S**
+
+**Réponses partielles apportées aux autres questions TPM :**
+- **Q16** — la maille est tranchée : l'affectation se fait par **zone entière et pour toutes les
+  activités à la fois** (`BUDGET!A4` : « GD/PECMAM/FARNE_AMBANISARIKA_AMBOVOMBE »), jamais site
+  par site. Preuve : les feuilles PEC n'ont qu'une liste de sites, sans bloc d'équipe — leur
+  budget est celui de l'équipe GD/GFD de la même zone. Le critère de choix **entre** deux
+  prestataires reste inconnu (le classeur n'en contient qu'un).
+  ⚠️ Conséquence pour MEMS : `tpm_zone.activity_tag` est mono-valué et borné à 20 caractères
+  (`routes/tpm.js:421`), et l'unicité `(geo_pcode, activity_tag)` (`:447-450`) **interdit** de
+  représenter une équipe multi-activités autrement que par un tag opaque. · **M**
+- **Q17** — les jours viennent du **calendrier de distribution** (`GFD ABV`!A12:C17 : deux dates
+  = deux jours), pas d'une norme de productivité — 10 sites en 2 jours pour TEAM 1, 29 sites en
+  2 jours pour TEAM 2. La composition est constante : 1 superviseur + 1 agent + 1 véhicule 4×4.
+  Le déplacement vaut 0 pour les zones du bureau et 1 pour les zones éloignées.
+- **Q18** — le nom du prestataire **n'apparaît dans aucune cellule** (seulement dans le nom du
+  fichier) : cela plaide pour un **en-tête**, pas une colonne répétée. « Nb de sites » = sites
+  affectés à l'équipe : 10 / 29 / 27 / 16, soit 82. Aucun plafond contractuel n'apparaît.
+- **Q14** — tranchée, et **il faut cinq colonnes, pas trois** : les six feuilles portent
+  `ADM1 | ADM2 | ADM3 | ADM4 | POIName`, et le POI est distinct de l'adm4 dans de nombreuses
+  lignes (« Ambanisarika » vs « Ambanisarika Centre »). Les 4 XLSForms confirment : tous
+  collectent l'adm4 explicitement.
+
+### M — Cartographie : Google Maps confirmé
+
+**Q20 est tranchée sur le principe** : Google Maps remplace le rendu actuel. L'alternative
+OSM/MapLibre mentionnée plus haut n'est plus qu'une note de repli hors ligne. **La question de
+la clé d'API reste entière et bloque la première ligne de code.**
+
+- **M1a — CSP.** L'en-tête réellement émis a été mesuré. Il faut ouvrir : `script-src` →
+  `https://maps.googleapis.com` ; `connect-src` → `maps.googleapis.com`, `maps.gstatic.com` ;
+  `img-src` → les hôtes de tuiles (`maps.gstatic.com`, `khms{,0,1}.googleapis.com`,
+  `mts.googleapis.com`…). **Et surtout `worker-src`, qui n'est pas déclarée aujourd'hui** et
+  retombe donc sur `default-src 'self'` : un worker `blob:` serait refusé, panne muette, carte
+  blanche sans erreur lisible. Mettre ces hôtes dans une constante **dédiée**, surtout pas dans
+  `config.corsOrigins` (`index.js:53`), qui mélange deux notions. · **S**
+- **M2 — le cadrage devient trivial.** `GET /api/geo/geometry` renvoie **déjà** `extent`
+  (`routes/geo.js:293`) : `map.fitBounds(...)` suffit, sans migration ni nouvelle route. · **S**
+- **M4b — filtre par emprise, nouveau et nécessaire.** `readGeometries` (`lib/geom.js:213-226`)
+  ne filtre que par `level` et `parent` : il n'accepte aucune bbox. Les colonnes existent
+  pourtant (`012_geo_geom.sql:44`) mais **aucune requête ne les lit et aucun index ne les
+  couvre**. Sans ce filtre, « le détail seulement pour ce qui est à l'écran » est impossible et
+  `detail=true` rapatrie tout le niveau. · **M**
+- **M4d — opacité.** « Rattache le shapefile **dessus** » impose que le fond reste visible : cela
+  exclut l'aplat actuel (`fillOpacity 0.9`, `MapView.jsx:358`) et le remplissage blanc des
+  unités sans données (`:352`), qui masqueraient précisément le fond demandé. · **S**
+- **M3 — volume de points.** `/api/analytics/map` sert jusqu'à 6 000 sites, aujourd'hui dessinés
+  en 6 000 `<circle>` SVG. Ni `google.maps.Marker` (déprécié) ni `AdvancedMarkerElement` ne
+  tiennent ce volume sans regroupement. · **L**
+- **GEO — le niveau 4 n'est pas acquis.** Les deux sources de shapefile sont inaccessibles
+  depuis cet environnement (403), mais le point dur est mesurable : un niveau village
+  (~18 000 fokontany) demande 382 Mo à 1,2 Go de tas dans le navigateur avant tout envoi, et le
+  service plafonne à 1 500‑4 000 features (`routes/geo.js:281`). **M4 se scinde donc en deux** :
+  le portage du dessin (acquis en principe) et la tenue du niveau 4 dans le pipeline (non
+  acquis, · **XL**). Il faut probablement un import de contours en ligne de commande et en flux,
+  sur le modèle de `import-geo.js`. · **L**
+- **DOC** — Corriger `MapView.jsx:12` (« Aucune tuile n'est appelée : la carte fonctionne hors
+  ligne et ne fuite aucune donnée »), qui devient faux, ainsi que la revendication de
+  déploiement souverain du README. Et documenter l'ouverture de la CSP : le commentaire
+  `index.js:46-49` dit que ces autorisations Google avaient été **retirées** délibérément —
+  sans note, le prochain lecteur les retirera à nouveau et cassera la carte. · **S**
+
+---
+
 # Questions bloquantes
 
 Ces points ne peuvent pas être décidés depuis le code — ils engagent une règle métier ou un
-arbitrage produit.
+arbitrage produit. **Huit ont été fermées ou réduites par les documents du 31/07/2026.**
 
 | # | Sujet | Question |
 |---|---|---|
 | **Q1** | xlsx (chantier 3) | Accepte-t-on que `web/package-lock.json` dépende de `cdn.sheetjs.com` (hors registre npm) pour chaque `npm ci` de la CI et du build Docker ? Sinon, bascule-t-on le parsing du XLSForm côté serveur sur `exceljs`, déjà présent ? |
-| **Q1 bis** | TPM (L8) | **Le fichier Excel de référence n'est pas dans le dépôt.** Pouvez-vous le fournir ? La structure du budget TPM en dépend entièrement. |
+| ~~**Q1 bis**~~ | TPM (L8) | ✅ **FERMÉE** — classeur fourni et dépouillé le 31/07/2026. Voir « Mise à jour du chantier L8 ». |
 | **Q2** | Bureaux (H1) | Une antenne devient-elle un **vrai bureau** (identifiant propre, comptes possibles, périmètre propre) ou reste-t-elle un libellé de rattachement ? Que fait-on des valeurs texte déjà saisies dans `offices.antennes` et `sites.antenne` ? Le périmètre d'un area office englobe-t-il celui de ses antennes ? |
 | **Q3** | Sites (H2) | Le registre ne restera atteignable que par l'onglet Suivi-évaluation. Les onglets étant réglables compte par compte (`users.tabs`), faut-il vérifier qu'aucun compte existant ne perd l'accès ? |
 | **Q4** | Périmètres (H3) | Le sélecteur d'unités doit-il permettre d'attribuer des communes (adm3), voire des fokontany (adm4) ? Le schéma l'autorise déjà. |
@@ -756,25 +1046,40 @@ arbitrage produit.
 | **Q6** | Export localités (I1) | CSV ou XLSX ? `exceljs` est déjà côté serveur et produit déjà les modèles d'import — un `.xlsx` supprimerait d'un coup les problèmes de séparateur, de BOM et de p-codes à zéro non significatif. |
 | **Q7** | Types de site (I2) | Deux typologies se recouvrent : `site_type` (liste figée `constants.js:194`) et `poi_subtype` (référentiel en base). Laquelle fait foi ? |
 | **Q8** | Indicateurs (J1) | Où placer le téléchargement du modèle et le téléversement : Paramètres → Indicateurs, ou Actual Data → Import Excel (où tout le dispositif existe déjà) ? |
-| **Q9** | Méthode de collecte (J2) | Quelle est la **liste exacte** ? Le dépôt ne connaît que cinq valeurs issues du jeu de démonstration (`seed.js:44-55`). |
+| ~~**Q9**~~ | Méthode de collecte (J2) | ✅ **FERMÉE** — 25 méthodes (`MRE dropdown list`!T2:T26) + 6 fréquences (`V2:V7`). **Reste un sous-point** : le classeur Résilience emploie des méthodes *composites* (« PDM/CHS ») sur 43 % des lignes — faut-il autoriser plusieurs méthodes par indicateur ? |
 | **Q10** | Rations (J3) | Que désigne « **multiplicateur** » : le nombre de bénéficiaires (remplaçant `sample = 1000`), ou un facteur supplémentaire en plus des bénéficiaires ? Et cela change-t-il aussi le calcul du PDD, ou seulement l'aperçu de test ? |
 | **Q11** | Rapports (K1) | « Indicateurs calculés » = les formules de performance par jeu de données (`Analytics.jsx:100-136`), les six calculs de couverture (`Settings.jsx:1509`), ou les deux ? |
 | **Q12** | Sauvegarde (K2) | But réel : archivage / reprise après sinistre, transfert entre instances, ou export sélectif pour analyse externe ? Les trois n'ont ni le même format ni les mêmes garde-fous. |
 | **Q13** | Notifications (K3) | La cloche montre-t-elle seulement l'état dérivé actuel (retards, validations en attente), ou aussi des **événements** (« un collègue a validé », « un import a été confirmé ») ? La seconde lecture impose une table de notifications côté serveur. |
-| **Q14** | Plan de suivi (L1) | Faut-il une **quatrième colonne adm4** ? Les sites sont le plus souvent rattachés au niveau adm4 ; sans elle, deux sites de fokontany différents d'une même commune sont indistinguables. |
-| **Q15** | ODK / déjà suivi (L4) | Quelle valeur le champ site du formulaire ODK contient-il réellement — le code métier du site, l'identifiant interne, un p-code, ou le nom en texte libre ? Et sur quelle période un site compte-t-il comme « déjà suivi » ? |
-| **Q16** | Affectation TPM (L5) | Sur quel critère un site va-t-il à tel prestataire : le bureau du site rapproché du bureau du prestataire, la commune, l'activité, une capacité maximale ? |
-| **Q17** | Brouillon TPM (L6) | Qui prépare le brouillon — le bureau, ou le système à la validation du plan ? D'où viennent les quantités par défaut (agents, superviseurs, jours, véhicules, litres) pour une commune donnée ? |
-| **Q18** | Colonnes TPM (L7) | Le nom du prestataire est constant sur tout le plan : colonne répétée, ou en-tête ? Et « nb de sites qu'il peut consulter » désigne-t-il les sites affectés, les sites accessibles, ou un plafond contractuel ? |
+| ~~**Q14**~~ | Plan de suivi (L1) | ✅ **FERMÉE — et la réponse va plus loin que la question** : il faut **cinq** colonnes (adm1→adm4 + nom du site), pas trois. Les 6 feuilles du budget TPM et les 4 XLSForms portent tous l'adm4, et le POI y est distinct de l'adm4. |
+| **Q15** | ODK / déjà suivi (L4) | 🟡 **RÉDUITE** — le champ site porte toujours un **code** issu de `choices`, mais de forme différente par formulaire (voir chantier O). **Restent trois points** : (a) comment rattacher SMP, dont les codes sont des entiers hors référentiel p‑code ? (b) que faire des 7 codes GD_PREVMA ambigus ? (c) **sur quelle période un site compte-t-il comme « déjà suivi » ?** — reste entière, c'est une règle métier. |
+| **Q16** | Affectation TPM (L5) | 🟡 **RÉDUITE** — la maille est tranchée : affectation **par zone entière et pour toutes les activités**, jamais site par site. **Reste** : sur quel critère choisir entre deux prestataires ? Le classeur n'en contient qu'un. |
+| ~~**Q17**~~ | Brouillon TPM (L6) | ✅ **FERMÉE** — les jours viennent du **calendrier de distribution** (2 dates = 2 jours), pas d'une norme ; composition constante 1 superviseur + 1 agent + 1 véhicule 4×4 ; déplacement 0 en zone de bureau, 1 en zone éloignée. |
+| ~~**Q18**~~ | Colonnes TPM (L7) | ✅ **FERMÉE** — le nom du prestataire n'est dans aucune cellule → **en-tête**, pas colonne. « Nb de sites » = sites affectés à l'équipe (10 / 29 / 27 / 16). Aucun plafond contractuel n'existe. |
 | **Q19** | Panneau prestataire (L9) | Quelles informations exactement, et dans quel ordre : identité et contacts, contrats et plafonds, barème, avenants, plans du mois et leur état, dernières dépenses, alertes de dépassement ? |
-| **Q20** | Google Maps (M1) | Acceptez-vous l'appel à des serveurs Google depuis chaque poste, la perte du fond de carte hors ligne, et qui fournit et paie la clé d'API ? |
-| **Q21** | Cadrage (M2) | Cadrage simple à l'ouverture, ou contrainte dure interdisant de sortir du pays (gênant pour un site frontalier) ? Faut-il griser l'extérieur ? |
-| **Q22** | Panneau carte (M3) | Quelle est la **liste ordonnée** des informations voulues pour un site, et pour une unité administrative ? Le panneau affiche aujourd'hui huit champs pour un site et quatre agrégats pour une unité. |
-| **Q23** | Contours (M4) | À partir de quel niveau de zoom veut-on les contours en pleine résolution (coût réseau direct) ? Et sur un fond satellite, contours en simple trait ou conservation des aplats thématiques — sachant qu'un aplat opaque masque le fond de carte demandé ? |
+| **Q20** | Google Maps (M1) | 🟡 **RÉDUITE** — Google Maps est confirmé, l'appel aux serveurs Google est accepté. **Reste, et c'est bloquant dès la première ligne de code : qui fournit et paie la clé d'API ?** Prévoir aussi sa restriction par référent HTTP, sans quoi elle est utilisable depuis n'importe quel site. |
+| **Q21** | Cadrage (M2) | 🟡 **COÛT EFFONDRÉ** (`extent` est déjà renvoyé). **Reste** : cadrage simple à l'ouverture, ou contrainte dure interdisant de sortir du pays (gênant pour un site frontalier) ? Faut-il griser l'extérieur ? |
+| **Q22** | Panneau carte (M3) | Inchangée. Quelle est la **liste ordonnée** des informations voulues pour un site, et pour une unité administrative ? |
+| **Q23** | Contours (M4) | 🟡 **RÉDUITE** — « rattache le shapefile **dessus** » impose que le fond reste visible, donc l'aplat opaque actuel est exclu. **Reste** : à partir de quel niveau de zoom veut-on la pleine résolution (coût réseau direct) ? |
+| **Q24** | Coût Google (M1) | Quel plafond mensuel accepte-t-on, et que se passe-t-il quand il est atteint : la carte s'arrête, ou bascule sur le rendu SVG actuel ? Un chargement est facturé à chaque ouverture de l'écran. |
+| **Q25** | GPS observé (chantier O) | Le geopoint ODK doit-il **écraser** `sites.lat/lon`, ou coexister ? Écraser est le moins cher mais détruit la valeur saisie **sans trace** (la table n'a ni provenance ni date de relevé), et un seul relevé fautif déplace le site définitivement. Recommandation à valider : garder `sites.lat/lon` comme référence, ajouter une table de positions observées, et n'écrire dans le site que par une action explicite « adopter cette position », journalisée. |
+| **Q26** | Nature du geopoint (chantier O) | Un geopoint enregistre où se tenait **l'agent**, pas la position officielle du site — sur un point de distribution l'écart peut atteindre plusieurs centaines de mètres, et plusieurs soumissions produisent un **nuage**. Que veut-on : le dernier point, un point moyen, ou tous les points comme trace de passage ? La précision renvoyée par ODK doit-elle servir de seuil de rejet ? |
+| **Q27** | Niveau du fond de carte | Veut-on vraiment un fond de **niveau 4** (~18 000 fokontany) ? Le pipeline n'en sert que 1 500 à 4 000 à la fois et le navigateur ne tient pas l'import. Un fond adm2/adm3 avec descente en adm4 sous un parent choisi est ce que le code fait déjà et reste tenable. |
+| **Q28** | Licence des contours | Les deux sources sont inaccessibles depuis cet environnement. À relever depuis un poste connecté : niveaux réellement fournis, **noms exacts des colonnes du `.dbf`** (ils décident si l'appariement automatique fonctionne), présence des p‑codes officiels, projection, et **licence de rediffusion** — un téléchargement gratuit derrière un compte n'emporte pas le droit de redistribuer les contours dans un produit interne. |
+| **Q29** | Confidentialité (M1) | Chaque affichage transmet à Google la zone regardée, donc indirectement où le programme travaille. Sur des zones sensibles (`sites.security` a quatre niveaux), est-ce acceptable ? C'est exactement la propriété que `MapView.jsx:12` revendique aujourd'hui. |
+| **Q30** | Référentiels MRE (chantier N) | Adopte-t-on les référentiels du gabarit RAM **en l'état** (8 natures + 76 sous-catégories, 3 niveaux de coût, interne/externe, pluriannuel) — ce qui refond `010_mre.sql` — ou garde-t-on les listes actuelles de MEMS en acceptant qu'elles ne correspondent à aucun référentiel du PAM ? |
 
 ---
 
 ## Méthode
+
+**Complément du 31/07/2026 (documents métier).** Dix documents fournis par le propriétaire du
+produit ont été dépouillés : les deux classeurs de budget (TPM et MRE) cellule par cellule et
+formule par formule, les 4 XLSForms ODK feuille `survey`/`choices`/`settings` en entier, le
+classeur d'indicateurs, la note RBM et le PPTX. Les affirmations qui en découlent sont ancrées
+sur des références de cellules vérifiables. Ce qui n'a **pas** pu être lu est signalé comme tel :
+les deux PDF du PAM (`cdn.document360.io`, 403) et les deux sources de shapefile — aucun contenu
+n'en a été déduit.
 
 Analyse du 31/07/2026 : lecture intégrale du dépôt (~22 000 lignes) par agents parallèles,
 254 fonctionnalités recensées (134 complètes, 105 partielles, 5 coquilles, 10 mortes), puis
