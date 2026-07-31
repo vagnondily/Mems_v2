@@ -11,7 +11,10 @@
     "dev:web": "cd web && npm run dev",
     "build": "cd web && npm run build",
     "start": "cd server && npm start",
-    "test": "cd server && npm test && cd ../web && npm test"
+    "test": "cd server && npm test && cd ../web && npm test",
+    "setup": "cd server && npm run install:mems"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }

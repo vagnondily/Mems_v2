@@ -38,7 +38,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload, go }){
       {sub==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
       {sub==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} />}
       {sub==="templates" && <SetTemplates db={db} set={set} notify={notify} can={can} />}
-      {sub==="api" && <><Sauvegarde db={db} notify={notify} /><SetApi db={db} notify={notify} /></>}
+      {sub==="api" && <><MiseAJour me={me} notify={notify} /><Sauvegarde db={db} notify={notify} /><SetApi db={db} notify={notify} /></>}
       {sub==="users" && <SetUsers db={db} set={set} me={me} notify={notify} />}
     </div>);
 }
@@ -1494,6 +1494,122 @@ function Sauvegarde({ db, notify }){
         </div>}
       </Card>
     </div>);
+}
+
+/* ── Mise à jour du serveur ──────────────────────────────────
+   L'écran n'existe que si l'installation l'a voulu. C'est le point important : le
+   dépôt, la branche et la commande sont fixés dans l'environnement du serveur, et
+   aucune requête ne peut les changer. On ne peut demander qu'une chose — « applique
+   ce qui a été configuré » — et il faut encore taper la confirmation.
+
+   L'ordre du geste est celui du risque : voir où l'on en est, voir ce qui a changé
+   en amont, puis seulement appliquer. */
+function MiseAJour({ me, notify }){
+  const [etat,setEtat] = useState({ loading:true });
+  const [ecart,setEcart] = useState(null);
+  const [resultat,setResultat] = useState(null);
+  const [mot,setMot] = useState("");
+  const [busy,setBusy] = useState("");
+
+  useEffect(() => { api.updateStatus()
+    .then(r => setEtat({ ...r, loading:false }))
+    .catch(e => setEtat({ loading:false, indisponible:true, err:e.message })); }, []);
+
+  if(etat.loading) return null;
+  /* Ni écran, ni mention, quand la fonction n'a pas été installée : annoncer une porte
+     qu'on ne peut pas ouvrir n'aide personne. Le compte non super non plus. */
+  if(etat.indisponible || me?.role !== "super") return null;
+
+  const verifier = async () => { setBusy("check"); setEcart(null);
+    try{ setEcart(await api.updateCheck()); }
+    catch(e){ notify(e.message, "err"); } finally{ setBusy(""); } };
+  const appliquer = async () => { setBusy("apply"); setResultat(null);
+    try{
+      const r = await api.updateApply();
+      setResultat(r); setMot("");
+      notify(r.redemarrage ? "Mise à jour appliquée — le service redémarre" : "Mise à jour appliquée", "ok");
+    }catch(e){ notify(e.message, "err"); setResultat({ ok:false, erreur:e.message, etapes:e.details }); }
+    finally{ setBusy(""); } };
+
+  const v = etat.version || {};
+  const r = etat.reglages || {};
+  return (
+    <Card flush title="Mise à jour du serveur"
+      subtitle={etat.mode === "git"
+        ? `Avance rapide sur ${r.remote}/${r.branche}`
+        : "Commande fournie à l'installation"}>
+      <div className="p-5 space-y-4">
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <div className="f10 uppercase tracking-wide font-bold text-slate-500 mb-1">Version en service</div>
+            {v.erreur ? <div className="f115 text-amber-700">{v.erreur}</div> : <>
+              <div className="font-mono f13 text-slate-800">{v.commit} <span className="text-slate-400">·</span> {v.branche}</div>
+              <div className="f115 text-slate-500">{v.sujet}</div>
+              <div className="f105 text-slate-400">{v.date ? new Date(v.date).toLocaleString("fr-FR") : ""}</div>
+              {v.modifieLocalement > 0 && <div className="f105 text-amber-700 mt-1">
+                {v.modifieLocalement} fichier(s) modifiés localement — la mise à jour sera refusée.</div>}
+            </>}
+          </div>
+          <div>
+            <div className="f10 uppercase tracking-wide font-bold text-slate-500 mb-1">Ce qui sera fait</div>
+            <ul className="f115 text-slate-600 space-y-0.5">
+              {[[r.sauvegarder,"Sauvegarde de la base avant"],
+                [true, etat.mode === "git" ? `Avance rapide sur ${r.remote}/${r.branche}` : `Commande : ${r.commande}`],
+                [r.migrer,"Migrations de base"],
+                [r.construire,"Reconstruction de l'interface"],
+                [r.redemarrer,"Arrêt du service pour redémarrage"]].map(([on,t],i)=>(
+                <li key={i} className={on ? "text-slate-700" : "text-slate-300 line-through"}>
+                  {on ? "• " : "◦ "}{t}</li>))}
+            </ul>
+            <div className="f105 text-slate-400 mt-2">
+              Réglé à l'installation ; non modifiable depuis l'application.</div>
+          </div>
+        </div>
+
+        {etat.derniere && <Note>Dernière opération : {etat.derniere.text}
+          {" "}({new Date(etat.derniere.at).toLocaleString("fr-FR")}, {etat.derniere.user_label}).</Note>}
+
+        <div className="flex gap-2">
+          <Btn kind="sec" icon={RefreshCw} disabled={busy==="check"} onClick={verifier}>
+            {busy==="check" ? "Lecture du dépôt…" : "Vérifier les mises à jour"}</Btn>
+        </div>
+
+        {ecart && ecart.mode === "commande" && <Note tone="warn">{ecart.message}</Note>}
+        {ecart && ecart.mode === "git" && <>
+          {ecart.enAttente === 0
+            ? <Note tone="ok">Ce serveur est à jour sur {ecart.cible}.</Note>
+            : <Note><b>{ecart.enAttente} mise(s) à jour</b> en attente sur {ecart.cible}.</Note>}
+          {ecart.avertissement && <Note tone="warn">{ecart.avertissement}</Note>}
+          {!!ecart.commits.length && <TableWrap max="mh240">
+            <thead><tr><Th>Commit</Th><Th>Date</Th><Th>Auteur</Th><Th>Objet</Th></tr></thead>
+            <tbody>{ecart.commits.map(c => (
+              <tr key={c.sha} className="border-t border-slate-100">
+                <Td className="font-mono f105">{c.sha}</Td>
+                <Td className="f105 text-slate-500">{new Date(c.date).toLocaleDateString("fr-FR")}</Td>
+                <Td className="f105 text-slate-500">{c.auteur}</Td>
+                <Td className="f115 whitespace-normal mw420">{c.sujet}</Td>
+              </tr>))}</tbody>
+          </TableWrap>}
+          {ecart.enAttente > 0 && !ecart.avertissement && <div className="flex items-end gap-2 mt-3">
+            <Field label="Confirmation" className="mb-0"
+              hint="Tapez METTRE A JOUR — le geste remplace le programme en cours d'exécution">
+              <Input value={mot} onChange={e=>setMot(e.target.value)} placeholder="METTRE A JOUR" /></Field>
+            <Btn kind="danger" icon={Check} disabled={mot !== "METTRE A JOUR" || busy==="apply"}
+              onClick={appliquer}>{busy==="apply" ? "Mise à jour…" : "Appliquer"}</Btn>
+          </div>}
+        </>}
+
+        {resultat && <div className="mt-2">
+          <Note tone={resultat.ok ? "ok" : "warn"}>
+            {resultat.ok ? resultat.note : resultat.erreur}</Note>
+          {!!resultat.etapes?.length && <ul className="f115 mt-2 space-y-0.5">
+            {resultat.etapes.map((e,i)=>(
+              <li key={i} className={e.ok ? "text-slate-700" : "text-rose-700"}>
+                {e.ok ? "✓" : "✗"} <b>{e.nom}</b> — <span className="text-slate-500">{e.detail}</span></li>))}
+          </ul>}
+        </div>}
+      </div>
+    </Card>);
 }
 
 function SetApi({ db, notify }){

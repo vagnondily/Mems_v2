@@ -17,17 +17,24 @@ analyse des données ODK Central, cartographie et restitution.
 
 ```bash
 git clone <votre-dépôt> mems && cd mems
-cp .env.example .env
-
-# Générer les deux secrets obligatoires
-echo "JWT_SECRET=$(openssl rand -hex 32)" >> .env
-echo "DATA_KEY=$(openssl rand -hex 32)"  >> .env
-
 npm run install:all
+npm run setup         # pose les questions et écrit server/.env
 npm run seed          # crée le schéma, les données d'exemple et le compte administrateur
 npm run dev:server    # http://localhost:4000
 npm run dev:web       # http://localhost:5173  (dans un second terminal)
 ```
+
+`npm run setup` engendre les deux secrets obligatoires, propose une valeur pour tout ce
+qui peut l'être, et pose **la seule question qui ne peut pas être devinée** : comment ce
+serveur se met à jour. Voir « Mise à jour » plus bas. Relancer `setup` sur une
+installation existante conserve les secrets en place — les réinventer invaliderait
+toutes les sessions et rendrait illisibles les jetons ODK déjà enregistrés.
+
+Le script fonctionne aussi hors terminal, les réponses étant lues sur l'entrée standard
+dans l'ordre des questions : une mise en service automatisée reste donc possible.
+
+Rien n'oblige à l'utiliser : `cp .env.example .env` puis l'édition à la main
+fonctionnent toujours.
 À la fin de `npm run seed`, la console affiche **une seule fois** l'adresse et le mot de passe
 de l'administrateur initial. Notez-le : il n'est stocké nulle part en clair et n'apparaît
 jamais dans l'application. À la première connexion, l'application impose son remplacement.
@@ -1166,6 +1173,50 @@ Autant le dire clairement, cela évite de mauvaises surprises.
 |---|---|---|
 | Mot de passe administrateur initial | affiché une fois par `npm run seed` | changé de force à la première connexion |
 | Mots de passe des comptes | `users.pw_hash`, bcrypt | Paramètres → Utilisateurs, ou `POST /api/auth/password` |
+## Mise à jour du serveur
+
+Un bouton qui va chercher du code sur internet et redémarre le service est, par
+construction, un chemin d'exécution de code à distance. MEMS l'offre — sans lui, une
+correction urgente suppose un accès SSH, et il n'y en a pas toujours un le jour où il
+faut — mais **la décision appartient à l'installation, pas à l'application**.
+
+`npm run setup` pose la question une fois. Trois réponses possibles :
+
+| `UPDATE_MODE` | Ce que fait le bouton | Pour qui |
+|---|---|---|
+| `off` *(défaut)* | Rien. L'écran n'existe pas et les routes répondent 501. | Toute installation qui se met à jour en ligne de commande. |
+| `git` | Relit le dépôt cloné, avance **en avance rapide** sur `UPDATE_BRANCH`, migre, reconstruit. | Déploiement direct depuis un clone git. |
+| `commande` | Exécute `UPDATE_COMMAND` telle quelle. | Conteneurs : `docker compose pull && docker compose up -d`. |
+
+Ce qui ne peut **jamais** venir d'une requête HTTP : le dépôt, la branche, la commande,
+et ce qui est fait ensuite. Une requête ne peut demander qu'une chose — « applique ce
+qui est configuré » — et doit encore porter la confirmation littérale `METTRE A JOUR`.
+
+Les garanties qui tiennent le reste :
+
+- **réservé au rôle `super`** ; administrer des données et remplacer le programme qui
+  les traite ne sont pas du même ordre ;
+- **sauvegarde JSON préalable** (`UPDATE_BACKUP`, activée par défaut) : si elle échoue,
+  la mise à jour est annulée avant d'avoir commencé ;
+- **le dossier de données n'est jamais touché** ;
+- **refus plutôt que fusion** : si l'historique local a divergé, ou si des fichiers sont
+  modifiés sur le serveur, l'opération s'arrête et le dit. Une fusion automatique sur un
+  serveur en service, sans personne pour lire le conflit, est une très mauvaise idée ;
+- **chaque tentative est journalisée**, réussie ou non.
+
+`UPDATE_RESTART` n'est à activer que si un superviseur relance le service
+(systemd, `restart: always`). Sans lui, le service resterait éteint.
+
+| Variable | Rôle |
+|---|---|
+| `UPDATE_MODE` | `off`, `git` ou `commande` |
+| `UPDATE_REMOTE` / `UPDATE_BRANCH` | dépôt et branche suivis en mode `git` |
+| `UPDATE_COMMAND` | commande lancée en mode `commande` |
+| `UPDATE_BACKUP` | sauvegarder la base avant (défaut : oui) |
+| `UPDATE_MIGRATE` / `UPDATE_BUILD` | migrer, reconstruire l'interface (défaut : oui) |
+| `UPDATE_RESTART` | arrêter le service à la fin (défaut : non) |
+| `UPDATE_TIMEOUT` | secondes avant abandon (défaut : 600) |
+
 | `JWT_SECRET` | fichier `.env` | `openssl rand -hex 32` ; invalide toutes les sessions |
 | `DATA_KEY` | fichier `.env` | `openssl rand -hex 32` ; ressaisissez ensuite les jetons ODK |
 | Jetons ODK Central | `odk_forms.token_enc`, chiffrés | Paramètres → ODK Central |

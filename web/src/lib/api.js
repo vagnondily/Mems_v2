@@ -234,6 +234,12 @@ export const api = {
   backupParts:   ()              => call("GET", "/backup/parts"),
   backup:        (parts=[])      => call("GET", `/backup${parts.length?`?parts=${parts.join(",")}`:""}`),
   backupRestore: (b)             => call("POST", "/backup/restore", b),
+
+  /* Mise à jour du code. Rien de ce qui suit ne porte de paramètre : le dépôt, la
+     branche et la commande sont fixés à l'installation, jamais par une requête. */
+  updateStatus:  ()              => call("GET", "/update/status"),
+  updateCheck:   ()              => call("POST", "/update/check", {}),
+  updateApply:   ()              => call("POST", "/update/apply", { confirmation:"METTRE A JOUR" }),
 };
 
 /* File d'écriture : les collections modifiées sont poussées par lot, avec réessai.

@@ -68,4 +68,46 @@ export const config = {
   bootstrapEmail: process.env.BOOTSTRAP_EMAIL || "admin@mems.local",
   bootstrapPassword: process.env.BOOTSTRAP_PASSWORD || "",
   logLevel: process.env.LOG_LEVEL || "info",
+
+  /* ── La mise à jour depuis le dépôt ────────────────────────
+     Un bouton qui va chercher du code sur internet et redémarre le serveur est, par
+     construction, un chemin d'exécution de code à distance. Il ne s'improvise pas
+     depuis l'application : il se DÉCIDE À L'INSTALLATION, par la personne qui tient
+     la machine, et rien de ce qui suit ne peut être modifié par une requête HTTP.
+
+       « off »      rien n'est exposé, pas même l'écran. C'est le défaut : une
+                    installation qu'on n'a pas configurée pour cela ne doit pas
+                    offrir de porte qu'on n'a pas voulue.
+
+       « git »      la stratégie intégrée : on relit le dépôt déjà cloné, on avance
+                    en avance rapide sur la branche configurée, on migre, on
+                    reconstruit l'interface. Refuse toute fusion non triviale.
+
+       « commande » la commande fournie par l'exploitant est lancée telle quelle.
+                    C'est la voie des installations en conteneur, où la mise à jour
+                    n'est pas un « git pull » mais un « docker compose pull && up ».
+
+     La branche et la commande viennent de l'environnement, jamais du corps de la
+     requête : sinon n'importe quel administrateur pourrait faire exécuter n'importe
+     quoi sur le serveur, ce qui n'est plus une mise à jour mais une prise de contrôle. */
+  update: {
+    mode: ["off","git","commande"].includes(process.env.UPDATE_MODE)
+      ? process.env.UPDATE_MODE : "off",
+    remote: process.env.UPDATE_REMOTE || "origin",
+    branch: process.env.UPDATE_BRANCH || "main",
+    commande: process.env.UPDATE_COMMAND || "",
+    /* Après la mise à jour : migrer la base, reconstruire l'interface, redémarrer.
+       Chacun se refuse séparément — une installation derrière un reverse proxy qui
+       relance le service elle-même n'a pas à laisser l'application le faire. */
+    migrer: bool(process.env.UPDATE_MIGRATE, true),
+    construire: bool(process.env.UPDATE_BUILD, true),
+    redemarrer: bool(process.env.UPDATE_RESTART, false),
+    /* La sauvegarde d'avant. On ne met pas à jour sans filet, et le filet doit être
+       posé par le serveur lui-même : compter sur la mémoire de l'exploitant au
+       moment où il clique est une mauvaise façon de protéger des données. */
+    sauvegarder: bool(process.env.UPDATE_BACKUP, true),
+    dossierSauvegardes: process.env.UPDATE_BACKUP_DIR || "./data/sauvegardes",
+    /* Combien de temps on laisse la mise à jour se dérouler avant de la couper. */
+    delaiSecondes: int(process.env.UPDATE_TIMEOUT, 600),
+  },
 };

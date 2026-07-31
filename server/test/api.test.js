@@ -536,6 +536,38 @@ test("restauration : elle refuse de détacher en silence ce qu'elle ne pourra pa
     lies, "aucun rattachement n'a été perdu");
 });
 
+test("mise à jour : fermée par défaut, et rien ne vient de la requête", async () => {
+  /* Un bouton qui va chercher du code sur internet et redémarre le serveur est un
+     chemin d'exécution de code à distance. Deux garanties le tiennent, et ce sont
+     elles qu'on éprouve ici :
+
+       — l'installation décide, pas l'application. Sans UPDATE_MODE, la fonction
+         n'existe pas, et la route le dit au lieu de faire semblant ;
+       — le dépôt, la branche et la commande viennent de l'environnement du serveur.
+         Une requête ne peut demander qu'« applique ce qui est configuré ». */
+  const enTest = process.env.UPDATE_MODE;
+  assert.ok(!enTest || enTest === "off",
+    "le jeu d'essai tourne sans mise à jour installée — c'est le défaut attendu");
+
+  for(const [methode, chemin] of [["get","/api/update/status"],
+                                  ["post","/api/update/check"],
+                                  ["post","/api/update/apply"]]){
+    const r = await request(app)[methode](chemin).set("Authorization", `Bearer ${adminToken}`).send({});
+    assert.equal(r.status, 501, `${chemin} doit annoncer que la fonction n'est pas installée`);
+    assert.match(r.body.error, /n'a pas été installée/);
+    assert.match(r.body.remede, /installation/i);
+  }
+
+  /* Et même installée, elle reste hors de portée de tout compte qui n'est pas
+     super-utilisateur : administrer des données et remplacer le programme qui les
+     traite ne sont pas du même ordre. */
+  const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  const r = await request(app).post("/api/update/apply")
+    .set("Authorization", `Bearer ${t}`).send({ confirmation:"METTRE A JOUR" });
+  assert.equal(r.status, 403);
+  assert.match(r.body.error, /super/i);
+});
+
 test("cloisonnement : visites, distributions, paramètres et journal suivent le bureau", async () => {
   const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
   const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;

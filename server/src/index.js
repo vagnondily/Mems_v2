@@ -24,6 +24,7 @@ import tpmRoutes from "./routes/tpm.js";
 import mreRoutes from "./routes/mre.js";
 import pddRoutes from "./routes/pdd.js";
 import backupRoutes from "./routes/backup.js";
+import updateRoutes from "./routes/update.js";
 import officeRoutes from "./routes/offices.js";
 import partnerRoutes from "./routes/partners.js";
 import userRoutes from "./routes/users.js";
@@ -147,6 +148,7 @@ app.use("/api/import", importRoutes);
 app.use("/api/mre", mreRoutes);
 app.use("/api/pdd", pddRoutes);
 app.use("/api/backup", backupRoutes);
+app.use("/api/update", updateRoutes);
 app.use("/api/tpm", tpmRoutes);
 app.use("/api", collectionRoutes);
 
