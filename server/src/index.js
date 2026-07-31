@@ -63,13 +63,20 @@ app.use(helmet({
 app.use(compression());
 app.use(cookieParser());
 app.use(express.json({ limit: `${config.maxBodyMb}mb` }));
+/* Un Codespace expose chaque port sous son propre sous-domaine généré
+   (https://<nom>-4000.app.github.dev, https://<nom>-5173.app.github.dev) :
+   deux origines différentes, imprévisibles à l'avance, donc absentes de
+   CORS_ORIGINS. Cette fonction existait déjà mais n'était jamais appelée —
+   la vérification ne la consultait jamais, et un test en mode « production »
+   depuis un Codespace échouait avec « origine non autorisée » sans que rien
+   dans le code ne l'explique. */
 const isGithubDevOrigin = origin => /^https:\/\/[a-z0-9-]+\.app\.github\.dev$/i.test(origin);
 app.use(cors({
   origin(origin, cb){
     /* Requêtes sans origine : outils en ligne de commande, sondes de santé. */
     if(!origin) return cb(null, true);
     if(!config.isProd) return cb(null, true);
-    if(config.corsOrigins.includes(origin)) return cb(null, true);
+    if(config.corsOrigins.includes(origin) || isGithubDevOrigin(origin)) return cb(null, true);
     return cb(new Error("origine non autorisée"));
   },
   credentials: true,
