@@ -142,6 +142,66 @@ function applyRules(rows, rules){
   });
   return { rows: out, log };
 }
+/* ── Indicateurs de performance : formules admin sur les variables ODK ──
+
+   evalFormula (ci-dessus) sert aux paramètres de couverture : de l'arithmétique
+   pure sur quelques variables nommées. L'audit des XLSForms MDG a montré que
+   les scores de performance ne sont pas de l'arithmétique pure — ce sont des
+   conditions imbriquées sur des réponses codées (« =oui », seuils, catégories
+   textuelles), avec souvent une pondération dont le dénominateur ne
+   correspond plus au maximum réel une fois le formulaire modifié sur le
+   terrain (voir les incohérences relevées sur GD_PREVMA, MIARO_PROD et
+   NutritionAIM). D'où un évaluateur distinct, plus permissif sur la syntaxe
+   (comparaisons, opérateur ternaire, chaînes) mais tout aussi cloisonné :
+   pas d'accès aux propriétés, pas d'affectation, pas d'appel hors de la
+   liste blanche. */
+const IND_FNS = ["max","min","round","abs","sqrt","floor","ceil"];
+const IND_CHARS = /^[a-zA-Z0-9_+\-*/()\s,.!<>=&|?:§]*$/;
+const STRING_LITERAL = /'[^']*'|"[^"]*"/g;
+function hasBareAssignment(withoutStrings){
+  return /=/.test(withoutStrings.replace(/===|!==|==|!=|<=|>=/g, ""));
+}
+function evalIndicator(expr, scope){
+  if(!expr) return { ok:false, value:null, err:"formule vide" };
+  if(/=>/.test(expr)) return { ok:false, value:null, err:"opérateur « => » non autorisé" };
+  const masked = expr.replace(STRING_LITERAL, "§");
+  if(!IND_CHARS.test(masked)) return { ok:false, value:null, err:"caractère non autorisé dans la formule" };
+  if(hasBareAssignment(masked)) return { ok:false, value:null, err:"« = » seul non autorisé — utilisez « == »" };
+  if(/\.\s*[a-zA-Z_]/.test(masked)) return { ok:false, value:null, err:"l'accès aux propriétés est interdit" };
+  const keys = Object.keys(scope);
+  const allowed = new Set([...keys, ...IND_FNS]);
+  const bad = (masked.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || []).find(t => !allowed.has(t));
+  if(bad) return { ok:false, value:null, err:`variable ou fonction inconnue : ${bad}` };
+  try{
+    const fn = new Function(...keys, ...IND_FNS, `"use strict"; return (${expr});`);
+    const v = fn(...keys.map(k=>scope[k]), Math.max, Math.min, Math.round, Math.abs, Math.sqrt, Math.floor, Math.ceil);
+    if(v === undefined || (typeof v === "number" && !Number.isFinite(v)))
+      return { ok:false, value:null, err:"résultat non calculable (division par zéro ?)" };
+    if(typeof v === "object") return { ok:false, value:null, err:"une formule doit renvoyer un nombre, un texte ou vrai/faux" };
+    return { ok:true, value:v };
+  }catch(e){ return { ok:false, value:null, err:e.message }; }
+}
+/* Une valeur de ligne qui ressemble à un nombre en devient un, pour que les
+   comparaisons (>=, <) fonctionnent sans que l'administrateur ait à convertir
+   chaque champ ; les autres restent en l'état pour les comparaisons de texte. */
+const numish = (v) => { if(v===null || v===undefined || String(v).trim()==="") return v;
+  return /^-?\d+(\.\d+)?$/.test(String(v).trim()) ? parseFloat(v) : v; };
+function applyFormulas(rows, formulas){
+  const active = (formulas||[]).filter(f => f.active!==false && f.field && f.expr);
+  const errors = {};
+  const out = rows.map(r => {
+    const row = { ...r };
+    const scope = Object.fromEntries(Object.entries(row).map(([k,v]) => [k, numish(v)]));
+    for(const f of active){
+      const res = evalIndicator(f.expr, scope);
+      row[f.field] = res.ok ? res.value : null;
+      scope[f.field] = row[f.field];
+      if(!res.ok){ (errors[f.id] ||= { name:f.name||f.field, count:0, sample:res.err }).count++; }
+    }
+    return row;
+  });
+  return { rows: out, errors };
+}
 function profileColumn(rows, field){
   const vals = rows.map(r => r[field]);
   const nonEmpty = vals.filter(v => v!==undefined && v!==null && String(v).trim()!=="");
@@ -158,4 +218,4 @@ function profileColumn(rows, field){
   return stat;
 }
 
-export { FNS, KEY, LEVELS, POP_BASE_YEAR, RULE_TYPES, SAFE_CHARS, applyRules, clsx, codeOf, computeMMR, computeParam, evalFormula, fmt, legacyScore, monthsSince, n, paramFor, pct, populationFor, profileColumn, r1, r2, r5, siteRequirement, siteScore, uid };
+export { FNS, IND_FNS, KEY, LEVELS, POP_BASE_YEAR, RULE_TYPES, SAFE_CHARS, applyFormulas, applyRules, clsx, codeOf, computeMMR, computeParam, evalFormula, evalIndicator, fmt, legacyScore, monthsSince, n, paramFor, pct, populationFor, profileColumn, r1, r2, r5, siteRequirement, siteScore, uid };

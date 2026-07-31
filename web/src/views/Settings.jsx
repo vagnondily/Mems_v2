@@ -40,7 +40,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
       {sub==="scope" && <SetScope db={db} notify={notify} can={can} />}
       {sub==="indicators" && <SetIndicators db={db} set={set} notify={notify} can={can} />}
       {sub==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
-      {sub==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} />}
+      {sub==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} reload={reload} />}
       {sub==="templates" && <SetTemplates db={db} set={set} notify={notify} can={can} />}
       {sub==="api" && <SetApi db={db} notify={notify} />}
       {sub==="users" && <SetUsers db={db} set={set} me={me} notify={notify} />}
@@ -1567,19 +1567,31 @@ function SetCalc({ db, set, notify, can }){
 }
 
 /* ── ODK Central ── */
-function SetOdk({ db, set, notify, can }){
+function SetOdk({ db, set, notify, can, reload }){
   const [edit,setEdit] = useState(null);
+  const [pulling,setPulling] = useState(null);
   const s = db.settings; const u=(k,v)=>set(d=>{ d.settings[k]=v; return d; });
   const save = (f) => { set(d => { const i=d.odkForms.findIndex(x=>x.id===f.id);
       if(i>=0) d.odkForms[i]=f; else d.odkForms.push({ ...f, id:uid("f"), records:0, last:"", rows:[] }); return d; });
     setEdit(null); notify("Source enregistrée","ok"); };
+  const pull = async (f) => {
+    setPulling(f.id);
+    try{
+      const r = await api.post(`/odk-forms/${f.id}/pull`);
+      notify(r.avertissement || `${r.records} soumission(s) tirée(s) d'ODK Central`, r.avertissement ? "warn" : "ok");
+      if(reload) await reload();
+    }catch(e){ notify(e.message || "tirage impossible", "err"); }
+    setPulling(null);
+  };
   return (
     <>
       <Note tool><b>Adresse d'appel.</b> Un formulaire ODK Central est lu à l'adresse
         <code className="bg-white px-1.5 py-0.5 rounded mx-1 f115">{s.odkBase}/v1/projects/&#123;projet&#125;/forms/&#123;formulaire&#125;.svc/Submissions</code>
         avec un jeton dans l'en-tête d'autorisation. Chaque source déclare le type de données qu'elle apporte,
         le champ qui identifie le site, et peut recevoir son XLSForm pour restituer les libellés des questions
-        à la place des noms techniques.</Note>
+        à la place des noms techniques. Le bouton <RefreshCw size={11} className="inline align-text-top" /> tire
+        les soumissions réelles depuis le serveur — il exige un <b>jeton propre à cette source</b> : le jeton
+        général ci-contre reste dans votre navigateur et n'est jamais envoyé au serveur.</Note>
       <div className="grid gap-4" style={{gridTemplateColumns:"340px 1fr"}}>
         <Card title="Serveur">
           <Field label="Adresse du serveur"><Input value={s.odkBase} onChange={e=>u("odkBase",e.target.value)} placeholder="https://odk-central.example.org" /></Field>
@@ -1594,7 +1606,7 @@ function SetOdk({ db, set, notify, can }){
             token:"", kind:"process", tag:"", siteField:"", dateField:"", labels:{}, xlsform:null })}>Nouvelle source</Btn>}>
           <TableWrap max="mh440">
             <thead><tr><Th>Formulaire</Th><Th>Projet / ID</Th><Th>Type de données</Th><Th>Activité</Th>
-              <Th>Champ site</Th><Th>Jeton</Th><Th>XLSForm</Th><Th num>Enreg.</Th><Th /></tr></thead>
+              <Th>Champ site</Th><Th>Jeton</Th><Th>XLSForm</Th><Th num>Enreg.</Th><Th>Dernier tirage</Th><Th /></tr></thead>
             <tbody>{db.odkForms.map(f=>(
               <tr key={f.id} className="hover:bg-sky-50">
                 <Td className="font-medium">{f.name}</Td>
@@ -1605,7 +1617,11 @@ function SetOdk({ db, set, notify, can }){
                 <Td>{(f.token||s.odkToken) ? <Badge tone="g">présent</Badge> : <Badge tone="r">manquant</Badge>}</Td>
                 <Td>{f.xlsform ? <Badge tone="g">{Object.keys(f.labels||{}).length} libellés</Badge> : <Badge>non joint</Badge>}</Td>
                 <Td num>{fmt(f.records)}</Td>
-                <Td className="text-right">
+                <Td className="f115 text-slate-500">{f.last ? new Date(f.last).toLocaleString("fr-FR") : "jamais"}</Td>
+                <Td className="text-right whitespace-nowrap">
+                  {can("edit") && <button title="Tirer les soumissions depuis ODK Central" disabled={pulling===f.id}
+                    onClick={()=>pull(f)} className="text-slate-400 hover:text-sky-600 p-1 disabled:opacity-40">
+                    <RefreshCw size={13} className={pulling===f.id?"animate-spin":""} /></button>}
                   {can("edit") && <button onClick={()=>setEdit(f)} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
                   {can("del") && <button onClick={()=>set(d=>{ d.odkForms=d.odkForms.filter(x=>x.id!==f.id); return d; })}
                     className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</Td>

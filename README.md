@@ -84,23 +84,25 @@ mems/
 │  │  ├─ lib/geo.js            construction de l'arbre administratif, millésimes
 │  │  ├─ lib/import.js         modèles Excel, réconciliation par clé, diff
 │  │  ├─ lib/scope.js          périmètre géographique — une seule définition
+│  │  ├─ lib/odkClient.js      client OData minimal pour tirer les soumissions ODK Central
 │  │  ├─ import-geo.js         chargement du référentiel complet en ligne de commande
 │  │  ├─ link-geo.js           rapprochement des données existantes vers le référentiel
+│  │  ├─ import-odk-forms.js   enregistrement de sources ODK Central depuis leurs XLSForms
 │  │  ├─ lib/logger.js         journal avec masquage des secrets
-│  │  └─ routes/               auth, state, sites, geo, users, analytics, collections
-│  └─ test/api.test.js         50 tests d'intégration
+│  │  └─ routes/               auth, state, sites, geo, users, analytics, collections, odk
+│  └─ test/api.test.js         tests d'intégration
 └─ web/                        interface
    ├─ src/
    │  ├─ App.jsx               racine : session, file d'écriture, routage des onglets
    │  ├─ lib/api.js            client HTTP et file de synchronisation
    │  ├─ lib/constants.js      référentiels et jeu de couleurs
-   │  ├─ lib/calc.js           calculs métier (score, couverture, apurement)
+   │  ├─ lib/calc.js           calculs métier (score, couverture, apurement, indicateurs)
    │  ├─ lib/shapefile.js      lecture de shapefile dans le navigateur
    │  ├─ components/           bibliothèque d'interface, frontière d'erreur
    │  └─ views/                Login, Shell, Home, Merged (Suivi & Programme),
    │                           Planning, ActualData, MapView, Analytics,
    │                           Reports, Settings
-   └─ test/e2e.test.js         10 tests pilotant l'interface contre un vrai serveur
+   └─ test/                    calc.test.js (évaluateur d'indicateurs) et e2e.test.js
 ```
 
 ---
@@ -279,6 +281,28 @@ distribution — situé dans un fokontany, pas un fokontany lui-même : plusieur
 sites partagent la même commune. Quand un site porte un `geo_pcode`, ses libellés `adm1`
 à `adm4` en sont **dérivés côté serveur** et ne peuvent plus diverger du référentiel. Ses
 coordonnées propres priment : une école n'est pas au centroïde de son fokontany.
+
+#### Enregistrer des sources ODK Central depuis leurs XLSForms
+
+Paramètres → ODK Central permet de joindre un XLSForm au navigateur pour en extraire les
+libellés (feuille `survey`). Pour enregistrer plusieurs formulaires d'un coup, ou avant
+même d'avoir l'adresse du serveur et le jeton, `import-odk-forms.js` fait la même lecture
+en ligne de commande :
+
+```bash
+node src/import-odk-forms.js suivi_gd.xlsx suivi_smp.xlsx           # analyse, sans écrire
+node src/import-odk-forms.js suivi_smp.xlsx --write --tag SMP       # enregistre la source
+```
+
+Le script lit `form_id` et `form_title` dans la feuille `settings`, construit le
+dictionnaire nom → libellé depuis `survey` (`label::Français (fr)`, à défaut
+`label::English (en)`), et devine le champ qui identifie le site ainsi que celui qui porte
+la date de l'enquête à partir des noms usuels des formulaires de suivi de processus
+(`DPName`, `POIName`, `SvyDate`…) — à corriger avec `--site-field` / `--date-field` si la
+détection se trompe sur un formulaire de forme différente. Une source déjà enregistrée
+(même `form_id`) est mise à jour, pas dupliquée. Le jeton d'accès et l'identifiant de
+projet ne sont **jamais** lus dans le fichier : ce sont des informations de déploiement, à
+saisir ensuite dans Paramètres → ODK Central.
 
 ### Contours administratifs et fond de carte
 
@@ -678,6 +702,7 @@ elles exigent un jeton — en-tête `Authorization: Bearer …` ou cookie `httpO
 | PUT | `/collections/:name` | variable | écriture d'une collection : suppressions explicites, révisions vérifiées |
 | PUT | `/settings` | `admin` | réglages |
 | PUT | `/visits/:id/status` | `validate` | validation d'une soumission |
+| POST | `/odk-forms/:id/pull` | `admin` | tire les soumissions réelles d'une source ODK Central |
 | GET | `/audit` | `admin` | journal |
 
 ### Écriture concurrente
@@ -722,6 +747,50 @@ plus dangereux des deux défauts.
 `sites` et `caseload` portent la même révision. Population, ciblage et distributions
 passent en outre par des écritures ligne à ligne (§ import et § population), où la
 question ne se pose plus.
+
+### Tirage ODK Central et indicateurs de performance
+
+Les scores de performance des XLSForms de suivi de processus (variables `calculate`)
+figent leur logique sur le terrain : un audit des cinq formulaires MDG a montré des
+dénominateurs qui ne correspondaient plus au nombre réel de critères notés (`ScoreEff_norm`
+plafonnée à 8 dans `GD_PREVMA` pour un maximum réel de 9, `ScoreRisk_norm` normalisée sur
+11 pour un pire cas réel de -15…), et jusqu'à trois grilles de lecture incohérentes pour un
+même site dans `MIARO_PROD` (score pondéré, non pondéré, et deux seuils de classement
+différents sur ce dernier). Un formulaire déjà déployé ne se corrige pas en le rechargeant
+sur le terrain.
+
+**`datasets.formulas`** répond à ça côté MEMS plutôt que côté XLSForm : dans *Analyses →
+Jeux de données → Formules de performance*, l'administrateur écrit une expression par
+indicateur (`MOFoodReceivedMatch=='1' ? 100 : 0`), rejouée sur chaque ligne du jeu apuré, et
+peut la corriger à tout moment sans toucher au formulaire. Les formules s'enchaînent dans
+l'ordre de la liste — l'une peut réutiliser le résultat de la précédente. L'évaluateur
+(`evalIndicator`, `web/src/lib/calc.js`) est cloisonné comme celui des paramètres de
+couverture (`evalFormula`) mais autorise en plus comparaisons, opérateur ternaire et
+chaînes — ce qu'exige une logique conditionnelle, à la différence d'une simple division.
+Aucun accès aux propriétés, aucune affectation, aucun appel hors d'une liste blanche de
+fonctions mathématiques ; une expression invalide ou un résultat non calculable (division
+par zéro) sont signalés par ligne, jamais silencieux.
+
+**`POST /api/odk-forms/:id/pull`** apporte les données réelles à ces formules. Jusqu'ici,
+les soumissions ODK Central n'étaient lues que depuis le navigateur, et ne laissaient rien
+côté serveur : « Créer un jeu de données depuis un formulaire » ne trouvait donc jamais de
+lignes en dehors de la démonstration hors ligne. La route tire les soumissions via l'API
+OData d'ODK Central (`.svc/Submissions`, paginée), les met en cache sur la source
+(`odk_forms.raw`), et laisse « Créer un jeu de données » en figer une copie indépendante —
+exactement le geste déjà existant, désormais alimenté pour de vrai. Trois limites assumées
+pour cette première version :
+
+- **Un jeton propre à la source est obligatoire.** Le jeton général (Paramètres → ODK
+  Central → Serveur) ne quitte jamais le navigateur — il ne peut donc pas servir à un appel
+  serveur. Sans jeton propre, la route refuse avec un message explicite plutôt que d'échouer
+  à moitié.
+- **Les groupes sont aplatis sur leur seul nom de feuille**, comme le fait déjà le
+  rattachement d'un XLSForm. Deux variables de groupes différents portant le même nom
+  s'écrasent — un défaut du XLSForm source (`HHCoord` dans `GD_PREVMA`, voir l'audit),
+  pas de ce client.
+- **Les groupes répétés ne sont pas suivis** : l'API OData les expose par une requête
+  `$expand` séparée par répétition, hors périmètre pour l'instant. Aucun indicateur de
+  performance audité n'en dépend.
 
 ### Périmètre géographique d'un bureau
 
@@ -1052,9 +1121,11 @@ Autant le dire clairement, cela évite de mauvaises surprises.
 - **Les scripts R et SPSS ne s'exécutent pas.** Ils sont rédigés, versionnés et exportés
   avec leur jeu de données ; l'exécution se fait dans R ou SPSS, et les résultats se
   réimportent. En revanche, les règles d'apurement s'exécutent réellement dans le navigateur.
-- **Les appels vers ODK Central partent du navigateur.** Si le serveur ODK n'autorise pas
-  l'origine de la page, l'appel échoue. Le passage par un relais côté serveur est la suite
-  logique, et le jeton est déjà stocké chiffré pour cela.
+- **Le tirage des soumissions passe désormais par le serveur** (`POST /api/odk-forms/:id/pull`,
+  § API), avec le jeton propre à la source, déchiffré côté serveur et jamais renvoyé. Ce
+  qui reste côté navigateur : le rattachement d'un XLSForm pour en extraire les libellés
+  (Paramètres → ODK Central), et l'ancien bouton « Tester la connexion », qui ne fait encore
+  qu'enregistrer la configuration.
 - **La cartographie n'utilise pas de fond de carte.** Projection équirectangulaire corrigée
   de la latitude, tracée à partir de vos seules coordonnées : aucune donnée ne sort, mais
   il n'y a ni relief ni routes.

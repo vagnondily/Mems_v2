@@ -133,7 +133,7 @@ r.get("/state", (req, res) => {
     id:f.id, rev:f.rev, name:f.name, formId:f.form_id, project:f.project||"", kind:f.kind,
     tag:f.activity_tag||"", siteField:f.site_field||"", dateField:f.date_field||"",
     labels: J(f.labels, {}), records:f.records, last:f.last_pull||"",
-    hasToken: !!f.token_enc, rows: [] }));
+    hasToken: !!f.token_enc, rows: J(f.raw, []) }));
 
   const settings = Object.fromEntries(
     db.prepare("SELECT key, value FROM settings").all().map(s => [s.key, J(s.value, s.value)]));
@@ -147,7 +147,8 @@ r.get("/state", (req, res) => {
         .reduce((acc,r2) => { const code = indByKey[r2.indicator_id]; if(!code) return acc;
           (acc[code] = acc[code] || Array(12).fill(false))[r2.month] = !!r2.planned; return acc; }, {}))),
     datasets: db.prepare("SELECT * FROM datasets").all().map(d => ({
-      id:d.id, rev:d.rev, name:d.name, formId:d.form_id, raw:J(d.raw,[]), rules:J(d.rules,[]), createdAt:d.created_at })),
+      id:d.id, rev:d.rev, name:d.name, formId:d.form_id, raw:J(d.raw,[]), rules:J(d.rules,[]),
+      formulas:J(d.formulas,[]), createdAt:d.created_at })),
     scripts: db.prepare("SELECT * FROM scripts").all().map(s => ({
       id:s.id, rev:s.rev, name:s.name, lang:s.language, stage:s.stage, datasetId:s.dataset_id,
       code:s.code, notes:s.notes||"", runs:J(s.runs,[]) })),
