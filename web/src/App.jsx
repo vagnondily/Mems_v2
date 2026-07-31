@@ -100,6 +100,9 @@ export default function App(){
     settings: { org:"Bureau pays", unit:"Unité suivi et évaluation", logo:"", currency:"MGA",
       dateFmt:"DD/MM/YYYY", pageSize:25, syncInterval:30, notifications:true,
       odkBase:"https://odk-central.example.org", apiEnabled:false, opSize:"Large",
+      /* Vide par défaut, à dessein : la ration réelle par denrée est une donnée de
+         programme, propre à chaque opération — personne ne la devine à sa place. */
+      rationTable:{},
       ...(state.settings || {}) },
   }), []);
 

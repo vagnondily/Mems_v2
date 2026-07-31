@@ -603,7 +603,8 @@ function seedPDD(){
 function DistributionPlan({ db, set, me, notify, can }){
   const [q,setQ] = useState(""); const [fMonth,setFMonth] = useState(""); const [fBureau,setFBureau] = useState("");
   const [fAct,setFAct] = useState(""); const [fMod,setFMod] = useState(""); const [fDistrict,setFDistrict] = useState("");
-  const [edit,setEdit] = useState(null); const [sel,setSel] = useState(new Set()); const [bulk,setBulk] = useState(false);
+  const [edit,setEdit] = useState(null); const [gen,setGen] = useState(false);
+  const [sel,setSel] = useState(new Set()); const [bulk,setBulk] = useState(false);
   const [page,setPage] = useState(1);
   const pdd = db.pdd || [];
   const rows = pdd.filter(l => {
@@ -628,6 +629,13 @@ function DistributionPlan({ db, set, me, notify, can }){
       d.audit.unshift({ id:uid("a"), at:new Date().toISOString(), user:"session", office:l.bureau,
         kind:"plan", text:`Ligne de PDD ${i>=0?"modifiée":"créée"} — ${l.commune} / ${l.actType}` });
       return d; }); setEdit(null); notify("Ligne enregistrée","ok"); };
+  /* Une ligne par denrée (modalité Food) plutôt qu'une seule ligne réutilisée : le
+     bouton « Générer par commune » peut créer plusieurs lignes d'un coup. */
+  const saveMany = (lines) => { set(d => { d.pdd = d.pdd||[];
+      lines.forEach(l => { d.pdd.push({ ...l, id:uid("pdd") });
+        d.audit.unshift({ id:uid("a"), at:new Date().toISOString(), user:"session", office:l.bureau,
+          kind:"plan", text:`Ligne de PDD créée (génération par commune) — ${l.commune} / ${l.actType} / ${l.commodity||l.modality}` }); });
+      return d; }); setGen(false); notify(`${lines.length} ligne(s) créée(s)`,"ok"); };
   const applyBulk = (patch) => { set(d => { d.pdd.forEach(l=>{ if(sel.has(l.id)) Object.assign(l, patch); }); return d; });
     notify(`${sel.size} ligne(s) mise(s) à jour`,"ok"); setSel(new Set()); };
   const exportPDD = () => download(`pdd_${db.year}.csv`, toCSV(rows.map(l=>({ ...l,
@@ -688,6 +696,7 @@ function DistributionPlan({ db, set, me, notify, can }){
             <Btn size="sm" kind="sec" icon={Download} onClick={exportPDD}>Exporter</Btn>
             {can("edit") && <Btn size="sm" kind={bulk?"primary":"sec"} icon={Layers}
               onClick={()=>{setBulk(b=>!b);setSel(new Set());}}>{bulk?"Quitter la sélection":"Modification groupée"}</Btn>}
+            {can("edit") && <Btn size="sm" kind="sec" icon={RefreshCw} onClick={()=>setGen(true)}>Générer par commune</Btn>}
             {can("edit") && <Btn size="sm" icon={Plus} onClick={()=>setEdit({ month:new Date().getMonth(), year:db.year,
               wbs:"URT1", actType:"GD", tag:"URT_GD", actMain:"", bureau:bureaux[0]||"", region:"", district:"", commune:"",
               partner:db.lists.partners[0], modality:"Food", commodity:"Riz", days:15, benefPlanned:0, households:0,
@@ -743,6 +752,7 @@ function DistributionPlan({ db, set, me, notify, can }){
           </div>)}
       </Card>
       <PddModal open={!!edit} line={edit} db={db} onClose={()=>setEdit(null)} onSave={save} />
+      <PddGenModal open={gen} db={db} onClose={()=>setGen(false)} onGenerate={saveMany} />
     </>);
 }
 function PddBulkBar({ sel, rows, fields, onSelectAll, onClear, onApply }){
@@ -826,6 +836,97 @@ function PddModal({ open, line, db, onClose, onSave }){
               x===null?"text-slate-400":x>=0.9?"text-lime-700":x>=0.6?"text-amber-600":"text-rose-700")}>{v}</div></div>))}
       </div>
       <Field label="Observation" className="mt-3"><Input value={f.note||""} onChange={e=>u("note",e.target.value)} /></Field>
+    </Modal>);
+}
+
+/* Un formulaire, une commune : pour la modalité Food, une ligne de PDD par denrée
+   configurée (Paramètres → Rations) plutôt qu'une saisie répétée à la main. */
+function PddGenModal({ open, db, onClose, onGenerate }){
+  const [f,setF] = useState({});
+  const [checked,setChecked] = useState(new Set());
+  const geo = useGeoCascade({ adm1:f.region, adm2:f.district, adm3:f.commune });
+  useEffect(()=>{ if(open) setF({ month:new Date().getMonth(), year:db.year, wbs:"URT1", actType:"GD",
+    tag:"URT_GD", actMain:"", bureau:"", region:"", district:"", commune:"",
+    partner:db.lists.partners[0]||"", modality:"Food", benefPlanned:0, households:0, days:15, amount:0 });
+  }, [open]);
+  const u=(k,v)=>setF(p=>({...p,[k]:v}));
+  const ration = (db.settings.rationTable||{})[f.actType] || {};
+  const items = PDD_COMMODITIES.map(c => ({ commodity:c, grams:n(ration[c]) })).filter(x=>x.grams>0)
+    .map(x => ({ ...x, tonnage: r2(n(f.benefPlanned)*n(f.days)*x.grams/1e6) }));
+  const itemsKey = items.map(i=>i.commodity).join("|");
+  useEffect(()=>{ setChecked(new Set(items.map(i=>i.commodity))); }, [itemsKey, open]);
+  if(!open) return null;
+  const regions = geo.adm1.map(x=>x.name);
+  const totalTonnage = r2(items.filter(i=>checked.has(i.commodity)).reduce((t,i)=>t+i.tonnage,0));
+  const canSubmit = f.commune && (f.modality!=="Food" || checked.size>0);
+
+  const submit = () => {
+    const base = { month:f.month, year:f.year, wbs:f.wbs, actType:f.actType, tag:f.tag, actMain:f.actMain,
+      bureau:f.bureau, region:f.region, district:f.district, commune:f.commune, partner:f.partner,
+      benefPlanned:n(f.benefPlanned), households:n(f.households), days:n(f.days),
+      benefActual:0, received:0, distributed:0, status:"planned", note:"" };
+    if(f.modality==="Food"){
+      const lines = items.filter(i=>checked.has(i.commodity))
+        .map(i => ({ ...base, modality:"Food", commodity:i.commodity, tonnage:i.tonnage, amount:0 }));
+      if(lines.length) onGenerate(lines);
+    } else {
+      onGenerate([{ ...base, modality:f.modality, commodity:"", tonnage:0, amount:n(f.amount) }]);
+    }
+  };
+
+  return (
+    <Modal open wide onClose={onClose} title="Générer un plan par commune"
+      subtitle="Pour la modalité Food, une ligne est créée par denrée paramétrée dans Paramètres → Rations"
+      footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
+        <Btn icon={Save} disabled={!canSubmit} onClick={submit}>
+          {f.modality==="Food" ? `Générer ${checked.size} ligne(s)` : "Générer la ligne"}</Btn></>}>
+      <div className="grid grid-cols-4 gap-x-4">
+        <Field label="PDD mois de"><Select value={f.month??0} onChange={e=>u("month",n(e.target.value))}
+          options={MONTHS_L.map((m,i)=>[i,m])} /></Field>
+        <Field label="Année"><Input type="number" value={f.year??db.year} onChange={e=>u("year",n(e.target.value))} /></Field>
+        <Field label="WBS"><Input value={f.wbs||""} onChange={e=>u("wbs",e.target.value)} /></Field>
+        <Field label="Type d'activité"><Select value={f.actType||"GD"} onChange={e=>{ u("actType",e.target.value);
+          u("tag", e.target.value==="GD"?"URT_GD":e.target.value==="PREVMA"?"URT_PREV":""); }} options={PDD_ACTS} /></Field>
+        <Field label="Activité principale" className="col-span-2"><Input value={f.actMain||""} onChange={e=>u("actMain",e.target.value)} /></Field>
+        <Field label="Bureau de terrain"><Input value={f.bureau||""} onChange={e=>u("bureau",e.target.value)} /></Field>
+        <Field label="Région"><Select value={f.region||""} empty="—" options={withCurrent(regions, f.region)}
+          onChange={e=>{ u("region",e.target.value); u("district",""); u("commune",""); }} /></Field>
+        <Field label="District"><Select value={f.district||""} empty="—" disabled={!f.region}
+          onChange={e=>{ u("district",e.target.value); u("commune",""); }}
+          options={withCurrent(geo.adm2.map(x=>x.name), f.district)} /></Field>
+        <Field label="Commune"><Select value={f.commune||""} empty="—" disabled={!f.district}
+          onChange={e=>u("commune",e.target.value)}
+          options={withCurrent(geo.adm3.map(x=>x.name), f.commune)} /></Field>
+        <Field label="Partenaire"><Select value={f.partner||""} onChange={e=>u("partner",e.target.value)} empty="—" options={db.lists.partners} /></Field>
+        <Field label="Modalité"><Select value={f.modality||"Food"} onChange={e=>u("modality",e.target.value)} options={PDD_MODALITIES} /></Field>
+        <Field label="Bénéficiaires planifiés"><Input type="number" value={f.benefPlanned??0} onChange={e=>u("benefPlanned",n(e.target.value))} /></Field>
+        <Field label="Ménages"><Input type="number" value={f.households??0} onChange={e=>u("households",n(e.target.value))} /></Field>
+        {f.modality==="Food"
+          ? <Field label="Jours de ration"><Input type="number" value={f.days??15} onChange={e=>u("days",n(e.target.value))} /></Field>
+          : <Field label="Montant planifié (MGA)"><Input type="number" value={f.amount??0} onChange={e=>u("amount",n(e.target.value))} /></Field>}
+      </div>
+      {f.modality==="Food" ? (
+        items.length ? (
+          <Card flush title="Denrées calculées" subtitle={`Tonnage = bénéficiaires × jours × ration ÷ 1 000 000 — total ${totalTonnage} t`}>
+            <TableWrap>
+              <thead><tr><Th className="w-9" /><Th>Denrée</Th><Th num>Ration (g/pers/j)</Th><Th num>Tonnage (t)</Th></tr></thead>
+              <tbody>{items.map(i=>(
+                <tr key={i.commodity} className="hover:bg-sky-50">
+                  <Td><input type="checkbox" checked={checked.has(i.commodity)}
+                    onChange={e=>setChecked(x=>{ const y=new Set(x); e.target.checked?y.add(i.commodity):y.delete(i.commodity); return y; })} /></Td>
+                  <Td className="font-medium">{i.commodity}</Td>
+                  <Td num>{i.grams}</Td>
+                  <Td num className="tabular-nums">{i.tonnage}</Td>
+                </tr>))}</tbody>
+            </TableWrap>
+          </Card>
+        ) : (
+          <Note tone="warn">Aucune ration n'est paramétrée pour « {(PDD_ACTS.find(a=>a[0]===f.actType)||[])[1]} ».
+            Configurez-la dans Paramètres → Rations, ou saisissez une ligne manuellement avec « Ajouter une ligne ».</Note>
+        )
+      ) : (
+        <Note>Modalité {f.modality} : une seule ligne est créée avec le montant saisi ci-dessus — aucune ration ne s'y applique.</Note>
+      )}
     </Modal>);
 }
 
@@ -1030,4 +1131,4 @@ function OutcomePlan({ db, set, notify, can }){
     </>);
 }
 
-export { CoveragePlan, DistributionActual, DistributionPlan, MonthCellModal, MonthGrid, MonthLegend, OutcomePlan, Overreaching, PDD_ACTS, PDD_COMMODITIES, PDD_MODALITIES, PDD_STATUS, ParamModal, PddBulkBar, PddModal, Planning, ProcessPlan, pddAgg, pddPlanned, pddRates, rate, rateTone, seedPDD };
+export { CoveragePlan, DistributionActual, DistributionPlan, MonthCellModal, MonthGrid, MonthLegend, OutcomePlan, Overreaching, PDD_ACTS, PDD_COMMODITIES, PDD_MODALITIES, PDD_STATUS, ParamModal, PddBulkBar, PddGenModal, PddModal, Planning, ProcessPlan, pddAgg, pddPlanned, pddRates, rate, rateTone, seedPDD };

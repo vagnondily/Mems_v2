@@ -13,7 +13,7 @@ import { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, DURATIONS, D_FORMULAS, D_SEC
 import { GUESS, guessField, readGeoFile } from "../lib/shapefile.js";
 import { niveau, niveaux } from "../lib/levels.js";
 import { Sources } from "./ActualData.jsx";
-import { MonthCellModal, MonthGrid, MonthLegend } from "./Planning.jsx";
+import { MonthCellModal, MonthGrid, MonthLegend, PDD_ACTS, PDD_COMMODITIES } from "./Planning.jsx";
 import { BLOCKS } from "./Reports.jsx";
 import { PageHead } from "./Shell.jsx";
 
@@ -25,7 +25,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
      rétablis, avec « À propos » qui venait de main. */
   const items = [["general","Général"],["country","Pays"],["offices","Bureaux"],["sites","Sites"],
     ["locations","Localités"],["scope","Périmètre des bureaux"],["indicators","Indicateurs"],
-    ["calc","Calculs"],["odk","ODK Central"],["templates","Modèles de rapport"],
+    ["calc","Calculs"],["rations","Rations"],["odk","ODK Central"],["templates","Modèles de rapport"],
     ["api","API"],["users","Utilisateurs"],["about","À propos"]];
   return (
     <div className="space-y-4">
@@ -40,6 +40,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
       {sub==="scope" && <SetScope db={db} notify={notify} can={can} />}
       {sub==="indicators" && <SetIndicators db={db} set={set} notify={notify} can={can} />}
       {sub==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
+      {sub==="rations" && <SetRations db={db} set={set} notify={notify} can={can} />}
       {sub==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} reload={reload} />}
       {sub==="templates" && <SetTemplates db={db} set={set} notify={notify} can={can} />}
       {sub==="api" && <SetApi db={db} notify={notify} />}
@@ -1576,6 +1577,52 @@ function SetCalc({ db, set, notify, can }){
             return <Note tone={t.ok?"ok":"err"}>{t.ok ? <>Résultat sur le jeu d'essai : <b>{r2(t.value)}</b></> : t.err}</Note>; })()}
         </>)}
       </Modal>
+    </>);
+}
+
+/* ── Rations (PDD) ── */
+function SetRations({ db, set, notify, can }){
+  const [actType,setActType] = useState(PDD_ACTS[0][0]);
+  const table = db.settings.rationTable || {};
+  const row = table[actType] || {};
+  const u = (commodity, v) => set(d => {
+    d.settings.rationTable = d.settings.rationTable || {};
+    d.settings.rationTable[actType] = { ...(d.settings.rationTable[actType]||{}), [commodity]: v };
+    return d; });
+  const clearAct = () => { set(d => { d.settings.rationTable = d.settings.rationTable || {};
+    d.settings.rationTable[actType] = {}; return d; }); notify("Rations réinitialisées pour cette activité","ok"); };
+  const configured = PDD_COMMODITIES.filter(c => n(row[c])>0);
+  const sample = 1000, days = 15;
+  return (
+    <>
+      <Note>Ration journalière par bénéficiaire (grammes/personne/jour), par denrée et par type d'activité —
+        une donnée de programme propre à chaque opération, à saisir ici plutôt qu'à deviner. Elle alimente le
+        bouton « Générer par commune » du plan de distribution (PDD) : une ligne y est créée automatiquement
+        pour chaque denrée dont la ration est renseignée, avec un tonnage calculé (bénéficiaires × jours de
+        ration × ration ÷ 1 000 000).</Note>
+      <div className="flex items-center gap-2 mb-4">
+        <Select value={actType} onChange={e=>setActType(e.target.value)} options={PDD_ACTS} className="mi-wauto" />
+        {can("edit") && <Btn kind="ghost" size="sm" icon={Trash2} onClick={clearAct}>Réinitialiser cette activité</Btn>}
+      </div>
+      <Card flush title={`Rations — ${(PDD_ACTS.find(a=>a[0]===actType)||[])[1]}`}
+        subtitle={`Aperçu sur ${fmt(sample)} bénéficiaires, ${days} jours de ration`}>
+        <TableWrap>
+          <thead><tr><Th>Denrée</Th><Th num>Ration (g/personne/jour)</Th><Th num>Tonnage d'essai (t)</Th></tr></thead>
+          <tbody>{PDD_COMMODITIES.map(c=>{
+            const g = n(row[c]);
+            const t = r2(sample*days*g/1e6);
+            return (
+              <tr key={c} className="hover:bg-sky-50">
+                <Td className="font-medium">{c}</Td>
+                <Td num><Input type="number" min="0" step="1" disabled={!can("edit")} value={row[c] ?? ""}
+                  onChange={e=>u(c, e.target.value===""?"":Math.max(0,n(e.target.value)))}
+                  className="mi-py1 w-24 text-right ml-auto" /></Td>
+                <Td num className="tabular-nums text-slate-500">{g>0?t:"—"}</Td>
+              </tr>); })}</tbody>
+        </TableWrap>
+      </Card>
+      {!configured.length && <Note tone="warn">Aucune ration n'est encore paramétrée pour cette activité — le
+        bouton « Générer par commune » du PDD n'y proposera aucune denrée tant que ceci n'est pas rempli.</Note>}
     </>);
 }
 
