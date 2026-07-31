@@ -1,7 +1,8 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import http from "node:http";
 import { execFileSync } from "node:child_process";
 import request from "supertest";
 
@@ -181,6 +182,113 @@ test("jetons de source externe : chiffrés au repos, jamais renvoyés", async ()
   const after = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
   assert.ok(!/jeton-tres-secret/.test(JSON.stringify(after.body)));
   assert.equal(after.body.odkForms[0].hasToken, true);
+});
+
+/* ── Tirage ODK Central (serveur) ──────────────────────────────────────
+   Sans serveur ODK Central réel à disposition, ces tests en simulent un en
+   mémoire : deux pages de soumissions, une variable de groupe aplatie, un
+   jeton vérifié, et un formulaire absent renvoyant 404 — pour prouver la
+   pagination, l'en-tête d'autorisation et la gestion d'erreurs sans deviner
+   le comportement d'un vrai serveur. */
+let odkMock, odkMockUrl, odkMockRequests;
+{
+  odkMockRequests = [];
+  odkMock = http.createServer((req, res) => {
+    odkMockRequests.push({ url: req.url, auth: req.headers.authorization });
+    res.setHeader("Content-Type", "application/json");
+    if(/\/forms\/absent\.svc\/Submissions/.test(req.url)){ res.statusCode = 404; return res.end("{}"); }
+    if(/\/forms\/refuse\.svc\/Submissions/.test(req.url)){ res.statusCode = 401; return res.end("{}"); }
+    if(/\/forms\/testform\.svc\/Submissions/.test(req.url)){
+      if(/page=2/.test(req.url)){
+        return res.end(JSON.stringify({ value: [{ __id:"s3", SvyDate:"2026-03-03", EnuName:"C" }] }));
+      }
+      return res.end(JSON.stringify({
+        value: [
+          { __id:"s1", SvyDate:"2026-03-01", EnuName:"A",
+            Technical_module: { TechnicalDP_submodule: { DPName:"Site 1" } } },
+          { __id:"s2", SvyDate:"2026-03-02", EnuName:"B",
+            Technical_module: { TechnicalDP_submodule: { DPName:"Site 2" } } },
+        ],
+        "@odata.nextLink": `${odkMockUrl}/v1/projects/1/forms/testform.svc/Submissions?page=2`,
+      }));
+    }
+    res.statusCode = 404; res.end("{}");
+  });
+  await new Promise(res => odkMock.listen(0, "127.0.0.1", res));
+  odkMockUrl = `http://127.0.0.1:${odkMock.address().port}`;
+  after(() => odkMock.close());
+}
+
+async function odkForm(overrides){
+  const w = await request(app).put("/api/collections/odkForms")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ rows: [{ name:"Test ODK", formId:"testform", project:"1", kind:"process",
+      token:"jeton-de-test", ...overrides }] });
+  assert.equal(w.status, 200, `création de la source ODK de test refusée : ${JSON.stringify(w.body)}`);
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  const f = st.body.odkForms.find(x => x.formId === (overrides.formId || "testform")
+    && x.name === (overrides.name || "Test ODK"));
+  assert.ok(f, "source ODK de test introuvable après création");
+  return f;
+}
+
+test("tirage ODK Central : pagine, aplatit les groupes, met à jour le cache et l'audit", async () => {
+  await request(app).put("/api/settings").set("Authorization", `Bearer ${adminToken}`)
+    .send({ odkBase: odkMockUrl });
+  const f = await odkForm({});
+  const r = await request(app).post(`/api/odk-forms/${f.id}/pull`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.records, 3);
+  assert.equal(r.body.pages, 2);
+  assert.equal(r.body.truncated, false);
+  assert.ok(odkMockRequests.every(q => q.auth === "Bearer jeton-de-test"));
+
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  const after1 = st.body.odkForms.find(x => x.id === f.id);
+  assert.equal(after1.records, 3);
+  assert.equal(after1.rows.length, 3);
+  /* Le groupe Technical_module > TechnicalDP_submodule est aplati sur DPName seul. */
+  assert.equal(after1.rows[0].DPName, "Site 1");
+  assert.equal(after1.rows[0].Technical_module, undefined);
+
+  const audit = await request(app).get("/api/audit").set("Authorization", `Bearer ${adminToken}`);
+  assert.ok(audit.body.rows.some(a => a.entity === "odk_forms" && a.action === "pull"));
+});
+
+test("tirage ODK Central : sans jeton propre, refus explicite plutôt qu'un jeton emprunté", async () => {
+  const f = await odkForm({ name:"Sans jeton", formId:"testform-notoken", token:"" });
+  const r = await request(app).post(`/api/odk-forms/${f.id}/pull`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 422);
+  assert.match(r.body.error, /jeton propre/);
+});
+
+test("tirage ODK Central : jeton refusé par le serveur distant renvoyé en 422, pas en 500", async () => {
+  const f = await odkForm({ name:"Refuse", formId:"refuse" });
+  const r = await request(app).post(`/api/odk-forms/${f.id}/pull`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 422);
+  assert.match(r.body.error, /refusé/);
+});
+
+test("tirage ODK Central : formulaire introuvable renvoyé en 422 avec un message clair", async () => {
+  const f = await odkForm({ name:"Absent", formId:"absent" });
+  const r = await request(app).post(`/api/odk-forms/${f.id}/pull`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 422);
+  assert.match(r.body.error, /introuvable/);
+});
+
+test("tirage ODK Central : réservé aux administrateurs", async () => {
+  const create = await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"lecteur-odk@test.local", password:"LecteurMotDePasse1", first_name:"Lecteur",
+            role:"viewer", tabs:["home"], active:true });
+  const login2 = await login("lecteur-odk@test.local", "LecteurMotDePasse1");
+  const f = await odkForm({ name:"Droits", formId:"testform-droits" });
+  const r = await request(app).post(`/api/odk-forms/${f.id}/pull`)
+    .set("Authorization", `Bearer ${login2.body.token}`);
+  assert.equal(r.status, 403);
 });
 
 test("droits : un lecteur peut consulter mais ne peut rien écrire", async () => {

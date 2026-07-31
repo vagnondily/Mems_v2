@@ -25,6 +25,7 @@ import userRoutes from "./routes/users.js";
 import analyticsRoutes from "./routes/analytics.js";
 import caseloadRoutes from "./routes/caseload.js";
 import importRoutes from "./routes/import.js";
+import odkRoutes from "./routes/odk.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 migrate(path.join(here, "..", "migrations"));
@@ -105,6 +106,7 @@ app.use("/api/country", authenticate, countryRoutes);
 app.use("/api/analytics", authenticate, analyticsRoutes);
 app.use("/api/caseload", authenticate, caseloadRoutes);
 app.use("/api/import", authenticate, importRoutes);
+app.use("/api", authenticate, odkRoutes);
 app.use("/api/mre", authenticate, mreRoutes);
 app.use("/api/tpm", authenticate, tpmRoutes);
 app.use("/api", authenticate, collectionRoutes);

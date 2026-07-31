@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { Activity, BarChart3, Code2, Database, Download, Filter, Pencil, Plus, Save, Trash2, Upload } from "lucide-react";
+import { Activity, AlertTriangle, BarChart3, Code2, Database, Download, Filter, Pencil, Plus, Save, Sigma, Trash2, Upload } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
-import { RULE_TYPES, applyRules, fmt, n, pct, profileColumn, r1, siteScore, uid } from "../lib/calc.js";
+import { RULE_TYPES, applyFormulas, applyRules, fmt, n, pct, profileColumn, r1, siteScore, uid } from "../lib/calc.js";
 import { C, MONTHS, SERIES } from "../lib/constants.js";
 import { PageHead } from "./Shell.jsx";
 
@@ -26,7 +26,7 @@ function Datasets({ db, set, notify, can }){
     const rows = f.rows && f.rows.length ? f.rows : [];
     if(!rows.length){ notify("Ce formulaire ne contient pas encore de données extraites","warn"); return; }
     set(d => { d.datasets.push({ id:uid("ds"), name: name || f.name, formId:f.id, formName:f.name,
-      createdAt:new Date().toISOString(), raw: rows, rules: [], version: 1, notes:"" }); return d; });
+      createdAt:new Date().toISOString(), raw: rows, rules: [], formulas: [], version: 1, notes:"" }); return d; });
     setCreating(false); notify("Jeu de données créé à partir des données brutes","ok"); };
   return (
     <>
@@ -79,8 +79,12 @@ function CleanModal({ open, ds, set, onClose, notify, can }){
   if(!open || !ds) return null;
   const cols = Object.keys(ds.raw[0]||{});
   const res = applyRules(ds.raw, ds.rules);
+  const withInd = applyFormulas(res.rows, ds.formulas);
+  const indCols = (ds.formulas||[]).filter(f=>f.active!==false && f.field).map(f=>f.field);
   const upd = (fn) => set(d => { const x = d.datasets.find(y=>y.id===ds.id); if(x) fn(x); return d; });
   const addRule = () => upd(x => { x.rules = x.rules||[]; x.rules.push({ id:uid("r"), type:"dropEmpty", field:cols[0], value:"", value2:"", active:true }); });
+  const addFormula = () => upd(x => { x.formulas = x.formulas||[]; x.formulas.push(
+    { id:uid("fx"), name:"Nouvel indicateur", field:"indicateur_"+(x.formulas.length+1), expr:"", notes:"", active:true }); });
   const exp = (rows, suffix) => download(`${ds.name.replace(/\W+/g,"_")}_${suffix}.csv`,
     toCSV(rows, Object.keys(rows[0]||{})), "text/csv");
   return (
@@ -88,9 +92,48 @@ function CleanModal({ open, ds, set, onClose, notify, can }){
       subtitle={`${fmt(ds.raw.length)} lignes brutes · ${fmt(res.rows.length)} après application des règles`}
       footer={<><Btn kind="sec" icon={Download} onClick={()=>exp(ds.raw,"brut")}>Exporter les données brutes</Btn>
         <Btn kind="sec" icon={Download} onClick={()=>exp(res.rows,"apure")}>Exporter les données apurées</Btn>
+        {indCols.length>0 && <Btn kind="sec" icon={Download} onClick={()=>exp(withInd.rows,"indicateurs")}>Exporter avec indicateurs</Btn>}
         <Btn onClick={onClose}>Fermer</Btn></>}>
       <Tabs className="mb-4" value={tab} onChange={setTab}
-        items={[["rules","Règles d'apurement"],["profile","Profil des variables"],["preview","Aperçu"],["log","Journal"]]} />
+        items={[["rules","Règles d'apurement"],["formulas","Formules de performance"],
+          ["profile","Profil des variables"],["preview","Aperçu"],["log","Journal"]]} />
+      {tab==="formulas" && (
+        <>
+          <Note tool><b>Pourquoi recalculer ici.</b> Les scores « calculate » des XLSForms ODK sont figés sur le
+            terrain et peuvent être faux (dénominateur qui ne correspond plus au nombre réel de critères, poids qui
+            ne somment pas à 100…). Une formule ci-dessous se réécrit et se corrige à tout moment, sans reflasher le
+            formulaire. Elle s'applique aux <b>données apurées</b> (après les règles), dans l'ordre de la liste : une
+            formule peut réutiliser le résultat d'une formule précédente comme variable.</Note>
+          {(ds.formulas||[]).length ? (ds.formulas||[]).map((f,i)=>{ const err = withInd.errors[f.id];
+            return (
+            <div key={f.id} className="px-3 py-3 border border-slate-200 rounded mb-2">
+              <div className="flex flex-wrap items-end gap-2 mb-2">
+                <label className="flex items-center gap-1.5 f115 self-center">
+                  <input type="checkbox" checked={f.active!==false} onChange={e=>upd(x=>{x.formulas[i].active=e.target.checked;})} />actif</label>
+                <div className="flex-1 mnw260"><div className="f10 font-semibold text-slate-500 mb-1">Nom</div>
+                  <Input value={f.name||""} onChange={e=>upd(x=>{x.formulas[i].name=e.target.value;})} className="mi-py1 mi-xs" /></div>
+                <div><div className="f10 font-semibold text-slate-500 mb-1">Colonne calculée</div>
+                  <Input value={f.field||""} onChange={e=>upd(x=>{x.formulas[i].field=e.target.value.replace(/\s+/g,"_");})} className="mi-py1 mi-xs w-40" /></div>
+                <div className="f115 self-center ml-auto">
+                  {err ? <span className="text-rose-700 flex items-center gap-1"><AlertTriangle size={12}/>{err.count} erreur(s)</span>
+                    : (f.active!==false && f.field && f.expr) ? <span className="text-lime-700">calculée sur {fmt(res.rows.length)} ligne(s)</span> : null}</div>
+                {can("edit") && <button onClick={()=>upd(x=>{x.formulas.splice(i,1);})} className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={14}/></button>}
+              </div>
+              <textarea value={f.expr||""} onChange={e=>upd(x=>{x.formulas[i].expr=e.target.value;})}
+                rows={2} className="m-code" spellCheck={false}
+                placeholder="ex. MOFoodReceivedMatch=='1' ? 100 : 0" />
+              {err && <p className="f115 text-rose-700 mt-1">{err.sample}</p>}
+              <div className="flex flex-wrap gap-1 mt-2">
+                {cols.map(c=>(
+                  <button key={c} onClick={()=>upd(x=>{x.formulas[i].expr=(x.formulas[i].expr||"")+c;})}
+                    className="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-sky-100 f11 text-slate-600 border border-slate-200">{c}</button>))}
+              </div>
+              <textarea value={f.notes||""} onChange={e=>upd(x=>{x.formulas[i].notes=e.target.value;})}
+                rows={1} className={inputCls+" mt-2"} placeholder="Notes méthodologiques (pondération, source, hypothèse…)" />
+            </div>); }) : <Empty icon={Sigma} title="Aucune formule"
+              text="Ajoutez un indicateur pour recalculer un score de performance à partir des variables de ce jeu." />}
+          {can("edit") && <Btn size="sm" kind="sec" icon={Plus} onClick={addFormula}>Ajouter une formule</Btn>}
+        </>)}
       {tab==="rules" && (
         <>
           {(ds.rules||[]).length ? (ds.rules||[]).map((r,i)=>(
@@ -117,18 +160,18 @@ function CleanModal({ open, ds, set, onClose, notify, can }){
         <TableWrap max="mh55">
           <thead><tr><Th>Variable</Th><Th num>Valeurs</Th><Th num>Manquantes</Th><Th num>Modalités</Th>
             <Th num>Moyenne</Th><Th num>Médiane</Th><Th num>Min</Th><Th num>Max</Th></tr></thead>
-          <tbody>{cols.map(c=>{ const p=profileColumn(res.rows,c);
+          <tbody>{[...cols, ...indCols].map(c=>{ const p=profileColumn(withInd.rows,c);
             return (<tr key={c} className="hover:bg-sky-50">
-              <Td className="font-medium">{c}</Td><Td num>{p.total}</Td>
+              <Td className="font-medium">{c}{indCols.includes(c) && <span className="ml-1.5"><Badge tone="b">indicateur</Badge></span>}</Td><Td num>{p.total}</Td>
               <Td num className={p.missing?"text-amber-700":""}>{p.missing}</Td><Td num>{p.unique}</Td>
               <Td num>{p.numeric?p.mean:"—"}</Td><Td num>{p.numeric?p.median:"—"}</Td>
               <Td num>{p.numeric?p.min:"—"}</Td><Td num>{p.numeric?p.max:"—"}</Td></tr>); })}</tbody>
         </TableWrap>)}
       {tab==="preview" && (
         <TableWrap max="mh55">
-          <thead><tr>{Object.keys(res.rows[0]||{}).map(c=><Th key={c}>{c}</Th>)}</tr></thead>
-          <tbody>{res.rows.slice(0,60).map((r,i)=>(
-            <tr key={i} className="hover:bg-sky-50">{Object.keys(res.rows[0]||{}).map(c=>
+          <thead><tr>{Object.keys(withInd.rows[0]||{}).map(c=><Th key={c}>{c}</Th>)}</tr></thead>
+          <tbody>{withInd.rows.slice(0,60).map((r,i)=>(
+            <tr key={i} className="hover:bg-sky-50">{Object.keys(withInd.rows[0]||{}).map(c=>
               <Td key={c} className={String(r[c]??"")===""?"text-slate-300":""}>{String(r[c]??"∅")}</Td>)}</tr>))}</tbody>
         </TableWrap>)}
       {tab==="log" && (

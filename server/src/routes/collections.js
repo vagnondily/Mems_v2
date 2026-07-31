@@ -78,9 +78,10 @@ const COLLECTIONS = {
   datasets: { table:"datasets", cap:"edit",
     schema: z.object({ id:S(64), name:z.string().min(1).max(160), formId:S(64),
       raw:z.array(z.record(z.any())).max(20000).default([]),
-      rules:z.array(z.record(z.any())).max(200).default([]) }),
+      rules:z.array(z.record(z.any())).max(200).default([]),
+      formulas:z.array(z.record(z.any())).max(100).default([]) }),
     map: (x) => ({ name:x.name, form_id:x.formId, raw:JSON.stringify(x.raw),
-      rules:JSON.stringify(x.rules) }) },
+      rules:JSON.stringify(x.rules), formulas:JSON.stringify(x.formulas) }) },
 
   scripts: { table:"scripts", cap:"edit",
     schema: z.object({ id:S(64), name:z.string().min(1).max(160),
