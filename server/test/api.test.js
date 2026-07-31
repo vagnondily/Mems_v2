@@ -460,6 +460,82 @@ test("cohérence géographique : le contrôle voit ce qui casse le fil du p-code
   assert.equal(remis.body.ecarts, sain.body.ecarts, "tout est revenu à l'état initial");
 });
 
+test("sauvegarde : le fichier est complet et ne contient aucun secret", async () => {
+  /* Un fichier de sauvegarde circule par courriel et finit sur une clé USB. Il ne doit
+     jamais suffire à se faire passer pour quelqu'un. */
+  const r = await request(app).get("/api/backup").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.manifeste.format, "mems-sauvegarde/1");
+  assert.ok(r.body.manifeste.postes.length > 10, "la sauvegarde couvre l'essentiel des tables");
+
+  const brut = JSON.stringify(r.body);
+  for(const secret of ["pw_hash", "token_enc", "reset_token"])
+    assert.ok(!brut.includes(secret), `« ${secret} » ne doit jamais sortir dans une sauvegarde`);
+  assert.ok(r.body.donnees.users?.length, "les comptes sont bien sauvegardés, sans leurs secrets");
+  assert.ok(r.body.donnees.users.every(u => !("pw_hash" in u)));
+
+  /* Un compte sans droit d'administration ne sauvegarde pas la base entière. */
+  const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  assert.equal((await request(app).get("/api/backup").set("Authorization", `Bearer ${t}`)).status, 403);
+});
+
+test("restauration : elle montre ce qu'elle ferait avant de le faire", async () => {
+  const sauv = (await request(app).get("/api/backup?parts=reportTemplates")
+    .set("Authorization", `Bearer ${adminToken}`)).body;
+  const modeles = sauv.donnees.reportTemplates;
+  const avant = db.prepare("SELECT COUNT(*) c FROM report_templates").get().c;
+
+  /* L'examen n'écrit rien. */
+  const exam = await request(app).post("/api/backup/restore")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ donnees:{ reportTemplates:[...modeles, { id:"rt_restaure", name:"Modèle restauré",
+            blocks:"[]", intro:"" }] }, mode:"completer", examiner:true });
+  assert.equal(exam.status, 200);
+  assert.equal(exam.body.examen, true);
+  assert.equal(exam.body.plan[0].creees, 1, "une seule ligne est nouvelle");
+  assert.equal(exam.body.plan[0].inchangees, modeles.length);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM report_templates").get().c, avant,
+    "l'examen n'a rien écrit");
+
+  /* L'écriture, elle, écrit — et seulement ce qui manquait. */
+  const fait = await request(app).post("/api/backup/restore")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ donnees:{ reportTemplates:[...modeles, { id:"rt_restaure", name:"Modèle restauré",
+            blocks:"[]", intro:"" }] }, mode:"completer", examiner:false });
+  assert.equal(fait.status, 200);
+  assert.equal(fait.body.creees, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM report_templates").get().c, avant + 1);
+  db.prepare("DELETE FROM report_templates WHERE id='rt_restaure'").run();
+});
+
+test("restauration : elle refuse de détacher en silence ce qu'elle ne pourra pas recoller", async () => {
+  /* Le piège de la restauration destructrice, et il ne se voit pas : le schéma détache
+     les lignes dépendantes (ON DELETE SET NULL) au lieu de refuser. Remplacer les seuls
+     partenaires, en réinsérant exactement les mêmes identifiants, laissait tous les
+     sites sans partenaire — l'effacement précède la réécriture, et la réécriture ne
+     recolle rien. On récupérait un fichier conforme et une base amputée d'un lien
+     qu'aucun écran ne signale. */
+  const sauv = (await request(app).get("/api/backup?parts=partners")
+    .set("Authorization", `Bearer ${adminToken}`)).body;
+  const lies = db.prepare("SELECT COUNT(*) c FROM sites WHERE partner_id IS NOT NULL").get().c;
+  assert.ok(lies > 0, "le jeu d'essai rattache des sites à des partenaires");
+
+  const exam = await request(app).post("/api/backup/restore")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ donnees:{ partners:sauv.donnees.partners }, mode:"remplacer", examiner:true });
+  assert.ok(exam.body.detacherait >= lies, "l'examen chiffre les dégâts avant qu'ils n'arrivent");
+  assert.ok(exam.body.plan[0].detacherait.some(d => d.table === "sites"));
+
+  const refus = await request(app).post("/api/backup/restore")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ donnees:{ partners:sauv.donnees.partners }, mode:"remplacer", examiner:false });
+  assert.equal(refus.status, 409);
+  assert.match(refus.body.error, /détacherait/);
+  assert.ok(refus.body.remede, "et l'on dit comment s'y prendre autrement");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM sites WHERE partner_id IS NOT NULL").get().c,
+    lies, "aucun rattachement n'a été perdu");
+});
+
 test("cloisonnement : visites, distributions, paramètres et journal suivent le bureau", async () => {
   const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
   const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;

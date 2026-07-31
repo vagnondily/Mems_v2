@@ -38,7 +38,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload, go }){
       {sub==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
       {sub==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} />}
       {sub==="templates" && <SetTemplates db={db} set={set} notify={notify} can={can} />}
-      {sub==="api" && <SetApi db={db} notify={notify} />}
+      {sub==="api" && <><Sauvegarde db={db} notify={notify} /><SetApi db={db} notify={notify} /></>}
       {sub==="users" && <SetUsers db={db} set={set} me={me} notify={notify} />}
     </div>);
 }
@@ -1358,6 +1358,144 @@ function SetTemplates({ db, set, notify, can }){
 }
 
 /* ── API ── */
+/* ── Sauvegarde et retour en arrière ─────────────────────────
+   Une base SQLite se copie, mais un fichier .db ne se lit pas, ne se vérifie pas avant
+   de le remettre, et ne se restaure pas par morceaux. C'est bon pour un incident
+   matériel et inadapté à ce qui arrive vraiment : un import qui a mal tourné, un plan
+   qu'on voudrait retrouver tel qu'il était en mars, une configuration à recopier d'une
+   instance vers une autre.
+
+   L'écran suit l'ordre du geste : on choisit ce qu'on emporte, on l'emporte ; ou bien
+   on dépose un fichier, on REGARDE ce qu'il ferait, et on écrit ensuite. Jamais
+   l'inverse. */
+function Sauvegarde({ db, notify }){
+  const [postes,setPostes] = useState(null);
+  const [choix,setChoix]   = useState(() => new Set());
+  const [busy,setBusy]     = useState("");
+  const [fichier,setFichier] = useState(null);
+  const [examen,setExamen] = useState(null);
+  const [mode,setMode]     = useState("completer");
+
+  useEffect(() => { api.backupParts()
+    .then(r => { setPostes(r.postes);
+      setChoix(new Set(r.postes.filter(p => !p.lourd && p.lignes).map(p => p.cle))); })
+    .catch(e => notify(e.message, "err")); }, []);
+
+  const basculer = (cle) => setChoix(s => { const c = new Set(s);
+    c.has(cle) ? c.delete(cle) : c.add(cle); return c; });
+
+  const emporter = async () => {
+    setBusy("export");
+    try{
+      const j = await api.backup([...choix]);
+      download(`mems_sauvegarde_${new Date().toISOString().slice(0,10)}.json`,
+        JSON.stringify(j, null, 2), "application/json");
+      notify(`Sauvegarde de ${j.manifeste.postes.length} poste(s) téléchargée`, "ok");
+    }catch(e){ notify(e.message, "err"); }
+    finally{ setBusy(""); }
+  };
+
+  const deposer = (f) => { const rd = new FileReader();
+    rd.onload = () => { try{
+        const j = JSON.parse(rd.result);
+        if(!j?.donnees) throw new Error("ce fichier n'est pas une sauvegarde MEMS");
+        setFichier(j); setExamen(null);
+      }catch(e){ notify(e.message, "err"); } };
+    rd.readAsText(f, "utf-8"); };
+
+  const regarder = async () => {
+    setBusy("examen");
+    try{ setExamen(await api.backupRestore({ donnees:fichier.donnees, mode, examiner:true })); }
+    catch(e){ notify(e.message, "err"); }
+    finally{ setBusy(""); }
+  };
+  const ecrire = async () => {
+    setBusy("restore");
+    try{
+      const r = await api.backupRestore({ donnees:fichier.donnees, mode, examiner:false });
+      notify(`${r.creees} ligne(s) restaurées` + (r.supprimees ? `, ${r.supprimees} remplacées` : ""), "ok");
+      if(r.note) notify(r.note, "warn");
+      setTimeout(() => window.location.reload(), 1200);
+    }catch(e){ notify(e.message, "err"); }
+    finally{ setBusy(""); }
+  };
+
+  const groupes = { configuration:"Configuration", decoupage:"Découpage géographique",
+    operations:"Données opérationnelles", suivi:"Suivi et évaluation", analyses:"Analyses et rapports" };
+
+  return (
+    <div className="grid gap-4" style={{gridTemplateColumns:"minmax(380px,1fr) minmax(420px,1fr)"}}>
+      <Card title="Emporter une sauvegarde"
+        subtitle="Un fichier JSON lisible, complet ou partiel"
+        right={<Btn size="sm" icon={Download} disabled={!choix.size || busy==="export"} onClick={emporter}>
+          {busy==="export" ? "Préparation…" : `Télécharger ${choix.size} poste(s)`}</Btn>}>
+        <Note>Les empreintes de mots de passe et les jetons ne figurent jamais dans la sauvegarde :
+          un tel fichier circule par courriel et finit sur une clé USB, il ne doit pas suffire à se
+          faire passer pour quelqu'un. Les comptes restaurés devront recevoir un nouveau mot de passe.</Note>
+        {!postes && <div className="f115 text-slate-500 mt-3">Lecture des postes…</div>}
+        {postes && Object.entries(groupes).map(([g, titre]) => {
+          const liste = postes.filter(p => p.groupe === g && !p.absent);
+          if(!liste.length) return null;
+          return (<div key={g} className="mt-4">
+            <div className="f10 uppercase tracking-wide font-bold text-slate-500 mb-1.5">{titre}</div>
+            <div className="space-y-1">
+              {liste.map(p => (
+                <label key={p.cle} className="flex items-center gap-2 f115 cursor-pointer py-0.5">
+                  <input type="checkbox" checked={choix.has(p.cle)} onChange={()=>basculer(p.cle)} />
+                  <span className="flex-1 text-slate-700">{p.label}
+                    {p.lourd && <span className="f10 text-amber-700 ml-1.5">volumineux</span>}</span>
+                  <span className="tabular-nums text-slate-500">{fmt(p.lignes)}</span>
+                </label>))}
+            </div></div>); })}
+      </Card>
+
+      <Card title="Revenir à une sauvegarde" subtitle="On regarde d'abord, on écrit ensuite">
+        <label className="block">
+          <input type="file" accept=".json" className="hidden"
+            onChange={e=>e.target.files[0] && deposer(e.target.files[0])} />
+          <span className="inline-flex items-center gap-1.5 border rounded font-semibold px-3 py-1.5 f13 m-btn-sec cursor-pointer">
+            <Upload size={14}/> Choisir un fichier de sauvegarde</span>
+        </label>
+        {fichier && <div className="mt-3">
+          <Note>Sauvegarde du {new Date(fichier.manifeste?.cree || Date.now()).toLocaleString("fr-FR")}
+            {fichier.manifeste?.par ? ` par ${fichier.manifeste.par}` : ""} —
+            {" "}{Object.keys(fichier.donnees).length} poste(s),
+            {" "}{fmt(Object.values(fichier.donnees).reduce((t,x)=>t+x.length,0))} ligne(s).</Note>
+          <Field label="Mode" className="mt-3">
+            <Select value={mode} onChange={e=>{setMode(e.target.value); setExamen(null);}}
+              options={[["completer","Compléter — n'écrire que ce qui manque"],
+                        ["remplacer","Remplacer — vider puis réécrire (destructif)"]]} /></Field>
+          <div className="flex gap-2">
+            <Btn kind="sec" disabled={busy==="examen"} onClick={regarder}>
+              {busy==="examen" ? "Examen…" : "Regarder ce que cela ferait"}</Btn>
+            <Btn kind={mode==="remplacer" ? "danger" : "primary"} icon={Check}
+              disabled={!examen || busy==="restore"} onClick={ecrire}>
+              {busy==="restore" ? "Écriture…" : "Restaurer"}</Btn>
+          </div>
+        </div>}
+        {examen && <div className="mt-4">
+          {!!examen.detacherait && <Note tone="warn">
+            <b>Refusé en l'état.</b> Vider ces postes détacherait {fmt(examen.detacherait)} ligne(s)
+            ailleurs — le schéma les met à vide, et la réécriture ne les recolle pas. Ajoutez les
+            postes dépendants, ou choisissez « compléter ».</Note>}
+          <TableWrap max="mh300">
+            <thead><tr><Th>Poste</Th><Th num>Dans le fichier</Th><Th num>En base</Th>
+              <Th num>Créées</Th><Th num>Supprimées</Th></tr></thead>
+            <tbody>{examen.plan.map(p => (
+              <tr key={p.cle} className={clsx("border-t border-slate-100", p.detacherait && "bg-amber-50/50")}>
+                <Td>{p.label}{p.detacherait && <div className="f10 text-amber-700">
+                  détacherait {p.detacherait.map(d=>`${fmt(d.lignes)} ${d.table}`).join(", ")}</div>}</Td>
+                <Td num className="tabular-nums">{fmt(p.entrantes)}</Td>
+                <Td num className="tabular-nums text-slate-500">{fmt(p.enBase)}</Td>
+                <Td num className="tabular-nums font-semibold">{fmt(p.creees)}</Td>
+                <Td num className="tabular-nums text-rose-700">{p.supprimees ? fmt(p.supprimees) : "—"}</Td>
+              </tr>))}</tbody>
+          </TableWrap>
+        </div>}
+      </Card>
+    </div>);
+}
+
 function SetApi({ db, notify }){
   const s = db.settings;
   const endpoints = [["/api/v1/sites","Registre des sites avec score et couverture"],

@@ -228,6 +228,12 @@ export const api = {
   coverage:   (q="")         => call("GET", `/analytics/coverage${q}`),
   summary:    (q="")         => call("GET", `/analytics/summary${q}`),
   audit:      (limit=100)    => call("GET", `/audit?limit=${limit}`),
+
+  /* Sauvegarde et retour en arrière. La restauration commence toujours par un examen :
+     elle est destructrice, et le faire d'un seul clic serait une faute de conception. */
+  backupParts:   ()              => call("GET", "/backup/parts"),
+  backup:        (parts=[])      => call("GET", `/backup${parts.length?`?parts=${parts.join(",")}`:""}`),
+  backupRestore: (b)             => call("POST", "/backup/restore", b),
 };
 
 /* File d'écriture : les collections modifiées sont poussées par lot, avec réessai.
