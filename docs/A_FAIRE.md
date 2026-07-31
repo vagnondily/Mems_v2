@@ -1,125 +1,787 @@
 # À faire
 
-Ce fichier n'existait pas dans le dépôt — il est créé ici pour donner suite à la
-demande « lis docs/A_FAIRE.md et fais le chantier 1 », en reprenant ce qui a été
-discuté et laissé en attente dans la conversation. À corriger/réordonner librement.
+Refonte du 31/07/2026. La version précédente listait 3 chantiers et 2 remarques ; l'audit
+complet du dépôt (254 fonctionnalités recensées, 15 migrations, 45 tables, ~70 routes) en a
+fait apparaître beaucoup d'autres, et a corrigé le statut des deux chantiers marqués « FAIT ».
+S'y ajoutent 25 demandes produit formulées le 31/07/2026.
 
-## Chantier 1 — PDD : calcul automatique des rations — FAIT
+**Comment lire ce document.** Les chantiers A à G sont de la dette : ils corrigent ce qui est
+cassé ou faux aujourd'hui. Les chantiers H à M sont les demandes produit. Chaque entrée porte
+ses ancres `chemin:ligne`, et les questions bloquantes sont regroupées en fin de document —
+plusieurs demandes ne peuvent pas être codées sans une décision métier.
 
-**Constat** : une ligne de PDD porte une seule denrée ; une distribution qui en
-mélange plusieurs (riz + légumineuses + huile, par exemple) demandait donc une
-ligne par denrée, saisie et calculée à la main (tonnage = bénéficiaires × jours ×
-ration, refait pour chacune).
+Toute affirmation ci-dessous a été vérifiée dans le code. Là où une vérification n'a pas pu
+être faite, c'est écrit.
 
-**Décision prise avec l'utilisateur** : pas de barème de ration réel fourni ni
-inventé (ce sont des données de programme, propres à chaque opération) — à la
-place, un écran de paramétrage où l'administrateur saisit lui-même la ration
-(grammes/personne/jour) par denrée et par type d'activité (GD/PREVMA/PECMAM/FFA).
+---
 
-**Livré** :
-1. `Paramètres → Rations` (`web/src/views/Settings.jsx`, `SetRations`) : table
-   éditable, par activité, de la ration de chaque denrée (grammes/personne/jour).
-   Persistée dans `settings.rationTable` (synchronisée comme le reste des
-   réglages — contrairement à `formulas`, qui ne l'est pas, voir remarque
-   plus bas). Aperçu du tonnage en direct sur un échantillon-témoin.
-2. `Programme → Distributions` (PDD, `web/src/views/Planning.jsx`,
-   `PddGenModal`) : un bouton « Générer par commune » ouvre un formulaire —
-   bureau, région/district/commune (référentiel géographique, cascade),
-   activité, partenaire, modalité, bénéficiaires planifiés, jours de ration.
-   Pour la modalité Food, il affiche la liste des denrées configurées pour
-   l'activité choisie avec le tonnage calculé en direct (décochables une à
-   une), et crée **une ligne de PDD par denrée cochée** à la validation. Pour
-   Cash/Voucher, une seule ligne (montant saisi à la main, comme avant —
-   aucune ration ne s'y applique).
+## Statut corrigé des chantiers précédents
 
-Vérifié de bout en bout avec un navigateur réel (Playwright) : paramétrage
-d'une ration, génération d'un plan pour une commune, ligne(s) bien créée(s)
-et persistée(s) côté serveur avec le tonnage attendu (bénéficiaires × jours ×
-ration ÷ 1 000 000).
+### Chantier 1 — PDD, calcul automatique des rations — était « FAIT », en réalité **partiel**
 
-**Remarque relevée en marge** : `db.formulas` (Paramètres → Calculs) n'est pas
-dans la liste `SYNCED` de `App.jsx` — un administrateur qui modifie un calcul
-le perd au rechargement. Peut-être volontaire (un bac à sable d'essai plutôt
-qu'un réglage), à confirmer ; le `rationTable` ne reproduit pas ce
-comportement et persiste réellement.
+Le cœur est bien livré et exact : `SetRations` existe, `PddGenModal` existe, la cascade
+géographique fonctionne, une ligne de PDD par denrée cochée est bien créée, la formule
+`bénéficiaires × jours × ration ÷ 1 000 000` est bien celle du code, et Cash/Voucher ne crée
+bien qu'une ligne. Restent cinq défauts :
 
-**Autre remarque relevée en testant** : une ligne de PDD nouvellement créée
-(que ce soit via « Ajouter une ligne » ou « Générer par commune ») ne renseigne
-que `partner` (le nom du partenaire) et pas `partner_id` — le serveur accepte
-la ligne (le champ est optionnel) mais la clé étrangère reste vide tant que la
-ligne n'a pas été rechargée depuis le serveur. Pré-existant, pas propre au
-chantier 1 ; à corriger séparément si l'on a besoin de `partner_id` fiable
-immédiatement après création (jointures, rapports).
+1. **Le bureau est un champ texte libre** (`web/src/views/Planning.jsx:891`) alors que le
+   serveur l'exige non vide (`server/src/routes/collections.js:56`). Une génération sans
+   bureau fait échouer en 422 la synchronisation de **toute** la collection `pdd`. L'échec est
+   quasi muet : `web/src/lib/api.js:209` ne réessaie pas les 4xx et `web/src/App.jsx:118`
+   n'alerte qu'au troisième échec.
+2. **`geo_pcode` n'est pas transmis** par le générateur, alors que la saisie manuelle le
+   transmet (`Planning.jsx:788`) : les lignes « par commune » ne sont rattachées à aucune
+   commune.
+3. **`office_id` n'est pas transmis** : un compte cloisonné ne revoit pas ses propres lignes
+   au rechargement (`server/src/routes/state.js:92-94`).
+4. **Droit incohérent sur l'écran Rations** : l'écran autorise sur `can("edit")`
+   (`Settings.jsx:1605,1617`), le serveur exige `admin` (`collections.js:196`). Un éditeur
+   saisit, l'aperçu se met à jour, la requête part en 403, la saisie est perdue sans message.
+5. **Incompatible avec l'import Excel du PDD** : la clé de réconciliation
+   (`server/src/lib/import.js:128`) n'inclut pas la denrée — les lignes multi-denrées créées
+   par le chantier 1 sont rejetées en doublon. Et l'énumération « Type »
+   (`import.js:137,210`) ne connaît que GD/PREVMA, pas PECMAM ni FFA que l'écran Rations
+   propose.
 
-## Chantier 2 — Revue des écrans « budget » comme utilisateur final — FAIT
+**Aucun test versionné.** Le document précédent disait « vérifié avec Playwright » : le dépôt
+n'utilise pas Playwright (jsdom + esbuild, `web/test/harness.mjs`), et le commit du chantier
+ne touche aucun fichier de test.
 
-Demande explicite : « regarde chaque écran, teste comme un end user » plutôt que
-deviner lequel est visé.
+### Chantier 2 — TPM, rattachement prestataire — était « FAIT », **le correctif serveur tient, le reste non**
 
-**MRE** (`Mre.jsx`) : testé de bout en bout au navigateur — création d'une
-activité, ajout de deux lignes de budget, total calculé (jamais saisi),
-répartitions par nature d'activité / catégorie de coût / mois, bascule vers
-« Exécution budgétaire ». Aucun défaut trouvé ; l'écran se comporte comme conçu.
+`state.js:166` renvoie bien `tpm_id` et le test existe (`server/test/api.test.js:1701`).
+Mais :
 
-**PDD — section Planification** : couverte par le chantier 1 (génération par
-commune) et par un ajout manuel classique ; testée aux deux endroits, rien
-à signaler au-delà de la remarque sur `partner_id` déjà notée plus haut.
+1. **Le test ne teste pas le scénario décrit.** Il vérifie que le champ est exposé, pas le
+   réenregistrement d'un compte. Si `routes/users.js:73` cessait d'écrire `tpm_id`, la suite
+   resterait verte.
+2. **Le mécanisme du bug est toujours armé, et son pire cas est ailleurs.**
+   `PUT /api/users/:id` est un remplacement complet couplé à des défauts zod
+   (`server/src/lib/validate.js:122-124`) : un PUT partiel remet `role="viewer"`, `tabs=[]`
+   et surtout **`active=true`** — il réactive un compte désactivé sans un mot d'erreur.
+   `tpm_id` n'était qu'un symptôme.
+3. **« Les deux rattachements désactivés pour admin/super » est faux** : seul le sélecteur
+   prestataire l'est (`Settings.jsx:1983`) ; le sélecteur bureau reste actif, alors que
+   l'infobulle juste au-dessus (`Settings.jsx:1978`) affirme le contraire. Et « comme le
+   serveur l'exige déjà » est faux aussi : `routes/users.js:17-23` ne contrôle rien sur
+   `office_id`.
+4. **L'exclusivité mutuelle rejoue le bug qu'elle corrige** : choisir l'option *vide* d'un
+   sélecteur vide aussi l'autre (`Settings.jsx:1981,1984`). Un aller-retour sur le sélecteur
+   bureau détache silencieusement le compte de son prestataire.
 
-**TPM** (`Tpm.jsx`) : un défaut réel et significatif trouvé en essayant de
-construire le scénario complet — un compte de prestataire qui se connecte
-lui-même pour soumettre son plan, plutôt qu'un administrateur qui agit en son
-nom :
+### Chantier 3 — xlsx (SheetJS) — **exact, toujours entièrement à faire, et infaisable ici**
 
-1. **`Paramètres → Utilisateurs` ne permettait pas de créer ce compte.** Le
-   serveur (`server/src/routes/users.js`, `server/src/lib/validate.js`) et
-   `TpmView` (le bandeau « Vous êtes rattaché au prestataire… », le masquage du
-   sélecteur « Tous les prestataires ») savent tous les deux ce qu'est un
-   compte `tpm_id`, mais l'écran de création/édition d'utilisateur
-   (`UserModal` dans `Settings.jsx`) n'exposait que le rattachement à un
-   bureau — aucun champ pour choisir un prestataire. Corrigé : `UserModal`
-   propose maintenant les deux rattachements, mutuellement exclusifs (choisir
-   l'un vide l'autre), désactivés pour les rôles administrateur/super, comme
-   le serveur l'exige déjà ; le tableau des comptes affiche le prestataire
-   rattaché au lieu de « Tous ».
-2. **`GET /api/state` omettait `tpm_id` de la liste des comptes**
-   (`server/src/routes/state.js`). Cette liste est rechargée à chaque
-   connexion et après chaque conflit de synchronisation — sans ce champ, le
-   client oubliait le rattachement d'un compte dès le premier rechargement,
-   et le **prochain enregistrement de ce compte** (même pour changer un champ
-   sans rapport, comme la fonction) renvoyait `tpm_id: null` au serveur,
-   détachant silencieusement le compte de son prestataire. C'est probablement
-   la cause des rattachements manquants observés. Corrigé, avec un test de
-   régression (`server/test/api.test.js`, « état : la liste des comptes porte
-   tpm_id… »).
+`web/package.json:17` et le lock : `xlsx@0.18.5`. Vérifié le 31/07/2026 : `0.18.5` **est** la
+dernière version publiée sur npm — SheetJS a quitté le registre, d'où le `fixAvailable: false`
+de `npm audit`. La seule voie reste le tarball CDN.
 
-Vérifié de bout en bout : création d'un compte prestataire, connexion sous ce
-compte, bandeau de cloisonnement affiché, liste des plans limitée au bon
-prestataire (l'autre prestataire n'apparaît pas), modification d'un champ
-sans toucher au rattachement puis relecture en base — `tpm_id` survit
-désormais. Le circuit de validation à trois niveaux et l'éditeur de zones/
-lignes d'un plan ont aussi été ouverts en tant qu'administrateur : aucune
-erreur, budget cohérent avec le barème contractuel.
+Deux précisions que le document précédent omettait :
 
-## Chantier 3 — xlsx (SheetJS) : finaliser côté environnement avec accès réseau
+- **`xlsx` n'est pas une dépendance dormante** : elle parse un fichier fourni par
+  l'utilisateur (`Settings.jsx:1707`, « Joindre le XLSForm »). La retirer suppose de réécrire
+  ce parcours — ou de basculer ce parsing côté serveur sur `exceljs`, déjà présent.
+- **`cdn.sheetjs.com` est injoignable depuis l'environnement de développement** : vérifié le
+  31/07/2026, `curl` renvoie `403` au tunnel du proxy. Le chantier exige donc un poste à accès
+  réseau complet, comme déjà noté.
 
-`web/package.json` pointe encore `xlsx` sur l'ancienne version vulnérable (le
-changement vers le tarball CDN a été reverti de la PR #5 — le bac à sable de
-développement ne peut pas atteindre `cdn.sheetjs.com`). À faire depuis un poste
-ou un Codespace avec accès réseau complet :
+Conséquence à assumer, non signalée jusqu'ici : une fois installé par tarball, `resolved`
+pointera vers `cdn.sheetjs.com` dans `web/package-lock.json`, et chaque `npm ci` de la CI
+(`.github/workflows/ci.yml:28`) et du build Docker dépendra d'un hôte hors registre. Cela
+**déplace** un risque de chaîne d'approvisionnement plutôt que de le supprimer. À trancher
+explicitement (voir Q1).
 
-```bash
-cd web
-npm install https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
-npm test
-git add package.json package-lock.json && git commit -m "xlsx: paquet corrigé SheetJS"
-```
+### Remarque A (`db.formulas`) — exacte, mais c'est un défaut de classe
 
-## Fait (pour mémoire, PR #4 et #5 fusionnées dans main)
+Deux corrections. D'abord, la corriger demande **deux gestes, pas un** : ajouter `formulas` à
+`SYNCED` ne suffirait pas, car `App.jsx:99` réécrit `formulas: D_FORMULAS` à chaque
+hydratation, et le serveur n'a ni collection (`collections.js:18-106` → 404) ni table pour les
+accueillir.
 
-- Ingestion ODK Central (script + tirage réel + appariement des variables des
-  5 XLSForms MDG).
-- Éditeur de formules de performance sur les jeux de données (Analyses).
-- `.devcontainer` pour GitHub Codespaces (amorçage automatique).
-- Correctifs : blocage CI e2e (recharts/rAF), CORS Codespaces, encadré de
-  connexion trompeur, favicon manquant, rafraîchissement après import d'un
-  référentiel géographique.
+Ensuite, **ce n'est pas un cas isolé** : sept réglages sont éditables à l'écran et perdus au
+rechargement — `scoring`, `roles`, `mmr`, `lists` (partenaires, modalités, sous-types de POI,
+tags), `actCategories`, `outcomePlan`, `formulas`. La matrice des rôles de
+`Paramètres → Utilisateurs` (`Settings.jsx:1933-1950`) est dans ce cas : on coche, rien ne se
+passe. Voir chantier D.
+
+Le doute exprimé (« peut-être volontaire, un bac à sable ») n'est étayé par rien dans le code :
+le bouton « Rétablir les calculs de base » (`Settings.jsx:1548`) et le badge « personnalisé »
+(`:1527`) indiquent au contraire une persistance attendue.
+
+### Remarque B (`partner_id`) — la conséquence décrite est inversée
+
+Le document disait que la clé étrangère « reste vide tant que la ligne n'a pas été rechargée »,
+ce qui suggère un problème transitoire. C'est l'inverse : **rien ne remplit jamais
+`partner_id`, et c'est le rechargement qui fait disparaître le partenaire.** Le schéma de
+synchro (`collections.js:53-66`) n'a pas de champ `partner`, zod le supprime silencieusement,
+la table `pdd` n'a pas cette colonne (`001_init.sql:247`), et `state.js:103` renvoie une chaîne
+vide.
+
+Il y a donc **perte de donnée saisie** : colonne « Partenaire » vidée (`Planning.jsx:734`),
+export CSV vidé (`:644-646`), filtre de recherche inopérant (`:616`). Le document omettait aussi
+la troisième voie de création touchée (import CSV, `Planning.jsx:655`).
+
+### Section « Fait pour mémoire » — exacte sauf un point
+
+Tirage ODK réel ✅ (vrai `fetch` HTTP paginé, `lib/odkClient.js:40,65-79`, couvert par 5 tests),
+éditeur de formules ✅, `.devcontainer` ✅, les cinq correctifs ✅.
+
+En revanche « appariement des variables des **5 XLSForms MDG** » promet un livrable que le
+dépôt ne porte pas : **aucun XLSForm n'est versionné**, aucune table de correspondance par
+formulaire n'est stockée. Ce qui existe est un appariement générique nom→libellé
+(`import-odk-forms.js:112-125`) et une détection heuristique du champ site/date par expressions
+régulières calibrées sur ces formulaires (`:73-78`). Le « 5 » ne vit que dans un message de
+commit et `README.md:770`. À reformuler ou à rendre vérifiable.
+
+---
+
+## Chantier A — Cloisonnement et droits côté serveur (sécurité, bloquant)
+
+À traiter avant tout le reste : ces points contredisent des garanties que l'application affiche.
+
+1. **`PUT /api/collections/:name` n'applique aucun cloisonnement.** `collections.js` n'importe
+   même pas `lib/scope.js` : `SELECT id, rev FROM <table>` sans filtre (`:138`),
+   `UPDATE … WHERE id=?` (`:164`), `DELETE … WHERE id=?` (`:176`). Un `editor` du bureau A peut
+   **écrire et supprimer les lignes du bureau B**, alors que `GET /api/state` les lui cache.
+   → Restreindre `existing`, l'UPDATE et surtout `deletes` au bureau de l'appelant.
+2. **Les suppressions n'exigent pas le droit `del`.** La route est protégée par `edit`, et le
+   tableau `deletes` passe avec — contrairement à la matrice des rôles
+   (`lib/auth.js:53-59`, `README.md:919-925`).
+3. **`must_change_pw` n'est appliqué nulle part côté serveur.** `authenticate`
+   (`lib/auth.js:36-51`) ne le lit pas ; seul `web/src/views/Login.jsx:32` bloque. Un appel API
+   direct avec le mot de passe provisoire donne un accès complet, indéfiniment.
+   → Refuser tout appel d'un compte `must_change_pw=1` hors `/auth/password` et `/auth/me`.
+4. **`PUT /api/caseload` n'applique aucun contrôle de périmètre** (`routes/caseload.js:179`),
+   alors que le même flux par import en applique un (`lib/import.js:411-415`). `scopeOf` est
+   importé mais n'est utilisé qu'en lecture.
+5. **SSRF sur `odkBase`** : l'URL n'est ni validée ni restreinte avant l'appel serveur
+   (`routes/odk.js:31`, `lib/odkClient.js:65`). → Imposer https, liste blanche d'hôtes, refus
+   des adresses privées.
+6. **Un compte prestataire n'est pas cloisonné hors du module TPM** : `routes/users.js:20-21`
+   impose `tpm_id` *sans* `office_id`, donc `scopeOf` le déclare non borné et `/api/state` lui
+   livre tous les sites, visites, plans et le journal d'audit.
+7. **Verrouillage définitif après oubli de mot de passe** : `failed_logins` n'est remis à zéro
+   que par une connexion réussie (`routes/auth.js:58`). Après expiration d'un verrou le
+   compteur vaut toujours 8 : la première tentative erronée reverrouille pour 15 minutes.
+   L'utilisateur est bloqué en permanence sans intervention d'un administrateur.
+8. **Sessions non révoquées** à la désactivation d'un compte ou au changement de rôle — ou
+   alors `README.md:946-947` est à corriger.
+9. **`PUT /tpm/plans/:id` ne vérifie pas `modifiable(plan.status)`** (`routes/tpm.js:521`) : un
+   plan validé reste modifiable.
+10. **Fuite de périmètre à l'agrégation** dans `GET /caseload` : `covers` retient volontairement
+    les ancêtres (`lib/scope.js:113-115`), mais `agrege` (`routes/caseload.js:72-86,98-108`)
+    somme ensuite tout ce qui en descend.
+
+---
+
+## Chantier B — Dépendances (audit du 31/07/2026)
+
+`npm audit` a réellement été exécuté. **13 alertes brutes : 10 côté serveur (9 hautes,
+1 modérée), 3 côté web (2 hautes, 1 modérée).** Après analyse d'atteignabilité, le classement
+réel est très différent du classement npm — et la vraie faille du serveur n'est dans aucune des
+13 alertes.
+
+### B1. Bombe de décompression sur l'import Excel — **atteignable, non signalée par npm**
+
+Aucun avis publié. `wb.xlsx.load()` décompresse intégralement chaque entrée de l'archive, sans
+plafond de taille inflatée et sans vérifier que l'entrée appartient au paquet OOXML.
+
+Chemin complet, entièrement dans le flux nominal :
+`server/src/index.js:115` → `routes/import.js:76` → `upload.single("file")` (multer
+`memoryStorage`, limite `MAX_BODY_MB` = **25 Mo**, `config.js:45`) → `routes/import.js:89`
+`readUpload(...)` → `lib/import.js:325` `await wb.xlsx.load(buffer)`.
+
+Le `fileFilter` (`routes/import.js:19`) accepte tout fichier dont le **nom** finit par `.xlsx` —
+aucun contrôle de signature.
+
+Mesure réelle rapportée par l'analyse : un `.xlsx` de 299,9 Ko contenant une entrée de 300 Mo de
+zéros fait passer le RSS du process de 79 Mo à 775 Mo en 3,5 s. À la limite de 25 Mo,
+l'expansion atteint ~25 Go : mort du process Node. `restart: unless-stopped`
+(`docker-compose.yml:6`) le relance, l'attaquant recommence. Une seule requête suffit — le
+limiteur de débit (600 req/min) n'y change rien.
+
+Prérequis attaquant : un compte authentifié avec le droit `edit` (`lib/import.js:30,127`), donc
+`super`, `admin`, `validator` **et `editor`** — le rôle le plus distribué sur le terrain.
+
+**Correctif applicatif, ~15 lignes, sans changer de dépendance** : avant le
+`wb.xlsx.load(buffer)` de `lib/import.js:325`, ouvrir l'archive avec JSZip (déjà présent
+transitivement), refuser toute entrée dont le nom ne correspond pas à
+`/^(\[Content_Types\]\.xml|_rels\/|docProps\/|xl\/)/`, et refuser si la somme des tailles
+décompressées annoncées dépasse un plafond (par ex. 10× la taille compressée, ou 200 Mo
+absolus). Ajouter un test de non-régression.
+
+*Note : cette mesure vient d'une analyse automatisée avec exécution ; je n'ai pas rejoué
+moi-même la mesure mémoire. Le chemin de code, lui, est vérifié ligne à ligne.*
+
+### B2. `xlsx@0.18.5` (web) — **atteignable, seule vulnérabilité de production**
+
+`GHSA-4r6h-8v6p-xvw6` (prototype pollution, CVE-2023-30533) et `GHSA-5pgg-2g8v-p4x9` (ReDoS,
+CVE-2024-22363). C'est la **seule** alerte qui survit à `npm audit --omit=dev`.
+
+Risque recalibré à **moyen**, pas haut : le parsing est 100 % côté navigateur (import dynamique
+`Settings.jsx:1707`), le serveur ne voit jamais l'octet du XLSForm, et l'accès est restreint aux
+rôles `super`/`admin` (`constants.js:117-121`). Conséquence maximale : compromission de la
+session d'un onglet administrateur — rôle qui détient pourtant la gestion des comptes et les
+jetons ODK déchiffrés. Probabilité faible (fichier fourni par un tiers + action manuelle),
+conséquence élevée.
+
+Voir chantier 3 pour la remédiation et sa contrepartie de chaîne d'approvisionnement.
+Mitigations de coût nul en attendant : garde de taille avant `Settings.jsx:1708`
+(`if (file.size > 5*1024*1024) …`).
+
+### B3. `vite@5.4.21` + `esbuild` (web, développement) — amplifié par une ligne de configuration
+
+Trois avis Vite (`GHSA-fx2h-pf6j-xcff` bypass `server.fs.deny` sous Windows CVSS 7.5,
+`GHSA-4w7w-66w2-5vf9` traversée de chemin, `GHSA-v6wh-96g9-6wx3` fuite de hash NTLM sous
+Windows) et un avis esbuild (`GHSA-67mh-4wv8-2f99`).
+
+**Aucun impact en production** — ce sont des dépendances de développement. Mais
+`web/vite.config.js:21` déclare **`host: "0.0.0.0"`** (vérifié) : le serveur de développement
+écoute sur toutes les interfaces, ce qui est la précondition des trois avis Vite. Que ce ne soit
+pas théorique est attesté par `server/src/config.js:32`, qui liste `http://10.0.10.147:5173`
+parmi les origines CORS.
+
+**Correctif immédiat, coût nul, sans changer une version : remplacer `host: "0.0.0.0"` par
+`host: "127.0.0.1"` dans `web/vite.config.js:21`.** Codespaces continue de fonctionner (le
+transfert de port se fait vers `127.0.0.1` dans le conteneur).
+
+Ensuite, à planifier : `vite@^7` + `@vitejs/plugin-react` correspondant (deux majeures), et
+**supprimer `"esbuild": "^0.28.1"` de `web/package.json:19`** — Vite charge sa propre copie
+imbriquée (0.21.5), donc cette ligne est un faux correctif qui trompe le prochain lecteur.
+
+### B4. Les 9 alertes « high » du serveur sont du bruit — **ne pas lancer `npm audit fix --force`**
+
+`brace-expansion` (`GHSA-mh99-v99m-4gvg`) compte **9 fois** dans l'audit, mais c'est **un seul
+avis** répercuté sur 8 paquets intermédiaires (`archiver`, `archiver-utils`, `glob`,
+`minimatch`, `readdir-glob`, `rimraf`, `zip-stream`, `exceljs`).
+
+**Inatteignable** : MEMS n'utilise que l'API non-streaming d'ExcelJS (`lib/import.js:251,325`,
+`routes/import.js:70`, `import-odk-forms.js:89`), qui passe par JSZip et non par `archiver`.
+`archiver` est bien chargé au `require`, mais charger n'est pas appeler : `brace-expansion` n'est
+atteint que si un motif glob est évalué, et l'entrée du bug est une chaîne de motif, pas un
+contenu de fichier.
+
+`uuid@8.3.2` (`GHSA-w5hq-g745-h8pq`) : **inatteignable doublement** — l'avis ne vise que v3/v5/v6
+avec l'argument `buf`, or exceljs n'appelle que `v4()` sans argument, et `uuid@8.3.2` n'exporte
+même pas `v6`.
+
+**`npm audit fix --force` installerait `exceljs@3.4.0` : c'est un rétrogradage de deux majeures
+qui casse l'API utilisée.** `exceljs@4.4.0` est bien la dernière version publiée — il n'existe
+aucun correctif amont. → Déclarer l'exception dans un fichier de suppression versionné avec la
+justification et une date de réexamen, et documenter dans le README.
+
+### B5. CVE SQLite invisible de npm
+
+`better-sqlite3@11.10.0` embarque SQLite 3.49.2, en deçà du seuil de **CVE-2025-6965**
+(troncature d'entier, corruption mémoire, CVSS 7.2). `npm audit` ne voit pas les bibliothèques C
+compilées dans un binaire prébuilt. Inatteignable aujourd'hui (pas d'injection SQL connue), mais
+c'est un amplificateur : le jour où une injection apparaît, on passe de « fuite » à « exécution
+de code ». → `npm i better-sqlite3@13.0.2` (embarque SQLite 3.53.4), puis `npm test`.
+
+### B6. Dettes de version sans CVE, à traiter en lot
+
+- **Node 20 est en fin de vie** et épinglé à quatre endroits : `Dockerfile:2,10,18` et
+  `.github/workflows/ci.yml:13`. C'est la dette la plus structurelle.
+- `exceljs@4.4.0` : dernière version publiée, mais stable depuis octobre 2023 — cul-de-sac amont.
+- `recharts@2.15.4` : **formellement déprécié** par son mainteneur (« 1.x and 2.x branches are no
+  longer active »). → v3.
+- `lucide-react@0.446.0` → 1.28.0 ; `react@18.3.1` → 19 (bloque `@vitejs/plugin-react` 6 et
+  recharts 3) ; `tailwindcss@3.4` → 4 ; `jsdom@25` → 30 (tests seulement) ;
+  `better-sqlite3` (voir B5) ; `express@4.22.2` (branche 4 **toujours maintenue**, publiée en
+  mai 2026 — pas urgent) ; `zod@3.25.76` (faux écart, embarque déjà Zod 4 sous `zod/v4`) ;
+  `bcryptjs@2.4.3` (vérifié : utilise `crypto.randomBytes`, aucun enjeu de sécurité).
+- Déjà à jour, à ne pas toucher : `multer@2.2.0`, `helmet@8.3.0`, `jsonwebtoken@9`,
+  `postcss`, `autoprefixer`.
+
+---
+
+## Chantier C — Chaîne de construction et de livraison
+
+1. **L'audit de la CI est décoratif.** `.github/workflows/ci.yml:38-41` :
+   `npm audit --audit-level=high || true`. Le `|| true` avale le code de sortie — l'étape est
+   verte quelle que soit la vulnérabilité. **C'est ce qui a laissé passer `xlsx` depuis le
+   début.** → Retirer `|| true`, séparer serveur et web, utiliser `--omit=dev` côté web, et
+   tenir une liste d'exceptions justifiées et datées (voir B4).
+2. **Aucun `.dockerignore`** (vérifié : le fichier n'existe pas). `Dockerfile:26`
+   `COPY server/ ./server/` s'exécute après la copie des `node_modules` et embarque donc tout
+   `server/data/` — dont la base SQLite locale — et tout `.env` présent dans l'arborescence de
+   build. `.gitignore` les couvre pour git, mais **Docker ne lit pas `.gitignore`**.
+   → Créer un `.dockerignore` (`node_modules`, `data`, `*.db*`, `.env*`, `*.log`, `dist`).
+3. **Images de base non épinglées** : `node:20-bookworm-slim` sans digest, trois fois.
+4. **Actions CI épinglées par étiquette mobile** (`actions/checkout@v4`, `actions/setup-node@v4`)
+   et **aucun bloc `permissions:`** dans le workflow.
+5. **Cartes source livrées en production** : `web/vite.config.js:8` impose `sourcemap: true`, et
+   le build émet les `.map` complets (plusieurs Mo). Le code source complet est donc servi aux
+   utilisateurs. → Décider : conserver pour le débogage, ou passer à `hidden`.
+6. **Le devcontainer ne respecte pas le lockfile** : `npm run install:all` fait `npm install` et
+   non `npm ci` — la CI et Docker font bien les choses, le chemin développeur non.
+7. **`npx esbuild` dans les tests** (`web/test/calc.test.js:21`, `e2e.test.js:68`) : si la devDep
+   disparaissait, `npx` irait la chercher au registre pendant la CI.
+8. **Aucun Dependabot ni Renovate** (vérifié : aucun fichier de configuration).
+9. **Mot de passe administrateur écrit en clair sur disque** : `.devcontainer/setup.sh:36` fait
+   `npm run seed | tee server/.admin-credentials.log`. `*.log` est bien dans `.gitignore` — il
+   n'y a donc pas de fuite vers le dépôt — mais le fichier reste lisible sur le disque et serait
+   embarqué dans une image Docker construite depuis ce répertoire tant que le point 2 n'est pas
+   corrigé.
+10. **Aucune limite de ressources** sur le conteneur (`docker-compose.yml` : ni `mem_limit` ni
+    `deploy.resources.limits`) — ce qui aggrave B1.
+
+---
+
+## Chantier D — Persistance des réglages (généralisation de la remarque A)
+
+Décider et traiter **en bloc** : `scoring`, `roles`, `mmr`, `lists`, `actCategories`,
+`outcomePlan`, `formulas`. Aujourd'hui tous éditables et tous perdus au rechargement
+(`App.jsx:18-19,90-99` ; `Settings.jsx:81-152,1942-1947` ; `Planning.jsx:387-397,1118-1120`).
+Soit on les persiste, soit les écrans passent en lecture seule — l'état actuel, qui laisse
+saisir dans le vide, n'est pas tenable.
+
+S'y ajoutent :
+- **« Générer le plan »** (`Planning.jsx:435-456`) n'écrit rien côté serveur.
+- **Le « Jeton général » ODK** : le champ et le badge « présent » (`Settings.jsx:1659,1677`)
+  ne correspondent à aucune persistance (`collections.js:199-203`).
+
+---
+
+## Chantier E — Finir le chantier 1
+
+1. Transmettre `geo_pcode`, `office_id` et `partner_id` à la création d'une ligne de PDD, aux
+   **trois** endroits : `PddGenModal` (`Planning.jsx:863-875`), « Ajouter une ligne »
+   (`:700-703`), import CSV (`:651-658`). Le plus sûr est de le faire une fois dans `save`
+   (`:627-631`) et `saveMany` (`:634-638`). Modèle existant : `Settings.jsx:227` résout déjà
+   `partner_id` pour les sites.
+2. Remplacer le champ bureau libre par un `Select` sur `db.lists.offices` et l'ajouter à la
+   garde `canSubmit` (`Planning.jsx:849,861,891`).
+3. Aligner le droit de l'écran Rations sur celui du serveur (ou l'inverse), et afficher un
+   avertissement quand le compte n'a pas le droit d'écrire.
+4. Notifier dès le premier échec pour les statuts 4xx (`App.jsx:117-119`), qui ne sont jamais
+   réessayés (`api.js:207-214`).
+5. Ajouter la denrée à la clé de réconciliation de l'import PDD (`import.js:128,219-231`) et
+   étendre l'énumération « Type » à PECMAM et FFA (`import.js:137,210`).
+6. Écrire les tests annoncés mais absents : côté serveur (PUT `/api/collections/pdd` créant N
+   lignes Food, tonnage vérifié, rejet d'un bureau vide) et côté web (parcours
+   « Rations → Générer par commune »).
+
+---
+
+## Chantier F — Retirer ce qui est simulé, mort ou faux
+
+1. **Bouton « Extraire » de Programme → Sources** : n'appelle rien, invente un nombre de
+   soumissions (`Math.random()*40`) et le persiste (`ActualData.jsx:617-622`). La vraie route
+   existe (`POST /api/odk-forms/:id/pull`) et est utilisée par l'écran jumeau de Paramètres.
+   → Brancher ou supprimer.
+2. **Onglet « API »** (`Settings.jsx:1820-1866`) : documente sept points d'entrée `/api/v1/*`
+   qui n'existent pas. Idem « Tester la connexion » (`:1661`).
+3. **Encadré trompeur** de Paramètres → Utilisateurs (`Settings.jsx:1902-1904`), qui nie le
+   cloisonnement serveur.
+4. **Code mort** : `web/src/lib/seed.js` (entier), `legacyScore`/`D_WEIGHTS`
+   (`calc.js:31-45`), `seedPDD` (`Planning.jsx:566-601`), anciens conteneurs `Planning`/
+   `ActualData` (`Planning.jsx:57-70`, `ActualData.jsx:14-30`), `api.saveTpmLines` et les
+   suppressions TPM (`api.js:132,141,146`) sans aucun appelant, colonne `rev` du caseload
+   jamais lue (`006_revisions.sql:36`).
+5. **Deux modèles de population coexistent** : `population`/`population_values` sont toujours
+   synchronisées et affichées alors que `caseload` est censé les remplacer
+   (`App.jsx:18`, `collections.js:48-51`, `calc.js:101-108`).
+6. **Deux vocabulaires pour `activity_tag`** : `caseload` porte `URT/NTA/SMP`, `pdd` porte
+   `URT_GD/URT_PREV`.
+7. **`users.tabs` est une coquille côté serveur** : aucune route ne le consulte
+   (`001_init.sql:62`) — retirer un onglet masque un menu mais ne ferme aucun accès.
+
+---
+
+## Chantier G — Remettre le README d'aplomb
+
+Le README se contredit et se trompe sur au moins sept points, tous vérifiés :
+
+1. `README.md:9` annonce « 25 tests d'API + 10 tests de bout en bout », `README.md:1120` annonce
+   « 96 tests d'API puis 12 » — le comptage réel est **102 tests d'API + 12 e2e + 4 unitaires**.
+2. L'arborescence (`:84-91`) s'arrête aux migrations 001-008 ; il y en a **15**.
+3. « Trente-et-une tables » (`:128`) → **45** (46 avec `_migrations`).
+4. Section `### Rôles` vide à `:873`, la vraie étant à `:917`.
+5. Routes non documentées : `GET /auth/sessions`, `PUT /tpm/plans/:id`,
+   `POST /tpm/plans/:id/close`, `DELETE /tpm/expenses/:id`.
+6. « Plus rien de spécifique à Madagascar n'est écrit dans le code » (`:179-183`) : faux —
+   `MGA` en dur à neuf endroits **et dans le schéma** (`011_tpm.sql:69`), libellés
+   « fokontany »/« commune » en dur dans six fichiers alors que `web/src/lib/levels.js` existe
+   pour cela.
+7. La démo hors ligne promise (`:10,69`) n'est pas dans le build : `vite.config.js` ne déclare
+   aucune entrée pour `demo.html`, et le serveur renvoie `index.html` pour tout chemin hors
+   `/api` (`index.js:125`). En production, « Ouvrir la démo » réaffiche l'application.
+
+---
+
+# Demandes produit du 31/07/2026
+
+25 entrées. Difficulté : **S** < 1 j · **M** 1-3 j · **L** 3-8 j · **XL** > 8 j ou décision
+produit préalable.
+
+## Chantier H — Structure des bureaux et configuration du pays
+
+### H1 — Hiérarchie des bureaux : area office → sous-bureau → antenne  · **XL**
+
+*« Ajouter antennes si on modifie le bureau devrait être liste des bureaux et on peut supprimer
+si non pertinent, parce qu'un area office peut avoir plusieurs sous-bureaux et antennes, ou un
+sous-bureau peut avoir une ou plusieurs antennes. »*
+
+**Aujourd'hui la table `offices` est plate.** `001_init.sql:8-16` déclare `id`, `name`, `code`,
+`kind` (`'field'|'hq'`), `active` — **aucune colonne parent, aucun niveau**.
+`009_office_config.sql:39` ajoute une colonne `antennes` qui est un **tableau JSON de chaînes** :
+une antenne n'est donc pas une entité, elle ne peut porter ni parent, ni périmètre, ni compte
+utilisateur. `sites.antenne` (`001_init.sql:92`) est également du texte libre.
+
+**Travail** : migration ajoutant `parent_id` et un niveau (`area|sub|antenne`) à `offices` ;
+reprise des valeurs texte déjà saisies dans `offices.antennes` et `sites.antenne` ; refonte de
+`SetOffices` pour choisir le parent dans la liste des bureaux et détacher ; **et surtout revue de
+`lib/scope.js`** — `officeBound`/`scopeOf` supposent aujourd'hui un bureau plat, il faut décider
+si le périmètre d'un area office englobe celui de ses antennes (héritage) ou non.
+
+→ Voir **Q2** (trois décisions bloquantes).
+
+### H2 — Retirer le sous-onglet « Sites » des Paramètres  · **S**
+
+**C'est un doublon exact.** `SitesModule` (`Settings.jsx:176-455`) est déjà monté à l'identique
+par Suivi-évaluation → Registre des sites (`Merged.jsx:88`). Seule la note d'introduction
+(`Settings.jsx:303`) est propre au montage dans les Paramètres. Rien à déplacer.
+
+→ Voir **Q3** (effet sur les droits d'accès).
+
+### H3 — Fusionner « Bureaux » et « Périmètre des bureaux » en un seul paramètre  · **M**
+
+Deux sous-onglets frères (`Settings.jsx:26-27`, rendus `:36` et `:40`) pour un seul objet : le
+périmètre n'est pas une entité autonome, c'est un attribut du bureau — `office_scope` a pour clé
+primaire `(office_id, geo_pcode)` (`007_office_scope.sql:25-32`). Les deux écrans affichent déjà
+les mêmes colonnes à partir de deux routes qui calculent la même chose.
+
+**Travail** : fusionner `SetScope` dans `SetOffices` sous forme de panneau par bureau. Aucune
+migration. À faire **après H1**, dont la hiérarchie change la maquette.
+
+→ Voir **Q4**.
+
+### H4 — Téléverser le shapefile et définir adm1-adm4 depuis la fiche pays  · **L**
+
+Aujourd'hui le téléversement du shapefile est dans l'onglet **Localités**
+(`Settings.jsx:1272-1376`), qui travaille implicitement sur le pays courant, et la fiche pays ne
+montre que le *nombre* de millésimes (`Settings.jsx:678`). Les libellés de niveaux existent déjà
+et sont éditables (`Settings.jsx:718-733`, `web/src/lib/levels.js`).
+
+**Travail** : déplacer l'import du découpage et des contours dans `SetCountry`, y afficher les
+millésimes du pays, et rendre les libellés de niveaux solidaires du pays.
+
+→ Voir **Q5** : « définir les adm1 à adm4 » signifie-t-il seulement les *nommer* (déjà fait) ou
+*déclarer combien de niveaux ce pays possède* ? La seconde lecture impose une colonne `depth` et
+la revue de tous les écrans qui supposent quatre niveaux.
+
+## Chantier I — Répertoire des localités
+
+### I1 — L'export des Localités est défectueux  · **M**
+
+**Défaut principal trouvé** : `Settings.jsx:1177` fait `toCSV(dir.rows, …)`, or `dir.rows` est la
+**page affichée**, plafonnée à `PER = 200` lignes (`Settings.jsx:1068,1085`). Sur un millésime
+malgache d'environ 18 000 fokontany, l'utilisateur obtient **200 lignes sur 18 000, sans aucun
+avertissement**. Neuf défauts secondaires ont été relevés (BOM UTF-8 absent, séparateur,
+échappement des guillemets, p-codes à zéro non significatif écrasés par Excel).
+
+**Travail** : exporter la totalité du jeu filtré, pas la page. → Voir **Q6** (CSV ou XLSX ?).
+
+### I2 — Le répertoire doit sortir la liste issue du shapefile, puis les sites avec leur type  · **L**
+
+**La première moitié est déjà faite** : `geo_unit` est peuplée exclusivement par l'import de
+shapefile (`Settings.jsx:1096-1167` → `routes/geo.js:198-218` → `lib/geo.js:33-130`), et le
+répertoire n'affiche que `geo_unit`. Le travail réel est la jointure localité → sites → type et
+son export.
+
+→ Voir **Q7**, **bloquante** : le dépôt porte **deux typologies qui se recouvrent** —
+`site_type` (liste figée, `constants.js:194` : FDP, Health Center, School, Warehouse, Market,
+Community site, Other) et `poi_subtype` (référentiel en base). Laquelle fait foi ?
+
+## Chantier J — Indicateurs et rations
+
+### J1 — Modèle d'indicateurs à télécharger, et import  · **L**
+
+Un export CSV rudimentaire existe (`Settings.jsx:1439`, colonnes `id,name,basket,unit,target,
+dir,method,freq`) mais **aucun modèle** : sur une masterlist vide il produit une seule ligne
+d'en-têtes.
+
+**Travail recommandé** : ajouter un troisième type de lot au pipeline d'import qui existe déjà
+pour `caseload` et `pdd` (`lib/import.js`, `routes/import.js` : modèle → téléversement →
+analyse → diff → confirmation), plutôt que d'écrire un import ad hoc.
+
+→ Voir **Q8** (où placer le téléchargement et le téléversement).
+
+### J2 — Méthode de collecte en liste déroulante  · **S**
+
+Le champ existe (`method TEXT`, `001_init.sql:213`) mais **sans contrainte** — saisie libre
+(`Settings.jsx:1502`), là où `direction` juste au-dessus porte un `CHECK`. D'où « Enquête
+ménage » / « enquete menages » / « HH survey » indistinguables.
+
+→ Voir **Q9**, **bloquante** : quelle est la liste exacte ? Le dépôt ne connaît que cinq valeurs
+issues du jeu de démonstration (`seed.js:44-55`).
+
+### J3 — Aperçu de ration paramétrable, résultat en kg  · **S**
+
+*« Mettre la ration par gramme journalière et pour tester mettre nombre de jours et
+multiplicateur à saisir, ensuite ration × nb de jours × multiplicateur, résultat en kg. »*
+
+La ration **est déjà** saisie en grammes/personne/jour (`Settings.jsx:1610`). Ce qui manque :
+les deux champs (aujourd'hui `sample = 1000` et `days = 15` sont **en dur**,
+`Settings.jsx:1595`), et le résultat en kg (aujourd'hui en tonnes, `÷ 1e6`). L'arrondi `r2`
+(`:1613`) écrase les petites rations : 1 g/pers/j affiche 0,02 t au lieu de 0,015.
+
+→ Voir **Q10**, **bloquante** : que désigne « multiplicateur » — le nombre de bénéficiaires
+(qui remplacerait `sample`), ou un facteur *supplémentaire* appliqué en plus des bénéficiaires ?
+Et la demande change-t-elle aussi le calcul du PDD (`Planning.jsx:854-855`, en tonnes) ou
+seulement l'aperçu de test ?
+
+## Chantier K — Rapports, sauvegarde, accueil
+
+### K1 — Indicateurs calculés dans les modèles de rapport, et rendu au choix  · **L**
+
+Le générateur n'offre que **sept blocs figés en dur** (`Reports.jsx:80-88`), et un modèle ne
+stocke qu'un tableau de chaînes (`Reports.jsx:219-220`). Les formules de performance par jeu de
+données (`Analytics.jsx:100-136`) et les calculs de couverture (`Settings.jsx:1509`) n'y
+figurent pas et ne peuvent pas y être ajoutés.
+
+**Travail** : passer d'un tableau de chaînes à un tableau d'objets `{source, ref, rendu}` dans
+`reportTemplates` ; alimenter la liste des choix depuis les formules existantes ; ajouter le
+sélecteur de rendu (recharts est déjà là).
+
+→ Voir **Q11** (quelles formules exactement).
+
+### K2 — Sauvegarde sélective et restauration  · **XL**
+
+**Rien n'existe** (recherche `backup|sauvegarde|restaur|restore` : aucune occurrence). Le seul
+approchant est l'« instantané JSON » (`Settings.jsx:1829-1837`), calculé dans le navigateur,
+déjà cloisonné par bureau, et couvrant 8 collections sur 45 tables — inutilisable comme base.
+
+**Fonction à fort risque.** Garde-fous nécessaires : droit `super`, confirmation explicite,
+sauvegarde préalable automatique avant toute restauration, journalisation d'audit, gestion de
+l'ordre des clés étrangères, et décision sur le chiffrement au repos (`lib/crypto.js`) et les
+mots de passe.
+
+→ Voir **Q12**, **bloquante** : archivage/reprise après sinistre, transfert entre instances, ou
+export pour analyse externe ? Les trois n'ont ni le même format ni les mêmes garde-fous.
+
+### K3 — Retirer les tâches urgentes de l'accueil, cloche de notifications en haut  · **M**
+
+Les « tâches urgentes » sont un calcul **100 % client** sans contrepartie serveur
+(`Home.jsx:11-45`, sept familles dérivées du store). Retirer la carte (`Home.jsx:142-163`) est
+trivial ; poser une cloche dans `Shell.jsx` l'est aussi.
+
+Le vrai écart est de nature : ce qui est affiché n'est pas une notification mais une dérivation
+de l'état courant — sans historique, sans destinataire, sans lu/non-lu.
+
+→ Voir **Q13** : simple déplacement dans un popover (**M**), ou vraie notion de notification
+côté serveur avec table et état lu/non-lu (**L/XL**) ?
+
+## Chantier L — Suivi des sites et suivi tiers
+
+### L1 (13a) — Colonnes adm1/adm2/adm3 avec les libellés du pays dans le plan de suivi  · **M**
+
+L'écran est `ProcessPlan` (`Planning.jsx:427-478`), la grille est `MonthGrid`
+(`Planning.jsx:15-48`). Elle n'a **qu'une seule colonne d'identification**, dont l'en-tête est la
+chaîne en dur « Élément » (`:18`) ; seul `adm3` survit, noyé dans une sous-ligne de texte
+(`:472`). adm1 et adm2 ne figurent nulle part.
+
+→ Voir **Q14** : faut-il une quatrième colonne adm4 ? Les sites sont le plus souvent rattachés
+**au niveau adm4** (`web/src/lib/geo.js:48`) — sans cette colonne, deux sites de fokontany
+différents d'une même commune sont indistinguables.
+
+### L2 (13b) — Planifier en filtrant par commune ou district  · **L**
+
+`ProcessPlan` n'a que deux filtres, ni l'un ni l'autre géographique : bureau et activité
+(`Planning.jsx:428,468-469`).
+
+**Écart bloquant découvert au passage** : la génération automatique ne respecte de toute façon
+aucun filtre, puisqu'elle balaie `d.sites` en entier (`Planning.jsx:437`) — et son résultat
+n'est pas persisté (voir chantier D).
+
+### L3 (13c) — Infobulles sur les symboles de la grille  · **S**
+
+Les symboles réels sont produits en `Planning.jsx:30-39` : cinq états de fond (hachures
+« inactif », vert plein, ambre, gris) et quatre glyphes (`✓`, `!`, `●`). L'infobulle actuelle ne
+dit que le mois (`:37`) ; la légende (`:49-54`) explique les couleurs mais pas les glyphes, et
+son échantillon « Inactif ce mois » (gris plein) **ne correspond pas au rendu réel** (hachures).
+
+### L4 (13d) — Marquer « déjà suivi » depuis les données ODK Central  · **XL**
+
+**Constat central, vérifié : il n'existe aucune table `submissions` dans le dépôt.** Les 15
+migrations créent 45 tables, aucune ne porte ce nom. Ce que la base contient d'ODK est un blob
+JSON par formulaire (`odk_forms.raw`, migration 015), **sans aucune clé vers `sites`**. Le champ
+`odk_forms.site_field` prévu pour ce rattachement **n'est jamais consommé côté serveur**.
+
+La demande suppose donc une donnée qui n'existe pas. Il faut d'abord construire le rattachement
+soumission → site, ce qui est un chantier à part entière.
+
+→ Voir **Q15**, cinq questions toutes bloquantes.
+
+### L5 (14a) — Affectation automatique des sites au prestataire après validation du plan  · **XL**
+
+**Trois briques manquent, pas une.** (a) *Le déclencheur* : le plan de suivi MEMS n'a pas
+d'état — `site_months` (`001_init.sql:129-141`) ne porte aucun statut, et « Générer le plan »
+n'est même pas persisté. (b) *L'objet affecté* : le module TPM raisonne en **zones/communes**
+(`tpm_zone.geo_pcode`, `011_tpm.sql:142-162`), jamais en sites. (c) *La règle d'affectation*
+elle-même.
+
+→ Voir **Q16**, bloquante : sur quel critère un site va-t-il à tel prestataire plutôt qu'à tel
+autre ?
+
+### L6 (14b) — Brouillon de budget mensuel pré-rempli  · **L**
+
+**L'état brouillon existe, le pré-remplissage non.** `tpm_plan.status` a bien `brouillon` par
+défaut (`011_tpm.sql:126-128`) et `modifiable()` ne rend éditables que `brouillon` et `renvoye`
+(`lib/tpm.js:256`). Mais `POST /api/tpm/plans` (`routes/tpm.js:375-404`) crée un plan **vide de
+zones et de lignes**, donc de budget nul — et `POST /plans/:id/submit` refuse justement de le
+soumettre (`:550-553`).
+
+→ Voir **Q17** (qui prépare le brouillon, et d'où viennent les quantités par défaut).
+
+### L7 (14c) — Colonnes du tableau du bas : adm1-3, nom du prestataire, nb de sites  · **M**
+
+En-têtes actuels (`Tpm.jsx:718-720`) : Zone | Activité | Équipe | Sup. | Agents | Jours | …
+Le serveur ne renvoie qu'un libellé fusionné « commune (district) » (`lib/tpm.js:106-109,126`) —
+il faut trois champs distincts.
+
+→ Voir **Q18** : le nom du prestataire est constant sur tout le plan (un plan = un prestataire,
+index unique `011_tpm.sql:137`) — une colonne qui répète la même valeur, ou un en-tête ?
+
+### L8 (14d) — Saisie agents/superviseurs/jours/trajets/véhicules/carburant, sans total  · **L**
+
+**Bonne nouvelle : les unités de coût existent déjà presque toutes.** `tpm_rate`
+(`011_tpm.sql:99-112`) porte un `driver CHECK IN ('superviseur','agent','vehicule','carburant',
+'forfait')`, et `tpm_zone` porte déjà `supervisors, agents, days, travel_days, vehicles,
+fuel_litres` (`:142-162`). « Sans le total » est **déjà acquis** : aucun total n'est stocké ni
+saisi (`lib/tpm.js:13-19`).
+
+L'essentiel de la demande est donc un **réagencement d'IHM** : déplacer ces saisies de la ligne
+de zone (`Tpm.jsx:734-739`) vers un bloc sous le budget.
+
+→ **Q1 bis / bloquant** : le fichier Excel de référence (« l'excel que je t'ai partagé »)
+**n'est pas dans le dépôt** — vérifié, aucun `.xlsx`, `.xls`, `.xlsm`, `.ods` ni `.csv` hors
+`node_modules`. Le classeur `MAHAVOTSE_BUDGET_TPM` n'apparaît que dans des commentaires de code.
+La structure exacte du budget attendu en dépend.
+
+### L9 (15) — Contrats et barèmes en sous-module du suivi budgétaire, panneau latéral rétractable  · **M**
+
+Aujourd'hui deux onglets **frères** de même niveau (`Tpm.jsx:95-96`). L'écart est purement
+structurel et d'interface : aucune donnée ne manque (`GET /api/tpm` renvoie déjà tout), le
+tableau budgétaire n'est simplement pas cliquable et il n'existe pas de composant de panneau
+latéral dans `web/src/components/ui.jsx`.
+
+→ Voir **Q19** (contenu et ordre du panneau).
+
+## Chantier M — Cartographie
+
+### M1 (16a) — Passer le rendu à l'API Google Maps  · **XL**
+
+**Aujourd'hui la carte est un SVG écrit à la main**, sans aucune bibliothèque cartographique :
+projection équirectangulaire calculée à la main (`MapView.jsx:13-28`), zoom borné à ×12
+(`:262`), **zéro appel réseau externe**.
+
+Conséquences à assumer, exposées sans militer :
+- **clé d'API Google obligatoire et facturable à l'usage** — à fournir et à payer ;
+- **chaque poste appellera des serveurs Google** à chaque ouverture de la carte, ce qui renverse
+  une propriété que le code et le README revendiquent (déploiement souverain derrière un proxy
+  TLS) ;
+- **la carte cessera d'afficher un fond dans un bureau sans accès internet** ;
+- la **CSP** posée par helmet (`server/src/index.js`) devra être ouverte aux scripts Google ;
+- « se focaliser sur le pays pour sortir le fond de carte » ne peut pas signifier que Google ne
+  servirait que les tuiles de ce pays : Google sert le monde. On ne peut que **borner la vue**
+  et/ou **griser l'extérieur** par un masque polygonal.
+
+*L'alternative usuelle est un fond de tuiles OSM/MapLibre, auto-hébergeable et sans clé ; le
+chiffrage ci-dessous reste néanmoins celui de Google Maps, puisque c'est ce qui est demandé.*
+
+→ Voir **Q20**.
+
+### M2 (16b) — Cadrer automatiquement sur le pays choisi  · **M**
+
+Le pays courant porte **déjà un centre** en base (`013_country.sql:47-49`, Madagascar à
+-18,9 / 47,5), éditable, transmis au navigateur — **et jamais utilisé**. La carte se cadre
+uniquement sur ce qu'elle a reçu, donc sur un pays sans contours elle zoome sur la seule région
+peuplée de sites, et sur un pays sans données elle n'affiche rien.
+
+Il manque une **emprise** (le centre seul ne permet pas de choisir un zoom). Trois options, dont
+deux **sans migration** : exposer l'emprise du millésime courant (`lib/geom.js:242-255` calcule
+déjà la bbox), ou calculer une bbox sur les `lat/lon` de `geo_unit`.
+
+→ Voir **Q21**.
+
+### M3 (16c) — Géolocalisation des sites et panneau d'informations à droite  · **M**
+
+**Les deux briques existent déjà.** Les sites portent `lat/lon` (`Settings.jsx:540-541`), servis
+par `GET /api/analytics/map` avec 17 colonnes et un plafond de 6000 lignes
+(`routes/analytics.js:20-43`). **Le panneau de droite existe** (`MapView.jsx:397-493`) et
+contient déjà l'échelle thématique, la fiche de l'unité administrative, la légende et une fiche
+de site à huit champs.
+
+Le panneau est donc à **enrichir et élargir** (`w-72` figé), pas à créer. Recommandation : ne
+pas élargir `/api/analytics/map` mais ajouter une route de détail à la demande
+`GET /api/analytics/site/:id` appelée au clic.
+
+→ Voir **Q22**, **bloquante** : quelles sont exactement les « informations pertinentes » ?
+
+### M4 (16d) — Superposer le shapefile sur le fond de carte  · **L**
+
+**Il n'y a rien à intégrer : le shapefile est déjà lu, simplifié, stocké, servi et dessiné.**
+Lecture entièrement dans le navigateur sans dépendance (`web/src/lib/shapefile.js` : index ZIP,
+`DecompressionStream`, DBF avec repli windows-1252, SHP binaire, conversion des anneaux ESRI en
+GeoJSON) ; envoi par lots de 120 (`Settings.jsx:1199-1236`) ; simplification Douglas-Peucker et
+stockage en deux résolutions avec bbox (`lib/geom.js:133-207`, `012_geo_geom.sql:33-53`) ;
+service en FeatureCollection GeoJSON (`routes/geo.js:273-296`) ; écran d'administration complet
+(`Settings.jsx:1272-1330`).
+
+L'écart est **entièrement dans le portage du dessin vers Google Maps**, avec trois difficultés
+que le SVG masque aujourd'hui : le **volume** (`google.maps.Data` n'est pas conçu pour 1500
+polygones), la **résolution** (le serveur sert par défaut la version simplifiée à ~550 m de
+tolérance, invisible à ×12 mais visiblement décalée sur un fond satellite à fort zoom), et le
+**style** (toute la logique d'aplat thématique doit passer d'attributs JSX à une fonction de
+style impérative).
+
+→ Voir **Q23**.
+
+---
+
+# Questions bloquantes
+
+Ces points ne peuvent pas être décidés depuis le code — ils engagent une règle métier ou un
+arbitrage produit.
+
+| # | Sujet | Question |
+|---|---|---|
+| **Q1** | xlsx (chantier 3) | Accepte-t-on que `web/package-lock.json` dépende de `cdn.sheetjs.com` (hors registre npm) pour chaque `npm ci` de la CI et du build Docker ? Sinon, bascule-t-on le parsing du XLSForm côté serveur sur `exceljs`, déjà présent ? |
+| **Q1 bis** | TPM (L8) | **Le fichier Excel de référence n'est pas dans le dépôt.** Pouvez-vous le fournir ? La structure du budget TPM en dépend entièrement. |
+| **Q2** | Bureaux (H1) | Une antenne devient-elle un **vrai bureau** (identifiant propre, comptes possibles, périmètre propre) ou reste-t-elle un libellé de rattachement ? Que fait-on des valeurs texte déjà saisies dans `offices.antennes` et `sites.antenne` ? Le périmètre d'un area office englobe-t-il celui de ses antennes ? |
+| **Q3** | Sites (H2) | Le registre ne restera atteignable que par l'onglet Suivi-évaluation. Les onglets étant réglables compte par compte (`users.tabs`), faut-il vérifier qu'aucun compte existant ne perd l'accès ? |
+| **Q4** | Périmètres (H3) | Le sélecteur d'unités doit-il permettre d'attribuer des communes (adm3), voire des fokontany (adm4) ? Le schéma l'autorise déjà. |
+| **Q5** | Pays (H4) | « Définir les adm1 à adm4 » = seulement les **nommer** (déjà possible), ou **déclarer combien de niveaux** ce pays possède ? La seconde lecture impose une colonne `depth` et la revue de tous les écrans qui supposent quatre niveaux. |
+| **Q6** | Export localités (I1) | CSV ou XLSX ? `exceljs` est déjà côté serveur et produit déjà les modèles d'import — un `.xlsx` supprimerait d'un coup les problèmes de séparateur, de BOM et de p-codes à zéro non significatif. |
+| **Q7** | Types de site (I2) | Deux typologies se recouvrent : `site_type` (liste figée `constants.js:194`) et `poi_subtype` (référentiel en base). Laquelle fait foi ? |
+| **Q8** | Indicateurs (J1) | Où placer le téléchargement du modèle et le téléversement : Paramètres → Indicateurs, ou Actual Data → Import Excel (où tout le dispositif existe déjà) ? |
+| **Q9** | Méthode de collecte (J2) | Quelle est la **liste exacte** ? Le dépôt ne connaît que cinq valeurs issues du jeu de démonstration (`seed.js:44-55`). |
+| **Q10** | Rations (J3) | Que désigne « **multiplicateur** » : le nombre de bénéficiaires (remplaçant `sample = 1000`), ou un facteur supplémentaire en plus des bénéficiaires ? Et cela change-t-il aussi le calcul du PDD, ou seulement l'aperçu de test ? |
+| **Q11** | Rapports (K1) | « Indicateurs calculés » = les formules de performance par jeu de données (`Analytics.jsx:100-136`), les six calculs de couverture (`Settings.jsx:1509`), ou les deux ? |
+| **Q12** | Sauvegarde (K2) | But réel : archivage / reprise après sinistre, transfert entre instances, ou export sélectif pour analyse externe ? Les trois n'ont ni le même format ni les mêmes garde-fous. |
+| **Q13** | Notifications (K3) | La cloche montre-t-elle seulement l'état dérivé actuel (retards, validations en attente), ou aussi des **événements** (« un collègue a validé », « un import a été confirmé ») ? La seconde lecture impose une table de notifications côté serveur. |
+| **Q14** | Plan de suivi (L1) | Faut-il une **quatrième colonne adm4** ? Les sites sont le plus souvent rattachés au niveau adm4 ; sans elle, deux sites de fokontany différents d'une même commune sont indistinguables. |
+| **Q15** | ODK / déjà suivi (L4) | Quelle valeur le champ site du formulaire ODK contient-il réellement — le code métier du site, l'identifiant interne, un p-code, ou le nom en texte libre ? Et sur quelle période un site compte-t-il comme « déjà suivi » ? |
+| **Q16** | Affectation TPM (L5) | Sur quel critère un site va-t-il à tel prestataire : le bureau du site rapproché du bureau du prestataire, la commune, l'activité, une capacité maximale ? |
+| **Q17** | Brouillon TPM (L6) | Qui prépare le brouillon — le bureau, ou le système à la validation du plan ? D'où viennent les quantités par défaut (agents, superviseurs, jours, véhicules, litres) pour une commune donnée ? |
+| **Q18** | Colonnes TPM (L7) | Le nom du prestataire est constant sur tout le plan : colonne répétée, ou en-tête ? Et « nb de sites qu'il peut consulter » désigne-t-il les sites affectés, les sites accessibles, ou un plafond contractuel ? |
+| **Q19** | Panneau prestataire (L9) | Quelles informations exactement, et dans quel ordre : identité et contacts, contrats et plafonds, barème, avenants, plans du mois et leur état, dernières dépenses, alertes de dépassement ? |
+| **Q20** | Google Maps (M1) | Acceptez-vous l'appel à des serveurs Google depuis chaque poste, la perte du fond de carte hors ligne, et qui fournit et paie la clé d'API ? |
+| **Q21** | Cadrage (M2) | Cadrage simple à l'ouverture, ou contrainte dure interdisant de sortir du pays (gênant pour un site frontalier) ? Faut-il griser l'extérieur ? |
+| **Q22** | Panneau carte (M3) | Quelle est la **liste ordonnée** des informations voulues pour un site, et pour une unité administrative ? Le panneau affiche aujourd'hui huit champs pour un site et quatre agrégats pour une unité. |
+| **Q23** | Contours (M4) | À partir de quel niveau de zoom veut-on les contours en pleine résolution (coût réseau direct) ? Et sur un fond satellite, contours en simple trait ou conservation des aplats thématiques — sachant qu'un aplat opaque masque le fond de carte demandé ? |
+
+---
+
+## Méthode
+
+Analyse du 31/07/2026 : lecture intégrale du dépôt (~22 000 lignes) par agents parallèles,
+254 fonctionnalités recensées (134 complètes, 105 partielles, 5 coquilles, 10 mortes), puis
+vérification contradictoire de chaque affirmation de la version précédente de ce document.
+
+`npm audit` a réellement été exécuté sur `server/` et `web/` ; les versions ont été confrontées
+au registre ; l'atteignabilité de chaque avis a été analysée dans le code plutôt que reprise
+telle quelle. Les constats les plus lourds (absence de cloisonnement sur `PUT /collections`,
+`must_change_pw` non appliqué, `host: "0.0.0.0"`, absence de `.dockerignore`, `|| true` de la CI,
+`cdn.sheetjs.com` injoignable) ont été revérifiés à la main.
