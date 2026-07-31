@@ -438,6 +438,21 @@ export default function MapView({ db, me, notify, go }){
 
   /* Cadrer sur l'unité administrative choisie : « faire une zone » au sens propre —
      on désigne un district et la carte s'y installe. */
+  /* ── Aller à un site ──────────────────────────────────────────
+     Une carte de points ne se parcourt pas : trois cents sites se superposent en
+     quelques amas, et l'on ne peut cliquer que ce qu'on voit déjà. C'est le défaut
+     que corrigent tous les localisateurs d'agences — une LISTE à côté de la carte,
+     liée dans les deux sens. On y cherche par le nom, on clique, la carte y va.
+
+     Le facteur 0,08° cadre environ dix kilomètres autour du point : assez pour voir
+     le voisinage, assez serré pour que le site cherché soit sans ambiguïté. */
+  const allerA = (s2) => {
+    if(!s2 || s2.lat == null || s2.lon == null) return;
+    setSel(s2);
+    const d = 0.08;
+    cadrerSur({ west:s2.lon - d, east:s2.lon + d, north:s2.lat + d, south:s2.lat - d }, 0.2);
+  };
+
   const cadrerUnite = (f2) => {
     const g = f2?.geometry; if(!g) return;
     let w = 180, e2 = -180, n2 = 90, s2 = -90;
@@ -552,6 +567,48 @@ export default function MapView({ db, me, notify, go }){
             text={busy ? "" : "Aucun site ne porte de coordonnées pour ces filtres. Renseignez la latitude et la longitude dans le registre des sites."} />
         ) : (
           <div className="flex">
+            {/* ── La liste ──────────────────────────────────────────
+                Elle porte ce que la carte ne peut pas porter : un nom qu'on lit, un
+                ordre qu'on parcourt, et la possibilité d'atteindre un site que six
+                autres recouvrent. Sélection commune avec la carte — cliquer ici
+                déplace la carte, cliquer là-bas surligne ici. */}
+            <aside className="w-64 shrink-0 border-r border-slate-200 bg-white flex flex-col"
+              style={{ height:H }}>
+              <div className="px-3 py-2 border-b border-slate-100 f105 text-slate-500">
+                {fmt(filtered.length)} site(s){q ? " pour cette recherche" : ""}
+              </div>
+              <div className="flex-1 overflow-auto">
+                {filtered.slice(0, 400).map(s2 => {
+                  const actif = sel?.id === s2.id;
+                  return (
+                    <button key={s2.id} onClick={()=>allerA(s2)}
+                      /* `scrollIntoView` n'existe pas partout — jsdom ne l'implémente
+                         pas, et un rendu qui lève ici emporte l'écran entier. On le
+                         demande sans l'exiger : faire défiler la liste est un confort,
+                         pas une condition d'affichage. */
+                      ref={actif ? (el => el?.scrollIntoView?.({ block:"nearest" })) : null}
+                      className={clsx("w-full text-left px-3 py-2 border-b border-slate-50 transition-colors",
+                        actif ? "bg-sky-50 bd-l-brand" : "hover:bg-slate-50")}
+                      style={actif ? { boxShadow:"inset 3px 0 0 " + C.brand } : undefined}>
+                      <div className="flex items-center gap-1.5">
+                        <i className="w-2.5 h-2.5 rounded-full shrink-0"
+                          style={{ background: colorOf(s2) }} />
+                        <span className={clsx("f115 truncate",
+                          actif ? "font-semibold text-sky-900" : "text-slate-800")}>{s2.name}</span>
+                      </div>
+                      <div className="f10 text-slate-500 truncate pl-4">
+                        {[s2.adm3 || s2.adm2, s2.office].filter(Boolean).join(" · ")}</div>
+                    </button>);
+                })}
+                {filtered.length > 400 && (
+                  <div className="px-3 py-3 f105 text-slate-400">
+                    400 premiers affichés — affinez la recherche ou les filtres.</div>)}
+                {!filtered.length && (
+                  <div className="px-3 py-4 f105 text-slate-400">
+                    Aucun site pour ces filtres.</div>)}
+              </div>
+            </aside>
+
             <div className="flex-1 min-w-0 relative" style={{ background:"#f7fafc" }}
                  onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}>
               <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full"
@@ -614,7 +671,10 @@ export default function MapView({ db, me, notify, go }){
                     <circle key={s.id} data-site={s.code} data-name={s.name}
                       cx={proj.x(s.lon)} cy={proj.y(s.lat)} r={radiusOf(s)/Math.sqrt(view.k)}
                       fill={colorOf(s)} fillOpacity={0.82} stroke="#fff" strokeWidth={0.8/view.k}
-                      onClick={()=>setSel(s)} style={{ cursor:"pointer" }}>
+                      onClick={()=>setSel(s)} style={{ cursor:"pointer" }}
+                      /* Le point sélectionné se distingue : sans cela, avec trois cents
+                         cercles superposés, on ne sait pas lequel on vient de choisir. */
+                      {...(sel?.id === s.id ? { stroke:C.t1, strokeWidth:2/view.k } : {})}>
                       <title>{`${s.name}\n${s.adm3 || ""} · ${s.office || ""}\n${fmt(s.beneficiaries)} bénéficiaires\n${s.done}/${s.planned} visites`}</title>
                     </circle>
                   ))}
