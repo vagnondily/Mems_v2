@@ -255,3 +255,126 @@ Trois points relevés, aucun corrigé :
 - **Jeton ODK d'organisation.** Retiré parce que le serveur l'écartait en silence. Un
   jeton chiffré au niveau de l'instance, repris par les sources qui n'en déclarent pas,
   reste à faire si le besoin se confirme — le chantier 1 rend le jeton par source.
+
+---
+
+# 9. Retours d'usage — écran par écran
+
+Relevés par l'utilisateur après une prise en main complète. Ce sont des demandes
+métier : elles décrivent le travail réel, et là où l'application ne le suit pas.
+
+## Configuration — la structure des bureaux
+
+**Un bureau n'est pas une liste de chaînes.** Aujourd'hui la fiche d'un bureau porte des
+« antennes » saisies comme du texte libre. Or la réalité est un ARBRE : un *area office*
+porte plusieurs sous-bureaux et antennes ; un sous-bureau porte lui-même une ou
+plusieurs antennes.
+
+Il faut `offices.parent_id` et une fiche qui, en modification, propose la LISTE des
+bureaux existants comme rattachement — avec la possibilité d'en retirer un devenu sans
+objet. Conséquences à traiter : le cloisonnement (`officeClause`, `officeReach`) doit
+descendre l'arbre — voir un area office, c'est voir ses sous-bureaux — et un bureau ne
+peut pas devenir son propre ancêtre.
+
+**Fusionner « Bureaux » et « Périmètre des bureaux » en un seul écran.** Ce sont deux
+faces d'une même question : ce bureau existe, et il couvre ceci. Les séparer oblige à
+faire deux fois le chemin pour un seul geste.
+
+**Retirer « Sites » des paramètres.** Le registre a sa place sous Suivi-évaluation ; il
+n'a rien à faire dans la configuration, où il fait croire qu'un site est un réglage.
+
+**Le shapefile appartient à la configuration du pays.** C'est là qu'on téléverse le
+fichier ET qu'on définit adm1 à adm4 avec leurs libellés — la correspondance entre les
+attributs du fichier et les niveaux se fait dans le même écran, pas ailleurs.
+
+## Répertoire des localités
+
+- **L'export ne sort pas correctement.** À reproduire et corriger.
+- **Le répertoire doit être ENGENDRÉ par le shapefile** : la liste des unités vient du
+  découpage chargé, et non d'une saisie parallèle. Depuis cette liste, on doit pouvoir
+  sortir les sites de chaque unité **avec leur type de site**.
+
+## Indicateurs
+
+- **Modèle à télécharger, fichier à téléverser.** Comme l'import Excel des réalisations :
+  on récupère un classeur pré-rempli, on le complète hors ligne, on le renvoie, et l'on
+  voit les écarts avant de confirmer. Réutiliser `server/src/routes/import.js`.
+- **La méthode de collecte devient une liste à choisir**, plus un champ libre — c'est ce
+  qui permettra de la croiser avec les sources ODK.
+
+## Rations
+
+Le calcul doit être explicite et vérifiable :
+
+    ration (grammes / personne / jour) × nombre de jours × multiplicateur = résultat en kg
+
+Saisir la ration en grammes journaliers, puis un nombre de jours et un multiplicateur
+pour éprouver le calcul, et afficher le résultat converti en kilogrammes. Aujourd'hui le
+générateur de plan de distribution prend une ration en kg/personne/jour sans montrer
+l'opération : on ne peut pas la vérifier d'un coup d'œil.
+
+## Modèles de rapport
+
+Ajouter les **indicateurs calculés** aux blocs disponibles, et pour chacun choisir sa
+forme — graphique, tableau, ou autre — selon ce que l'indicateur supporte. Un taux se
+lit en courbe, une répartition en secteurs, une liste en tableau : le modèle doit
+laisser ce choix plutôt que l'imposer.
+
+## Plan de suivi des sites — *Suivi-évaluation → Suivi des sites*
+
+C'est la demande la plus dense de cette liste.
+
+- **Afficher adm1 à adm3 dans le tableau**, sous les libellés du pays, à côté des sites
+  configurés (rattachés par adm4 ou adm3). La planification se fait en voyant où l'on est.
+- **Planifier par filtre** : choisir une commune ou un district et planifier l'ensemble
+  de ses sites d'un geste, plutôt que ligne à ligne.
+- **Infobulles sur les symboles** de la grille mensuelle. Aujourd'hui rien n'explique ce
+  que veut dire chaque marque, et personne ne devine.
+- **Marquer ce qui a DÉJÀ été suivi** d'après les soumissions ODK Central rattachées à la
+  base — dépend du chantier 1.
+
+## Suivi tiers — *plans mensuels*
+
+Le circuit doit être automatique là où il est aujourd'hui manuel :
+
+1. **Affectation automatique des sites** au prestataire dès que le plan de suivi est
+   validé. Aujourd'hui elle est saisie à la main, ce qui la rend fausse dès le premier
+   changement de plan.
+2. Le prestataire reçoit alors un **brouillon de budget mensuel** qu'il examine et valide.
+3. **Refaire la fenêtre du bas.** Au lieu de « zones / activité / équipe », elle doit
+   porter : **adm1 à adm3**, le **nom du prestataire**, puis le **nombre de sites qu'il
+   peut consulter**. Sous le budget, il renseigne le nombre d'agents et/ou de
+   superviseurs, le nombre de jours, de trajets, de véhicules et le carburant —
+   **sans saisir le total**, qui se calcule.
+4. Il en sort un **budget modifiable, de la forme du classeur Excel partagé**, qu'il
+   complète et soumet.
+
+**Contrats et barèmes deviennent un sous-module du suivi budgétaire.** Ou bien : cliquer
+un prestataire ouvre à droite un **panneau rétractable** portant toutes ses informations.
+La seconde forme est préférable — on consulte un barème en regardant un budget, pas en
+changeant d'écran.
+
+## Cartographie — à reprendre
+
+- **Fond de carte par l'API Google Maps**, cadré sur le pays choisi.
+- Puis la **géolocalisation des sites** par-dessus.
+- Les **informations pertinentes à droite**, comme dans le localisateur d'agences qui a
+  servi de référence.
+- **Sans perdre l'intégration du shapefile** : les contours administratifs restent
+  affichés au-dessus du fond, et cliquer une unité filtre la liste.
+
+*Note technique* : Google Maps est une bibliothèque distante et une clef d'API. La
+politique de sécurité du contenu (`server/src/index.js`) devra autoriser explicitement
+ses origines, et la clef sera un réglage d'installation, jamais une constante du code.
+Peser le coût : l'implémentation actuelle en tuiles OSM ne dépend d'aucun contrat ni
+d'aucune facturation.
+
+## Déjà fait — ne pas reconstruire
+
+Deux demandes de cette liste existent déjà ; si elles n'ont pas été trouvées, c'est un
+défaut de visibilité, pas de fonction :
+
+- **Sauvegarde sélective et restauration** — *Paramètres → API*. Export JSON poste par
+  poste, restauration avec examen préalable et refus des suppressions destructrices.
+- **Cloche de notifications et page dédiée** — l'accueil ne porte plus la longue liste ;
+  la cloche de l'en-tête ouvre la destination « À traiter ».
