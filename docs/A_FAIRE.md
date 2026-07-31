@@ -369,7 +369,7 @@ ses origines, et la clef sera un réglage d'installation, jamais une constante d
 Peser le coût : l'implémentation actuelle en tuiles OSM ne dépend d'aucun contrat ni
 d'aucune facturation.
 
-## Déjà fait — ne pas reconstruire
+## Déjà fait — ne pas reconstruire (section 9)
 
 Deux demandes de cette liste existent déjà ; si elles n'ont pas été trouvées, c'est un
 défaut de visibilité, pas de fonction :
@@ -378,3 +378,74 @@ défaut de visibilité, pas de fonction :
   poste, restauration avec examen préalable et refus des suppressions destructrices.
 - **Cloche de notifications et page dédiée** — l'accueil ne porte plus la longue liste ;
   la cloche de l'en-tête ouvre la destination « À traiter ».
+
+---
+
+# 10. Les angles morts
+
+Relecture de l'ensemble des échanges depuis le début. Ce qui suit n'a jamais été
+demandé explicitement, ou l'a été si tôt qu'on l'a perdu de vue. Rien de tout cela n'est
+un défaut visible aujourd'hui — c'est précisément pourquoi il faut l'écrire.
+
+## 10.1 Ce qui a divergé sans qu'on le voie
+
+**La démonstration hors ligne ne suit plus.** Il avait été demandé qu'elle reprenne
+« toutes les options du site ». Depuis, l'application a gagné le filtre d'exercice, le
+générateur de plan de distribution, la sauvegarde, les demandes d'accès, la mise à jour,
+la liste liée de la carte, le contrôle de cohérence. La page de démonstration ignore tout
+cela. Une démonstration périmée est pire qu'aucune : elle montre un produit qui n'existe
+plus.
+
+**Des documents n'ont jamais été lus.** Plusieurs liens Drive et iCloud ont été bloqués
+par la politique réseau de cet environnement. Les fichiers Excel et les documents RBM
+joints directement ont bien été exploités, mais **ce qui n'a pas pu être ouvert peut
+contenir des exigences dont personne ne sait qu'elles manquent.** À vérifier en
+rouvrant ces documents et en les confrontant à l'application.
+
+**La validation du budget de suivi tiers était demandée À TROIS NIVEAUX.** Le circuit
+actuel en compte deux : soumission puis examen. Le troisième — vraisemblablement une
+validation hiérarchique après l'accord technique — n'existe pas. À reprendre avec la
+section 9, qui refait déjà cet écran.
+
+## 10.2 Ce qui n'a jamais été mesuré
+
+**La montée en charge.** Tout a été éprouvé sur un jeu de démonstration de 309 sites et
+52 unités administratives. Le référentiel réel de Madagascar en compte près de 18 000 au
+niveau fokontany. Or la carte dessine un cercle SVG par site sans regroupement, `/state`
+rend l'état complet en une fois, et le contrôle de cohérence parcourt tous les sites
+contre tous les contours. Aucun de ces trois points n'a été chronométré à l'échelle
+réelle. **Importer le référentiel complet et mesurer avant de promettre quoi que ce soit.**
+
+**L'accessibilité.** Jamais contrôlée : navigation au clavier, contraste, rôles ARIA,
+lecteurs d'écran. Une application de bureau pays finit par tomber sous une exigence
+d'accessibilité, et la reprendre après coup coûte dix fois plus cher.
+
+**Les tablettes.** Seul l'écran de connexion a été vérifié en étroit. Les grilles
+mensuelles, la carte et le plan de distribution sont conçus pour un grand écran. Si les
+agents de terrain saisissent sur tablette, c'est un chantier à part entière.
+
+## 10.3 Ce qui manque pour une exploitation réelle
+
+**Le fonctionnement en connectivité faible.** Ce n'est pas un détail à Madagascar :
+l'application exige une liaison permanente avec le serveur. Un bureau de terrain qui
+perd le réseau ne peut plus rien saisir. L'import Excel offre un contournement — remplir
+hors ligne, téléverser ensuite — mais il n'a jamais été présenté comme la réponse à ce
+problème, et il ne couvre pas la saisie des visites. **Décider si c'est acceptable, ou
+en faire un chantier.**
+
+**La sauvegarde périodique.** L'export JSON existe et la mise à jour en prend un avant
+d'agir, mais rien ne sauvegarde tout seul, tous les jours. Une sauvegarde qui dépend de
+quelqu'un qui y pense n'est pas une sauvegarde. Une tâche planifiée écrivant dans
+`UPDATE_BACKUP_DIR`, avec rotation.
+
+**La réinitialisation d'un mot de passe.** Il n'existe aucun chemin autonome : un
+administrateur doit intervenir. C'est un choix défendable — il n'y a pas de service de
+courriel — mais il faut au moins que l'administrateur puisse le faire depuis la fiche du
+compte, ce qui n'a jamais été vérifié.
+
+**La purge du journal d'audit.** La table `audit` grossit sans limite. Sur plusieurs
+années, elle finira par peser plus que les données. Prévoir une rétention.
+
+**Un guide pour l'utilisateur.** Le README s'adresse à qui installe. Personne n'a écrit
+comment on conçoit un plan de suivi ou on interprète l'exigence minimale — et ces deux
+gestes ne sont pas évidents.
