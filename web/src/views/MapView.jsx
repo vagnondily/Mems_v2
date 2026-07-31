@@ -453,6 +453,17 @@ export default function MapView({ db, me, notify, go }){
     cadrerSur({ west:s2.lon - d, east:s2.lon + d, north:s2.lat + d, south:s2.lat - d }, 0.2);
   };
 
+  /* Les sites de l'unité retenue sur la carte. Le rattachement fait foi quand il
+     existe ; à défaut, on retombe sur les libellés, qui sont ce dont disposent les
+     sites non rattachés — c'est moins sûr, mais c'est mieux que de n'afficher rien. */
+  const uniteRetenue = selShape
+    ? shapes.features.find(x => x.properties.pcode === selShape) : null;
+  const listeSites = uniteRetenue
+    ? filtered.filter(s2 => s2.geo_pcode === selShape
+        || (s2.geo_path || "").split("/").includes(selShape)
+        || [s2.adm1, s2.adm2, s2.adm3, s2.adm4].includes(uniteRetenue.properties.name))
+    : filtered;
+
   const cadrerUnite = (f2) => {
     const g = f2?.geometry; if(!g) return;
     let w = 180, e2 = -180, n2 = 90, s2 = -90;
@@ -575,10 +586,18 @@ export default function MapView({ db, me, notify, go }){
             <aside className="w-64 shrink-0 border-r border-slate-200 bg-white flex flex-col"
               style={{ height:H }}>
               <div className="px-3 py-2 border-b border-slate-100 f105 text-slate-500">
-                {fmt(filtered.length)} site(s){q ? " pour cette recherche" : ""}
+                {fmt(listeSites.length)} site(s){q ? " pour cette recherche" : ""}
+                {/* Le choroplèthe colorait sans jamais servir à naviguer : on voyait
+                    qu'un district portait cent sites et l'on ne pouvait pas les
+                    atteindre. Cliquer l'unité restreint la liste — la carte devient
+                    un moyen de chercher, pas seulement de constater. */}
+                {uniteRetenue && (<>
+                  {" · "}<button onClick={()=>setSelShape(null)}
+                    className="text-sky-700 hover:underline font-semibold">
+                    dans {uniteRetenue.properties.name} ✕</button></>)}
               </div>
               <div className="flex-1 overflow-auto">
-                {filtered.slice(0, 400).map(s2 => {
+                {listeSites.slice(0, 400).map(s2 => {
                   const actif = sel?.id === s2.id;
                   return (
                     <button key={s2.id} onClick={()=>allerA(s2)}
@@ -600,12 +619,12 @@ export default function MapView({ db, me, notify, go }){
                         {[s2.adm3 || s2.adm2, s2.office].filter(Boolean).join(" · ")}</div>
                     </button>);
                 })}
-                {filtered.length > 400 && (
+                {listeSites.length > 400 && (
                   <div className="px-3 py-3 f105 text-slate-400">
                     400 premiers affichés — affinez la recherche ou les filtres.</div>)}
-                {!filtered.length && (
+                {!listeSites.length && (
                   <div className="px-3 py-4 f105 text-slate-400">
-                    Aucun site pour ces filtres.</div>)}
+                    {uniteRetenue ? "Aucun site dans cette unité." : "Aucun site pour ces filtres."}</div>)}
               </div>
             </aside>
 
