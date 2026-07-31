@@ -68,7 +68,7 @@ function ActualSummary({ db }){
             <thead><tr><Th>Formulaire</Th><Th>Type</Th><Th>Extraction</Th><Th num>Enreg.</Th></tr></thead>
             <tbody>{db.odkForms.map(f=>(
               <tr key={f.id}><Td><div className="font-medium">{f.name}</div>
-                  <div className="f11 text-slate-400">/v1/projects/…/{f.formId}</div></Td>
+                  <div className="f11 text-slate-400">/api/v1/data/{f.formId}</div></Td>
                 <Td><Badge tone="b">{ {process:"Processus", output:"Output", outcome:"Outcome", sites:"Sites"}[f.kind] }</Badge></Td>
                 <Td className="text-slate-500">{f.last || "—"}</Td><Td num>{fmt(f.records)}</Td></tr>))}
             </tbody></TableWrap>
@@ -617,29 +617,29 @@ function OutcomeModal({ open, row, db, onClose, onSave }){
 }
 
 /* ── Sources de données ────────────────────────────────────
-   Le bouton « Extraire » ne lisait rien. Il ajoutait un nombre AU HASARD au compteur
-   d'enregistrements du formulaire, inscrivait « Extraction ODK Central » au journal,
-   et annonçait « Extraction lancée ». Le compteur montait, la date de dernière
-   extraction se mettait à jour, et l'on repartait convaincu que les soumissions du
-   terrain étaient entrées — alors qu'aucun appel n'avait été émis et qu'aucune donnée
-   n'existait derrière ces nombres.
-
-   C'est la pire espèce de défaut : non pas une commande sans effet, qu'on remarque,
-   mais une commande qui simule le succès. Un chiffre inventé qui se retrouve dans un
-   rapport ne se distingue plus d'un chiffre mesuré.
-
-   La déclaration des sources reste — c'est de la vraie configuration, enregistrée et
-   utilisée par les écrans d'analyse. L'extraction, elle, n'est pas branchée : on le
-   dit, au lieu d'en jouer la pantomime. */
-function Sources({ db, set, notify, can }){
+   L'extraction est désormais branchée (chantier 1 du carnet) : POST /api/odk/forms/:id/pull
+   lit vraiment les soumissions, avec pagination et jeton. Ce qui suit remplace l'ancien
+   bouton « Extraire » qui ajoutait un nombre au hasard au compteur sans avoir rien appelé —
+   la pire espèce de défaut, celle qui simule le succès plutôt que de ne rien faire. */
+function Sources({ db, set, notify, can, reload }){
+  const [busy,setBusy] = useState({});
+  const extraire = async (f) => {
+    setBusy(b=>({ ...b, [f.id]:true }));
+    try{
+      const r = await api.odkPull(f.id);
+      notify(`Extraction — ${r.nouvelles} nouvelle(s), ${r.ignorees} déjà lue(s)`
+        + (r.sansSite ? `, ${r.sansSite} sans site résolu` : ""), r.sansSite ? "warn" : "ok");
+      if(reload) await reload();
+    }catch(e){ notify(e.message, "err"); }
+    finally{ setBusy(b=>{ const c={...b}; delete c[f.id]; return c; }); }
+  };
   return (
     <>
-      <Note tone="warn"><b>Extraction non branchée.</b> Les sources se déclarent ici et servent aux
-        écrans d'analyse, mais aucune soumission n'est encore lue depuis ODK Central : la lecture
-        suppose un appel côté serveur, avec pagination et jeton, qui reste à écrire. En attendant,
-        les réalisations entrent par Programme → Import de fichiers, qui lui fonctionne de bout en bout.
-        L'adresse d'appel prévue est
-        <code className="bg-white px-1.5 py-0.5 rounded mx-1 f115">{db.settings.odkBase}/v1/projects/&#123;projet&#125;/forms/&#123;formulaire&#125;.svc/Submissions</code>.</Note>
+      <Note tool><b>Lecture ODK.</b> Chaque source déclarée ci-dessous peut être extraite directement :
+        la lecture est paginée, reprend depuis la dernière soumission lue, et rejouer l'appel n'ajoute
+        aucun doublon. Le jeton et le champ site se configurent dans Paramètres → ODK Central. Les
+        réalisations peuvent aussi entrer par Programme → Import de fichiers, pour ce qu'un formulaire
+        ne couvre pas.</Note>
       <Card flush title="Formulaires connectés" subtitle="Chaque formulaire alimente une partie de l'application">
         <TableWrap max="mh420">
           <thead><tr><Th>Formulaire</Th><Th>Identifiant</Th><Th>Type de données</Th><Th>Champ site</Th>
@@ -650,8 +650,15 @@ function Sources({ db, set, notify, can }){
               <Td><Badge tone="b">{ {process:"Suivi de processus", output:"Output", outcome:"Outcome", sites:"Registre des sites"}[f.kind] }</Badge></Td>
               <Td className="f115 text-slate-500">{f.siteField || "auto"}</Td>
               <Td>{f.xlsform ? <Badge tone="g">{f.xlsform.name} · {Object.keys(f.labels||{}).length} libellés</Badge> : <Badge>Non joint</Badge>}</Td>
-              <Td num>{fmt(f.records)}</Td><Td className="text-slate-500">{f.last || "—"}</Td>
-              <Td className="text-right f105 text-slate-400">déclarée</Td>
+              <Td num>{fmt(f.records)}</Td>
+              <Td className="text-slate-500">{f.last || "—"}
+                {f.lastError && <div className="f11 text-rose-600" title={f.lastError}>échec : {f.lastError.slice(0,40)}</div>}</Td>
+              <Td className="text-right">
+                {can("edit") && (f.hasToken || f.token)
+                  ? <Btn size="sm" kind="ghost" icon={Download} disabled={!!busy[f.id]} onClick={()=>extraire(f)}>
+                      {busy[f.id] ? "Extraction…" : "Extraire"}</Btn>
+                  : <span className="f105 text-slate-400">{(f.hasToken || f.token) ? "lecture seule" : "jeton manquant"}</span>}
+              </Td>
             </tr>))}</tbody>
         </TableWrap>
       </Card>

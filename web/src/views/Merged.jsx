@@ -114,6 +114,6 @@ export function Programme({ db, set, me, sub, setSub, notify, can, go, reload })
       </>)}
 
       {sub==="import"  && <ImportView db={db} notify={notify} can={can} />}
-      {sub==="sources" && <Sources db={db} set={set} notify={notify} can={can} />}
+      {sub==="sources" && <Sources db={db} set={set} notify={notify} can={can} reload={reload} />}
     </div>);
 }

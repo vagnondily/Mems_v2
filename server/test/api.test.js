@@ -2998,3 +2998,150 @@ test("coordonnées : un site créé avec des coordonnées est rattaché sans qu'
   db.prepare("DELETE FROM sites WHERE id IN (?,?)").run(r.body.site.id, sans.body.site.id);
   retirerContour(v);
 });
+
+/* ── ODK Central : lecture des soumissions (chantier 1 du carnet) ── */
+test("ODK Central : le test de connexion appelle vraiment le serveur, et rend son verdict", async () => {
+  await request(app).put("/api/settings").set("Authorization", `Bearer ${adminToken}`)
+    .send({ odkBase:"https://odk.test.local" });
+  const created = await request(app).put("/api/collections/odkForms").set("Authorization", `Bearer ${adminToken}`)
+    .send({ rows: [{ name:"Formulaire de test", formId:"test_form", project:"9",
+      token:"jeton-test-odk", kind:"process", siteField:"site_id", dateField:"visit_date" }] });
+  assert.equal(created.status, 200);
+  const form = db.prepare("SELECT * FROM odk_forms WHERE form_id='test_form'").get();
+  assert.ok(form, "la source a bien été enregistrée");
+  assert.ok(form.token_enc && !form.token_enc.includes("jeton-test-odk"), "le jeton est chiffré au repos");
+
+  const originalFetch = global.fetch;
+  try{
+    global.fetch = async (url, opts) => {
+      /* Forme KoBoCAT/Ona — voir odk.js pour pourquoi, et l'incertitude qui l'accompagne. */
+      assert.match(url, /\/api\/v1\/data\/test_form\?limit=1$/);
+      assert.equal(opts.headers.Authorization, "Token jeton-test-odk");
+      return { ok:true, status:200, text: async () => JSON.stringify([{ _id:1 }]) };
+    };
+    const ok = await request(app).post(`/api/odk/forms/${form.id}/test`).set("Authorization", `Bearer ${adminToken}`);
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.ok, true);
+
+    global.fetch = async () => ({ ok:false, status:401,
+      text: async () => JSON.stringify({ detail:"Invalid token." }) });
+    const refuse = await request(app).post(`/api/odk/forms/${form.id}/test`).set("Authorization", `Bearer ${adminToken}`);
+    /* Jamais 401 sur cette route : le client MEMS traite tout 401 comme une session
+       MEMS expirée et déconnecte — un jeton ODK externe refusé ne doit pas déclencher
+       cette route-là, sous peine d'éjecter l'administrateur pour une tout autre raison. */
+    assert.equal(refuse.status, 409);
+    assert.equal(refuse.body.ok, false);
+    assert.match(refuse.body.error, /Invalid token/);
+  } finally { global.fetch = originalFetch; }
+
+  db.prepare("DELETE FROM odk_forms WHERE id=?").run(form.id);
+});
+
+test("ODK Central : l'extraction pagine, résout le site, et rejouer l'appel n'ajoute rien de plus", async () => {
+  await request(app).put("/api/settings").set("Authorization", `Bearer ${adminToken}`)
+    .send({ odkBase:"https://odk.test.local" });
+  const [siteParCode, siteParNom] = db.prepare("SELECT id, code, name FROM sites LIMIT 2").all();
+  assert.ok(siteParCode && siteParNom && siteParCode.id !== siteParNom.id);
+
+  const created = await request(app).put("/api/collections/odkForms").set("Authorization", `Bearer ${adminToken}`)
+    .send({ rows: [{ name:"Suivi de site — test", formId:"pull_form", project:"9",
+      token:"jeton-pull", kind:"process", siteField:"site_id", dateField:"visit_date" }] });
+  assert.equal(created.status, 200);
+  const form = db.prepare("SELECT * FROM odk_forms WHERE form_id='pull_form'").get();
+
+  const page0 = [
+    { _uuid:"sub-1", _submission_time:"2026-01-05T10:00:00", site_id: siteParCode.code, visit_date:"2026-01-05" },
+    { _uuid:"sub-2", _submission_time:"2026-01-06T10:00:00", site_id: siteParNom.name, visit_date:"2026-01-06" },
+    { _uuid:"sub-3", _submission_time:"2026-01-07T10:00:00", site_id: "SITE-INTROUVABLE", visit_date:"2026-01-07" },
+  ];
+  const appels = [];
+  const originalFetch = global.fetch;
+  try{
+    global.fetch = async (url) => {
+      appels.push(url);
+      const u = new URL(url);
+      const start = Number(u.searchParams.get("start") || 0);
+      /* KoBoCAT/Ona rend un tableau JSON brut, pas une enveloppe { value:[...] }. */
+      return { ok:true, status:200,
+        text: async () => JSON.stringify(start === 0 ? page0 : []) };
+    };
+
+    const pull1 = await request(app).post(`/api/odk/forms/${form.id}/pull`).set("Authorization", `Bearer ${adminToken}`);
+    assert.equal(pull1.status, 200);
+    assert.equal(pull1.body.lues, 3);
+    assert.equal(pull1.body.nouvelles, 3);
+    assert.equal(pull1.body.ignorees, 0);
+    assert.equal(pull1.body.sansSite, 1, "une soumission ne trouve pas de site et le compte le dit");
+    assert.equal(pull1.body.cursor, "2026-01-07T10:00:00");
+    assert.ok(!appels[0].includes("query"), "sans curseur, le premier appel ne filtre pas encore");
+
+    const subs = db.prepare(
+      "SELECT id, site_id, site_key, periode FROM odk_submission WHERE form_id=? ORDER BY submitted_at").all(form.id);
+    assert.equal(subs.length, 3);
+    assert.equal(subs[0].site_id, siteParCode.id, "résolution par code");
+    assert.equal(subs[1].site_id, siteParNom.id, "résolution par nom, à défaut de code");
+    assert.equal(subs[2].site_id, null, "aucun site trouvé : la ligne reste, sans rattachement inventé");
+    assert.equal(subs[2].periode, "2026-01");
+
+    const apresForm = db.prepare("SELECT records, last_cursor, last_error FROM odk_forms WHERE id=?").get(form.id);
+    assert.equal(apresForm.records, 3);
+    assert.equal(apresForm.last_cursor, "2026-01-07T10:00:00");
+    assert.equal(apresForm.last_error, null);
+
+    /* Rejouer l'appel est sans risque : l'identifiant de soumission rend l'insertion idempotente. */
+    const pull2 = await request(app).post(`/api/odk/forms/${form.id}/pull`).set("Authorization", `Bearer ${adminToken}`);
+    assert.equal(pull2.status, 200);
+    assert.equal(pull2.body.nouvelles, 0);
+    assert.equal(pull2.body.ignorees, 3);
+    const dernierAppel = decodeURIComponent(appels[appels.length - 1]);
+    assert.ok(dernierAppel.includes(`"_submission_time":{"$gt":"2026-01-07T10:00:00"}`),
+      "le second appel repart du curseur enregistré, pas de zéro");
+    assert.equal(db.prepare("SELECT COUNT(*) c FROM odk_submission WHERE form_id=?").get(form.id).c, 3);
+
+    /* Les champs rencontrés alimentent l'écran d'appariement (chantier 2). */
+    const champs = await request(app).get(`/api/odk/forms/${form.id}/champs`).set("Authorization", `Bearer ${adminToken}`);
+    assert.equal(champs.status, 200);
+    const siteField = champs.body.rows.find(r => r.champ === "site_id");
+    assert.ok(siteField, "le champ site apparaît parmi les champs rencontrés");
+    assert.ok(siteField.exemples.length > 0 && siteField.exemples.length <= 3);
+    const dateField = champs.body.rows.find(r => r.champ === "visit_date");
+    assert.equal(dateField.type, "text");
+  } finally { global.fetch = originalFetch; }
+
+  db.prepare("DELETE FROM odk_submission WHERE form_id=?").run(form.id);
+  db.prepare("DELETE FROM odk_forms WHERE id=?").run(form.id);
+});
+
+test("ODK Central : un compte en lecture seule ne peut pas déclencher une extraction", async () => {
+  const created = await request(app).put("/api/collections/odkForms").set("Authorization", `Bearer ${adminToken}`)
+    .send({ rows: [{ name:"Source protégée", formId:"protected_form", project:"9",
+      token:"jeton", kind:"process" }] });
+  const form = db.prepare("SELECT * FROM odk_forms WHERE form_id='protected_form'").get();
+
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"lecteur.odk@test.local", password:"LecteurOdkMotDePasse1", first_name:"Lecteur ODK",
+            role:"viewer", tabs:["home"], active:true });
+  const lr = await login("lecteur.odk@test.local", "LecteurOdkMotDePasse1");
+  assert.equal(lr.status, 200);
+  const t = lr.body.token;
+
+  const r = await request(app).post(`/api/odk/forms/${form.id}/pull`).set("Authorization", `Bearer ${t}`);
+  assert.equal(r.status, 403);
+  const c = await request(app).post(`/api/odk/forms/${form.id}/test`).set("Authorization", `Bearer ${t}`);
+  assert.equal(c.status, 403);
+
+  db.prepare("DELETE FROM odk_forms WHERE id=?").run(form.id);
+});
+
+test("ODK Central : sans jeton enregistré, l'extraction refuse plutôt que d'échouer confusément", async () => {
+  const created = await request(app).put("/api/collections/odkForms").set("Authorization", `Bearer ${adminToken}`)
+    .send({ rows: [{ name:"Source sans jeton", formId:"no_token_form", project:"9", kind:"process" }] });
+  const form = db.prepare("SELECT * FROM odk_forms WHERE form_id='no_token_form'").get();
+  assert.equal(form.token_enc, null);
+
+  const r = await request(app).post(`/api/odk/forms/${form.id}/pull`).set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 409);
+  assert.match(r.body.error, /jeton/);
+
+  db.prepare("DELETE FROM odk_forms WHERE id=?").run(form.id);
+});

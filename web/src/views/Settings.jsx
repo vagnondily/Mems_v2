@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api.js";
 import { useGeoCascade, resetGeoCache } from "../lib/geo.js";
-import { Activity, AlertTriangle, Building2, CalendarRange, Check, ClipboardList, Download, FileText, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
+import { Activity, AlertTriangle, Building2, CalendarRange, Check, ClipboardList, Download, FileText, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X, Zap } from "lucide-react";
 import { Area, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, n, pct, r2, r5, siteRequirement, siteScore, uid } from "../lib/calc.js";
@@ -36,7 +36,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload, go }){
       {sub==="scope" && <><SetScope db={db} notify={notify} can={can} /><CoherenceGeo notify={notify} /></>}
       {sub==="indicators" && <SetIndicators db={db} set={set} notify={notify} can={can} />}
       {sub==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
-      {sub==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} />}
+      {sub==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} reload={reload} />}
       {sub==="templates" && <SetTemplates db={db} set={set} notify={notify} can={can} />}
       {sub==="api" && <><MiseAJour me={me} notify={notify} /><Sauvegarde db={db} notify={notify} /><SetApi db={db} notify={notify} /></>}
       {sub==="users" && <>
@@ -1177,32 +1177,50 @@ function SetCalc({ db, set, notify, can }){
 }
 
 /* ── ODK Central ── */
-function SetOdk({ db, set, notify, can }){
+function SetOdk({ db, set, notify, can, reload }){
   const [edit,setEdit] = useState(null);
+  const [busy,setBusy] = useState({});
   const s = db.settings; const u=(k,v)=>set(d=>{ d.settings[k]=v; return d; });
   const save = (f) => { set(d => { const i=d.odkForms.findIndex(x=>x.id===f.id);
       if(i>=0) d.odkForms[i]=f; else d.odkForms.push({ ...f, id:uid("f"), records:0, last:"", rows:[] }); return d; });
     setEdit(null); notify("Source enregistrée","ok"); };
+
+  /* Les deux seules commandes qui appellent vraiment ODK Central. Une source non
+     enregistrée n'a pas encore d'id serveur — les deux boutons n'apparaissent
+     qu'une fois la fiche enregistrée. */
+  const tester = async (f) => {
+    setBusy(b=>({ ...b, [f.id]:"test" }));
+    try{
+      const r = await api.odkTest(f.id);
+      notify(`Connexion vérifiée : le serveur répond`, "ok");
+    }catch(e){ notify(e.message, "err"); }
+    finally{ setBusy(b=>{ const c={...b}; delete c[f.id]; return c; }); }
+  };
+  const extraire = async (f) => {
+    setBusy(b=>({ ...b, [f.id]:"pull" }));
+    try{
+      const r = await api.odkPull(f.id);
+      notify(`Extraction — ${r.nouvelles} nouvelle(s), ${r.ignorees} déjà lue(s)`
+        + (r.sansSite ? `, ${r.sansSite} sans site résolu` : ""), r.sansSite ? "warn" : "ok");
+      if(reload) await reload();
+    }catch(e){ notify(e.message, "err"); }
+    finally{ setBusy(b=>{ const c={...b}; delete c[f.id]; return c; }); }
+  };
   return (
     <>
-      <Note tool><b>Adresse d'appel.</b> Un formulaire ODK Central est lu à l'adresse
-        <code className="bg-white px-1.5 py-0.5 rounded mx-1 f115">{s.odkBase}/v1/projects/&#123;projet&#125;/forms/&#123;formulaire&#125;.svc/Submissions</code>
-        avec un jeton dans l'en-tête d'autorisation. Chaque source déclare le type de données qu'elle apporte,
-        le champ qui identifie le site, et peut recevoir son XLSForm pour restituer les libellés des questions
-        à la place des noms techniques.</Note>
+      <Note tool><b>Adresse d'appel.</b> Un formulaire est lu à l'adresse
+        <code className="bg-white px-1.5 py-0.5 rounded mx-1 f115">{s.odkBase}/api/v1/data/&#123;formulaire&#125;</code>
+        avec le jeton dans l'en-tête <code className="bg-white px-1 rounded f115">Authorization: Token …</code>
+        — la convention KoBoCAT/Ona dont MODA hérite, pas l'API OData d'ODK Central. Chaque source déclare
+        le type de données qu'elle apporte, le champ qui identifie le site, et peut recevoir son XLSForm pour
+        restituer les libellés des questions à la place des noms techniques.</Note>
       <div className="grid gap-4" style={{gridTemplateColumns:"340px 1fr"}}>
-        {/* Deux commandes ont disparu d'ici, et c'est un gain.
-
-            « Tester la connexion » ne testait rien : elle affichait un message et
-            s'arrêtait là. Un bouton qui prétend éprouver quelque chose et ne l'éprouve
-            pas est pire que son absence — on le presse, il ne se plaint pas, et l'on
-            en conclut que le serveur répond.
-
-            « Jeton général » était refusé côté serveur, en silence : le dictionnaire
-            des réglages n'accepte aucun secret en clair, et la clé était simplement
-            ignorée à l'enregistrement. On saisissait un jeton, le champ semblait le
-            retenir, et il n'existait nulle part au rechargement. Le jeton se porte par
-            SOURCE, où il est chiffré — c'est le seul chemin qui fonctionne. */}
+        {/* « Jeton général » reste absent d'ici, et c'est volontaire : il était refusé
+            côté serveur, en silence — le dictionnaire des réglages n'accepte aucun
+            secret en clair, et la clé était simplement ignorée à l'enregistrement.
+            Le jeton se porte par SOURCE, où il est chiffré (icône ⚡ pour l'éprouver,
+            icône ↓ pour extraire, dans le tableau ci-contre) — c'est le seul chemin
+            qui fonctionne. */}
         <Card title="Serveur">
           <Field label="Adresse du serveur"><Input value={s.odkBase} onChange={e=>u("odkBase",e.target.value)} placeholder="https://odk-central.example.org" /></Field>
           <Field label="Identifiant de projet par défaut"><Input value={s.odkProject||""} onChange={e=>u("odkProject",e.target.value)} placeholder="1" /></Field>
@@ -1215,7 +1233,7 @@ function SetOdk({ db, set, notify, can }){
             token:"", kind:"process", tag:"", siteField:"", dateField:"", labels:{}, xlsform:null })}>Nouvelle source</Btn>}>
           <TableWrap max="mh440">
             <thead><tr><Th>Formulaire</Th><Th>Projet / ID</Th><Th>Type de données</Th><Th>Activité</Th>
-              <Th>Champ site</Th><Th>Jeton</Th><Th>XLSForm</Th><Th num>Enreg.</Th><Th /></tr></thead>
+              <Th>Champ site</Th><Th>Jeton</Th><Th>XLSForm</Th><Th num>Enreg.</Th><Th>Dernière extraction</Th><Th /></tr></thead>
             <tbody>{db.odkForms.map(f=>(
               <tr key={f.id} className="hover:bg-sky-50">
                 <Td className="font-medium">{f.name}</Td>
@@ -1223,10 +1241,23 @@ function SetOdk({ db, set, notify, can }){
                 <Td><Badge tone="b">{ {process:"Suivi de processus", output:"Output", outcome:"Outcome", sites:"Registre des sites"}[f.kind] }</Badge></Td>
                 <Td>{f.tag ? <Badge>{f.tag}</Badge> : <span className="text-slate-400">—</span>}</Td>
                 <Td className="f115">{f.siteField || <span className="text-amber-700">à définir</span>}</Td>
-                <Td>{f.token ? <Badge tone="g">présent</Badge> : <Badge tone="r">manquant</Badge>}</Td>
+                {/* `f.hasToken` vient du serveur, à la lecture ; `f.token` porte la valeur tout
+                    juste tapée puis enregistrée, avant que l'aller-retour serveur n'ait mis à jour
+                    `hasToken` dans l'état local. Ne tester que `hasToken` faisait disparaître les
+                    boutons Tester/Extraire juste après avoir configuré une source, jusqu'au
+                    prochain rechargement complet — les deux signaux valent « jeton présent ». */}
+                <Td>{(f.hasToken || f.token) ? <Badge tone="g">présent</Badge> : <Badge tone="r">manquant</Badge>}</Td>
                 <Td>{f.xlsform ? <Badge tone="g">{Object.keys(f.labels||{}).length} libellés</Badge> : <Badge>non joint</Badge>}</Td>
                 <Td num>{fmt(f.records)}</Td>
-                <Td className="text-right">
+                <Td className="text-slate-500">{f.last || "—"}
+                  {f.lastError && <div className="f11 text-rose-600" title={f.lastError}>échec : {f.lastError.slice(0,40)}</div>}</Td>
+                <Td className="text-right whitespace-nowrap">
+                  {can("edit") && (f.hasToken || f.token) && <button disabled={!!busy[f.id]} title="Tester la connexion"
+                    onClick={()=>tester(f)} className="text-slate-400 m-ico p-1 disabled:opacity-40">
+                    <Zap size={13} className={busy[f.id]==="test" ? "animate-pulse" : ""} /></button>}
+                  {can("edit") && (f.hasToken || f.token) && <button disabled={!!busy[f.id]} title="Extraire les soumissions"
+                    onClick={()=>extraire(f)} className="text-slate-400 m-ico p-1 disabled:opacity-40">
+                    <Download size={13} className={busy[f.id]==="pull" ? "animate-pulse" : ""} /></button>}
                   {can("edit") && <button onClick={()=>setEdit(f)} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
                   {can("del") && <button onClick={()=>set(d=>{ d.odkForms=d.odkForms.filter(x=>x.id!==f.id); return d; })}
                     className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</Td>
@@ -1242,7 +1273,7 @@ function OdkModal({ open, form, db, onClose, onSave, notify }){
   useEffect(()=>{ setF(form ? { ...form, labels:{ ...(form.labels||{}) } } : {}); },[form]);
   if(!open) return null;
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
-  const url = `${db.settings.odkBase}/v1/projects/${f.project||"{projet}"}/forms/${f.formId||"{formulaire}"}.svc/Submissions`;
+  const url = `${db.settings.odkBase}/api/v1/data/${f.formId||"{formulaire}"}`;
   const fields = Object.keys((f.rows||[])[0] || {});
   const attachXls = async (file) => {
     setBusy(true);
@@ -1274,10 +1305,13 @@ function OdkModal({ open, form, db, onClose, onSave, notify }){
       subtitle="Connexion, type de données, correspondance des champs et libellés"
       footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
         <Btn icon={Save} disabled={!f.name||!f.formId} onClick={()=>onSave(f)}>Enregistrer</Btn></>}>
-      <Field label="Coller l'adresse complète du formulaire" hint="Le projet et l'identifiant sont extraits automatiquement">
-        <Input placeholder={`${db.settings.odkBase}/v1/projects/1/forms/suivi_site`} onChange={e=>{
-          const m = /\/v1\/projects\/([^/]+)\/forms\/([^/.?#]+)/.exec(e.target.value);
-          if(m){ u("project",m[1]); setF(p=>({...p, project:m[1], formId:m[2]})); } }} /></Field>
+      <Field label="Coller l'adresse complète du formulaire" hint="L'identifiant est extrait automatiquement">
+        <Input placeholder={`${db.settings.odkBase}/api/v1/data/suivi_site`} onChange={e=>{
+          /* Forme réelle KoBoCAT/Ona : .../api/v1/data/{id}, sans segment de projet. */
+          const kobo = /\/api\/v1\/data\/([^/?#]+)/.exec(e.target.value);
+          if(kobo){ setF(p=>({...p, formId:kobo[1]})); return; }
+          const central = /\/v1\/projects\/([^/]+)\/forms\/([^/.?#]+)/.exec(e.target.value);
+          if(central){ setF(p=>({...p, project:central[1], formId:central[2]})); } }} /></Field>
       <div className="grid grid-cols-3 gap-x-4">
         <Field label="Nom du formulaire" className="col-span-2"><Input value={f.name||""} onChange={e=>u("name",e.target.value)} /></Field>
         <Field label="Identifiant du projet"><Input value={f.project||""} onChange={e=>u("project",e.target.value)} /></Field>

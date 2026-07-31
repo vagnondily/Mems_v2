@@ -208,6 +208,13 @@ export const api = {
   deleteTpmExpense:(id)          => call("DELETE", `/tpm/expenses/${encodeURIComponent(id)}`),
   tpmSuggest:     (q="")         => call("GET", `/tpm/suggest${q}`),
 
+  /* ODK Central : lecture des soumissions. `odkTest` est le vrai « Tester la
+     connexion » — l'ancien bouton n'appelait rien. `odkPull` extrait par pages
+     depuis le curseur enregistré côté serveur ; rejouer l'appel ne double rien. */
+  odkTest:        (id)           => call("POST", `/odk/forms/${encodeURIComponent(id)}/test`, {}),
+  odkPull:        (id)           => call("POST", `/odk/forms/${encodeURIComponent(id)}/pull`, {}),
+  odkChamps:      (id)           => call("GET", `/odk/forms/${encodeURIComponent(id)}/champs`),
+
   /* Pays et vocabulaire du découpage. Cette première version sert Madagascar ;
      ces routes existent pour que le pays suivant soit un acte de configuration. */
   countries:      ()             => call("GET", "/country"),

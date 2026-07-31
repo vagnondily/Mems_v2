@@ -181,7 +181,7 @@ r.get("/state", (req, res) => {
     id:f.id, rev:f.rev, name:f.name, formId:f.form_id, project:f.project||"", kind:f.kind,
     tag:f.activity_tag||"", siteField:f.site_field||"", dateField:f.date_field||"",
     labels: J(f.labels, {}), records:f.records, last:f.last_pull||"",
-    hasToken: !!f.token_enc, rows: [] }));
+    lastError:f.last_error||"", hasToken: !!f.token_enc, rows: [] }));
 
   /* Ce que l'exploitant autorise comme fond de carte. Le client ne le devine pas :
      une URL de tuiles écrite dans l'interface serait chargée même là où la politique

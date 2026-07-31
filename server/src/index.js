@@ -32,6 +32,7 @@ import userRoutes from "./routes/users.js";
 import analyticsRoutes from "./routes/analytics.js";
 import caseloadRoutes from "./routes/caseload.js";
 import importRoutes from "./routes/import.js";
+import odkRoutes from "./routes/odk.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 migrate(path.join(here, "..", "migrations"));
@@ -154,6 +155,7 @@ app.use("/api/pdd", pddRoutes);
 app.use("/api/backup", backupRoutes);
 app.use("/api/update", updateRoutes);
 app.use("/api/tpm", tpmRoutes);
+app.use("/api/odk", odkRoutes);
 app.use("/api", collectionRoutes);
 
 /* En production le serveur sert aussi le frontend compilé. */
