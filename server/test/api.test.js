@@ -284,6 +284,39 @@ test("cloisonnement : un compte rattaché à un bureau ne voit que ses sites", a
 
 /* Le cloisonnement ne valait que pour les sites : visites, distributions, paramètres et
    journal partaient en clair vers tous les bureaux. Ce test verrouille la correction. */
+test("exercice : /state sert l'année demandée, et l'année en cours par défaut", async () => {
+  /* Tout ce qui est daté était figé sur l'année du calendrier : au 1er janvier, le
+     travail de l'exercice écoulé devenait invisible d'un seul coup, et rien ne
+     permettait de préparer le suivant. */
+  const enCours = new Date().getFullYear();
+
+  const defaut = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(defaut.status, 200);
+  assert.equal(defaut.body.year, enCours, "sans argument, l'exercice est celui en cours");
+  assert.equal(defaut.body.anneeEnCours, enCours);
+  assert.ok(Array.isArray(defaut.body.annees) && defaut.body.annees.length,
+    "les exercices disponibles sont annoncés");
+  assert.ok(defaut.body.annees.includes(enCours) && defaut.body.annees.includes(enCours + 1),
+    "l'année en cours et la suivante sont toujours proposées — on prépare avant d'avoir des lignes");
+
+  /* Un exercice explicite ne rend QUE ses lignes datées. */
+  const precedent = await request(app).get(`/api/state?year=${enCours - 1}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(precedent.body.year, enCours - 1);
+  assert.ok(precedent.body.pdd.every(p => p.year === enCours - 1),
+    "le plan de distribution ne mélange pas les exercices");
+  const attendu = db.prepare("SELECT COUNT(*) c FROM pdd WHERE year=?").get(enCours - 1).c;
+  assert.equal(precedent.body.pdd.length, attendu);
+
+  /* Une année absurde ne fait pas tomber la route : on retombe sur l'exercice en cours. */
+  for(const mauvais of ["1066", "abcd", "99999", ""]){
+    const r = await request(app).get(`/api/state?year=${mauvais}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    assert.equal(r.status, 200, `year=${mauvais} doit rester servi`);
+    assert.equal(r.body.year, enCours, `year=${mauvais} retombe sur l'année en cours`);
+  }
+});
+
 test("cloisonnement : visites, distributions, paramètres et journal suivent le bureau", async () => {
   const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
   const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
@@ -292,12 +325,16 @@ test("cloisonnement : visites, distributions, paramètres et journal suivent le 
 
   /* Chaque collection doit contenir exactement les lignes du bureau — ni plus, ni moins —
      et le jeu d'essai doit comporter des lignes d'ailleurs, sans quoi le test ne prouve rien. */
-  for(const [table, key, label] of [["visits","visits","visites"],
-                                    ["pdd","pdd","distributions"],
-                                    ["coverage_params","params","paramètres"]]){
-    const sien = db.prepare(`SELECT COUNT(*) c FROM ${table} WHERE office_id=?`).get(office.id).c;
+  /* Le plan de distribution est en outre borné à l'exercice affiché : /state ne sert
+     que l'année demandée, faute de quoi on ne pourrait ni relire l'exercice écoulé ni
+     préparer le suivant. Le cloisonnement par bureau, lui, ne change pas. */
+  const exercice = ` AND year = ${new Date().getFullYear()}`;
+  for(const [table, key, label, an] of [["visits","visits","visites",""],
+                                    ["pdd","pdd","distributions",exercice],
+                                    ["coverage_params","params","paramètres",""]]){
+    const sien = db.prepare(`SELECT COUNT(*) c FROM ${table} WHERE office_id=?${an}`).get(office.id).c;
     const ailleurs = db.prepare(
-      `SELECT COUNT(*) c FROM ${table} WHERE office_id IS NULL OR office_id<>?`).get(office.id).c;
+      `SELECT COUNT(*) c FROM ${table} WHERE (office_id IS NULL OR office_id<>?)${an}`).get(office.id).c;
     assert.ok(ailleurs > 0, `le jeu d'essai contient des ${label} d'autres bureaux`);
     assert.equal(st.body[key].length, sien,
       `${label} : le bureau reçoit ses ${sien} ligne(s), et rien des ${ailleurs} autres`);

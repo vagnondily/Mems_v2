@@ -37,7 +37,31 @@ r.get("/state", (req, res) => {
 
   const siteRows = db.prepare(
     `SELECT t.* FROM sites t WHERE 1=1 ${oc.sql} ORDER BY t.code`).all(...oc.args);
-  const year = new Date().getFullYear();
+  /* ── L'exercice ────────────────────────────────────────────
+     Tout ce qui est daté — grille mensuelle des sites, outputs, plan de collecte,
+     plan de distribution — était figé sur l'année du calendrier. Il n'existait aucun
+     moyen de consulter l'exercice précédent ni de préparer le suivant : au 1er
+     janvier, le travail de l'année écoulée devenait invisible d'un seul coup.
+
+     L'année demandée arrive en paramètre et vaut, à défaut, celle en cours — c'est
+     l'exercice sur lequel on travaille neuf fois sur dix, et personne ne devrait
+     avoir à le choisir pour commencer. */
+  const enCours = new Date().getFullYear();
+  const demande = Number.parseInt(req.query.year, 10);
+  const year = Number.isFinite(demande) && demande >= 2000 && demande <= 2100 ? demande : enCours;
+
+  /* Les exercices réellement disponibles, pour que le sélecteur ne propose pas des
+     années vides. L'année en cours et la suivante y figurent toujours : on prépare un
+     plan avant qu'il n'existe une seule ligne. */
+  const annees = [...new Set([
+    ...db.prepare("SELECT DISTINCT year y FROM outputs").all().map(r2 => r2.y),
+    ...db.prepare("SELECT DISTINCT year y FROM pdd").all().map(r2 => r2.y),
+    ...db.prepare("SELECT DISTINCT year y FROM site_months").all().map(r2 => r2.y),
+    ...db.prepare(
+      "SELECT DISTINCT CAST(strftime('%Y', visit_date) AS INTEGER) y FROM visits WHERE visit_date IS NOT NULL")
+      .all().map(r2 => r2.y),
+    enCours, enCours + 1, year,
+  ])].filter(y => Number.isFinite(y) && y >= 2000 && y <= 2100).sort((a, b) => b - a);
   const months = db.prepare("SELECT * FROM site_months WHERE year=?").all(year);
   const byId = {};
   siteRows.forEach(s => { byId[s.id] = Array.from({length:12}, () =>
@@ -106,8 +130,8 @@ r.get("/state", (req, res) => {
     values: Object.fromEntries(popVals.filter(v=>v.population_id===p.id).map(v=>[v.year, v.value])) }));
 
   const pdd = db.prepare(
-    `SELECT t.* FROM pdd t WHERE 1=1 ${oc.sql} ORDER BY t.year, t.month, t.bureau`)
-    .all(...oc.args).map(p => ({
+    `SELECT t.* FROM pdd t WHERE t.year = ? ${oc.sql} ORDER BY t.month, t.bureau`)
+    .all(year, ...oc.args).map(p => ({
     /* office_id doit figurer ici : le client renvoie la collection telle qu'il l'a reçue,
        et un champ absent est réécrit à NULL par la synchronisation — le rattachement au
        bureau était donc effacé à chaque enregistrement du plan de distribution. */
@@ -170,7 +194,8 @@ r.get("/state", (req, res) => {
     db.prepare("SELECT key, value FROM settings").all().map(s => [s.key, J(s.value, s.value)]));
 
   res.json({
-    year, me: { id:u.id, role:u.role, office_id:u.office_id,
+    year, annees, anneeEnCours: enCours,
+    me: { id:u.id, role:u.role, office_id:u.office_id,
       country_code:u.country_code || null },
     offices, partners, categories: cats, sites, params, visits, indicators, outcomes,
     /* Les sous-types de point d'intérêt : la table existait, le semis la remplissait,

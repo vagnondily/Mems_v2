@@ -94,7 +94,9 @@ export const api = {
   logout:      ()            => call("POST", "/auth/logout", {}),
   me:          ()            => call("GET", "/auth/me"),
   changePassword: (current, next) => call("POST", "/auth/password", { current, next }),
-  state:       ()            => call("GET", "/state"),
+  /* L'exercice voyage avec la demande d'état : le serveur ne sert que les lignes
+     datées de cette année-là. Sans argument, il retombe sur l'année en cours. */
+  state:       (annee)       => call("GET", `/state${annee ? `?year=${encodeURIComponent(annee)}` : ""}`),
 
   createSite:  (s)           => call("POST", "/sites", s),
   updateSite:  (id, s)       => call("PUT", `/sites/${encodeURIComponent(id)}`, s),

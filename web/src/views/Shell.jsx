@@ -146,6 +146,37 @@ function PaysCourant({ db }){
     </label>);
 }
 
+/* ── L'exercice ────────────────────────────────────────────
+   Tout ce qui est daté était figé sur l'année du calendrier : impossible de relire
+   l'exercice écoulé ni de préparer le suivant, et au 1er janvier le travail de
+   l'année précédente disparaissait d'un coup de tous les écrans.
+
+   Il est posé ici, à côté du pays, parce qu'il porte la même nature : ce n'est pas
+   un filtre d'un écran, c'est le cadre dans lequel on travaille, et il doit être
+   visible de partout plutôt que répété douze fois. Il s'ouvre sur l'année en cours —
+   celle sur laquelle on travaille neuf fois sur dix.
+
+   À la différence du pays, changer d'exercice ne recharge pas la page : le
+   vocabulaire, le découpage et les libellés ne changent pas d'une année à l'autre,
+   seules changent les lignes datées. Un rechargement complet serait ici une gêne
+   gratuite. */
+function ExerciceCourant({ db, annee, setAnnee }){
+  const liste = db?.annees?.length ? db.annees : [annee];
+  if(liste.length < 2) return null;
+  return (
+    <label className="flex items-center gap-1.5 f115 text-white/80"
+      title="Exercice affiché par tous les écrans datés">
+      <CalendarRange size={14} className="opacity-80" />
+      <select value={annee} aria-label="Exercice"
+        onChange={e => setAnnee(Number(e.target.value))}
+        className="bg-transparent text-white f115 font-semibold border-none outline-none cursor-pointer">
+        {liste.map(y => (
+          <option key={y} value={y} className="text-slate-800">
+            {y}{y === db?.anneeEnCours ? " · en cours" : ""}</option>))}
+      </select>
+    </label>);
+}
+
 /* La cloche. Le décompte est celui des alertes de priorité haute : mettre le total
    ferait un nombre à trois chiffres en permanence, qu'on cesse de lire au bout d'un
    jour. Zéro alerte haute n'affiche pas de pastille — un badge « 0 » est du bruit. */
@@ -169,7 +200,8 @@ function Cloche({ db, actif, onClick }){
 
 /* `allowed` est calculé une seule fois par App (resolveTabs) et transmis ici :
    deux règles divergentes laissaient un compte sans aucune navigation. */
-function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, allowed = [] }){
+function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, allowed = [],
+                 annee, setAnnee }){
   const [menu,setMenu] = useState(false);
   useEffect(()=>{ const h=()=>setMenu(false);
     window.addEventListener("click",h); return ()=>window.removeEventListener("click",h); },[]);
@@ -208,6 +240,7 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, allowed = [
               <x.icon size={15} className={tab===x.id ? "" : "opacity-80"} />{x.label}</button>))}
         </nav>
         <div className="ml-auto flex items-center gap-2.5 shrink-0">
+          <ExerciceCourant db={db} annee={annee} setAnnee={setAnnee} />
           <PaysCourant db={db} />
           <SyncBadge sync={sync} />
           <Cloche db={db} actif={tab==="alerts"} onClick={()=>setTab("alerts")} />

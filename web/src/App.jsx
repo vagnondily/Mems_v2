@@ -141,6 +141,10 @@ export default function App(){
   const [phase, setPhase] = useState("boot");
   const [fatal, setFatal] = useState("");
   const [sync, setSync] = useState({ state:"saved" });
+  /* L'exercice affiché. Il s'ouvre sur l'année en cours et n'est pas conservé d'une
+     session à l'autre : au 1er janvier, on doit retrouver la nouvelle année sans
+     avoir à y penser — c'est précisément ce que « par défaut » veut dire ici. */
+  const [annee, setAnneeState] = useState(() => new Date().getFullYear());
   const queue = useRef(null);
   const prevDb = useRef(null);
 
@@ -198,10 +202,22 @@ export default function App(){
     });
   }, []);
 
-  const loadState = useCallback(async () => {
-    const d = hydrate(await api.state());
+  const loadState = useCallback(async (an) => {
+    const d = hydrate(await api.state(an ?? annee));
     prevDb.current = d; setDb(d); return d;
-  }, [hydrate]);
+  }, [hydrate, annee]);
+
+  /* Changer d'exercice relit l'état : les collections datées — grille mensuelle,
+     outputs, plan de distribution, plan de collecte — sont celles de cette année-là.
+     La file d'écriture est vidée AVANT, sinon une saisie encore en vol partirait
+     étiquetée de l'année qu'on vient de quitter. */
+  const setAnnee = useCallback(async (an) => {
+    if(an === annee) return;
+    try{ await queue.current?.flushAll(); }catch(e){}
+    setAnneeState(an);
+    try{ await loadState(an); }
+    catch(e){ notify("Impossible de charger l'exercice " + an, "err"); }
+  }, [annee, loadState, notify]);
 
   /* Après un enregistrement réussi, le serveur rend les révisions telles qu'elles sont
      désormais. On les recopie dans l'état local, et dans la référence de comparaison
@@ -358,7 +374,8 @@ export default function App(){
 
   return (<>
     <Shell db={db} me={me} tab={view} sub={subs[view]} setTab={setTab} allowed={allowed}
-           onLogout={onLogout} sync={sync} notify={notify}>
+           onLogout={onLogout} sync={sync} notify={notify}
+           annee={annee} setAnnee={setAnnee}>
       <Boundary reset={view + "|" + (subs[view] || "")}>
         {view==="home" && <Home db={db} me={me} go={setTab} />}
         {view==="alerts" && <Alerts db={db} go={setTab} />}

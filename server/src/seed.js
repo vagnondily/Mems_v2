@@ -239,17 +239,24 @@ if(info){
         };
         insSite.run(row);
         let last = null;
-        for(let m=0;m<12;m++){
-          const active = row.status === "Active" ? 1 : 0;
-          const planned = (active && m <= new Date().getMonth() && Math.random() < 0.3) ? 1 : 0;
-          const done = (planned && Math.random() < 0.68) ? 1 : 0;
-          insMonth.run(id, YEAR, m, active, planned, done, planned ? partner : null,
-                       done ? responsible : null);
-          if(done){
-            const date = `${YEAR}-${String(m+1).padStart(2,"0")}-${String(3+Math.floor(Math.random()*24)).padStart(2,"0")}`;
-            insVisit.run(newId("visit"), id, officeId[office], date, tag, responsible, "340943",
-              Math.random() < 0.8 ? "Validé" : "À valider");
-            last = date;
+        /* Deux exercices, pas un seul. L'exercice écoulé est complet — douze mois
+           planifiés et réalisés — et celui en cours s'arrête au mois courant. Sans
+           cela, le sélecteur d'exercice n'aurait qu'une seule année à proposer et
+           l'on ne pourrait ni comparer, ni vérifier que le filtre filtre. */
+        for(const an of [YEAR - 1, YEAR]){
+          const dernierMois = an < YEAR ? 11 : new Date().getMonth();
+          for(let m=0;m<12;m++){
+            const active = row.status === "Active" ? 1 : 0;
+            const planned = (active && m <= dernierMois && Math.random() < 0.3) ? 1 : 0;
+            const done = (planned && Math.random() < 0.68) ? 1 : 0;
+            insMonth.run(id, an, m, active, planned, done, planned ? partner : null,
+                         done ? responsible : null);
+            if(done){
+              const date = `${an}-${String(m+1).padStart(2,"0")}-${String(3+Math.floor(Math.random()*24)).padStart(2,"0")}`;
+              insVisit.run(newId("visit"), id, officeId[office], date, tag, responsible, "340943",
+                Math.random() < 0.8 ? "Validé" : "À valider");
+              last = date;
+            }
           }
         }
         if(!last && n % 6 === 0) last = `${YEAR-1}-${String(1+Math.floor(Math.random()*12)).padStart(2,"0")}-12`;
@@ -260,10 +267,13 @@ if(info){
     const insOut = db.prepare(`INSERT INTO outputs (id,activity_tag,year,month,planned,actual,adjust)
                                VALUES (?,?,?,?,?,?,?)`);
     ["URT","ACL","CAR","SMP","NTA","MPA"].forEach(tag => {
-      for(let m=0;m<=new Date().getMonth();m++){
-        const planned = 4000 + Math.floor(Math.random()*9000);
-        insOut.run(newId("out"), tag, YEAR, m, planned,
-          Math.round(planned*(0.62+Math.random()*0.45)), pick(["none","none","up","down","new"]));
+      for(const an of [YEAR - 1, YEAR]){
+        const dernierMois = an < YEAR ? 11 : new Date().getMonth();
+        for(let m=0;m<=dernierMois;m++){
+          const planned = 4000 + Math.floor(Math.random()*9000);
+          insOut.run(newId("out"), tag, an, m, planned,
+            Math.round(planned*(0.62+Math.random()*0.45)), pick(["none","none","up","down","new"]));
+        }
       }
     });
 
@@ -297,7 +307,15 @@ if(info){
       for(const i of idx){ const b = BUREAUX.find(o => o[0] === office); if(b) bureauDe[GEO[i][3]] = b; }
     /* Filet : une commune non attribuée revient au premier bureau. */
     GEO.forEach(g => { bureauDe[g[3]] = bureauDe[g[3]] || BUREAUX[0]; });
-    [Math.max(0,new Date().getMonth()-1), new Date().getMonth()].forEach(mi =>
+    /* Le plan de distribution sur deux exercices : quatre mois de l'année écoulée,
+       puis les deux mois en cours. C'est peu, mais c'est ce qu'il faut pour que le
+       filtre d'exercice ait quelque chose à filtrer et pour comparer d'une année à
+       l'autre. */
+    const MOIS_PDD = [
+      ...[2, 5, 8, 11].map(mi => [YEAR - 1, mi]),
+      ...[Math.max(0, new Date().getMonth() - 1), new Date().getMonth()].map(mi => [YEAR, mi]),
+    ];
+    MOIS_PDD.forEach(([an, mi]) =>
       GEO.forEach(g => { const [oname, code] = bureauDe[g[3]];
         ["GD","PREVMA"].forEach(actType => {
           if(Math.random() < 0.25) return;
@@ -309,7 +327,7 @@ if(info){
           const cb = Math.random()<0.14 ? 0 : 0.55+Math.random()*0.5;
           const cr = Math.random()<0.10 ? 0 : 0.60+Math.random()*0.45;
           const cd = Math.random()<0.14 ? 0 : Math.min(cr, 0.5+Math.random()*0.75);
-          insPdd.run({ id:newId("pdd"), year:YEAR, month:mi, wbs: actType==="GD"?"URT1":"URT2",
+          insPdd.run({ id:newId("pdd"), year:an, month:mi, wbs: actType==="GD"?"URT1":"URT2",
             act_type:actType, activity_tag: actType==="GD"?"URT_GD":"URT_PREV",
             act_main: actType==="GD" ? "Distribution générale sécheresse" : "Prévention de la malnutrition aiguë",
             office_id: officeId[oname], bureau: code, region:g[1], district:g[2], commune:g[3],

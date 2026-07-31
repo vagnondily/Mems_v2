@@ -147,7 +147,10 @@ function ProcessData({ db, set, notify, can, go }){
    vu ce qui va changer. */
 function ImportView({ db, notify, can }){
   const [kind,setKind]   = useState("caseload");
-  const [year,setYear]   = useState(db.year);
+  /* Le modèle est préparé pour l'exercice affiché : importer dans une autre année que
+     celle qu'on regarde était le meilleur moyen de déposer douze mois de réalisations
+     au mauvais endroit. */
+  const year = db.year;
   const [busy,setBusy]   = useState("");
   const [prev,setPrev]   = useState(null);      /* prévisualisation du lot */
   const [hist,setHist]   = useState([]);
@@ -218,9 +221,8 @@ function ImportView({ db, notify, can }){
         <Card title="① Télécharger le modèle">
           <Field label="Données à importer">
             <Select value={kind} onChange={e=>{setKind(e.target.value); setPrev(null);}} options={KINDS} /></Field>
-          <Field label="Exercice">
-            <Select value={String(year)} onChange={e=>setYear(+e.target.value)}
-              options={[db.year-1, db.year, db.year+1].map(y=>[String(y),String(y)])} /></Field>
+          <Field label="Exercice" hint="Celui choisi dans l'en-tête — changez-y d'année pour importer ailleurs">
+            <Input value={String(year)} disabled /></Field>
           <Btn icon={Download} onClick={modele} disabled={busy==="modele"}>
             {busy==="modele" ? "Préparation…" : "Télécharger le modèle Excel"}</Btn>
 
@@ -322,7 +324,10 @@ function ImportView({ db, notify, can }){
      réalisation = bénéficiaires servis / bénéficiaires planifiés */
 function CaseloadView({ db, notify, can }){
   const [level,setLevel] = useState("adm3");
-  const [year,setYear]   = useState(db.year);
+  /* L'exercice est celui choisi dans l'en-tête. Il y avait ici un second sélecteur
+     d'année, indépendant : on changeait l'un, l'autre restait, et deux écrans voisins
+     montraient des exercices différents sans que rien ne l'indique. */
+  const year = db.year;
   const [month,setMonth] = useState("");          /* "" = toute l'année */
   const [tag,setTag]     = useState("");          /* "" = total dédoublonné */
   const [sel,setSel]     = useState({ adm1:"", adm2:"" });
@@ -380,8 +385,6 @@ function CaseloadView({ db, notify, can }){
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         <Select value={level} onChange={e=>setLevel(e.target.value)} className="mi-py1 mi-xs mi-wauto"
           options={[["adm1","Par région"],["adm2","Par district"],["adm3","Par commune"],["adm4","Par fokontany"]]} />
-        <Select value={String(year)} onChange={e=>setYear(+e.target.value)} className="mi-py1 mi-xs mi-wauto"
-          options={[db.year-1, db.year, db.year+1].map(y=>[String(y), String(y)])} />
         <Select value={month} onChange={e=>setMonth(e.target.value)} empty="Toute l'année"
           options={MONTHS_L.map((m,i)=>[String(i), m])} className="mi-py1 mi-xs mi-wauto" />
         <Select value={tag} onChange={e=>setTag(e.target.value)} empty="Toutes activités (dédoublonné)"
@@ -456,7 +459,7 @@ function CaseloadView({ db, notify, can }){
 }
 
 function OutputData({ db, set, notify, can }){
-  const [tab,setTab] = useState("outputs"); const [year,setYear] = useState(db.year);
+  const [tab,setTab] = useState("outputs");
   const cell = (tag,mi) => db.outputs.find(o=>o.tag===tag && o.month===mi);
   const upsert = (tag,mi,patch) => set(d => { let o = d.outputs.find(x=>x.tag===tag && x.month===mi);
     if(!o){ o = { id:uid("o"), tag, month:mi, planned:0, actual:0, adjust:"none", note:"" }; d.outputs.push(o); }
