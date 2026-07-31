@@ -48,12 +48,12 @@ supplémentaires, limites de débit, etc.).
 
 **À faire en tout premier, avant tout autre travail sur ce chantier ou sur le 2** :
 retester `POST /odk/forms/:id/test` contre le vrai `moda.wfp.org`, depuis un poste qui y
-a accès (pas cet environnement), avec le jeton `be9a1ddf1b77c1095e4bde29dfbdb513ebea9dab`
-donné en session — **ce jeton a été affiché en clair dans la conversation ; le
-considérer comme grillé et le faire révoquer/régénérer côté WFP avant usage en
-production**. Si la vraie réponse diverge de l'hypothèse KoBoCAT/Ona, corriger
-`buildUrl()` et `callOdk()` dans `server/src/routes/odk.js` en conséquence — c'est le
-seul endroit qui la connaît, exprès.
+a accès (pas cet environnement), avec un jeton valide pour le formulaire 340943. **Un
+jeton d'essai a été communiqué en clair dans la conversation qui a produit cette passe ;
+il doit être considéré comme grillé et révoqué/régénéré côté WFP avant tout usage — ne
+pas le reprendre, y compris depuis l'historique de conversation.** Si la vraie réponse
+diverge de l'hypothèse KoBoCAT/Ona, corriger `buildUrl()` et `callOdk()` dans
+`server/src/routes/odk.js` en conséquence — c'est le seul endroit qui la connaît, exprès.
 
 ### Migration — `server/migrations/022_odk_submissions.sql` (construite)
 
