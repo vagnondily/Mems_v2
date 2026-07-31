@@ -202,6 +202,91 @@ function applyFormulas(rows, formulas){
   });
   return { rows: out, errors };
 }
+/* ── Indicateurs de site, dérivés des soumissions ODK Central ──────────────
+   Un indicateur de performance affiché sur la fiche d'un site n'est pas une
+   formule sur UNE ligne (comme evalIndicator/applyFormulas ci-dessus, qui
+   opèrent sur un jeu de données) : c'est un agrégat sur TOUTES les soumissions
+   qui concernent ce site, pour l'activité en cours — Σ ou % sur l'ensemble
+   des visites, pas la valeur d'une visite isolée. */
+
+/* Codes ODK usuels d'une liste Yesno* (voir XLSForms MDG : Yesno, Yesnodk,
+   Yesnona…) : 1=Oui, 0=Non. Les codes spéciaux (888 « ne sait pas »,
+   9999 « sans objet ») ne sont ni l'un ni l'autre — ils sortent du dénominateur
+   plutôt que de fausser un taux de conformité. */
+const YES_CODES = new Set(["1", "yes", "oui"]);
+const NO_CODES = new Set(["0", "no", "non"]);
+
+/* Les soumissions ODK qui concernent un site donné, pour une activité donnée :
+   toutes les sources dont le tag correspond, dont une ligne porte ce code de
+   site dans son champ site_field. Le rapprochement est insensible à la casse —
+   c'est un code de choix XLSForm, pas une saisie libre. */
+function siteSubmissions(odkForms, tag, siteCode){
+  const code = String(siteCode || "").trim().toUpperCase();
+  if(!code) return [];
+  return (odkForms || [])
+    .filter(f => f.tag === tag && f.siteField)
+    .flatMap(f => (f.rows || [])
+      .filter(row => String(row[f.siteField] ?? "").trim().toUpperCase() === code)
+      .map(row => ({ row, form:f })));
+}
+
+/* Un indicateur, calculé sur l'ensemble des soumissions déjà filtrées.
+   `kind` dit comment agréger — jamais une formule libre : contrairement à
+   evalIndicator, l'administrateur choisit un champ et un type d'agrégat dans
+   l'écran de paramétrage, il n'écrit pas d'expression. */
+function computeOne(def, matches){
+  const vals = matches.map(m => m.row[def.field]).filter(v => v !== undefined && v !== null && v !== "");
+  switch(def.kind){
+    case "count":
+      return { value: matches.length, n: matches.length, display: fmt(matches.length) };
+    case "latest_date": {
+      const dates = matches.map(m => m.form.dateField && m.row[m.form.dateField]).filter(Boolean).sort();
+      const last = dates.at(-1) || null;
+      return { value:last, n:dates.length, display: last || "—" };
+    }
+    case "avg": {
+      const nums = vals.map(v => parseFloat(v)).filter(Number.isFinite);
+      if(!nums.length) return { value:null, n:0, display:"—" };
+      const avg = nums.reduce((t,v) => t+v, 0) / nums.length;
+      return { value:avg, n:nums.length, display: String(r2(avg)) };
+    }
+    case "ratio": {
+      const num = matches.map(m => parseFloat(m.row[def.field])).filter(Number.isFinite)
+        .reduce((t,v) => t+v, 0);
+      const den = matches.map(m => parseFloat(m.row[def.field2])).filter(Number.isFinite)
+        .reduce((t,v) => t+v, 0);
+      if(!den) return { value:null, n:matches.length, display:"—" };
+      const pctv = (num/den) * 100;
+      return { value:pctv, n:matches.length, display: Math.round(pctv) + " %" };
+    }
+    case "pct_in": {
+      const codes = new Set((def.codes || []).map(String));
+      if(!vals.length) return { value:null, n:0, display:"—" };
+      const hit = vals.filter(v => codes.has(String(v))).length;
+      const pctv = (hit / vals.length) * 100;
+      return { value:pctv, n:vals.length, display: Math.round(pctv) + " %" };
+    }
+    case "pct_yes":
+    default: {
+      const known = vals.filter(v => YES_CODES.has(String(v)) || NO_CODES.has(String(v)));
+      if(!known.length) return { value:null, n:0, display:"—" };
+      const yes = known.filter(v => YES_CODES.has(String(v))).length;
+      const pctv = (yes / known.length) * 100;
+      return { value:pctv, n:known.length, display: Math.round(pctv) + " %" };
+    }
+  }
+}
+
+/* Les indicateurs configurés (Paramètres → Indicateurs de site) pour une
+   activité, calculés pour un site précis à partir de ses soumissions ODK.
+   `bad:true` sur la définition dit qu'un taux élevé est un signal
+   d'alerte (fraude, sécurité) plutôt qu'une performance — l'écran colore
+   la valeur en conséquence, il ne la réinterprète pas lui-même. */
+function computeSiteIndicators(odkForms, tag, siteCode, defs){
+  const matches = siteSubmissions(odkForms, tag, siteCode);
+  return (defs || []).map(def => ({ ...def, ...computeOne(def, matches) }));
+}
+
 function profileColumn(rows, field){
   const vals = rows.map(r => r[field]);
   const nonEmpty = vals.filter(v => v!==undefined && v!==null && String(v).trim()!=="");
@@ -218,4 +303,4 @@ function profileColumn(rows, field){
   return stat;
 }
 
-export { FNS, IND_FNS, KEY, LEVELS, POP_BASE_YEAR, RULE_TYPES, SAFE_CHARS, applyFormulas, applyRules, clsx, codeOf, computeMMR, computeParam, evalFormula, evalIndicator, fmt, legacyScore, monthsSince, n, paramFor, pct, populationFor, profileColumn, r1, r2, r5, siteRequirement, siteScore, uid };
+export { FNS, IND_FNS, KEY, LEVELS, POP_BASE_YEAR, RULE_TYPES, SAFE_CHARS, applyFormulas, applyRules, clsx, codeOf, computeMMR, computeParam, computeSiteIndicators, evalFormula, evalIndicator, fmt, legacyScore, monthsSince, n, paramFor, pct, populationFor, profileColumn, r1, r2, r5, siteRequirement, siteScore, uid };

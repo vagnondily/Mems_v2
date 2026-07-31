@@ -231,6 +231,17 @@ let odkMock, odkMockUrl, odkMockRequests;
         "@odata.nextLink": `${odkMockUrl}/v1/projects/1/forms/testform.svc/Submissions?page=2`,
       }));
     }
+    /* Une soumission chacune pour un site proche (moins d'1 km) et un site
+       éloigné (plusieurs km) de ses coordonnées enregistrées, pour vérifier
+       le rapprochement GPS sans dépendre d'un serveur ODK Central réel. */
+    if(/\/forms\/gpsform\.svc\/Submissions/.test(req.url)){
+      return res.end(JSON.stringify({ value: [
+        { __id:"g1", SvyDate:"2026-04-01", DPName:"GPS-PRES",
+          HHCoord:{ type:"Point", coordinates:[47.5005, -18.9005, 12] } },
+        { __id:"g2", SvyDate:"2026-04-02", DPName:"GPS-LOIN",
+          HHCoord:{ type:"Point", coordinates:[47.6, -18.95, 8] } },
+      ] }));
+    }
     res.statusCode = 404; res.end("{}");
   });
   await new Promise(res => odkMock.listen(0, "127.0.0.1", res));
@@ -273,6 +284,54 @@ test("tirage ODK Central : pagine, aplatit les groupes, met à jour le cache et 
 
   const audit = await request(app).get("/api/audit").set("Authorization", `Bearer ${adminToken}`);
   assert.ok(audit.body.rows.some(a => a.entity === "odk_forms" && a.action === "pull"));
+});
+
+test("tirage ODK Central : une question geopoint est conservée en {lat,lon,alt}, pas perdue", async () => {
+  await request(app).put("/api/settings").set("Authorization", `Bearer ${adminToken}`)
+    .send({ odkBase: odkMockUrl });
+  const near = await request(app).post("/api/sites").set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"GPS-PRES", name:"Site GPS proche", lat:-18.9, lon:47.5 });
+  assert.equal(near.status, 201, JSON.stringify(near.body));
+  const far = await request(app).post("/api/sites").set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"GPS-LOIN", name:"Site GPS éloigné", lat:-18.9, lon:47.5 });
+  assert.equal(far.status, 201, JSON.stringify(far.body));
+
+  const f = await odkForm({ name:"GPS", formId:"gpsform", siteField:"DPName", gpsField:"HHCoord" });
+  const r = await request(app).post(`/api/odk-forms/${f.id}/pull`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  const after1 = st.body.odkForms.find(x => x.id === f.id);
+  /* Le point GeoJSON {type:"Point",coordinates:[lon,lat,alt]} devient {lat,lon,alt} sous le
+     nom même de la question — pas un {type:"Point"} orphelin, pas un tableau perdu. */
+  const g1 = after1.rows.find(x=>x.DPName==="GPS-PRES");
+  assert.ok(g1, "soumission GPS-PRES introuvable après tirage");
+  assert.deepEqual(g1.HHCoord, { lat:-18.9005, lon:47.5005, alt:12 });
+  assert.equal(g1.type, undefined);
+
+  /* Le site à moins d'1 km n'est pas signalé ; celui à plusieurs km l'est, avec l'écart en note. */
+  const sites = st.body.sites;
+  const pres = sites.find(s => s.code === "GPS-PRES"), loin = sites.find(s => s.code === "GPS-LOIN");
+  assert.equal(pres.needsReview, false);
+  assert.equal(loin.needsReview, true);
+  assert.ok(loin.reviewDistanceKm > 1, `distance attendue > 1 km, obtenu ${loin.reviewDistanceKm}`);
+  assert.match(loin.reviewNote, /Écart GPS/);
+  assert.equal(r.body.gpsAlertes, 1);
+
+  /* Un second tirage sans nouvel écart ne lève pas l'alerte toute seule : seul
+     un administrateur, après vérification, la referme. */
+  const r2 = await request(app).post(`/api/odk-forms/${f.id}/pull`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r2.status, 200);
+  const st2 = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(st2.body.sites.find(s => s.code === "GPS-LOIN").needsReview, true);
+
+  /* L'administrateur referme l'alerte comme n'importe quelle modification de site. */
+  const clear = await request(app).put(`/api/sites/${loin.id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ ...loin, code:loin.code, name:loin.poi, needs_review:0, review_note:null, rev:loin.rev });
+  assert.equal(clear.status, 200, JSON.stringify(clear.body));
+  assert.equal(clear.body.site.needs_review, 0);
 });
 
 test("tirage ODK Central : sans jeton propre, refus explicite plutôt qu'un jeton emprunté", async () => {

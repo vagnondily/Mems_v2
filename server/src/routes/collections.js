@@ -97,6 +97,9 @@ const COLLECTIONS = {
       formId:z.string().min(1).max(120), project:S(40), token:S(400),
       kind:z.enum(["process","output","outcome","sites"]).default("process"),
       tag:S(20), siteField:S(120), dateField:S(120),
+      /* Le champ `geopoint` varie d'un formulaire à l'autre (HHCoord, HHCoord_DP…),
+         tout comme siteField et dateField : chaque source déclare le sien. */
+      gpsField:S(120),
       /* Une question ODK peut porter un libellé long — texte de consentement,
          note d'instruction au préambule d'un module — bien au-delà d'un intitulé
          de question ordinaire. Un XLSForm réel en a dépassé 2000 caractères ; la
@@ -105,7 +108,7 @@ const COLLECTIONS = {
       labels:z.record(z.string().max(4000)).default({}) }),
     map: (x) => ({ name:x.name, form_id:x.formId, project:x.project,
       kind:x.kind, activity_tag:x.tag, site_field:x.siteField, date_field:x.dateField,
-      labels:JSON.stringify(x.labels),
+      gps_field:x.gpsField, labels:JSON.stringify(x.labels),
       /* Le jeton n'est jamais conservé en clair ; laissé vide, l'existant est préservé. */
       ...(x.token ? { token_enc: encrypt(x.token) } : {}) }) },
 };

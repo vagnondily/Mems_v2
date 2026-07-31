@@ -47,6 +47,7 @@ r.get("/state", (req, res) => {
     responsible:s.responsible||"", lastVisit:s.last_visit||"",
     synergies:s.synergies, newPartner:s.new_partner, expPartner:s.exp_partner,
     issueIPM:s.issue_ipm, issueReport:s.issue_report, issueCFM:s.issue_cfm, fraud:s.fraud,
+    needsReview:!!s.needs_review, reviewNote:s.review_note||"", reviewDistanceKm:s.review_distance_km,
     plan: byId[s.id],
   }));
 
@@ -132,6 +133,7 @@ r.get("/state", (req, res) => {
   const odkForms = db.prepare("SELECT * FROM odk_forms").all().map(f => ({
     id:f.id, rev:f.rev, name:f.name, formId:f.form_id, project:f.project||"", kind:f.kind,
     tag:f.activity_tag||"", siteField:f.site_field||"", dateField:f.date_field||"",
+    gpsField:f.gps_field||"",
     labels: J(f.labels, {}), records:f.records, last:f.last_pull||"",
     hasToken: !!f.token_enc, rows: J(f.raw, []) }));
 

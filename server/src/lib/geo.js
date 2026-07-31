@@ -4,6 +4,18 @@ import { newId } from "./crypto.js";
 
 export const LEVELS = ["adm0","adm1","adm2","adm3","adm4"];
 
+/* Distance orthodromique (grand cercle) entre deux points, en kilomètres.
+   Rayon terrestre moyen — suffisant pour comparer un point GPS de terrain à
+   celui enregistré pour un site ; aucune application ici n'a besoin de la
+   précision d'un ellipsoïde. */
+const EARTH_RADIUS_KM = 6371;
+export function haversineKm(lat1, lon1, lat2, lon2){
+  const rad = (d) => d * Math.PI / 180;
+  const dLat = rad(lat2 - lat1), dLon = rad(lon2 - lon1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLon/2)**2;
+  return 2 * EARTH_RADIUS_KM * Math.asin(Math.sqrt(a));
+}
+
 /* Forme de rapprochement d'un nom : sans accents, sans ponctuation, en minuscules.
    « Antanimora Sud » et « ANTANIMORA-SUD » se rejoignent ; c'est ce qui rend
    exploitable un fichier Excel saisi à la main. */

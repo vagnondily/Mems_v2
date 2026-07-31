@@ -16,17 +16,36 @@
    celles de l'entrepôt dans MDG_Process_Monitoring_GD_PREVMA_v2) s'écrasent
    l'un l'autre. C'est un défaut du XLSForm, pas de ce client : mieux vaut
    le voir dans les résultats que le masquer par un chemin composé illisible
-   dans l'éditeur de formules. */
+   dans l'éditeur de formules.
+
+   Une question `geopoint` XLSForm revient dans l'OData d'ODK Central comme
+   un point GeoJSON — `{ type:"Point", coordinates:[lon,lat,alt] }` — pas comme
+   un champ de premier niveau. Sans traitement particulier, la branche
+   « objet, pas tableau » de l'aplatissement y descendait, gardait `type`
+   (une chaîne) et perdait `coordinates` (un tableau, explicitement ignoré) :
+   la question GPS disparaissait entièrement, remplacée par un `type:"Point"`
+   égaré. Elle est désormais reconnue avant la récursion et posée sous le nom
+   même de la question, en `{ lat, lon, alt }` — exploitable pour la
+   vérification de cohérence GPS avec le référentiel des sites. */
 
 const MAX_PAGES = 50;
 const PAGE_SIZE = 1000;
 const TIMEOUT_MS = 20_000;
 const MAX_ROWS = 20_000;
 
+function isGeoPoint(v){
+  return !!v && typeof v === "object" && v.type === "Point" && Array.isArray(v.coordinates)
+    && v.coordinates.length >= 2 && v.coordinates.every(x => typeof x === "number");
+}
+
 function flatten(obj, out = {}){
   for(const [k, v] of Object.entries(obj || {})){
     if(k.startsWith("__") || k.startsWith("@odata")) continue;
-    if(v && typeof v === "object" && !Array.isArray(v)) flatten(v, out);
+    if(isGeoPoint(v)){
+      const [lon, lat, alt] = v.coordinates;
+      out[k] = { lat, lon, alt: alt ?? null };
+    }
+    else if(v && typeof v === "object" && !Array.isArray(v)) flatten(v, out);
     else if(!Array.isArray(v)) out[k] = v;
   }
   return out;

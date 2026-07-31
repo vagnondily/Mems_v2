@@ -132,6 +132,74 @@ avant que la synchronisation vers le serveur n'ait confirmé quoi que ce soit �
 même défaut de fond que le rattachement `tpm_id` du chantier 2). Portée à
 4000 caractères, avec un test de régression.
 
+## Chantier 4 — Indicateurs de site et cohérence GPS (soumissions ODK Central) — FAIT
+
+**Demande** : pouvoir repérer facilement, à partir des soumissions ODK Central,
+les sites à risque, les signes de détournement ou de fraude, et la performance
+par catégorie — analyse fondée sur chacun des cinq XLSForms réels, affichée sur
+la fiche de chaque site (« à droite »), et modulable par l'administrateur.
+Vérifier aussi que le point GPS d'une soumission correspond, à 1 km près, aux
+coordonnées enregistrées pour le site dans MEMS.
+
+**Ce qui a d'abord fallu corriger** : une question `geopoint` XLSForm arrive
+dans l'OData d'ODK Central comme un point GeoJSON —
+`{ type:"Point", coordinates:[lon,lat,alt] }` — pas comme un champ de premier
+niveau. L'aplatissement (`server/src/lib/odkClient.js`) descendait dedans,
+gardait `type` et perdait `coordinates` (un tableau, explicitement ignoré) :
+la question GPS disparaissait entièrement. Elle est maintenant reconnue avant
+la récursion et posée sous le nom même de la question, en `{ lat, lon, alt }`.
+
+**Analyse des cinq XLSForms** : en comparant les feuilles `survey` de
+GD_PREVMA, MIARO_PROD, SMP, NutritionAIM et RESILIENCE_SAMS (déjà appariées au
+chantier d'ingestion ODK), un tronc commun de questions ressort — même nom de
+champ, même liste de choix `Yesno` (1=Oui, 0=Non) — qui couvre exactement les
+angles demandés :
+- **Chaîne d'approvisionnement** : conformité au bordereau, déchargement
+  observé, registre de stock tenu, livraison reçue et dans les délais,
+  personnel formé.
+- **Redevabilité envers les populations affectées (AAP)** : mécanisme de
+  plainte connu/utilisé, trajet vers le site jugé sûr.
+- **Fraude et détournement** : vol/détournement signalé ou constaté, doute sur
+  la sélection des bénéficiaires, rumeur de paiement pour bénéficier de l'aide,
+  bénéficiaires porteurs de la carte d'autrui.
+- **Sécurité** : acteurs armés présents, problème de sécurité rapporté.
+- **Suivi** : nombre de visites, date de la dernière.
+- MIARO (tag `MPA`) porte en plus un taux de présence (réel ÷ planifié) et le
+  bon fonctionnement du matériel SCOPE.
+
+**Livré** :
+1. `Paramètres → Indicateurs de site` (`SetSiteIndicators`, Settings.jsx) :
+   éditeur modulable par activité — intitulé, type d'agrégat (% de Oui, % dans
+   une liste de codes, moyenne, ratio de deux champs, nombre, date la plus
+   récente), champ(s) ODK, catégorie, et un drapeau « alerte » quand un taux
+   élevé est un signal (fraude, sécurité) plutôt qu'une performance. Persisté
+   dans `settings.siteIndicators`, pré-rempli avec le tronc commun ci-dessus,
+   librement modifiable — « Rétablir les indicateurs par défaut » par activité.
+2. Chaque source ODK Central (`Paramètres → ODK Central`) déclare désormais
+   aussi un **champ GPS**, à côté du champ site et du champ date déjà
+   existants.
+3. Au tirage (`POST /odk-forms/:id/pull`), chaque soumission dont le champ GPS
+   situe le site à plus d'1 km de ses coordonnées enregistrées marque ce site
+   « à vérifier » (`sites.needs_review`, `review_note`, `review_distance_km`) —
+   à la hausse seulement : un tirage sans nouvel écart ne referme jamais
+   l'alerte tout seul, il faut un administrateur.
+4. Registre des sites : un badge rouge « GPS » sur la ligne concernée, un
+   filtre « GPS : à vérifier seulement », et un compteur dans les statistiques
+   de tête d'écran.
+5. Fiche d'un site (`SiteModal`) : un panneau à droite, toujours visible quel
+   que soit l'onglet actif à gauche — l'alerte GPS (écart, date, source, bouton
+   « Marquer comme vérifié ») et les indicateurs de performance, calculés à la
+   volée à partir des soumissions ODK dont le champ site correspond au code du
+   site, groupés par catégorie et colorés selon qu'un taux élevé est une
+   performance ou une alerte.
+
+Vérifié de bout en bout avec un serveur ODK Central simulé et des données
+proches du réel : geopoint conservé après tirage, site à plus d'1 km marqué et
+badge visible dans le registre, indicateurs calculés conformes aux soumissions
+(vérifiés un par un), correction de l'alerte qui persiste côté serveur et fait
+disparaître le badge. Server : 104/104 tests (dont un nouveau sur la
+préservation du geopoint et le marquage/levée de l'alerte GPS).
+
 ## Fait (pour mémoire, PR #4 et #5 fusionnées dans main)
 
 - Ingestion ODK Central (script + tirage réel + appariement des variables des

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Boundary } from "./components/Boundary.jsx";
 import { Toast, Btn } from "./components/ui.jsx";
 import { uid } from "./lib/calc.js";
-import { ACT_CATEGORIES, C, D_MMR, D_SCORING, D_ROLES, D_FORMULAS, D_WEIGHTS } from "./lib/constants.js";
+import { ACT_CATEGORIES, C, D_MMR, D_SCORING, D_ROLES, D_FORMULAS, D_SITE_INDICATORS, D_WEIGHTS } from "./lib/constants.js";
 import { api, setToken, setUnauthorizedHandler, createSyncQueue } from "./lib/api.js";
 import { Analytics } from "./views/Analytics.jsx";
 import { Home } from "./views/Home.jsx";
@@ -103,6 +103,11 @@ export default function App(){
       /* Vide par défaut, à dessein : la ration réelle par denrée est une donnée de
          programme, propre à chaque opération — personne ne la devine à sa place. */
       rationTable:{},
+      /* Ceci, à l'inverse, part du tronc commun des cinq XLSForms MDG réels
+         (voir constants.js) : un point de départ raisonnable, pas une donnée
+         propre à l'opération — modifiable ensuite dans Paramètres → Indicateurs
+         de site. */
+      siteIndicators: JSON.parse(JSON.stringify(D_SITE_INDICATORS)),
       ...(state.settings || {}) },
   }), []);
 

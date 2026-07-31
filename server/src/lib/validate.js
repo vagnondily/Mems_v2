@@ -52,6 +52,12 @@ export const schemas = {
     issue_report: z.coerce.number().int().min(0).max(2).default(0),
     issue_cfm: z.coerce.number().int().min(0).max(2).default(0),
     fraud: z.coerce.number().int().min(0).max(2).default(0),
+    /* Posé par le tirage ODK Central (voir routes/odk.js) quand une soumission
+       situe le site à plus d'1 km de ses coordonnées enregistrées ; levé
+       manuellement une fois l'écart vérifié. */
+    needs_review: z.coerce.number().int().min(0).max(1).default(0),
+    review_note: nullableStr(500),
+    review_distance_km: z.coerce.number().min(0).max(20000).nullish().transform(v => v ?? null),
     /* Révision lue par le client, pour détecter l'écriture concurrente. */
     rev: z.coerce.number().int().min(1).optional(),
   }),

@@ -161,6 +161,86 @@ const CALC_VARS = [
   ["score","Score de risque du site sur 100","Registre des sites"],
 ];
 
+/* ══════════════════ Indicateurs de site (issus des soumissions ODK) ══════════════════
+   Chaque activité de suivi de processus (GD/PREVMA, MIARO, SMP, suivi nutrition,
+   SAMS) a son propre XLSForm, mais les cinq partagent un tronc commun de
+   questions — même nom de champ, même liste de choix Yesno (1=Oui, 0=Non) —
+   relevé en comparant les cinq formulaires MDG réels. C'est ce tronc commun qui
+   forme le paramétrage par défaut ci-dessous : un point de départ, pas une
+   liste figée — Paramètres → Indicateurs de site permet à l'administrateur
+   d'en ajouter, modifier ou retirer par activité.
+
+   `bad:true` signale qu'un taux élevé est un signal d'ALERTE (fraude, sécurité)
+   et non une performance — la seule différence d'affichage avec les autres
+   catégories, dont un taux élevé est au contraire ce qu'on recherche. */
+const SITE_INDICATOR_CATEGORIES = [
+  ["approvisionnement", "Chaîne d'approvisionnement"],
+  ["aap", "Redevabilité envers les populations affectées"],
+  ["fraude", "Fraude et détournement"],
+  ["securite", "Sécurité"],
+  ["suivi", "Suivi"],
+];
+const SITE_INDICATOR_KINDS = [
+  ["pct_yes", "% de « Oui » (liste Yesno)"],
+  ["pct_in", "% dans une liste de codes"],
+  ["avg", "Moyenne"],
+  ["ratio", "Ratio de deux champs (%)"],
+  ["count", "Nombre de soumissions"],
+  ["latest_date", "Date la plus récente"],
+];
+/* Tronc commun aux cinq XLSForms MDG (GD/PREVMA, MIARO, SMP, NutritionAIM,
+   RESILIENCE_SAMS) : mêmes noms de champ, même liste Yesno, relevés lors de
+   l'appariement des variables. */
+const D_SITE_IND_COMMON = [
+  { id:"scApprovMatch", category:"approvisionnement", label:"Réception conforme au bordereau",
+    kind:"pct_yes", field:"MOFoodReceivedMatch" },
+  { id:"scApprovOfflo", category:"approvisionnement", label:"Déchargement observé et conforme",
+    kind:"pct_yes", field:"MOWhOffLoadYN" },
+  { id:"scApprovStock", category:"approvisionnement", label:"Registre des mouvements de stock tenu",
+    kind:"pct_yes", field:"MOStockMovementRecord" },
+  { id:"scApprovPrev", category:"approvisionnement", label:"Livraison du mois précédent reçue",
+    kind:"pct_yes", field:"MOPrevDelivery" },
+  { id:"scApprovTime", category:"approvisionnement", label:"Livraison dans les délais",
+    kind:"pct_yes", field:"MODeliveryOnTime" },
+  { id:"scApprovTrain", category:"approvisionnement", label:"Personnel formé à la gestion des stocks",
+    kind:"pct_yes", field:"MOWhHrtrain" },
+  { id:"scAapCfm", category:"aap", label:"Mécanisme de plainte connu ou utilisé",
+    kind:"pct_yes", field:"HHAsstUseCFM" },
+  { id:"scAapSafe", category:"aap", label:"Trajet vers le site jugé sûr",
+    kind:"pct_in", field:"HHAsstSafeLevel", codes:["1","2"] },
+  { id:"scFraudDivBenef", category:"fraude", label:"Vol ou détournement signalé (bénéficiaires)",
+    kind:"pct_yes", field:"HHDistDiv", bad:true },
+  { id:"scFraudDivObs", category:"fraude", label:"Vol ou détournement constaté (observation)",
+    kind:"pct_yes", field:"MODistDiv", bad:true },
+  { id:"scFraudSelect", category:"fraude", label:"Doute sur la sélection des bénéficiaires",
+    kind:"pct_yes", field:"MOFraudConcerns", bad:true },
+  { id:"scFraudPayEnt", category:"fraude", label:"Rumeur de faveur ou paiement pour bénéficier de l'aide",
+    kind:"pct_yes", field:"HHAsstPayEnt", bad:true },
+  { id:"scFraudCardOther", category:"fraude", label:"Bénéficiaires porteurs de la carte d'autrui observés",
+    kind:"pct_yes", field:"MOBenefOther", bad:true },
+  { id:"scSecArmed", category:"securite", label:"Acteurs armés présents sur le site",
+    kind:"pct_yes", field:"MOAsstArmed", bad:true },
+  { id:"scSecReported", category:"securite", label:"Problème de sécurité rapporté par les bénéficiaires",
+    kind:"pct_yes", field:"HHAsstSecurity", bad:true },
+  { id:"scSuiviCount", category:"suivi", label:"Nombre de visites enregistrées", kind:"count" },
+  { id:"scSuiviLast", category:"suivi", label:"Date de la dernière visite", kind:"latest_date" },
+];
+/* MIARO (prévention de la malnutrition, tag MPA) porte en plus une vérification
+   de présence et l'usage de SCOPE, propres à ce formulaire. */
+const D_SITE_INDICATORS = {
+  URT: D_SITE_IND_COMMON,
+  MPA: [
+    ...D_SITE_IND_COMMON,
+    { id:"scMpaAttendance", category:"suivi", label:"Taux de présence (réel ÷ planifié)",
+      kind:"ratio", field:"MOAttendanceTotal", field2:"MOPlannedTotal" },
+    { id:"scMpaScope", category:"approvisionnement", label:"Matériel SCOPE fonctionnel",
+      kind:"pct_yes", field:"MOScopeFunc" },
+  ],
+  NTA: D_SITE_IND_COMMON,
+  SMP: D_SITE_IND_COMMON,
+  SAMS: D_SITE_IND_COMMON,
+};
+
 /* ══════════════════ Référentiels repris du plan de suivi ══════════════════ */
 const ACT_CATEGORIES = [
   "Unconditional resource transfers to support access to food",
@@ -270,4 +350,4 @@ function coverageRows(db, category, scope){
     cumul: { active: Math.max(0,...active), plan: plan.reduce((t,x)=>t+x,0), actual: actual.reduce((t,x)=>t+x,0) } };
 }
 
-export { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, CSS, DURATIONS, D_ADJUST, D_FORMULAS, D_INDICATORS, D_MMR, D_MODALITY, D_OFFICES, D_PARTNERS, D_POI_SUB, D_ROLES, D_SCORING, D_SECURITY, D_STATUS, D_TAGS, D_URBAN, D_WEIGHTS, MODALITY_TYPES, MONITORING_TYPES, MONTHS, MONTHS_L, PROG_AREAS, SERIES, SITE_TYPES, TABS_ALL, caseloadScore, coverageRows, siteDerived, sitePriority };
+export { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, CSS, DURATIONS, D_ADJUST, D_FORMULAS, D_INDICATORS, D_MMR, D_MODALITY, D_OFFICES, D_PARTNERS, D_POI_SUB, D_ROLES, D_SCORING, D_SECURITY, D_SITE_INDICATORS, D_STATUS, D_TAGS, D_URBAN, D_WEIGHTS, MODALITY_TYPES, MONITORING_TYPES, MONTHS, MONTHS_L, PROG_AREAS, SERIES, SITE_INDICATOR_CATEGORIES, SITE_INDICATOR_KINDS, SITE_TYPES, TABS_ALL, caseloadScore, coverageRows, siteDerived, sitePriority };

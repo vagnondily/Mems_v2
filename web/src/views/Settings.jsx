@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api.js";
 import { useGeoCascade, resetGeoCache } from "../lib/geo.js";
-import { Activity, Building2, CalendarRange, Check, ClipboardList, Download, FileText, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
+import { Activity, AlertTriangle, Building2, CalendarRange, Check, ClipboardList, Download, FileText, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
 import { Area, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
-import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, n, pct, r2, r5, siteRequirement, siteScore, uid } from "../lib/calc.js";
-import { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, DURATIONS, D_FORMULAS, D_SECURITY, D_STATUS, D_URBAN, MONITORING_TYPES, PROG_AREAS, SITE_TYPES, TABS_ALL, siteDerived, sitePriority } from "../lib/constants.js";
+import { LEVELS, clsx, computeMMR, computeParam, computeSiteIndicators, evalFormula, fmt, n, pct, r2, r5, siteRequirement, siteScore, uid } from "../lib/calc.js";
+import { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, DURATIONS, D_FORMULAS, D_SECURITY, D_SITE_INDICATORS, D_STATUS, D_URBAN, MONITORING_TYPES, PROG_AREAS, SITE_INDICATOR_CATEGORIES, SITE_INDICATOR_KINDS, SITE_TYPES, TABS_ALL, siteDerived, sitePriority } from "../lib/constants.js";
 /* `readGeoFile` était APPELÉ sans être importé : l'import de découpage depuis
    l'interface levait « readGeoFile is not defined » dès le choix du fichier. Le
    référentiel de production avait été chargé par le script src/import-geo.js, si
@@ -25,7 +25,8 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
      rétablis, avec « À propos » qui venait de main. */
   const items = [["general","Général"],["country","Pays"],["offices","Bureaux"],["sites","Sites"],
     ["locations","Localités"],["scope","Périmètre des bureaux"],["indicators","Indicateurs"],
-    ["calc","Calculs"],["rations","Rations"],["odk","ODK Central"],["templates","Modèles de rapport"],
+    ["calc","Calculs"],["rations","Rations"],["siteIndicators","Indicateurs de site"],
+    ["odk","ODK Central"],["templates","Modèles de rapport"],
     ["api","API"],["users","Utilisateurs"],["about","À propos"]];
   return (
     <div className="space-y-4">
@@ -41,6 +42,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
       {sub==="indicators" && <SetIndicators db={db} set={set} notify={notify} can={can} />}
       {sub==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
       {sub==="rations" && <SetRations db={db} set={set} notify={notify} can={can} />}
+      {sub==="siteIndicators" && <SetSiteIndicators db={db} set={set} notify={notify} can={can} />}
       {sub==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} reload={reload} />}
       {sub==="templates" && <SetTemplates db={db} set={set} notify={notify} can={can} />}
       {sub==="api" && <SetApi db={db} notify={notify} />}
@@ -176,6 +178,7 @@ function SetAbout({ db }){
 function SitesModule({ db, set, me, notify, can, context }){
   const [q,setQ] = useState(""); const [fOffice,setFOffice] = useState(""); const [fCommune,setFCommune] = useState("");
   const [fStatus,setFStatus] = useState(""); const [fPrio,setFPrio] = useState(""); const [fTag,setFTag] = useState("");
+  const [fReview,setFReview] = useState("");
   const [view,setView] = useState("standard"); const [page,setPage] = useState(1);
   const [edit,setEdit] = useState(null); const [cell,setCell] = useState(null);
   const [sel,setSel] = useState(new Set()); const [bulk,setBulk] = useState(false);
@@ -189,6 +192,7 @@ function SitesModule({ db, set, me, notify, can, context }){
     if(fStatus==="active" && s.status==="Inactive") return false;
     if(fStatus==="inactive" && s.status!=="Inactive") return false;
     if(fPrio && String(siteScore(s, db.weights, db).level)!==fPrio) return false;
+    if(fReview==="review" && !s.needsReview) return false;
     if(q && ![s.id,s.poi,s.poiSubtype,s.adm1,s.adm2,s.adm3,s.subOffice,s.activityTag,s.partner,s.modality]
       .join(" ").toLowerCase().includes(q.toLowerCase())) return false;
     return true; });
@@ -202,7 +206,8 @@ function SitesModule({ db, set, me, notify, can, context }){
   const stats = { total: scoped.length, active: scoped.filter(s=>s.status!=="Inactive").length,
     toVisit: scoped.filter(s=>s.status!=="Inactive" && s.plan.some(p=>p.planned&&!p.done)).length,
     done: scoped.filter(s=>s.plan.some(p=>p.done)).length,
-    planned: scoped.filter(s=>s.plan.some(p=>p.planned)).length };
+    planned: scoped.filter(s=>s.plan.some(p=>p.planned)).length,
+    review: scoped.filter(s=>s.needsReview).length };
   const avg = pct(scoped.reduce((t,s)=>t+s.plan.filter(p=>p.done).length,0),
                   scoped.reduce((t,s)=>t+s.plan.filter(p=>p.planned).length,0));
 
@@ -230,6 +235,8 @@ function SitesModule({ db, set, me, notify, can, context }){
       exp_partner: Number(site.expPartner ?? 0), issue_ipm: Number(site.issueIPM ?? 0),
       issue_report: Number(site.issueReport ?? 0), issue_cfm: Number(site.issueCFM ?? 0),
       fraud: Number(site.fraud ?? 0),
+      needs_review: site.needsReview ? 1 : 0, review_note: site.reviewNote || null,
+      review_distance_km: site.reviewDistanceKm ?? null,
     };
     try{
       const r = site.id ? await api.updateSite(site.id, payload) : await api.createSite(payload);
@@ -309,6 +316,8 @@ function SitesModule({ db, set, me, notify, can, context }){
         <Stat label="Sites à visiter" value={stats.toVisit} sub="Échéance non honorée" tone={stats.toVisit?"warn":"ok"} icon={Target} />
         <Stat label="Sites suivis" value={stats.done} sub="Au moins une visite" tone="ok" icon={Check} />
         <Stat label="Progression moyenne" value={avg+"%"} tone={avg>=80?"ok":avg>=50?"warn":"bad"} sub="Réalisé ÷ planifié" icon={ClipboardList} />
+        <Stat label="GPS à vérifier" value={stats.review} sub="Écart de plus d'1 km avec ODK Central"
+          tone={stats.review?"bad":"ok"} icon={AlertTriangle} />
       </StatRow>
 
       <Card flush>
@@ -327,6 +336,8 @@ function SitesModule({ db, set, me, notify, can, context }){
             options={[["active","Actifs"],["inactive","Inactifs"]]} className="mi-py1 mi-xs mi-wauto" />
           <Select value={fPrio} onChange={e=>{setFPrio(e.target.value);setPage(1);}} empty="Toutes priorités"
             options={[["3","Élevée"],["2","Moyenne"],["1","Faible"]]} className="mi-py1 mi-xs mi-wauto" />
+          <Select value={fReview} onChange={e=>{setFReview(e.target.value);setPage(1);}} empty="GPS : tous"
+            options={[["review","À vérifier seulement"]]} className="mi-py1 mi-xs mi-wauto" />
           <div className="ml-auto flex items-center gap-1 bg-white border border-slate-300 rounded p-0.5">
             {[["standard","Vue standard"],["visit","À visiter"],["done","Déjà visités"],["plan","Planification"]].map(([v,l])=>(
               <button key={v} onClick={()=>{setView(v);setPage(1);}}
@@ -373,7 +384,9 @@ function SitesModule({ db, set, me, notify, can, context }){
                   {bulk && <Td onClick={e=>e.stopPropagation()}><input type="checkbox" checked={sel.has(s.id)}
                     onChange={e=>{ const x=new Set(sel); e.target.checked?x.add(s.id):x.delete(s.id); setSel(x); }} /></Td>}
                   <Td className="f11 text-slate-500">{s.id}</Td>
-                  <Td>{s.status!=="Inactive" ? <Badge tone="g">Active</Badge> : <Badge>Inactive</Badge>}</Td>
+                  <Td><div className="flex items-center gap-1">
+                    {s.status!=="Inactive" ? <Badge tone="g">Active</Badge> : <Badge>Inactive</Badge>}
+                    {s.needsReview && <span title={s.reviewNote}><Badge tone="r">GPS</Badge></span>}</div></Td>
                   <Td className="font-medium text-slate-800">{s.poi}</Td>
                   <Td className="text-slate-700">{s.poiSubtype}</Td>
                   <Td className="f11 text-slate-500">{code}</Td>
@@ -449,7 +462,7 @@ function SitesModule({ db, set, me, notify, can, context }){
         </Card>
       </div>
 
-      <SiteModal open={!!edit} site={edit} db={db} onClose={()=>setEdit(null)} onSave={saveSite} />
+      <SiteModal open={!!edit} site={edit} db={db} can={can} onClose={()=>setEdit(null)} onSave={saveSite} />
       <MonthCellModal cell={cell} db={db} set={set} onClose={()=>setCell(null)} notify={notify} />
     </div>);
 }
@@ -487,7 +500,7 @@ function BulkBar({ db, sel, rows, communes, onSelectCommune, onApply, onClear })
     </div>);
 }
 
-function SiteModal({ open, site, db, onClose, onSave }){
+function SiteModal({ open, site, db, can, onClose, onSave }){
   const [tab,setTab] = useState("id"); const [f,setF] = useState({});
   useEffect(()=>{ setF(site||{}); setTab("id"); },[site]);
   /* Cascade servie par le serveur, avant tout retour anticipé : un hook ne peut
@@ -504,6 +517,8 @@ function SiteModal({ open, site, db, onClose, onSave }){
       subtitle="Identification, codification et critères de risque"
       footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
         <Btn icon={Save} onClick={()=>onSave({ ...f, geo_pcode: geo.pcode })}>{site?.id?"Mettre à jour":"Créer le site"}</Btn></>}>
+      <div className="grid gap-4" style={{gridTemplateColumns: site?.id ? "1fr 300px" : "1fr"}}>
+      <div className="min-w-0">
       <Tabs className="mb-4" value={tab} onChange={setTab}
         items={[["id","Identification"],["risk","Critères de risque"],["plan","Suivi"]]} />
       {tab==="id" && (
@@ -598,7 +613,64 @@ function SiteModal({ open, site, db, onClose, onSave }){
               d2.visitedFourPlus ? "4 fois ou plus" : d2.visitedThrice ? "3 fois" : d2.visitedTwice ? "2 fois"
               : d2.visitedOnce ? "1 fois" : "Jamais"} readOnly /></Field>
           </div>); })()}
+      </div>
+      {/* À droite, toujours visible quel que soit l'onglet actif à gauche : l'alerte
+          GPS et les indicateurs de performance ne sont pas un onglet de plus, ils
+          accompagnent la lecture de la fiche. Absent à la création : rien à croiser
+          avec des soumissions ODK tant que le site n'a pas de code enregistré. */}
+      {site?.id && <SitePanel f={f} db={db} can={can} onClear={()=>{ u("needsReview",false);
+        u("reviewNote",""); u("reviewDistanceKm",null);
+        onSave({ ...f, needsReview:false, reviewNote:"", reviewDistanceKm:null, geo_pcode:geo.pcode }); }} />}
+      </div>
     </Modal>);
+}
+
+/* Alerte GPS et indicateurs de performance du site, calculés à la volée à
+   partir des soumissions ODK Central déjà tirées — rien n'est stocké à part
+   l'alerte GPS elle-même (voir routes/odk.js, posée au tirage). */
+function SitePanel({ f, db, can, onClear }){
+  const defs = (db.settings.siteIndicators || {})[f.activityTag] || [];
+  const indicators = computeSiteIndicators(db.odkForms || [], f.activityTag, f.code, defs);
+  const byCat = SITE_INDICATOR_CATEGORIES
+    .map(([k,l]) => [k, l, indicators.filter(i => i.category===k)])
+    .filter(([,,rows]) => rows.length);
+  const total = indicators.reduce((t,i) => t + (i.n||0), 0);
+  const tone = (ind) => ind.value == null ? "n"
+    : ind.bad ? (ind.value >= 30 ? "r" : ind.value >= 10 ? "y" : "g")
+    : (ind.value >= 70 ? "g" : ind.value >= 40 ? "y" : "r");
+  return (
+    <div className="space-y-3">
+      {f.needsReview && (
+        <div className="rounded border border-rose-300 bg-rose-50 p-3">
+          <div className="flex items-center gap-1.5 f125 font-semibold text-rose-800">
+            <AlertTriangle size={14} /> GPS à vérifier
+          </div>
+          <p className="f115 text-rose-800 mt-1 leading-relaxed">{f.reviewNote}</p>
+          {can("edit") && <Btn size="sm" kind="sec" icon={Check} className="mt-2" onClick={onClear}>
+            Marquer comme vérifié</Btn>}
+        </div>)}
+      <Card flush title="Indicateurs de performance" subtitle={`Activité ${f.activityTag||"—"} · soumissions ODK rattachées à ce site`}>
+        {!f.activityTag ? (
+          <div className="p-3 f115 text-slate-500">Aucune activité rattachée à ce site.</div>
+        ) : !defs.length ? (
+          <div className="p-3 f115 text-slate-500">Aucun indicateur paramétré pour cette activité —
+            Paramètres → Indicateurs de site.</div>
+        ) : !total ? (
+          <div className="p-3 f115 text-slate-500">Aucune soumission ODK Central ne correspond encore au
+            code de ce site ({f.code||"—"}) pour cette activité.</div>
+        ) : byCat.map(([catKey, catLabel, rows]) => (
+          <div key={catKey} className="px-3 py-2 border-b border-slate-100 last:border-0">
+            <div className="f10 font-bold uppercase tracking-wide text-slate-500 mb-1.5">{catLabel}</div>
+            <div className="space-y-1.5">
+              {rows.map(ind => (
+                <div key={ind.id} className="flex items-center gap-2 f115">
+                  <span className="text-slate-600 flex-1 leading-tight">{ind.label}</span>
+                  <Badge tone={tone(ind)}>{ind.display}</Badge>
+                </div>))}
+            </div>
+          </div>))}
+      </Card>
+    </div>);
 }
 
 /* ── Localités : niveaux administratifs issus du shapefile ── */
@@ -1626,6 +1698,75 @@ function SetRations({ db, set, notify, can }){
     </>);
 }
 
+/* ── Indicateurs de site (issus des soumissions ODK Central) ── */
+function SetSiteIndicators({ db, set, notify, can }){
+  const [tag,setTag] = useState(db.lists.tags[0]?.code || "");
+  const table = db.settings.siteIndicators || {};
+  const list = table[tag] || [];
+  const setList = (fn) => set(d => {
+    d.settings.siteIndicators = d.settings.siteIndicators || {};
+    d.settings.siteIndicators[tag] = fn([...(d.settings.siteIndicators[tag] || [])]);
+    return d;
+  });
+  const upd = (i, patch) => setList(l => l.map((x,j) => j===i ? { ...x, ...patch } : x));
+  const remove = (i) => setList(l => l.filter((_,j) => j!==i));
+  const add = () => setList(l => [...l, { id:uid("si"), category:"approvisionnement",
+    label:"", kind:"pct_yes", field:"" }]);
+  const resetDefaults = () => { set(d => { d.settings.siteIndicators = d.settings.siteIndicators || {};
+    d.settings.siteIndicators[tag] = JSON.parse(JSON.stringify(D_SITE_INDICATORS[tag] || []));
+    return d; }); notify("Indicateurs par défaut rétablis pour cette activité","ok"); };
+  const byCat = SITE_INDICATOR_CATEGORIES.map(([k,l]) => [k, l, list
+    .map((ind,i)=>({ ind, i })).filter(x => x.ind.category===k)]);
+
+  return (
+    <>
+      <Note>Ces indicateurs sont calculés à partir des soumissions ODK Central rattachées à un site (même code que
+        <code className="bg-white px-1 rounded mx-1">Champ identifiant du site</code> d'une source, Paramètres → ODK Central) et
+        affichés sur sa fiche, dans le registre des sites. Ils partent du tronc commun relevé sur les cinq XLSForms
+        MDG réels — à ajuster librement par activité : chaque catégorie sert un usage précis, notamment repérer les
+        sites où des signes de détournement ou de fraude sont rapportés, ou dont la situation sécuritaire se dégrade.</Note>
+      <div className="flex items-center gap-2 mb-4">
+        <Select value={tag} onChange={e=>setTag(e.target.value)}
+          options={db.lists.tags.map(t=>[t.code, `${t.code} — ${t.label}`])} className="mi-wauto" />
+        {can("edit") && <Btn kind="sec" size="sm" icon={RefreshCw} onClick={resetDefaults}>Rétablir les indicateurs par défaut</Btn>}
+        {can("edit") && <Btn size="sm" icon={Plus} onClick={add}>Ajouter un indicateur</Btn>}
+      </div>
+      {!list.length && <Empty icon={Target} title="Aucun indicateur pour cette activité"
+        text="Rétablissez les indicateurs par défaut, ou ajoutez-en un." />}
+      {byCat.map(([catKey, catLabel, rows]) => rows.length > 0 && (
+        <Card key={catKey} flush title={catLabel}
+          right={rows.some(({ind})=>ind.bad) && <Badge tone="r">alerte si taux élevé</Badge>}>
+          <TableWrap>
+            <thead><tr><Th>Intitulé</Th><Th>Type</Th><Th>Champ</Th><Th>Champ 2 / codes</Th>
+              <Th className="mi-tc">Alerte</Th><Th /></tr></thead>
+            <tbody>{rows.map(({ind,i})=>(
+              <tr key={ind.id||i}>
+                <Td><input value={ind.label||""} onChange={e=>upd(i,{label:e.target.value})}
+                  className={clsx(inputCls,"mi-py1 mnw220")} placeholder="Réception conforme au bordereau" /></Td>
+                <Td><Select value={ind.kind||"pct_yes"} onChange={e=>upd(i,{kind:e.target.value})}
+                  options={SITE_INDICATOR_KINDS} className="mi-py1 mi-xs mi-wauto" /></Td>
+                <Td>{ind.kind!=="count" && ind.kind!=="latest_date"
+                  ? <input value={ind.field||""} onChange={e=>upd(i,{field:e.target.value})}
+                      className={clsx(inputCls,"mi-py1 w-40")} placeholder="MOFoodReceivedMatch" />
+                  : <span className="text-slate-400 f11">— (aucun champ)</span>}</Td>
+                <Td>{ind.kind==="ratio"
+                  ? <input value={ind.field2||""} onChange={e=>upd(i,{field2:e.target.value})}
+                      className={clsx(inputCls,"mi-py1 w-40")} placeholder="MOPlannedTotal (dénominateur)" />
+                  : ind.kind==="pct_in"
+                  ? <input value={(ind.codes||[]).join(",")} onChange={e=>upd(i,{codes:e.target.value.split(",").map(x=>x.trim()).filter(Boolean)})}
+                      className={clsx(inputCls,"mi-py1 w-32")} placeholder="1,2" />
+                  : <span className="text-slate-400 f11">—</span>}</Td>
+                <Td className="mi-tc"><input type="checkbox" checked={!!ind.bad}
+                  onChange={e=>upd(i,{bad:e.target.checked})} title="Un taux élevé est une alerte, pas une performance" /></Td>
+                <Td className="text-right">
+                  <button onClick={()=>remove(i)} className="px-1 text-slate-400 hover:text-rose-600"><Trash2 size={14}/></button></Td>
+              </tr>))}</tbody>
+          </TableWrap>
+        </Card>
+      ))}
+    </>);
+}
+
 /* ── ODK Central ── */
 function SetOdk({ db, set, notify, can, reload }){
   const [edit,setEdit] = useState(null);
@@ -1663,7 +1804,7 @@ function SetOdk({ db, set, notify, can, reload }){
         </Card>
         <Card flush title="Sources de données" subtitle={`${db.odkForms.length} formulaires déclarés`}
           right={can("edit") && <Btn size="sm" icon={Plus} onClick={()=>setEdit({ name:"", formId:"", project:s.odkProject||"",
-            token:"", kind:"process", tag:"", siteField:"", dateField:"", labels:{}, xlsform:null })}>Nouvelle source</Btn>}>
+            token:"", kind:"process", tag:"", siteField:"", dateField:"", gpsField:"", labels:{}, xlsform:null })}>Nouvelle source</Btn>}>
           <TableWrap max="mh440">
             <thead><tr><Th>Formulaire</Th><Th>Projet / ID</Th><Th>Type de données</Th><Th>Activité</Th>
               <Th>Champ site</Th><Th>Jeton</Th><Th>XLSForm</Th><Th num>Enreg.</Th><Th>Dernier tirage</Th><Th /></tr></thead>
@@ -1761,6 +1902,10 @@ function OdkModal({ open, form, db, onClose, onSave, notify }){
           {fields.length ? <Select value={f.dateField||""} onChange={e=>u("dateField",e.target.value)} empty="—"
               options={fields.map(c=>[c, (f.labels||{})[c] ? `${c} — ${f.labels[c]}` : c])} />
             : <Input value={f.dateField||""} onChange={e=>u("dateField",e.target.value)} placeholder="visit_date" />}</Field>
+        <Field label="Champ GPS (question geopoint)" hint="Comparé aux coordonnées du site à ± 1 km au tirage">
+          {fields.length ? <Select value={f.gpsField||""} onChange={e=>u("gpsField",e.target.value)} empty="—"
+              options={fields.map(c=>[c, (f.labels||{})[c] ? `${c} — ${f.labels[c]}` : c])} />
+            : <Input value={f.gpsField||""} onChange={e=>u("gpsField",e.target.value)} placeholder="HHCoord" />}</Field>
       </div>
       <div className="border-t border-slate-200 pt-3 mb-3">
         <div className="flex items-center gap-3 mb-2">
