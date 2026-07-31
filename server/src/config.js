@@ -39,6 +39,14 @@ export const config = {
       .split(",").map(s => s.trim()).filter(Boolean);
     return isProd ? envOrigins : [...new Set([...envOrigins, ...defaultDev])];
   })(),
+  /* Hôtes autorisés à servir les tuiles du fond de carte. Par défaut
+     OpenStreetMap, qui ne demande ni clé ni compte de facturation. Pointer
+     TILE_HOSTS vers un serveur de tuiles interne est la bonne réponse dès que
+     l'usage dépasse la politique d'usage d'OSM ; le vider ferme la carte à
+     toute image tierce, au prix du fond (contours et points restent). */
+  tileHosts: (process.env.TILE_HOSTS
+    || "https://*.tile.openstreetmap.org https://tile.openstreetmap.org")
+    .split(/[,\s]+/).map(s => s.trim()).filter(Boolean),
   trustProxy: bool(process.env.TRUST_PROXY, false),
   rateLoginMax: int(process.env.RATE_LOGIN_MAX, 10),
   rateApiMax: int(process.env.RATE_API_MAX, 600),
@@ -46,6 +54,11 @@ export const config = {
   bcryptRounds: int(process.env.BCRYPT_ROUNDS, 12),
   lockAfter: int(process.env.LOCK_AFTER_FAILED, 8),
   lockMinutes: int(process.env.LOCK_MINUTES, 15),
+  /* Hôtes ODK Central explicitement autorisés, séparés par des virgules.
+     Vide — le cas par défaut — signifie « tout serveur https dont l'adresse est
+     publique » ; voir lib/odkClient.js pour la règle complète et son pourquoi. */
+  odkAllowedHosts: (process.env.ODK_ALLOWED_HOSTS || "")
+    .split(",").map(s => s.trim().toLowerCase()).filter(Boolean),
   bootstrapEmail: process.env.BOOTSTRAP_EMAIL || "admin@mems.local",
   bootstrapPassword: process.env.BOOTSTRAP_PASSWORD || "",
   logLevel: process.env.LOG_LEVEL || "info",

@@ -1,0 +1,34 @@
+# Docker ne lit pas .gitignore : sans ce fichier, le `COPY server/ ./server/` du
+# Dockerfile embarque dans l'image tout ce que le dépôt ignore mais qui existe
+# sur le disque de qui construit — la base SQLite de travail (server/data/),
+# le .env avec JWT_SECRET et DATA_KEY, le journal d'amorçage du Codespace qui
+# contient le mot de passe administrateur initial en clair.
+
+node_modules
+**/node_modules
+
+# Données et secrets
+.env
+.env.*
+!.env.example
+data
+**/data
+*.db
+*.db-wal
+*.db-shm
+*.log
+**/.admin-credentials.log
+
+# Produits de compilation : l'image les reconstruit elle-même
+dist
+**/dist
+coverage
+web/test/_app.mjs
+
+# Historique et outillage, inutiles à l'exécution
+.git
+.github
+.devcontainer
+docs
+*.md
+!README.md

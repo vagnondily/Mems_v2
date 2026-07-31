@@ -25,6 +25,7 @@ import userRoutes from "./routes/users.js";
 import analyticsRoutes from "./routes/analytics.js";
 import caseloadRoutes from "./routes/caseload.js";
 import importRoutes from "./routes/import.js";
+import xlsformRoutes from "./routes/xlsform.js";
 import odkRoutes from "./routes/odk.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -49,8 +50,16 @@ app.use(helmet({
          supprimer, pas à conserver au cas où. */
       styleSrc: ["'self'", "'unsafe-inline'"],
       fontSrc: ["'self'", "data:"],
-      imgSrc: ["'self'", "data:", "blob:"],
+      /* Les tuiles du fond de carte sont des images tierces : elles sont la
+         SEULE exception, et elle est déclarée par une liste d'hôtes explicite
+         (config.tileHosts, réglable par TILE_HOSTS) plutôt que par un joker.
+         Une instance sans fond de carte se configure en vidant cette variable :
+         la carte continue alors d'afficher contours et points. */
+      imgSrc: ["'self'", "data:", "blob:", ...config.tileHosts],
       connectSrc: ["'self'", ...config.corsOrigins],
+      /* Déclarée explicitement : sans elle, worker-src retombe sur default-src
+         et un worker créé depuis un blob: est refusé sans message lisible. */
+      workerSrc: ["'self'", "blob:"],
       frameSrc: ["'self'"],
       objectSrc: ["'none'"],
       baseUri: ["'self'"],
@@ -114,6 +123,7 @@ app.use("/api/analytics", authenticate, analyticsRoutes);
 app.use("/api/caseload", authenticate, caseloadRoutes);
 app.use("/api/import", authenticate, importRoutes);
 app.use("/api", authenticate, odkRoutes);
+app.use("/api", authenticate, xlsformRoutes);
 app.use("/api/mre", authenticate, mreRoutes);
 app.use("/api/tpm", authenticate, tpmRoutes);
 app.use("/api", authenticate, collectionRoutes);

@@ -39,8 +39,17 @@ r.post("/login", loginLimiter, validate(schemas.login), async (req, res) => {
   /* Même message et même coût quel que soit l'échec : on ne révèle pas l'existence d'un compte. */
   const generic = { error:"identifiants incorrects" };
   if(!u){ await hashPassword(password); return res.status(401).json(generic); }
-  if(u.locked_until && u.locked_until > new Date().toISOString())
-    return res.status(423).json({ error:"compte temporairement verrouillé" });
+  if(u.locked_until){
+    if(u.locked_until > new Date().toISOString())
+      return res.status(423).json({ error:"compte temporairement verrouillé" });
+    /* Le verrou a expiré, mais le compteur restait au seuil : la tentative
+       suivante — même unique, même du titulaire légitime qui vient de patienter
+       ses quinze minutes — reverrouillait aussitôt pour quinze de plus. Le verrou
+       « temporaire » était en fait définitif sans intervention d'un administrateur.
+       Sa levée doit donc rendre au compte le compteur qu'il avait avant. */
+    db.prepare("UPDATE users SET failed_logins=0, locked_until=NULL WHERE id=?").run(u.id);
+    u.failed_logins = 0; u.locked_until = null;
+  }
   if(!u.active) return res.status(401).json(generic);
 
   const ok = await verifyPassword(password, u.pw_hash);

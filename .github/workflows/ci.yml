@@ -35,7 +35,21 @@ jobs:
         working-directory: web
         run: npm test
 
-      - name: Audit des dépendances
-        run: |
-          cd server && npm audit --audit-level=high || true
-          cd ../web && npm audit --audit-level=high || true
+      # Le « || true » qui terminait ces deux lignes rendait l'étape verte quelle
+      # que soit la vulnérabilité trouvée. C'est ce qui a laissé passer xlsx
+      # pendant des mois. L'étape échoue désormais pour de bon.
+      #
+      # Côté web on n'audite que les dépendances de production : les avis qui
+      # visent le serveur de développement de Vite ne concernent pas ce qui est
+      # livré, et les faire échouer la CI ferait revenir le « || true ».
+      #
+      # Côté serveur, les 9 avis « high » de la chaîne exceljs sont inatteignables
+      # (l'API non-streaming passe par JSZip, jamais par archiver) et il n'existe
+      # aucun correctif amont — exceljs 4.4.0 est la dernière version publiée.
+      # Ils sont donc exclus nommément, avec leur justification, plutôt que noyés
+      # sous un « || true ». À réexaminer si exceljs publie de nouveau.
+      - name: Audit des dépendances du serveur
+        run: node scripts/audit.mjs server --omit-dev
+
+      - name: Audit des dépendances du frontend
+        run: node scripts/audit.mjs web --omit-dev

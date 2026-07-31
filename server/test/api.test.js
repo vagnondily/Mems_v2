@@ -17,6 +17,10 @@ process.env.BOOTSTRAP_PASSWORD = "MotDePasseTest2026";
 process.env.RATE_LOGIN_MAX = "50";
 process.env.BCRYPT_ROUNDS = "4";          /* tests rapides ; la production reste à 12 */
 process.env.FORCE_SEED = "1";
+/* Le serveur ODK Central simulé plus bas tourne en http sur la boucle locale — que le
+   correctif A5 refuse désormais par défaut. C'est exactement le cas que la liste
+   blanche existe pour couvrir : un exploitant désigne nommément son serveur interne. */
+process.env.ODK_ALLOWED_HOSTS = "127.0.0.1";
 
 for(const f of [DB, DB+"-wal", DB+"-shm"]) if(fs.existsSync(f)) fs.unlinkSync(f);
 fs.mkdirSync(path.dirname(DB), { recursive:true });
@@ -29,6 +33,15 @@ const login = async (email, password) => {
   const r = await request(app).post("/api/auth/login").send({ email, password });
   return r;
 };
+
+/* Depuis le chantier A3, un mot de passe provisoire — `must_change_pw=1`, posé aussi
+   bien par l'amorçage que par toute création de compte — ne donne plus accès qu'à son
+   propre remplacement. Les tests ci-dessous portent sur tout le reste : ils franchissent
+   cette étape une fois, comme le ferait n'importe quel utilisateur à sa première
+   connexion. Le parcours de changement a son propre test, plus bas. */
+const motDePasseAdopte = (email) =>
+  db.prepare("UPDATE users SET must_change_pw=0 WHERE email=?").run(email);
+motDePasseAdopte("admin@test.local");
 let adminToken;
 const asAdmin = () => request(app).set ? null : null;
 
@@ -284,6 +297,7 @@ test("tirage ODK Central : réservé aux administrateurs", async () => {
   const create = await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"lecteur-odk@test.local", password:"LecteurMotDePasse1", first_name:"Lecteur",
             role:"viewer", tabs:["home"], active:true });
+  motDePasseAdopte("lecteur-odk@test.local");
   const login2 = await login("lecteur-odk@test.local", "LecteurMotDePasse1");
   const f = await odkForm({ name:"Droits", formId:"testform-droits" });
   const r = await request(app).post(`/api/odk-forms/${f.id}/pull`)
@@ -291,11 +305,45 @@ test("tirage ODK Central : réservé aux administrateurs", async () => {
   assert.equal(r.status, 403);
 });
 
+/* Chantier A5 — `odkBase` est un réglage, donc une donnée venue de l'extérieur, et
+   elle partait telle quelle dans un `fetch` côté serveur : SSRF caractérisée. */
+test("tirage ODK Central : adresse hors liste blanche, privée ou non chiffrée refusée", async () => {
+  const { config } = await import("../src/config.js");
+  const { verifierBaseOdk } = await import("../src/lib/odkClient.js");
+  const f = await odkForm({ name:"SSRF", formId:"testform-ssrf" });
+
+  /* Une liste blanche renseignée fait seule autorité : le service de métadonnées
+     de l'hébergeur — cible classique d'une SSRF — n'y figure pas. */
+  await request(app).put("/api/settings").set("Authorization", `Bearer ${adminToken}`)
+    .send({ odkBase: "http://169.254.169.254" });
+  const r = await request(app).post(`/api/odk-forms/${f.id}/pull`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 422, JSON.stringify(r.body));
+  assert.match(r.body.error, /liste des serveurs ODK autorisés/);
+
+  /* Sans liste — le cas par défaut — https est exigé et les adresses privées refusées. */
+  const liste = config.odkAllowedHosts;
+  config.odkAllowedHosts = [];
+  try{
+    await assert.rejects(() => verifierBaseOdk("http://odk.exemple.org"), /https/);
+    await assert.rejects(() => verifierBaseOdk("https://10.1.2.3/"), /réseau privé/);
+    await assert.rejects(() => verifierBaseOdk("https://127.0.0.1:8443/"), /bouclage/);
+    await assert.rejects(() => verifierBaseOdk("https://[::1]/"), /bouclage/);
+    await assert.rejects(() => verifierBaseOdk("https://169.254.169.254/"), /lien-local/);
+    await assert.rejects(() => verifierBaseOdk("pas une adresse"), /illisible/);
+  } finally { config.odkAllowedHosts = liste; }
+
+  /* Le serveur simulé retrouve son adresse pour les tests qui suivent. */
+  await request(app).put("/api/settings").set("Authorization", `Bearer ${adminToken}`)
+    .send({ odkBase: odkMockUrl });
+});
+
 test("droits : un lecteur peut consulter mais ne peut rien écrire", async () => {
   const create = await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"lecteur@test.local", password:"LecteurMotDePasse1", first_name:"Lecteur",
             role:"viewer", tabs:["home"], active:true });
   assert.equal(create.status, 201);
+  motDePasseAdopte("lecteur@test.local");
   const lr = await login("lecteur@test.local", "LecteurMotDePasse1");
   assert.equal(lr.status, 200);
   const t = lr.body.token;
@@ -312,6 +360,7 @@ test("cloisonnement : un compte rattaché à un bureau ne voit que ses sites", a
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"terrain@test.local", password:"TerrainMotDePasse1", first_name:"Terrain",
             role:"editor", office_id:office.id, tabs:["home"], active:true });
+  motDePasseAdopte("terrain@test.local");
   const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
   const st = await request(app).get("/api/state").set("Authorization", `Bearer ${t}`);
   assert.ok(st.body.sites.length > 0);
@@ -354,6 +403,75 @@ test("cloisonnement : visites, distributions, paramètres et journal suivent le 
     "aucune entrée de journal d'un autre bureau");
 });
 
+/* Chantier A1 — `PUT /api/collections/:name` n'appliquait aucun cloisonnement :
+   « SELECT id, rev » sans filtre, puis UPDATE et DELETE par identifiant. Un éditeur
+   du bureau A écrivait donc — et surtout supprimait — les lignes du bureau B, que
+   `GET /api/state` lui cache pourtant. Ces trois tests verrouillent la correction. */
+test("cloisonnement : un éditeur n'écrit pas dans la collection d'un autre bureau", async () => {
+  const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
+  const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+
+  const autre = db.prepare(
+    "SELECT * FROM pdd WHERE office_id IS NOT NULL AND office_id<>? LIMIT 1").get(office.id);
+  assert.ok(autre, "le jeu d'essai porte une ligne de distribution d'un autre bureau");
+
+  const usurpe = await request(app).put("/api/collections/pdd").set("Authorization", `Bearer ${t}`)
+    .send({ rows:[{ id:autre.id, year:autre.year, month:autre.month, actType:autre.act_type,
+                    bureau:"Détournée", office_id:office.id, modality:"Food", status:"planned" }] });
+  assert.equal(usurpe.status, 403, JSON.stringify(usurpe.body));
+  const apres = db.prepare("SELECT bureau, office_id FROM pdd WHERE id=?").get(autre.id);
+  assert.equal(apres.bureau, autre.bureau, "la ligne de l'autre bureau est intacte");
+  assert.equal(apres.office_id, autre.office_id, "elle n'a pas changé de bureau");
+
+  /* Sur ses propres lignes, rien ne change : le cloisonnement borne, il n'interdit pas. */
+  const sienne = db.prepare("SELECT * FROM pdd WHERE office_id=? LIMIT 1").get(office.id);
+  assert.ok(sienne, "le bureau porte des lignes à lui");
+  const ok = await request(app).put("/api/collections/pdd").set("Authorization", `Bearer ${t}`)
+    .send({ rows:[{ id:sienne.id, year:sienne.year, month:sienne.month, actType:sienne.act_type,
+                    bureau:sienne.bureau, office_id:office.id, modality:sienne.modality,
+                    status:sienne.status, note:"modifiée par son bureau" }] });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.updated, 1);
+  assert.equal(db.prepare("SELECT note FROM pdd WHERE id=?").get(sienne.id).note,
+    "modifiée par son bureau");
+});
+
+test("cloisonnement : une création reste dans le bureau de l'appelant", async () => {
+  const office = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
+  const ailleurs = db.prepare("SELECT id FROM offices WHERE id<>? LIMIT 1").get(office.id);
+  const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  const r = await request(app).put("/api/collections/pdd").set("Authorization", `Bearer ${t}`)
+    .send({ rows:[{ year:2026, month:0, actType:"GD", bureau:"Ligne témoin A1",
+                    office_id:ailleurs.id, modality:"Food", status:"planned" }] });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.created, 1);
+  assert.equal(db.prepare("SELECT office_id FROM pdd WHERE bureau=?").get("Ligne témoin A1").office_id,
+    office.id, "le bureau annoncé dans le corps ne fait pas foi");
+});
+
+/* Chantier A2 — la route entière n'est gardée que par « edit », et le tableau
+   `deletes` passait avec, alors que la matrice des rôles (lib/auth.js) réserve
+   « del » à l'administration. */
+test("droits : supprimer dans une collection exige « del », pas seulement « edit »", async () => {
+  const office = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
+  const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  const sienne = db.prepare("SELECT id FROM pdd WHERE office_id=? LIMIT 1").get(office.id);
+
+  const refus = await request(app).put("/api/collections/pdd").set("Authorization", `Bearer ${t}`)
+    .send({ rows:[], deletes:[sienne.id] });
+  assert.equal(refus.status, 403, JSON.stringify(refus.body));
+  assert.match(refus.body.error, /del/);
+  assert.ok(db.prepare("SELECT 1 FROM pdd WHERE id=?").get(sienne.id),
+    "la ligne n'a pas été supprimée");
+
+  /* Un administrateur, lui, en a le droit : le correctif restreint, il ne bloque pas. */
+  const admin = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const ok = await request(app).put("/api/collections/pdd").set("Authorization", `Bearer ${admin}`)
+    .send({ rows:[], deletes:[sienne.id] });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.removed, 1);
+});
+
 test("identité : le nom du bureau accompagne le compte, pour l'affichage et le cloisonnement", async () => {
   const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
   const r = await login("terrain@test.local", "TerrainMotDePasse1");
@@ -380,6 +498,96 @@ test("comptes : politique de mot de passe et garde-fous d'administration", async
   assert.equal(suppr.status, 409);
 });
 
+/* Chantier A6 — `PUT /api/users/:id` réutilisait le schéma de création : les défauts
+   zod y remettaient role="viewer", tabs=[] et surtout active=true, et les champs
+   facultatifs absents repartaient à null. Un enregistrement partiel — celui que fait
+   tout écran qui ne connaît qu'une partie du compte — réactivait donc un compte
+   désactivé et le détachait de son prestataire, sans un mot d'erreur. */
+test("comptes : un PUT partiel ne réactive ni ne rétrograde ce qu'il n'envoie pas", async () => {
+  const tpm = db.prepare("SELECT id FROM tpm LIMIT 1").get();
+  assert.ok(tpm, "le jeu d'essai porte un prestataire");
+
+  const cree = await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"partiel@test.local", password:"PartielMotDePasse1", first_name:"Partiel",
+            last_name:"Ancien", title:"Agent", role:"editor", tpm_id:tpm.id,
+            tabs:["home","suivi"], active:false });
+  assert.equal(cree.status, 201, JSON.stringify(cree.body));
+  const avant = db.prepare("SELECT * FROM users WHERE email='partiel@test.local'").get();
+  assert.equal(avant.active, 0, "le compte est bien créé désactivé");
+
+  /* Le corps ne porte QUE l'adresse et le prénom. Tout le reste doit survivre. */
+  const put = await request(app).put(`/api/users/${avant.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"partiel@test.local", first_name:"Partiel corrigé" });
+  assert.equal(put.status, 200, JSON.stringify(put.body));
+
+  const apres = db.prepare("SELECT * FROM users WHERE id=?").get(avant.id);
+  assert.equal(apres.first_name, "Partiel corrigé", "ce qui est envoyé est bien écrit");
+  assert.equal(apres.active, 0, "un compte désactivé ne se réactive pas tout seul");
+  assert.equal(apres.role, "editor", "le rôle n'est pas rétrogradé en « viewer »");
+  assert.equal(apres.tabs, avant.tabs, "les onglets ne sont pas vidés");
+  assert.equal(apres.tpm_id, tpm.id, "le rattachement au prestataire tient");
+  assert.equal(apres.office_id, avant.office_id, "le rattachement au bureau tient");
+  assert.equal(apres.last_name, "Ancien", "les champs facultatifs ne sont pas effacés");
+  assert.equal(apres.title, "Agent");
+
+  /* Même contrôle sur un compte de bureau, où `office_id` n'est pas nul : un compte
+     de prestataire n'en porte jamais, il ne prouverait donc rien à lui seul. */
+  const office = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
+  const cree2 = await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"partiel2@test.local", password:"Partiel2MotDePasse1", first_name:"Partiel2",
+            role:"validator", office_id:office.id, tabs:["home"], active:false });
+  assert.equal(cree2.status, 201, JSON.stringify(cree2.body));
+  const av2 = db.prepare("SELECT * FROM users WHERE email='partiel2@test.local'").get();
+  const put2 = await request(app).put(`/api/users/${av2.id}`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ first_name:"Partiel2 corrigé" });
+  assert.equal(put2.status, 200, JSON.stringify(put2.body));
+  const ap2 = db.prepare("SELECT * FROM users WHERE id=?").get(av2.id);
+  assert.equal(ap2.office_id, office.id, "le bureau n'est pas détaché");
+  assert.equal(ap2.role, "validator");
+  assert.equal(ap2.active, 0);
+
+  /* Ce qui est explicitement envoyé s'applique toujours, réactivation comprise :
+     le correctif rend le partiel inoffensif, il n'empêche pas la modification. */
+  const put3 = await request(app).put(`/api/users/${av2.id}`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ active:true });
+  assert.equal(put3.status, 200, JSON.stringify(put3.body));
+  assert.equal(db.prepare("SELECT active FROM users WHERE id=?").get(av2.id).active, 1);
+});
+
+/* Chantier A7 — `failed_logins` n'était remis à zéro que par une connexion réussie.
+   Après expiration d'un verrou le compteur valait toujours le seuil : la première
+   tentative erronée reverrouillait aussitôt pour quinze minutes. Le verrou
+   « temporaire » était définitif sans intervention d'un administrateur. */
+test("connexion : un verrou expiré rend son compteur au compte, il ne se referme pas", async () => {
+  const create = await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"verrou@test.local", password:"VerrouMotDePasse1", first_name:"Verrou",
+            role:"viewer", tabs:["home"], active:true });
+  assert.equal(create.status, 201);
+  motDePasseAdopte("verrou@test.local");
+  const etat = () => db.prepare(
+    "SELECT failed_logins, locked_until FROM users WHERE email='verrou@test.local'").get();
+
+  /* L'état exact que laisse un verrou qui vient d'expirer : compteur au seuil
+     (LOCK_AFTER_FAILED, 8 par défaut) et échéance dans le passé. */
+  db.prepare("UPDATE users SET failed_logins=8, locked_until=? WHERE email='verrou@test.local'")
+    .run(new Date(Date.now() - 60_000).toISOString());
+
+  const rate = await login("verrou@test.local", "PasLeBonMotDePasse1");
+  assert.equal(rate.status, 401, "c'est un échec de connexion ordinaire, pas un verrou");
+  assert.equal(etat().failed_logins, 1, "le compteur repart de zéro, pas du seuil");
+  assert.equal(etat().locked_until, null, "aucun nouveau verrou n'a été posé");
+
+  /* Et le titulaire retrouve son compte, sans passer par un administrateur. */
+  assert.equal((await login("verrou@test.local", "VerrouMotDePasse1")).status, 200);
+  assert.equal(etat().failed_logins, 0);
+
+  /* Un verrou encore valide, lui, tient : le correctif lève l'expiré, pas le verrou. */
+  db.prepare("UPDATE users SET failed_logins=8, locked_until=? WHERE email='verrou@test.local'")
+    .run(new Date(Date.now() + 60_000).toISOString());
+  assert.equal((await login("verrou@test.local", "VerrouMotDePasse1")).status, 423);
+});
+
 test("changement de mot de passe : ferme les autres sessions", async () => {
   const first = (await login("lecteur@test.local", "LecteurMotDePasse1")).body.token;
   const second = (await login("lecteur@test.local", "LecteurMotDePasse1")).body.token;
@@ -388,6 +596,46 @@ test("changement de mot de passe : ferme les autres sessions", async () => {
   assert.equal(ch.status, 200);
   assert.equal((await request(app).get("/api/state").set("Authorization", `Bearer ${first}`)).status, 401);
   assert.equal((await request(app).get("/api/state").set("Authorization", `Bearer ${second}`)).status, 200);
+});
+
+/* Chantier A3 — `must_change_pw` n'était lu que par l'écran de connexion
+   (web/src/views/Login.jsx). Un appel direct à l'API avec le mot de passe
+   provisoire ouvrait tout, indéfiniment. */
+test("mot de passe provisoire : n'ouvre que son propre remplacement", async () => {
+  const create = await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"provisoire@test.local", password:"ProvisoireMotDePasse1",
+            first_name:"Provisoire", role:"editor", tabs:["home"], active:true });
+  assert.equal(create.status, 201);
+  const lr = await login("provisoire@test.local", "ProvisoireMotDePasse1");
+  assert.equal(lr.status, 200, "la connexion aboutit : c'est ce qu'elle ouvre qui est borné");
+  assert.equal(lr.body.user.must_change_pw, true);
+  const t = lr.body.token;
+
+  /* Tout le reste de l'API est fermé, y compris la simple lecture de l'état. */
+  for(const [m, chemin] of [["get","/api/state"], ["get","/api/auth/sessions"],
+                            ["get","/api/caseload"], ["put","/api/collections/pdd"]]){
+    const r = await request(app)[m](chemin).set("Authorization", `Bearer ${t}`).send({ rows:[] });
+    assert.equal(r.status, 403, `${m.toUpperCase()} ${chemin} doit être refusé`);
+    assert.match(r.body.error, /provisoire/);
+  }
+
+  /* Les trois chemins du parcours de changement restent ouverts, et eux seuls. */
+  const me = await request(app).get("/api/auth/me").set("Authorization", `Bearer ${t}`);
+  assert.equal(me.status, 200);
+  assert.equal(me.body.user.must_change_pw, true);
+  const jetable = (await login("provisoire@test.local", "ProvisoireMotDePasse1")).body.token;
+  assert.equal((await request(app).post("/api/auth/logout")
+    .set("Authorization", `Bearer ${jetable}`)).status, 200, "on peut toujours refermer sa session");
+
+  const ch = await request(app).post("/api/auth/password").set("Authorization", `Bearer ${t}`)
+    .send({ current:"ProvisoireMotDePasse1", next:"DefinitifMotDePasse2026" });
+  assert.equal(ch.status, 200);
+
+  /* Le drapeau tombe avec le changement : l'accès s'ouvre, sans autre intervention. */
+  const apres = await login("provisoire@test.local", "DefinitifMotDePasse2026");
+  assert.equal(apres.body.user.must_change_pw, false);
+  assert.equal((await request(app).get("/api/state")
+    .set("Authorization", `Bearer ${apres.body.token}`)).status, 200);
 });
 
 test("déconnexion : le jeton devient inutilisable", async () => {
@@ -712,6 +960,44 @@ test("population et ciblage : les valeurs incohérentes sont rejetées avec leur
   assert.equal(r.body.crees + r.body.modifies, 0);
 });
 
+/* Chantier A4 — `PUT /api/caseload` n'appliquait aucun contrôle de périmètre alors
+   que le même flux par import en applique un ligne à ligne : `scopeOf` était importé
+   dans la route mais ne servait qu'en lecture. */
+test("population et ciblage : une écriture hors périmètre est rejetée ligne à ligne", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(t);
+  const year = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`)).body.year;
+  const te = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+
+  const vueAdmin = (await request(app).get(`/api/caseload?level=adm3&year=${year}`)
+    .set("Authorization", `Bearer ${t}`)).body.rows;
+  const vueTerrain = (await request(app).get(`/api/caseload?level=adm3&year=${year}`)
+    .set("Authorization", `Bearer ${te}`)).body.rows;
+  const siennes = new Set(vueTerrain.map(x => x.pcode));
+  const dehors = vueAdmin.find(x => !siennes.has(x.pcode));
+  const dedans = vueTerrain.find(x => x.population > 0);
+  assert.ok(dehors, "l'administrateur voit des communes que l'éditeur ne voit pas");
+  assert.ok(dedans, "l'éditeur a bien un périmètre renseigné");
+
+  /* La ligne de son périmètre est réécrite à l'identique : le test mesure le refus,
+     il ne doit pas déplacer les chiffres que les tests suivants relisent. */
+  const r = await request(app).put("/api/caseload").set("Authorization", `Bearer ${te}`)
+    .send({ rows:[
+      { geo_pcode:dehors.pcode, level:"adm3", year, activity_tag:"",
+        population:1000, targeted:10, source:"tentative hors périmètre" },
+      { geo_pcode:dedans.pcode, level:"adm3", year, activity_tag:"",
+        population:dedans.population, households:dedans.households,
+        targeted:dedans.targeted, targeted_hh:dedans.targetedHh, source:dedans.source },
+    ]});
+  assert.equal(r.status, 200);
+  assert.equal(r.body.rejetes, 1, JSON.stringify(r.body.rejets));
+  assert.equal(r.body.rejets[0].pcode, dehors.pcode);
+  assert.match(r.body.rejets[0].message, /hors du périmètre/);
+  assert.equal(r.body.crees + r.body.modifies, 1, "la ligne de son propre périmètre passe");
+  assert.ok(!db.prepare("SELECT 1 FROM caseload WHERE geo_pcode=? AND source=?")
+    .get(dehors.pcode, "tentative hors périmètre"), "rien n'a été écrit hors périmètre");
+});
+
 /* ── Import par fichier ───────────────────────────────────────────────
    Le pipeline en trois temps : modèle pré-rempli, prévisualisation qui n'écrit
    rien, puis confirmation en une transaction. */
@@ -915,6 +1201,43 @@ test("import : le périmètre du bureau est appliqué ligne à ligne", async () 
   assert.equal(prev.status, 200);
   assert.ok(prev.body.rejets.some(x => /hors du périmètre/.test(x.message || "")),
     "l'unité d'un autre bureau est rejetée : un fichier est une entrée utilisateur comme une autre");
+});
+
+/* Chantier B1 — `wb.xlsx.load()` inflatait chaque entrée de l'archive sans plafond
+   et sans vérifier sa provenance. Quelques kilo-octets, un simple droit « edit », et
+   le processus mourait ; le conteneur redémarrant tout seul, l'opération se rejoue. */
+test("import : une archive piégée est refusée avant d'être décompressée", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(t);
+  const JSZip = (await import("jszip")).default;
+
+  /* D'abord la non-régression qui compte le plus : un vrai classeur passe toujours. */
+  const normal = await televerser(t, await modele(t, "caseload"));
+  assert.equal(normal.status, 200, JSON.stringify(normal.body));
+
+  /* ① Rapport de compression impossible pour un classeur : 8 Mo annoncés à
+       l'intérieur, quelques kilo-octets reçus. Le fichier n'est jamais ouvert. */
+  const bombe = new JSZip();
+  bombe.file("[Content_Types].xml", "<Types/>");
+  bombe.file("xl/workbook.xml", Buffer.alloc(8 * 1024 * 1024));
+  const bufBombe = await bombe.generateAsync({ type:"nodebuffer", compression:"DEFLATE" });
+  assert.ok(bufBombe.length < 100 * 1024,
+    `le piège ne pèse que ${bufBombe.length} octets sur le disque`);
+  const r1 = await request(app).post("/api/import/caseload").set("Authorization", `Bearer ${t}`)
+    .attach("file", bufBombe, "piege.xlsx");
+  assert.equal(r1.status, 422, JSON.stringify(r1.body));
+  assert.match(r1.body.error, /rapport est trop grand/);
+
+  /* ② Entrée étrangère au paquet OOXML : un classeur n'en contient jamais. */
+  const clandestin = new JSZip();
+  clandestin.file("[Content_Types].xml", "<Types/>");
+  clandestin.file("xl/workbook.xml", "<workbook/>");
+  clandestin.file("charge_utile/script.sh", "echo bonjour");
+  const bufClandestin = await clandestin.generateAsync({ type:"nodebuffer", compression:"DEFLATE" });
+  const r2 = await request(app).post("/api/import/caseload").set("Authorization", `Bearer ${t}`)
+    .attach("file", bufClandestin, "piege2.xlsx");
+  assert.equal(r2.status, 422, JSON.stringify(r2.body));
+  assert.match(r2.body.error, /étrangère au format Excel/);
 });
 
 /* ── Concurrence ──────────────────────────────────────────────────────
@@ -1258,6 +1581,7 @@ test("bureau pays : un compte de Tana voit tous les sites sans être administrat
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"tana@test.local", password:"TanaMotDePasse1", first_name:"Tana",
             role:"editor", office_id:hq.id, tabs:["home"], active:true });
+  motDePasseAdopte("tana@test.local");
   const t = (await login("tana@test.local", "TanaMotDePasse1")).body.token;
 
   const st = await request(app).get("/api/state").set("Authorization", `Bearer ${t}`);
@@ -1614,6 +1938,7 @@ test("TPM : le circuit se franchit dans l'ordre et par le bon acteur", async () 
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"prestataire@test.local", password:"PrestataireMotDePasse1",
             first_name:"Presta", role:"editor", tpm_id:tpmCtx.tpm, tabs:["home"], active:true });
+  motDePasseAdopte("prestataire@test.local");
   const tp = (await login("prestataire@test.local", "PrestataireMotDePasse1")).body.token;
   /* Le deuxième niveau est « le responsable suivi-évaluation du bureau » : un compte
      du bureau qui a le droit de valider. Un éditeur du même bureau ne l'a pas —
@@ -1622,6 +1947,7 @@ test("TPM : le circuit se franchit dans l'ordre et par le bon acteur", async () 
     .send({ email:"se-bureau@test.local", password:"SeBureauMotDePasse1",
             first_name:"Valid", role:"validator", office_id:tpmCtx.office.id,
             tabs:["home"], active:true });
+  motDePasseAdopte("se-bureau@test.local");
   const te = (await login("se-bureau@test.local", "SeBureauMotDePasse1")).body.token;
   const editeur = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
   const tana = (await login("tana@test.local", "TanaMotDePasse1")).body.token;

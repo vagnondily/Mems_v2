@@ -28,6 +28,9 @@ r.post("/odk-forms/:id/pull", requireCap("admin"), async (req, res, next) => {
   if(!f.project) return res.status(422).json({ error:
     "identifiant de projet ODK Central absent pour cette source (Paramètres → ODK Central)" });
 
+  /* Cette adresse vient d'un réglage, donc de l'extérieur : elle est vérifiée avant
+     tout appel sortant par `verifierBaseOdk` (lib/odkClient.js), qui impose https,
+     refuse les adresses privées et honore la liste blanche ODK_ALLOWED_HOSTS. */
   const odkBase = J(db.prepare("SELECT value FROM settings WHERE key='odkBase'").get()?.value, "");
   if(!odkBase) return res.status(422).json({ error:
     "adresse du serveur ODK Central absente (Paramètres → ODK Central → Serveur)" });
@@ -52,6 +55,9 @@ r.post("/odk-forms/:id/pull", requireCap("admin"), async (req, res, next) => {
           + "Affinez la période ou contactez l'équipe technique pour relever la limite."
         : null });
   }catch(e){
+    /* Adresse refusée : c'est une donnée de configuration fautive, pas une panne —
+       422 et le motif exact, pour que l'administrateur sache quoi changer. */
+    if(e.code === "ODK_URL") return res.status(422).json({ error: e.message });
     if(e.code === "ODK_AUTH") return res.status(422).json({ error:
       "jeton refusé par ODK Central : vérifiez qu'il est valide et qu'il donne accès à ce formulaire." });
     if(e.code === "ODK_NOT_FOUND") return res.status(422).json({ error:

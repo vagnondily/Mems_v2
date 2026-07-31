@@ -4,6 +4,7 @@ import { db, tx } from "../db.js";
 import { newId } from "../lib/crypto.js";
 import { encrypt } from "../lib/crypto.js";
 import { requireCap, can } from "../lib/auth.js";
+import { officeBound } from "../lib/scope.js";
 
 const r = Router();
 const S = (max=200) => z.string().max(max).nullish().transform(v => v ?? null);
@@ -14,9 +15,15 @@ const B = z.union([z.boolean(), z.number(), z.string()]).transform(v =>
 
 /* Chaque collection déclare sa table, le droit exigé, sa forme et sa projection en colonnes.
    Une écriture remplace la collection entière dans une transaction :
-   les lignes absentes du corps sont supprimées, les autres insérées ou mises à jour. */
+   les lignes absentes du corps sont supprimées, les autres insérées ou mises à jour.
+
+   `office:true` marque les collections dont la table porte une colonne `office_id`,
+   et elles seules : ce sont les deux mêmes que `GET /api/state` cloisonne
+   (`coverage_params` et `pdd`). Les autres — indicateurs, résultats, modèles de
+   rapport, sources ODK… — sont communes à toute l'installation ; y appliquer un
+   filtre par bureau ne protégerait personne et couperait tout le monde de tout. */
 const COLLECTIONS = {
-  params: { table:"coverage_params", cap:"edit",
+  params: { table:"coverage_params", cap:"edit", office:true,
     schema: z.object({ id:S(64), csp:S(40), office_id:z.string().max(64),
       category_id:S(64), tag:z.string().min(1).max(20),
       duration:I(0,12), riskLevel:I(1,3), feasiblePerMonth:I(0,1000) }),
@@ -50,7 +57,7 @@ const COLLECTIONS = {
       level:z.string().max(20).default("adm2"), base:I(), rate:N(-50,50) }),
     map: (x) => ({ area_key:x.key, level:x.level, base_year:2018, base:x.base, rate:x.rate }) },
 
-  pdd: { table:"pdd", cap:"edit",
+  pdd: { table:"pdd", cap:"edit", office:true,
     schema: z.object({ id:S(64), year:I(2000,2100), month:I(0,11), wbs:S(40),
       actType:z.string().min(1).max(40), tag:S(20), actMain:S(200), office_id:S(64), geo_pcode:S(64),
       bureau:z.string().min(1).max(120), region:S(120), district:S(120), commune:S(120),
@@ -131,11 +138,46 @@ r.put("/collections/:name", (req, res, next) => {
     details: parsed.error.issues.slice(0,10).map(i=>({ champ:i.path.join("."), message:i.message })) });
 
   const { rows, deletes } = parsed.data;
+
+  /* Supprimer n'est pas modifier. La matrice des rôles (lib/auth.js) réserve « del »
+     à l'administration, mais la route entière n'était gardée que par « edit » : le
+     tableau `deletes` passait donc avec, et un éditeur effaçait ce que son rôle lui
+     interdit explicitement d'effacer. Le droit se vérifie ici, pas à l'écriture :
+     un refus doit arriver avant que quoi que ce soit ne soit tenté. */
+  if(deletes.length && !can(req.user, "del"))
+    return res.status(403).json({ error:"droit « del » requis pour supprimer des lignes" });
+
   let created = 0, updated = 0, removed = 0;
   const conflits = [];
 
+  /* ── Cloisonnement par bureau ────────────────────────────────────────
+     `GET /api/state` cache déjà à un compte cloisonné les lignes des autres
+     bureaux. L'écriture, elle, ne filtrait rien : il suffisait de nommer une ligne
+     par son identifiant pour la modifier — et surtout pour la supprimer — dans un
+     bureau qu'on n'a jamais eu le droit de voir. Le périmètre se calcule avec la
+     même fonction que la lecture, pour que les deux ne puissent pas diverger ;
+     un administrateur (officeBound = null) n'est borné par rien. */
+  const bureau = def.office ? officeBound(req.user) : null;
+
+  if(bureau){
+    /* Toucher la ligne d'un autre bureau se refuse explicitement plutôt que de se
+       taire : sans ce contrôle, une ligne absente de `existing` retomberait dans la
+       branche INSERT et échouerait sur une contrainte d'unicité — un 409 « doublon »
+       parfaitement incompréhensible pour qui vient de tenter une modification. */
+    const ailleurs = new Set(db.prepare(
+      `SELECT id FROM ${def.table} WHERE office_id IS NULL OR office_id<>?`).all(bureau)
+      .map(x => x.id));
+    const touchees = [...new Set([...rows.map(x => x.id), ...deletes]
+      .filter(id => id && ailleurs.has(id)))];
+    if(touchees.length) return res.status(403).json({
+      error: "certaines lignes appartiennent à un autre bureau que le vôtre",
+      lignes: touchees.slice(0, 20) });
+  }
+
   /* Les conflits se détectent avant d'écrire : soit l'ensemble passe, soit rien. */
-  const existing = new Map(db.prepare(`SELECT id, rev FROM ${def.table}`).all().map(x => [x.id, x.rev]));
+  const existing = new Map((bureau
+    ? db.prepare(`SELECT id, rev FROM ${def.table} WHERE office_id=?`).all(bureau)
+    : db.prepare(`SELECT id, rev FROM ${def.table}`).all()).map(x => [x.id, x.rev]));
   for(const raw of rows){
     if(!raw.id || !existing.has(raw.id)) continue;
     const courante = existing.get(raw.id);
@@ -159,10 +201,19 @@ r.put("/collections/:name", (req, res, next) => {
     tx(() => {
       for(const raw of rows){
         const cols = def.map(raw);
+        /* Le rattachement au bureau n'est pas une donnée que l'appelant choisit :
+           un compte cloisonné qui déposerait une ligne dans un autre bureau ne
+           pourrait plus jamais la relire ni la corriger — et l'aurait rendue
+           invisible à ceux qu'elle concerne. */
+        if(bureau) cols.office_id = bureau;
         const keys = Object.keys(cols);
         if(raw.id && existing.has(raw.id)){
+          /* Le bureau est répété dans le WHERE, alors que `existing` le garantit déjà :
+             la règle doit tenir dans le SQL lui-même, pour qu'aucune refonte future de
+             la détection de conflits ne puisse la faire disparaître sans qu'on le voie. */
           db.prepare(`UPDATE ${def.table} SET ${keys.map(k=>k+"=?").join(",")}, rev=rev+1
-                      WHERE id=?`).run(...keys.map(k=>cols[k]), raw.id);
+                      WHERE id=?${bureau ? " AND office_id=?" : ""}`)
+            .run(...keys.map(k=>cols[k]), raw.id, ...(bureau ? [bureau] : []));
           updated++;
         } else {
           const nid = raw.id || newId(req.params.name.slice(0,4));
@@ -172,9 +223,12 @@ r.put("/collections/:name", (req, res, next) => {
           created++;
         }
       }
-      /* Suppressions demandées, et elles seules. */
-      const del = db.prepare(`DELETE FROM ${def.table} WHERE id=?`);
-      for(const id of deletes) if(existing.has(id)){ del.run(id); removed++; }
+      /* Suppressions demandées, et elles seules — bornées au bureau de l'appelant
+         dans le SQL comme dans `existing`, pour la même raison que l'UPDATE. */
+      const del = db.prepare(
+        `DELETE FROM ${def.table} WHERE id=?${bureau ? " AND office_id=?" : ""}`);
+      for(const id of deletes) if(existing.has(id))
+        removed += del.run(id, ...(bureau ? [bureau] : [])).changes;
     })();
   }catch(e){
     if(/FOREIGN KEY/.test(e.message))

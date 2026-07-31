@@ -1704,13 +1704,11 @@ function OdkModal({ open, form, db, onClose, onSave, notify }){
     try{
       let labels = {};
       if(/\.(xlsx|xls)$/i.test(file.name)){
-        const XLSX = await import("xlsx");
-        const wb = XLSX.read(await file.arrayBuffer(), { type:"array" });
-        const sheet = wb.Sheets[wb.SheetNames.find(x=>/survey/i.test(x)) || wb.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json(sheet, { defval:"" });
-        rows.forEach(r => { const name = r.name || r.Name;
-          const lab = r.label || r["label::Français (fr)"] || r["label::French (fr)"] || r["label::English (en)"] || r.Label;
-          if(name && lab) labels[String(name)] = String(lab); });
+        /* Lecture côté serveur : le navigateur n'embarque plus de lecteur de
+           classeurs. Le serveur renvoie aussi le type de chaque variable et un
+           aperçu des listes de choix, ce que la lecture locale ne donnait pas. */
+        const r = await api.xlsformParse(file);
+        labels = r.labels || {};
       } else {
         parseCSV(await file.text()).forEach(r => { const k = Object.keys(r);
           const name = r[k.find(x=>/^name$/i.test(x))], lab = r[k.find(x=>/^label/i.test(x))];

@@ -43,6 +43,20 @@ button,select,textarea{font:inherit;color:inherit}
 .mh340{max-height:340px}.mh420{max-height:420px}.mh440{max-height:440px}
 .mh55{max-height:55vh}.mh62{max-height:62vh}.mh65{max-height:65vh}.mh68{max-height:68vh}
 .mh78{max-height:78vh}
+/* Fiche de site affichée au clic sur un point de la carte. Reprend la forme
+   d'une fiche d'adresse : titre, sous-titre, puis quelques couples clé/valeur
+   qu'on veut lire sans ouvrir la fiche complète du registre. */
+.mems-popup .leaflet-popup-content-wrapper{border-radius:0.6rem;box-shadow:0 6px 22px rgba(2,32,54,.18)}
+.mems-popup .leaflet-popup-content{margin:10px 12px;line-height:1.45}
+.mp-t{font-size:13.5px;font-weight:700;color:#0f172a}
+.mp-s{font-size:11px;color:#64748b;margin-bottom:6px}
+.mp-l{display:flex;gap:8px;font-size:11.5px;padding:1px 0}
+.mp-k{color:#64748b;flex:0 0 88px}
+.mp-v{color:#1e293b;font-weight:500;min-width:0;word-break:break-word}
+/* Leaflet pose ses propres z-index très haut ; les modales de MEMS montent à
+   60 et doivent rester au-dessus de la carte. */
+.leaflet-pane,.leaflet-control{z-index:20 !important}
+.leaflet-container{font:inherit;background:#eef3f7}
 .mw220{max-width:220px}.mw240{max-width:240px}.mw300{max-width:300px}.mw320{max-width:320px}
 .mw420{max-width:420px}.mw1520{max-width:1520px}
 .mnw52{min-width:52px}.mnw260{min-width:260px}.w38{width:38px}.w46{width:46%}.h22{height:22px}

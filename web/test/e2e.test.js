@@ -65,9 +65,15 @@ before(async () => {
   assert.equal(health.status, "ok");
 
   /* L'application est empaquetée telle quelle : c'est bien le code livré qui est testé. */
+  /* Les feuilles de style et les images importées par les bibliothèques (le CSS
+     de Leaflet et ses icônes) n'ont pas de sens dans jsdom, qui ne peint rien :
+     on les vide plutôt que d'ajouter des chargeurs qui alourdiraient le bundle
+     de test sans rien apprendre. Vite, lui, les traite normalement. */
   execFileSync("npx", ["esbuild", "src/App.jsx", "--bundle", "--format=esm",
     "--loader:.jsx=jsx", "--jsx=automatic", "--external:react", "--external:react-dom",
-    "--external:react/jsx-runtime", "--outfile=test/_app.mjs", "--log-level=error"], { stdio:"pipe" });
+    "--external:react/jsx-runtime",
+    "--loader:.css=empty", "--loader:.png=empty", "--loader:.svg=empty",
+    "--outfile=test/_app.mjs", "--log-level=error"], { stdio:"pipe" });
 
   ctx = makeDom(BASE);
   React = (await import("react")).default;
@@ -161,23 +167,27 @@ test("cartographie : points projetés, filtres actifs, fiche au clic", async () 
   await flush(); await flush();
 
   assert.ok(byText("h3", "Cartographie des sites"), "la carte est en place");
-  const points = all("svg circle[data-site]");
-  assert.ok(points.length > 20, `des sites sont projetés (${points.length} points)`);
+  /* Le fond de carte est rendu par Leaflet, qui gère son propre DOM et ne peint
+     rien sous jsdom. Ce qui se teste ici est donc le répertoire des sites — la
+     liste liée à la carte, qui est aussi la façon dont un utilisateur retrouve
+     un site par son nom plutôt qu'à l'œil sur le fond. */
+  const points = all("[data-site-item]");
+  assert.ok(points.length > 20, `le répertoire liste les sites (${points.length} entrées)`);
   assert.ok(byText("div", "Légende"), "la légende est affichée");
 
-  /* Un filtre réduit réellement le nombre de points. */
+  /* Un filtre réduit réellement la sélection. */
   const selects = all("main select");
   const filtreStatut = selects.find(s => [...s.options].some(o => o.value === "Inactive"));
   const avant = points.length;
   await type(filtreStatut, "Inactive");
   await flush(); await flush();
-  const apres = all("svg circle[data-site]").length;
+  const apres = all("[data-site-item]").length;
   assert.ok(apres < avant, `le filtre réduit la sélection (${avant} → ${apres})`);
   await type(filtreStatut, "Active"); await flush(); await flush();
 
-  /* Le clic sur un point ouvre la fiche du site. */
-  const cible = all("svg circle[data-site]")[0];
-  await click(cible, "un point de la carte");
+  /* Le clic sur une entrée du répertoire ouvre la fiche du site. */
+  const cible = all("[data-site-item]")[0];
+  await click(cible, "un site du répertoire");
   await flush();
   assert.ok(byText("div", "Site sélectionné"), "la fiche du site s'ouvre");
   assert.ok(byText("dt", "Coordonnées"), "les coordonnées sont affichées");

@@ -100,6 +100,12 @@ export const api = {
   importKinds:    ()              => call("GET", "/import/kinds"),
   importTemplate: (kind, year)    => fetchBlob(`/import/${encodeURIComponent(kind)}/template?year=${year}`),
   importUpload:   (kind, file)    => postFile(`/import/${encodeURIComponent(kind)}`, file),
+  /* Le XLSForm est lu par le serveur, qui a déjà exceljs. Le navigateur
+     embarquait SheetJS pour le faire lui-même : deux failles connues, aucun
+     correctif au registre npm, et un lecteur de classeurs livré à chaque
+     utilisateur pour une fenêtre de configuration ouverte par les seuls
+     administrateurs. */
+  xlsformParse:   (file)          => postFile("/xlsform/parse", file),
   importBatches:  ()              => call("GET", "/import/batches"),
   importBatch:    (id)            => call("GET", `/import/batches/${encodeURIComponent(id)}`),
   importCommit:   (id)            => call("POST", `/import/batches/${encodeURIComponent(id)}/commit`, {}),

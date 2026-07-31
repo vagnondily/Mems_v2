@@ -1,5 +1,7 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
-import { MapPin, Search, RefreshCw, Download, Users, Target, Activity, AlertTriangle, Layers } from "lucide-react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { MapPin, Search, RefreshCw, Download, Users, Target, Activity, AlertTriangle, Phone, Clock, Layers } from "lucide-react";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 import { C, MONTHS_L, D_SECURITY } from "../lib/constants.js";
 import { fmt, pct, n, r2, clsx } from "../lib/calc.js";
 import { download, toCSV } from "../components/ui.jsx";
@@ -8,24 +10,23 @@ import { api } from "../lib/api.js";
 import { useGeoCascade, names } from "../lib/geo.js";
 import { niveau, niveaux } from "../lib/levels.js";
 
-/* Projection équirectangulaire simple, suffisante pour un pays et sans dépendance externe.
-   Aucune tuile n'est appelée : la carte fonctionne hors ligne et ne fuite aucune donnée. */
-function makeProjection(bounds, width, height, pad = 26){
-  if(!bounds) return null;
-  const latSpan = Math.max(0.02, bounds.maxLat - bounds.minLat);
-  const lonSpan = Math.max(0.02, bounds.maxLon - bounds.minLon);
-  /* Correction de la convergence des méridiens à la latitude moyenne. */
-  const midLat = (bounds.maxLat + bounds.minLat) / 2;
-  const kx = Math.cos(midLat * Math.PI / 180) || 1;
-  const scale = Math.min((width - 2*pad) / (lonSpan * kx), (height - 2*pad) / latSpan);
-  const cx = (bounds.maxLon + bounds.minLon) / 2;
-  const cy = midLat;
-  return {
-    x: (lon) => width/2 + (lon - cx) * kx * scale,
-    y: (lat) => height/2 - (lat - cy) * scale,
-    scale,
-  };
-}
+/* ── Fond de carte ────────────────────────────────────────────────────
+   Tuiles OpenStreetMap : libres, sans clé d'API et sans facturation. Le
+   choix est délibéré — un fond commercial impose une clé, un compte de
+   facturation et un quota, pour un rendu qui n'apprend rien de plus sur
+   un pays d'intervention.
+
+   Le fond est *optionnel* : si les tuiles ne se chargent pas (bureau hors
+   ligne, pare-feu), Leaflet laisse simplement le fond vide et continue de
+   dessiner les contours et les points. C'est ce qui préserve la propriété
+   qu'avait le rendu précédent — une carte utilisable sans réseau — sans
+   avoir à maintenir deux moteurs de rendu.
+
+   L'URL est surchargeable dans les réglages (`settings.tileUrl`) pour
+   pointer vers un serveur de tuiles interne, ce qui est la bonne réponse
+   dès que l'usage dépasse la politique d'usage d'OSM. */
+const TUILES_DEFAUT = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+const ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
 
 const COLOR_MODES = [
   ["coverage", "Couverture des visites"],
@@ -34,55 +35,33 @@ const COLOR_MODES = [
   ["status", "Statut du site"],
 ];
 
-/* Aplats du fond de carte. « Aucun » laisse les contours en simple trait : c'est
-   ce qu'il faut quand on regarde les points. Les trois autres répondent à des
-   questions que le module de ciblage posait déjà en tableau, et qu'un tableau ne
-   sait pas montrer — où sont les vides. */
+/* Aplats du fond administratif. « Contours seuls » laisse le fond de carte
+   visible : c'est ce qu'il faut quand on regarde les points. Les trois autres
+   répondent à des questions qu'un tableau ne sait pas montrer — où sont les
+   vides. */
 const FILL_MODES = [
   ["none",     "Contours seuls"],
   ["presence", "Présence de sites"],
   ["coverage", "Couverture du suivi"],
   ["benef",    "Bénéficiaires"],
 ];
-/* Les niveaux proposés viennent de la configuration du pays : « Régions,
-   Districts, Communes, Fokontany » est le vocabulaire de Madagascar, pas celui du
-   logiciel. Le pays n'est pas proposé — on ne colore pas un aplat sur une seule
-   forme. */
 
-/* Une géométrie GeoJSON vers un chemin SVG, projeté.
-
-   L'arrondi à 0,1 pixel n'est pas une coquetterie : un contour de commune compte
-   des centaines de sommets, et écrire « 412.7382910384 » plutôt que « 412.7 »
-   multiplie par trois la taille du DOM pour une différence invisible. Sur un
-   millier de contours, cela se voit à l'affichage. */
-function pathOf(geometry, proj){
-  if(!geometry || !proj) return "";
-  const r1 = (v) => Math.round(v * 10) / 10;
-  const anneau = (r) => {
-    let d = "";
-    for(let i = 0; i < r.length; i++){
-      const x = r1(proj.x(r[i][0])), y = r1(proj.y(r[i][1]));
-      d += (i ? "L" : "M") + x + " " + y;
-    }
-    return d + "Z";
-  };
-  if(geometry.type === "Polygon") return geometry.coordinates.map(anneau).join("");
-  if(geometry.type === "MultiPolygon")
-    return geometry.coordinates.map(p => p.map(anneau).join("")).join("");
-  return "";
-}
-
-/* Échelle d'aplat séquentielle, du plus clair au plus foncé de la teinte de
-   marque. Cinq classes : au-delà, l'œil ne distingue plus, et en dessous on perd
-   l'information. Le blanc est réservé au zéro — un vide doit se voir comme un vide,
-   pas comme la première classe. */
+/* Échelle séquentielle, du plus clair au plus foncé de la teinte de marque.
+   Cinq classes : au-delà l'œil ne distingue plus, en dessous on perd
+   l'information. Le zéro n'est pas peint du tout — sur un fond de carte, un
+   aplat blanc masquerait le fond au lieu de signaler un vide. */
 const RAMP = ["#e8f2f8", "#bcdcec", "#8ac2dd", "#4e9ec7", "#0b6d9e"];
 function classify(v, max){
-  if(v == null || max <= 0) return null;
-  if(v <= 0) return null;
+  if(v == null || max <= 0 || v <= 0) return null;
   const k = Math.min(RAMP.length - 1, Math.floor((v / max) * RAMP.length));
   return RAMP[k];
 }
+
+/* Les libellés de site viennent de la base et finissent dans le HTML d'un
+   popup Leaflet, qui pose de l'innerHTML. Sans échappement, un nom de site
+   contenant du balisage s'exécuterait dans la session de qui ouvre la carte. */
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g,
+  c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 
 export default function MapView({ db, me, notify, go }){
   const [rows, setRows] = useState([]);
@@ -94,14 +73,12 @@ export default function MapView({ db, me, notify, go }){
   const [colorMode, setColorMode] = useState("coverage");
   const [sizeByBenef, setSizeByBenef] = useState(true);
   const [f, setF] = useState({ office_id:"", adm1:"", adm2:"", activity_tag:"", status:"Active" });
-  const [view, setView] = useState({ k:1, dx:0, dy:0 });
-  /* Fond de carte : contours administratifs et mode d'aplat. */
   const [fillMode, setFillMode] = useState("presence");
   const [geoLevel, setGeoLevel] = useState("adm2");
   const [shapes, setShapes] = useState({ features:[], extent:null, tronque:false, loading:false });
   const [selShape, setSelShape] = useState(null);
+  const [fond, setFond] = useState(true);
   const GEO_LEVELS = niveaux(db, { from:"adm1", to:"adm4" });
-  const W = 900, H = 560;
 
   const load = async () => {
     setBusy(true); setError("");
@@ -118,8 +95,6 @@ export default function MapView({ db, me, notify, go }){
   const filtered = useMemo(() => !q ? rows : rows.filter(s =>
     [s.code, s.name, s.adm3, s.adm4, s.office].join(" ").toLowerCase().includes(q.toLowerCase())), [rows, q]);
 
-  /* Le cadrage tient compte des contours : sans cela une région dont les sites
-     sont regroupés dans un coin verrait son contour dépasser de l'écran. */
   const cadre = useMemo(() => {
     const e = shapes.extent;
     if(!e) return bounds;
@@ -128,33 +103,10 @@ export default function MapView({ db, me, notify, go }){
     return { minLat:Math.min(bounds.minLat, g.minLat), maxLat:Math.max(bounds.maxLat, g.maxLat),
              minLon:Math.min(bounds.minLon, g.minLon), maxLon:Math.max(bounds.maxLon, g.maxLon) };
   }, [bounds, shapes.extent]);
-  const proj = useMemo(() => makeProjection(cadre, W, H), [cadre]);
-  const tags = useMemo(() => [...new Set(rows.map(s => s.activity_tag).filter(Boolean))].sort(), [rows]);
-  /* Le référentiel vient du serveur, niveau par niveau : le navigateur ne
-     charge jamais les 18 000 fokontany pour alimenter deux listes déroulantes. */
-  const geo = useGeoCascade({ adm1: f.adm1 });
-  /* Repères de fond : centroïdes des communes du périmètre affiché. Bornés à 1 000,
-     qui est la limite du serveur — on demandait 1 200, la requête repartait en 422,
-     et le `catch` du client vidait la liste sans rien dire : ces repères ne se sont
-     jamais affichés. Au-delà de ce nombre ils forment de toute façon une tache
-     grise sans rien apprendre. */
-  const [geoMarks, setGeoMarks] = useState([]);
-  useEffect(() => {
-    let alive = true;
-    const qs = new URLSearchParams({ level:"adm3", limit:"1000" });
-    if(geo.codes.adm2) qs.set("parent", geo.codes.adm2);
-    else if(geo.codes.adm1) qs.set("parent", geo.codes.adm1);
-    api.geo("?"+qs)
-      .then(r => { if(alive) setGeoMarks((r.rows||[]).filter(g => g.lat != null && g.lon != null)); })
-      .catch(() => { if(alive) setGeoMarks([]); });
-    return () => { alive = false; };
-  }, [geo.codes.adm1, geo.codes.adm2]);
 
-  /* ── Contours administratifs ───────────────────────────────────────
-     Chargés par niveau et bornés au parent affiché. La version servie est la
-     version simplifiée : c'est celle dont un écran de 900 pixels a besoin, et
-     demander la pleine résolution d'un pays entier n'afficherait rien de plus
-     tout en pesant cent fois plus lourd. */
+  const tags = useMemo(() => [...new Set(rows.map(s => s.activity_tag).filter(Boolean))].sort(), [rows]);
+  const geo = useGeoCascade({ adm1: f.adm1 });
+
   useEffect(() => {
     let alive = true;
     if(!db.geoVersion?.geom?.units){ setShapes({ features:[], extent:null, tronque:false, loading:false }); return; }
@@ -177,19 +129,19 @@ export default function MapView({ db, me, notify, go }){
     return t;
   }, [tags]);
 
-  const colorOf = (s) => {
+  const colorOf = useCallback((s) => {
     if(colorMode === "security")
       return s.security === 0 ? C.ok : s.security === 1 ? C.warn : s.security === 3 ? C.bad : "#7c8792";
     if(colorMode === "activity") return palette[s.activity_tag] || "#94a3b8";
     if(colorMode === "status") return s.status === "Active" ? C.ok : "#94a3b8";
     const c = s.planned ? pct(s.done, s.planned) : (s.done ? 100 : 0);
     return s.planned === 0 && s.done === 0 ? "#c3cdd6" : c >= 80 ? C.ok : c >= 40 ? C.warn : C.bad;
-  };
-  const radiusOf = (s) => {
-    if(!sizeByBenef) return 4.2;
-    const b = n(s.beneficiaries);
-    return 3 + Math.min(9, Math.sqrt(b) / 22);
-  };
+  }, [colorMode, palette]);
+
+  const radiusOf = useCallback((s) => {
+    if(!sizeByBenef) return 6;
+    return 5 + Math.min(13, Math.sqrt(n(s.beneficiaries)) / 16);
+  }, [sizeByBenef]);
 
   const stats = useMemo(() => {
     const active = filtered.filter(s => s.status === "Active");
@@ -200,29 +152,19 @@ export default function MapView({ db, me, notify, go }){
       coverage: pct(visited.length, active.length) };
   }, [filtered]);
 
-  /* ── Valeurs thématiques par unité ─────────────────────────────────
-     Agrégées depuis les sites déjà chargés, par p-code. Le rattachement se fait
-     par code et non par nom : deux communes homonymes dans deux districts
-     différents existent, et les confondre colorerait la mauvaise. Un site dont le
-     p-code manque ne compte pour aucune unité — il est visible en point, ce qui
-     est la bonne façon de signaler qu'il n'est pas rattaché.
-
-     Les valeurs remontent d'un niveau à l'autre par la propriété `parent` que le
-     serveur joint à chaque contour : les sites sont à la commune, la carte peut
-     être au district. */
+  /* Valeurs thématiques par unité, agrégées depuis les sites chargés. Le
+     rattachement se fait par p-code et non par nom : deux communes homonymes
+     dans deux districts différents existent, et les confondre colorerait la
+     mauvaise. Les valeurs remontent d'un niveau à l'autre par la propriété
+     `parent` que le serveur joint à chaque contour. */
   const themeValues = useMemo(() => {
     if(fillMode === "none" || !shapes.features.length) return { par:{}, max:0, absent:0 };
-    /* Chaîne de parenté des contours affichés, pour remonter un site plus fin. */
     const parentDe = {};
     shapes.features.forEach(f => { parentDe[f.properties.pcode] = f.properties.parent; });
     const cible = new Set(shapes.features.map(f => f.properties.pcode));
-
     const par = {}; let absent = 0;
     for(const st of filtered){
-      let p = st.geo_pcode;
-      /* On remonte jusqu'à une unité du niveau affiché — dix sauts au plus, le
-         référentiel n'en compte que cinq. */
-      let sauts = 0;
+      let p = st.geo_pcode, sauts = 0;
       while(p && !cible.has(p) && sauts++ < 10) p = parentDe[p];
       if(!p || !cible.has(p)){ absent++; continue; }
       const a = par[p] = par[p] || { sites:0, actifs:0, planifies:0, visites:0, benef:0 };
@@ -233,8 +175,7 @@ export default function MapView({ db, me, notify, go }){
     const val = (a) => fillMode === "presence" ? a.sites
       : fillMode === "benef" ? a.benef
       : (a.planifies ? Math.round((a.visites / a.planifies) * 100) : (a.visites ? 100 : 0));
-    const max = fillMode === "coverage" ? 100
-      : Math.max(0, ...Object.values(par).map(val));
+    const max = fillMode === "coverage" ? 100 : Math.max(0, ...Object.values(par).map(val));
     return { par, val, max, absent };
   }, [fillMode, shapes.features, filtered]);
 
@@ -259,13 +200,155 @@ export default function MapView({ db, me, notify, go }){
     notify("Points exportés","ok");
   };
 
-  const zoom = (factor) => setView(v => ({ ...v, k: Math.max(1, Math.min(12, v.k * factor)) }));
-  const drag = useRef(null);
-  const onDown = (e) => { drag.current = { x:e.clientX, y:e.clientY, dx:view.dx, dy:view.dy }; };
-  const onMove = (e) => { if(!drag.current) return;
-    setView(v => ({ ...v, dx: drag.current.dx + (e.clientX - drag.current.x),
-                          dy: drag.current.dy + (e.clientY - drag.current.y) })); };
-  const onUp = () => { drag.current = null; };
+  /* ── Carte Leaflet ──────────────────────────────────────────────────
+     Le conteneur est piloté à la main plutôt que par un composant React :
+     Leaflet gère lui-même son DOM, et le laisser faire évite de recréer des
+     milliers de couches à chaque rendu de React. */
+  const boxRef = useRef(null);
+  const mapRef = useRef(null);
+  const tuilesRef = useRef(null);
+  const ptsRef = useRef(null);
+  const shpRef = useRef(null);
+  const marqueurs = useRef(new Map());
+  const cadreVu = useRef("");
+  /* Compteur de cycles de vie de la carte. React monte, démonte puis remonte les
+     effets en mode strict ; sans ce compteur, les effets qui peuplent la carte
+     ne se relanceraient pas après le remontage et l'écran resterait vide. Il
+     sert aussi de garde : tant qu'il vaut 0, aucune couche n'est posée. */
+  const [pret, setPret] = useState(0);
+
+  useEffect(() => {
+    if(mapRef.current || !boxRef.current) return;
+    /* Leaflet dessine contours et points avec un moteur vectoriel, et c'est le
+       SVG qu'il utilise par défaut. Là où il est absent, lui ajouter la moindre
+       couche échoue au fond de la bibliothèque avec une erreur qui ne dit rien
+       de la cause (`_leaflet_id` sur null) — on préfère ne pas créer la carte
+       du tout : le répertoire des sites et la fiche de droite, eux, fonctionnent
+       partout.
+
+       On teste le SVG et lui seul. Leaflet annonce `Browser.canvas` vrai dès que
+       la classe HTMLCanvasElement existe, ce qui est le cas sous jsdom où
+       getContext n'est pourtant pas implémenté : s'y fier ferait échouer le
+       rendu plus tard, et plus obscurément. Tout navigateur réel a le SVG.
+
+       Le jour où la volumétrie l'exigera, c'est un regroupement des points en
+       grappes qu'il faudra, pas un changement de moteur. */
+    if(!L.Browser.svg) return;
+    let map;
+    try{
+      map = L.map(boxRef.current, { zoomControl:true, attributionControl:true,
+        worldCopyJump:false });
+    }catch(e){ return; }           /* conteneur absent : on n'affiche pas de carte */
+    map.setView([-18.9, 47.5], 5); /* repli avant tout cadrage réel */
+    mapRef.current = map;
+    shpRef.current = L.layerGroup().addTo(map);
+    ptsRef.current = L.layerGroup().addTo(map);
+    map.on("click", () => { setSel(null); setSelShape(null); });
+    setPret(v => v + 1);
+    return () => {
+      /* Tout est remis à zéro, pas seulement la carte : garder un groupe de
+         couches rattaché à une carte détruite fait échouer le prochain ajout
+         de couche, et l'erreur est illisible. */
+      try{ map.remove(); }catch(e){ /* déjà détruite */ }
+      mapRef.current = null; shpRef.current = null; ptsRef.current = null;
+      tuilesRef.current = null; marqueurs.current.clear(); cadreVu.current = "";
+    };
+  }, []);
+
+  /* Fond de tuiles, ajouté et retiré à la demande. Le retirer est utile hors
+     ligne : sans réseau, Leaflet réessaie chaque tuile et le journal se
+     remplit d'erreurs pour un fond qui n'arrivera pas. */
+  useEffect(() => {
+    const map = mapRef.current;
+    if(!map) return;
+    if(tuilesRef.current){ map.removeLayer(tuilesRef.current); tuilesRef.current = null; }
+    if(!fond) return;
+    const url = db.settings?.tileUrl || TUILES_DEFAUT;
+    tuilesRef.current = L.tileLayer(url, { attribution: ATTRIBUTION, maxZoom: 19,
+      crossOrigin: true }).addTo(map);
+    tuilesRef.current.bringToBack();
+  }, [fond, db.settings?.tileUrl, pret]);
+
+  /* Cadrage : seulement quand le périmètre change réellement, sinon chaque
+     rafraîchissement des points ramènerait l'utilisateur à son point de
+     départ au milieu de sa navigation. */
+  useEffect(() => {
+    const map = mapRef.current;
+    if(!map || !cadre) return;
+    const cle = [cadre.minLat, cadre.maxLat, cadre.minLon, cadre.maxLon].map(v => r2(v)).join(",");
+    if(cle === cadreVu.current) return;
+    cadreVu.current = cle;
+    try{
+      map.fitBounds([[cadre.minLat, cadre.minLon], [cadre.maxLat, cadre.maxLon]], { padding:[24,24] });
+    }catch(e){ /* emprise dégénérée : on garde la vue courante */ }
+  }, [cadre, pret]);
+
+  /* Contours administratifs. L'opacité est volontairement basse : le fond de
+     carte doit rester lisible dessous, c'est précisément ce qu'on lui demande.
+     L'unité sans donnée n'est pas peinte du tout. */
+  useEffect(() => {
+    const g = shpRef.current;
+    if(!g) return;
+    g.clearLayers();
+    for(const feat of shapes.features){
+      const pc = feat.properties.pcode;
+      const a = themeValues.par?.[pc];
+      const teinte = fillMode === "none" || !a ? null
+        : classify(themeValues.val(a), themeValues.max);
+      const actif = selShape === pc;
+      const couche = L.geoJSON(feat, { style: {
+        color: actif ? C.brandD : "#5f7183",
+        weight: actif ? 2.5 : 0.8,
+        opacity: actif ? 1 : 0.75,
+        fillColor: teinte || "#000000",
+        fillOpacity: teinte ? 0.45 : 0,
+      }});
+      couche.on("click", (e) => { L.DomEvent.stop(e); setSelShape(p => p === pc ? null : pc); });
+      couche.bindTooltip(esc(feat.properties.name), { sticky:true });
+      g.addLayer(couche);
+    }
+  }, [shapes.features, fillMode, themeValues, selShape, pret]);
+
+  /* Points de site. Un cercle plutôt qu'une épingle : le rayon porte le nombre
+     de bénéficiaires et la couleur porte le mode thématique choisi — deux
+     informations qu'une épingle uniforme ne sait pas rendre. */
+  useEffect(() => {
+    const g = ptsRef.current;
+    if(!g) return;
+    g.clearLayers();
+    marqueurs.current.clear();
+    for(const s of filtered){
+      if(s.lat == null || s.lon == null) continue;
+      const m = L.circleMarker([s.lat, s.lon], {
+        radius: radiusOf(s), color:"#ffffff", weight:1.5,
+        fillColor: colorOf(s), fillOpacity:0.9,
+      });
+      m.bindPopup(popupHtml(s, db), { maxWidth:280, className:"mems-popup" });
+      m.on("click", (e) => { L.DomEvent.stop(e); setSel(s); });
+      g.addLayer(m);
+      marqueurs.current.set(s.id, m);
+    }
+  }, [filtered, colorOf, radiusOf, db, pret]);
+
+  /* Sélection depuis la liste : on recentre et on ouvre le popup, comme le
+     ferait un clic sur le point lui-même. */
+  const choisir = (s) => {
+    setSel(s);
+    const map = mapRef.current, m = marqueurs.current.get(s.id);
+    if(map && s.lat != null && s.lon != null){
+      map.setView([s.lat, s.lon], Math.max(map.getZoom(), 11), { animate:true });
+      if(m) m.openPopup();
+    }
+  };
+
+  const recentrer = () => {
+    const map = mapRef.current;
+    if(!map || !cadre) return;
+    try{ map.fitBounds([[cadre.minLat, cadre.minLon], [cadre.maxLat, cadre.maxLon]], { padding:[24,24] }); }
+    catch(e){ /* rien à recentrer */ }
+  };
+
+  const sansCoord = rows.length && !rows.some(s => s.lat != null && s.lon != null);
 
   return (
     <div className="space-y-4">
@@ -279,7 +362,7 @@ export default function MapView({ db, me, notify, go }){
       </StatRow>
 
       <Card flush title="Cartographie des sites"
-        subtitle={busy ? "Chargement des points…" : `${fmt(filtered.length)} points affichés · projection WGS 84`}
+        subtitle={busy ? "Chargement des points…" : `${fmt(filtered.length)} points affichés · fond OpenStreetMap`}
         right={<>
           <div className="relative">
             <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -313,186 +396,160 @@ export default function MapView({ db, me, notify, go }){
           <label className="flex items-center gap-1.5 f115 text-slate-600">
             <input type="checkbox" checked={sizeByBenef} onChange={e=>setSizeByBenef(e.target.checked)} />
             taille selon les bénéficiaires</label>
-          <div className="ml-auto flex items-center gap-1">
-            <Btn size="sm" kind="sec" onClick={()=>zoom(1/1.4)}>−</Btn>
-            <span className="f115 text-slate-500 tabular-nums px-1">×{r2(view.k)}</span>
-            <Btn size="sm" kind="sec" onClick={()=>zoom(1.4)}>+</Btn>
-            <Btn size="sm" kind="ghost" onClick={()=>setView({ k:1, dx:0, dy:0 })}>Recentrer</Btn>
+          <label className="flex items-center gap-1.5 f115 text-slate-600">
+            <input type="checkbox" checked={fond} onChange={e=>setFond(e.target.checked)} />
+            fond de carte</label>
+          <div className="ml-auto">
+            <Btn size="sm" kind="ghost" onClick={recentrer}>Recentrer</Btn>
           </div>
         </div>
 
         {error ? <Note tone="err">{error}</Note> : null}
+        {sansCoord ? (
+          <Note tone="warn">Aucun des {fmt(rows.length)} sites de cette sélection ne porte de
+            coordonnées. Renseignez la latitude et la longitude dans le registre des sites, ou
+            laissez-les remonter des relevés GPS des formulaires de collecte.</Note>) : null}
 
-        {/* Un fond de carte sans point reste utile : il montre les unités où le
-            programme n'a aucune présence, ce qui est précisément l'information
-            qu'une carte de points ne peut pas donner. */}
-        {!proj || (!filtered.length && !shapes.features.length) ? (
-          <Empty icon={MapPin} title={busy ? "Chargement…" : "Aucun site à afficher"}
-            text={busy ? "" : "Aucun site ne porte de coordonnées pour ces filtres. Renseignez la latitude et la longitude dans le registre des sites."} />
-        ) : (
-          <div className="flex">
-            <div className="flex-1 min-w-0 relative" style={{ background:"#f7fafc" }}
-                 onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}>
-              <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ cursor: drag.current ? "grabbing" : "grab" }}
-                   onMouseDown={onDown}>
-                <defs>
-                  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-                    <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#e6edf2" strokeWidth="1" />
-                  </pattern>
-                </defs>
-                <rect width={W} height={H} fill="url(#grid)" />
-                <g transform={`translate(${view.dx},${view.dy}) scale(${view.k})`}>
-                  {/* ── Fond de carte administratif ──────────────────────
-                      Les contours passent en premier : tout le reste se dessine
-                      par-dessus. Le trait s'affine avec le zoom pour rester d'une
-                      épaisseur constante à l'écran — sans quoi un zoom ×8
-                      transformerait les frontières en gros traits opaques. */}
-                  {shapes.features.map(f => {
-                    const a = themeValues.par?.[f.properties.pcode];
-                    const fill = fillMode === "none" || !a ? "#ffffff"
-                      : classify(themeValues.val(a), themeValues.max) || "#ffffff";
-                    const actif = selShape === f.properties.pcode;
-                    return (
-                      <path key={f.properties.pcode} d={pathOf(f.geometry, proj)}
-                        data-unit={f.properties.pcode} fill={fill}
-                        fillOpacity={fillMode === "none" ? 0.55 : 0.9}
-                        stroke={actif ? C.brandD : "#9fb2c0"}
-                        strokeWidth={(actif ? 2 : 0.7) / view.k}
-                        onClick={()=>setSelShape(actif ? null : f.properties.pcode)}
-                        style={{ cursor:"pointer" }}>
-                        <title>{`${f.properties.name}${a ? `\n${a.sites} site(s), ${a.actifs} actif(s)\n${a.visites}/${a.planifies} visites\n${fmt(a.benef)} bénéficiaires` : "\naucun site"}`}</title>
-                      </path>);
-                  })}
-                  {/* Repères de communes : centroïdes du référentiel, chargés à la demande.
-                      Inutiles dès que les contours sont là — ils disaient « il y a une
-                      commune ici », ce que le contour dit mieux. */}
-                  {!shapes.features.length && geoMarks.map((g,i) => (
-                    <circle key={"g"+i} data-geo="1" cx={proj.x(+g.lon)} cy={proj.y(+g.lat)} r={1.2/view.k}
-                            fill="#b9c6d1" opacity={0.7} />
-                  ))}
-                  {filtered.map(s => (
-                    <circle key={s.id} data-site={s.code} data-name={s.name}
-                      cx={proj.x(s.lon)} cy={proj.y(s.lat)} r={radiusOf(s)/Math.sqrt(view.k)}
-                      fill={colorOf(s)} fillOpacity={0.82} stroke="#fff" strokeWidth={0.8/view.k}
-                      onClick={()=>setSel(s)} style={{ cursor:"pointer" }}>
-                      <title>{`${s.name}\n${s.adm3 || ""} · ${s.office || ""}\n${fmt(s.beneficiaries)} bénéficiaires\n${s.done}/${s.planned} visites`}</title>
-                    </circle>
-                  ))}
-                  {sel && (
-                    <circle cx={proj.x(sel.lon)} cy={proj.y(sel.lat)} r={(radiusOf(sel)+5)/Math.sqrt(view.k)}
-                            fill="none" stroke={C.brandD} strokeWidth={2/view.k} />
-                  )}
-                </g>
-                <g>
-                  <rect x={12} y={H-46} width={188} height={34} fill="#fff" fillOpacity={0.92}
-                        stroke="#e2e8ec" rx={3} />
-                  <text x={22} y={H-30} fontSize="10" fill={C.t2}>Échelle approximative</text>
-                  <line x1={22} y1={H-22} x2={22 + 100} y2={H-22} stroke={C.t1} strokeWidth="2" />
-                  <text x={128} y={H-19} fontSize="10" fill={C.t2}>
-                    {Math.round(100 / (proj.scale * view.k) * 111)} km</text>
-                </g>
-              </svg>
+        <div className="flex">
+          {/* ── Répertoire des sites ──────────────────────────────────
+              La liste et la carte désignent le même objet : cliquer dans l'une
+              recentre l'autre. C'est ce qui permet de trouver un site par son
+              nom sans le chercher à l'œil sur le fond de carte. */}
+          <div className="w-64 shrink-0 border-r border-slate-200 mh68 overflow-auto bg-slate-50">
+            <div className="px-3 py-2 f11 font-bold uppercase tracking-wide text-slate-500 sticky top-0 bg-slate-50 border-b border-slate-200">
+              {fmt(filtered.length)} site{filtered.length > 1 ? "s" : ""}
             </div>
+            {!filtered.length ? (
+              <p className="p-3 f115 text-slate-500">{busy ? "Chargement…" : "Aucun site pour ces filtres."}</p>
+            ) : filtered.slice(0, 400).map(s => {
+              const actif = sel && sel.id === s.id;
+              return (
+                <button key={s.id} type="button" onClick={()=>choisir(s)}
+                  data-site-item={s.code}
+                  className={clsx("w-full text-left px-3 py-2 border-b border-slate-200 transition-colors",
+                    actif ? "bg-sky-700 text-white" : "hover:bg-sky-50")}>
+                  <div className="flex items-start gap-2">
+                    <i className="w-2.5 h-2.5 rounded-full mt-1 shrink-0 border border-white/70"
+                       style={{ background: colorOf(s) }} />
+                    <div className="min-w-0">
+                      <div className={clsx("f13 font-semibold truncate", actif ? "text-white" : "text-slate-800")}>
+                        {s.name}</div>
+                      <div className={clsx("f11 truncate", actif ? "text-sky-100" : "text-slate-500")}>
+                        {[s.adm3, s.adm2].filter(Boolean).join(", ") || s.code}</div>
+                      <div className={clsx("f105 truncate", actif ? "text-sky-200" : "text-slate-400")}>
+                        {fmt(s.beneficiaries)} bénéf. · {s.done}/{s.planned || "—"} visites</div>
+                    </div>
+                  </div>
+                </button>);
+            })}
+            {filtered.length > 400 && (
+              <p className="p-3 f105 text-amber-700">
+                Liste tronquée à 400 entrées sur {fmt(filtered.length)} : affinez la recherche ou
+                les filtres. Tous les points restent affichés sur la carte.</p>)}
+          </div>
 
-            <aside className="w-72 shrink-0 border-l border-slate-200 p-4 mh68 overflow-auto">
-              {/* L'échelle d'aplat en premier : c'est ce qui couvre la surface de la
-                  carte, donc ce que l'œil interroge en premier. */}
-              {fillMode !== "none" && !!shapes.features.length && (
+          {/* Le conteneur Leaflet. La hauteur doit être posée en dur : sans
+              hauteur explicite, Leaflet calcule une carte de zéro pixel. */}
+          <div className="flex-1 min-w-0 relative">
+            <div ref={boxRef} className="mh68" style={{ minHeight:520, background:"#eef3f7" }} />
+          </div>
+
+          <aside className="w-72 shrink-0 border-l border-slate-200 p-4 mh68 overflow-auto">
+            {fillMode !== "none" && !!shapes.features.length && (
+              <div className="mb-4">
+                <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">
+                  {(FILL_MODES.find(m=>m[0]===fillMode)||[])[1]}
+                  <span className="font-normal normal-case tracking-normal text-slate-400">
+                    {" "}· {(GEO_LEVELS.find(g=>g[0]===geoLevel)||[])[1].toLowerCase()}</span></div>
+                <div className="flex h-3 rounded overflow-hidden border border-slate-200">
+                  <i className="flex-1 bg-white" title="aucun" />
+                  {RAMP.map(c => <i key={c} className="flex-1" style={{ background:c }} />)}
+                </div>
+                <div className="flex justify-between f105 text-slate-400 mt-1">
+                  <span>aucun</span>
+                  <span>{fillMode === "coverage" ? "100 %" : fmt(themeValues.max)}</span></div>
+                {!!themeValues.absent && (
+                  <div className="f105 text-amber-700 mt-1">
+                    {fmt(themeValues.absent)} site(s) sans rattachement au découpage :
+                    visibles en points, comptés dans aucune unité.</div>)}
+                {shapes.tronque && (
+                  <div className="f105 text-amber-700 mt-1">
+                    Affichage tronqué : filtrez par région ou district pour voir ce niveau en entier.</div>)}
+              </div>)}
+
+            {!db.geoVersion?.geom?.units && (
+              <Note tone="warn">Aucun contour chargé : les limites administratives n'apparaissent
+                pas. Paramètres → Localités → Contours administratifs.</Note>)}
+
+            {selShape && (() => {
+              const feat = shapes.features.find(x => x.properties.pcode === selShape);
+              const a = themeValues.par?.[selShape];
+              return feat && (
                 <div className="mb-4">
                   <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">
-                    {(FILL_MODES.find(m=>m[0]===fillMode)||[])[1]}
-                    <span className="font-normal normal-case tracking-normal text-slate-400">
-                      {" "}· {(GEO_LEVELS.find(g=>g[0]===geoLevel)||[])[1].toLowerCase()}</span></div>
-                  <div className="flex h-3 rounded overflow-hidden border border-slate-200">
-                    <i className="flex-1" style={{ background:"#ffffff" }} title="aucun" />
-                    {RAMP.map(c => <i key={c} className="flex-1" style={{ background:c }} />)}
-                  </div>
-                  <div className="flex justify-between f105 text-slate-400 mt-1">
-                    <span>aucun</span>
-                    <span>{fillMode === "coverage" ? "100 %" : fmt(themeValues.max)}</span></div>
-                  {!!themeValues.absent && (
-                    <div className="f105 text-amber-700 mt-1">
-                      {fmt(themeValues.absent)} site(s) sans rattachement au découpage :
-                      visibles en points, comptés dans aucune unité.</div>)}
-                  {shapes.tronque && (
-                    <div className="f105 text-amber-700 mt-1">
-                      Affichage tronqué : filtrez par région ou district pour voir ce niveau en entier.</div>)}
-                </div>)}
-
-              {!db.geoVersion?.geom?.units && (
-                <Note tone="warn">Aucun contour chargé : la carte n'a pas de fond, et une
-                  unité sans site reste invisible. Paramètres → Localités → Contours
-                  administratifs.</Note>)}
-
-              {selShape && (() => {
-                const f = shapes.features.find(x => x.properties.pcode === selShape);
-                const a = themeValues.par?.[selShape];
-                return f && (
-                  <div className="mb-4">
-                    <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">
-                      Unité sélectionnée</div>
-                    <div className="border border-slate-200 rounded p-3">
-                      <div className="f13 font-semibold text-slate-800">{f.properties.name}</div>
-                      <div className="f11 text-slate-500 mb-2">{f.properties.level} · {selShape}</div>
-                      <dl className="space-y-1 f115">
-                        {[["Sites", a ? fmt(a.sites) : "0"],
-                          ["dont actifs", a ? fmt(a.actifs) : "0"],
-                          ["Visites", a ? `${fmt(a.visites)} / ${fmt(a.planifies)}` : "—"],
-                          ["Bénéficiaires", a ? fmt(a.benef) : "—"]].map(([k,v])=>(
-                          <div key={k} className="flex justify-between gap-2">
-                            <dt className="text-slate-500">{k}</dt>
-                            <dd className="font-medium tabular-nums">{v}</dd></div>))}
-                      </dl>
-                      {!a && <div className="f105 text-amber-700 mt-2">
-                        Aucune présence enregistrée dans cette unité.</div>}
-                    </div>
-                  </div>);
-              })()}
-
-              <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">Légende des points</div>
-              <ul className="space-y-1.5 mb-4">
-                {legend.map(([col,label]) => (
-                  <li key={label} className="flex items-center gap-2 f115 text-slate-600">
-                    <i className="w-3 h-3 rounded-full inline-block shrink-0" style={{ background:col }} />
-                    <span className="truncate" title={label}>{label}</span></li>))}
-              </ul>
-              {sel ? (
-                <>
-                  <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">Site sélectionné</div>
+                    Unité sélectionnée</div>
                   <div className="border border-slate-200 rounded p-3">
-                    <div className="f13 font-semibold text-slate-800">{sel.name}</div>
-                    <div className="f11 text-slate-500 mb-2">{sel.code} · {sel.office}</div>
+                    <div className="f13 font-semibold text-slate-800">{feat.properties.name}</div>
+                    <div className="f11 text-slate-500 mb-2">{feat.properties.level} · {selShape}</div>
                     <dl className="space-y-1 f115">
-                      {[["Emplacement", [sel.adm1, sel.adm2, sel.adm3].filter(Boolean).join(", ")],
-                        [niveau(db, "adm4"), sel.adm4 || "—"],
-                        ["Catégorie", sel.category || "—"],
-                        ["Activité", sel.activity_tag || "—"],
-                        ["Bénéficiaires", fmt(sel.beneficiaries)],
-                        ["Sécurité", (D_SECURITY.find(x=>x[0]===sel.security)||[])[1] || sel.security],
-                        ["Coordonnées", `${r2(sel.lat)}, ${r2(sel.lon)}`],
-                        ["Dernière visite", sel.last_visit || "jamais"]].map(([k,v]) => (
-                        <div key={k} className="flex gap-2">
-                          <dt className="text-slate-500 w-28 shrink-0">{k}</dt>
-                          <dd className="text-slate-800 min-w-0 break-words">{v}</dd></div>))}
+                      {[["Sites", a ? fmt(a.sites) : "0"],
+                        ["dont actifs", a ? fmt(a.actifs) : "0"],
+                        ["Visites", a ? `${fmt(a.visites)} / ${fmt(a.planifies)}` : "—"],
+                        ["Bénéficiaires", a ? fmt(a.benef) : "—"]].map(([k,v])=>(
+                        <div key={k} className="flex justify-between gap-2">
+                          <dt className="text-slate-500">{k}</dt>
+                          <dd className="font-medium tabular-nums">{v}</dd></div>))}
                     </dl>
-                    <div className="mt-3 pt-3 border-t border-slate-100">
-                      <div className="flex justify-between f115 text-slate-600 mb-1">
-                        <span>Visites réalisées</span><b>{sel.done} / {sel.planned || "—"}</b></div>
-                      <Bar2 value={sel.planned ? pct(sel.done, sel.planned) : 0}
-                        tone={pct(sel.done, sel.planned) >= 80 ? "ok" : "warn"} />
-                    </div>
-                    <Btn size="sm" kind="sec" className="mt-3 w-full justify-center"
-                      onClick={()=>go("settings","sites")}>Ouvrir dans le registre</Btn>
+                    {!a && <div className="f105 text-amber-700 mt-2">
+                      Aucune présence enregistrée dans cette unité.</div>}
                   </div>
-                </>
-              ) : (
-                <p className="f115 text-slate-500 leading-relaxed">
-                  Cliquez sur un point pour afficher la fiche du site. Faites glisser la carte pour la déplacer
-                  et utilisez les commandes de zoom.</p>
-              )}
-            </aside>
-          </div>
-        )}
+                </div>);
+            })()}
+
+            <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">Légende des points</div>
+            <ul className="space-y-1.5 mb-4">
+              {legend.map(([col,label]) => (
+                <li key={label} className="flex items-center gap-2 f115 text-slate-600">
+                  <i className="w-3 h-3 rounded-full inline-block shrink-0" style={{ background:col }} />
+                  <span className="truncate" title={label}>{label}</span></li>))}
+            </ul>
+
+            {sel ? (
+              <>
+                <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">Site sélectionné</div>
+                <div className="border border-slate-200 rounded p-3">
+                  <div className="f13 font-semibold text-slate-800">{sel.name}</div>
+                  <div className="f11 text-slate-500 mb-2">{sel.code} · {sel.office}</div>
+                  <dl className="space-y-1 f115">
+                    {[["Emplacement", [sel.adm1, sel.adm2, sel.adm3].filter(Boolean).join(", ")],
+                      [niveau(db, "adm4"), sel.adm4 || "—"],
+                      ["Catégorie", sel.category || "—"],
+                      ["Activité", sel.activity_tag || "—"],
+                      ["Bénéficiaires", fmt(sel.beneficiaries)],
+                      ["Sécurité", (D_SECURITY.find(x=>x[0]===sel.security)||[])[1] || sel.security],
+                      ["Coordonnées", sel.lat == null ? "non renseignées" : `${r2(sel.lat)}, ${r2(sel.lon)}`],
+                      ["Dernière visite", sel.last_visit || "jamais"]].map(([k,v]) => (
+                      <div key={k} className="flex gap-2">
+                        <dt className="text-slate-500 w-28 shrink-0">{k}</dt>
+                        <dd className="text-slate-800 min-w-0 break-words">{v}</dd></div>))}
+                  </dl>
+                  <div className="mt-3 pt-3 border-t border-slate-100">
+                    <div className="flex justify-between f115 text-slate-600 mb-1">
+                      <span>Visites réalisées</span><b>{sel.done} / {sel.planned || "—"}</b></div>
+                    <Bar2 value={sel.planned ? pct(sel.done, sel.planned) : 0}
+                      tone={pct(sel.done, sel.planned) >= 80 ? "ok" : "warn"} />
+                  </div>
+                  <Btn size="sm" kind="sec" className="mt-3 w-full justify-center"
+                    onClick={()=>go("settings","sites")}>Ouvrir dans le registre</Btn>
+                </div>
+              </>
+            ) : (
+              <p className="f115 text-slate-500 leading-relaxed">
+                Choisissez un site dans la liste de gauche ou cliquez un point sur la carte.
+                Le fond de carte peut être masqué pour travailler hors ligne.</p>
+            )}
+          </aside>
+        </div>
       </Card>
 
       <Card flush title="Répartition géographique" subtitle="Sites, visites réalisées et bénéficiaires par région">
@@ -511,4 +568,24 @@ export default function MapView({ db, me, notify, go }){
       </Card>
     </div>
   );
+}
+
+/* Le popup reprend la forme d'une fiche d'adresse : le nom en tête, puis les
+   quelques lignes qu'on veut lire sans ouvrir la fiche complète. Tout ce qui
+   vient de la base est échappé. */
+function popupHtml(s, db){
+  const ligne = (label, valeur) => valeur
+    ? `<div class="mp-l"><span class="mp-k">${esc(label)}</span><span class="mp-v">${esc(valeur)}</span></div>`
+    : "";
+  const lieu = [s.adm3, s.adm2, s.adm1].filter(Boolean).join(", ");
+  return `<div class="mp">
+    <div class="mp-t">${esc(s.name)}</div>
+    <div class="mp-s">${esc(s.code)}${s.office ? " · " + esc(s.office) : ""}</div>
+    ${ligne("Emplacement", lieu)}
+    ${ligne(niveau(db, "adm4"), s.adm4)}
+    ${ligne("Activité", s.activity_tag)}
+    ${ligne("Bénéficiaires", fmt(s.beneficiaries))}
+    ${ligne("Visites", `${s.done} / ${s.planned || "—"}`)}
+    ${ligne("Dernière visite", s.last_visit || "jamais")}
+  </div>`;
 }
