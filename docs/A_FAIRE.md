@@ -4,10 +4,10 @@ Ce fichier n'existait pas dans le dépôt — il est créé ici pour donner suit
 demande « lis docs/A_FAIRE.md et fais le chantier 1 », en reprenant ce qui a été
 discuté et laissé en attente dans la conversation. À corriger/réordonner librement.
 
-## Chantier 1 — PDD : calcul automatique des rations
+## Chantier 1 — PDD : calcul automatique des rations — FAIT
 
 **Constat** : une ligne de PDD porte une seule denrée ; une distribution qui en
-mélange plusieurs (riz + légumineuses + huile, par exemple) demande donc une
+mélange plusieurs (riz + légumineuses + huile, par exemple) demandait donc une
 ligne par denrée, saisie et calculée à la main (tonnage = bénéficiaires × jours ×
 ration, refait pour chacune).
 
@@ -16,24 +16,40 @@ inventé (ce sont des données de programme, propres à chaque opération) — �
 place, un écran de paramétrage où l'administrateur saisit lui-même la ration
 (grammes/personne/jour) par denrée et par type d'activité (GD/PREVMA/PECMAM/FFA).
 
-**Portée** :
-1. `Paramètres → Rations` : table éditable, par activité, de la ration de
-   chaque denrée (grammes/personne/jour). Persistée dans `settings.rationTable`
-   (synchronisée comme le reste des réglages — contrairement à `formulas`, qui
-   ne l'est pas, voir remarque plus bas).
-2. `Suivi-évaluation → Programme → Distributions` (PDD) : un bouton
-   « Générer par commune » ouvre un formulaire — bureau, région/district/commune,
+**Livré** :
+1. `Paramètres → Rations` (`web/src/views/Settings.jsx`, `SetRations`) : table
+   éditable, par activité, de la ration de chaque denrée (grammes/personne/jour).
+   Persistée dans `settings.rationTable` (synchronisée comme le reste des
+   réglages — contrairement à `formulas`, qui ne l'est pas, voir remarque
+   plus bas). Aperçu du tonnage en direct sur un échantillon-témoin.
+2. `Programme → Distributions` (PDD, `web/src/views/Planning.jsx`,
+   `PddGenModal`) : un bouton « Générer par commune » ouvre un formulaire —
+   bureau, région/district/commune (référentiel géographique, cascade),
    activité, partenaire, modalité, bénéficiaires planifiés, jours de ration.
    Pour la modalité Food, il affiche la liste des denrées configurées pour
-   l'activité choisie avec le tonnage calculé en direct, et crée **une ligne de
-   PDD par denrée** à la validation. Pour Cash/Voucher, une seule ligne (montant
-   saisi à la main, comme aujourd'hui — aucune ration ne s'y applique).
+   l'activité choisie avec le tonnage calculé en direct (décochables une à
+   une), et crée **une ligne de PDD par denrée cochée** à la validation. Pour
+   Cash/Voucher, une seule ligne (montant saisi à la main, comme avant —
+   aucune ration ne s'y applique).
+
+Vérifié de bout en bout avec un navigateur réel (Playwright) : paramétrage
+d'une ration, génération d'un plan pour une commune, ligne(s) bien créée(s)
+et persistée(s) côté serveur avec le tonnage attendu (bénéficiaires × jours ×
+ration ÷ 1 000 000).
 
 **Remarque relevée en marge** : `db.formulas` (Paramètres → Calculs) n'est pas
 dans la liste `SYNCED` de `App.jsx` — un administrateur qui modifie un calcul
 le perd au rechargement. Peut-être volontaire (un bac à sable d'essai plutôt
-qu'un réglage), à confirmer ; le nouveau `rationTable` ne reproduit pas ce
+qu'un réglage), à confirmer ; le `rationTable` ne reproduit pas ce
 comportement et persiste réellement.
+
+**Autre remarque relevée en testant** : une ligne de PDD nouvellement créée
+(que ce soit via « Ajouter une ligne » ou « Générer par commune ») ne renseigne
+que `partner` (le nom du partenaire) et pas `partner_id` — le serveur accepte
+la ligne (le champ est optionnel) mais la clé étrangère reste vide tant que la
+ligne n'a pas été rechargée depuis le serveur. Pré-existant, pas propre au
+chantier 1 ; à corriger séparément si l'on a besoin de `partner_id` fiable
+immédiatement après création (jointures, rapports).
 
 ## Chantier 2 — Revue des écrans « budget » comme utilisateur final
 
