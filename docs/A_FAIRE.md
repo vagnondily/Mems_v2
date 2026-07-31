@@ -169,3 +169,89 @@ dans un classeur Tableau partagé.
 
 1 avant 2 (l'appariement suppose des soumissions), 3 indépendant. Chaque chantier se
 termine par ses tests API et un passage dans un navigateur réel avant d'être poussé.
+
+---
+
+# Le reste du carnet
+
+Ce qui a été relevé au fil du travail et laissé ouvert. Classé par ce que coûte de ne
+pas le faire, et non par difficulté.
+
+## 4. Aligner le calcul de priorité sur la note RBM — **le plus important**
+
+C'est le seul point de cette liste où MEMS produit aujourd'hui des **chiffres qui ne
+sont pas ceux que la méthode institutionnelle donnerait**. Le reste est du confort ou de
+la dette ; celui-ci touche la justesse.
+
+Repéré en lisant `Guidance_note_on_RBM.pdf` et `RBM.pptx`, jamais corrigé :
+
+- **Outil 3.a — priorité d'un site.** La note prescrit la MOYENNE de six sous-scores,
+  avec des dérogations dures : certains critères, seuls, imposent la priorité haute quel
+  que soit le reste. `sitePriority()` dans `web/src/lib/constants.js` ADDITIONNE des
+  points et compare à des seuils. Deux sites que la méthode classerait différemment
+  peuvent donc recevoir la même priorité, et inversement. Or ce score décide de la
+  fréquence des visites : l'écart se propage jusqu'au plan et jusqu'au budget.
+- **Outil 3.b — ajustement annuel.** L'ajustement porte sur le nombre de sites UNIQUES
+  visités dans l'année, pas sur le nombre de visites. La distinction change le
+  dénominateur de la couverture.
+- **Outil 2 — allocation des moyens par le risque.** Absent. C'est ce qui relie le
+  niveau de risque d'une zone au budget de suivi qu'on lui consacre.
+- **Règle trimestrielle de l'exigence minimale.** `computeMMR()` calcule au prorata des
+  mois écoulés ; la note raisonne par trimestre.
+
+**Comment s'y prendre** : écrire d'abord les tests à partir des exemples chiffrés de la
+note — elle en donne — puis corriger jusqu'à ce qu'ils passent. Ne pas corriger la
+formule au jugé : c'est ainsi qu'on remplace un écart connu par un écart inconnu.
+
+## 5. Un compte rattaché à plusieurs pays
+
+`users.country_code` ne porte qu'un pays. Un administrateur régional qui suit Madagascar
+et les Comores est aujourd'hui soit borné à un seul, soit pas borné du tout — c'est-à-dire
+qu'il voit tout, y compris ce qui ne le regarde pas.
+
+Il faut une table de liaison `user_country(user_id, country_code)` et faire lire
+`countryBound()` (`server/src/lib/scope.js`) sur un ENSEMBLE plutôt que sur une valeur.
+Les appels sont nombreux mais la fonction est unique — c'est précisément pour cela
+qu'elle avait été isolée.
+
+## 6. La carte
+
+- **Regroupement des points.** Au-delà de quelques centaines de sites au même endroit,
+  les cercles se recouvrent en une tache. La liste latérale rend le problème supportable,
+  elle ne le supprime pas. Regrouper par proximité en deçà d'un seuil de zoom, avec le
+  compte dans la pastille.
+- **Délimiter une zone et la conserver.** Le rectangle de zoom existe, mais dessiner un
+  périmètre et l'enregistrer — pour dire « cette zone est suivie par ce prestataire » —
+  n'existe pas. C'était demandé.
+- **Défaut d'affichage.** Dans le champ de recherche de la carte, la loupe recouvre la
+  première lettre du texte indicatif : on lit « ◎ite, commune, fokontany ». Il manque un
+  retrait à gauche sur l'`input` (`web/src/views/MapView.jsx`).
+
+## 7. Suites de la revue de sécurité
+
+Trois points relevés, aucun corrigé :
+
+- **CORS en développement.** `origin` renvoie vrai pour toute origine dès que
+  `NODE_ENV !== "production"`, avec `credentials: true`. Sans danger en local, dangereux
+  si une instance déployée démarre un jour sans `NODE_ENV`. Exiger une liste explicite,
+  ou refuser de démarrer hors production sur une interface non locale.
+- **`sameSite=lax`.** Correct aujourd'hui parce qu'aucune requête GET ne modifie l'état.
+  Cette propriété n'est écrite nulle part et rien ne la vérifie : un GET mutant ajouté
+  plus tard rouvrirait la faille sans que personne ne le voie. Écrire un test qui
+  parcourt les routes et refuse tout GET qui écrit.
+- **`GET /api/backup`.** Rend la base entière à toute session administrateur. Le
+  cloisonnement est correct, mais c'est devenu la requête la plus lourde de conséquences
+  de l'application : elle mérite sa propre alerte au journal, distincte du reste.
+
+## 8. Petites dettes
+
+- **Partenaire par commune dans le plan de distribution.** Le générateur affecte un seul
+  partenaire à toutes les lignes produites. En réalité il change d'une commune à l'autre.
+  Ajouter une colonne « partenaire » modifiable dans le tableau des communes de l'écran
+  de conception.
+- **Bureaux sans périmètre dans le jeu d'essai.** Bekily et Tsihombe n'en ont pas : le
+  contrôle de cohérence géographique les signale à chaque exécution, ce qui apprend à
+  ignorer un signal qui devrait rester rare. Corriger le semis.
+- **Jeton ODK d'organisation.** Retiré parce que le serveur l'écartait en silence. Un
+  jeton chiffré au niveau de l'instance, repris par les sources qui n'en déclarent pas,
+  reste à faire si le besoin se confirme — le chantier 1 rend le jeton par source.
