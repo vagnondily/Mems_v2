@@ -86,6 +86,7 @@ mems/
 │  │  ├─ lib/scope.js          périmètre géographique — une seule définition
 │  │  ├─ import-geo.js         chargement du référentiel complet en ligne de commande
 │  │  ├─ link-geo.js           rapprochement des données existantes vers le référentiel
+│  │  ├─ import-odk-forms.js   enregistrement de sources ODK Central depuis leurs XLSForms
 │  │  ├─ lib/logger.js         journal avec masquage des secrets
 │  │  └─ routes/               auth, state, sites, geo, users, analytics, collections
 │  └─ test/api.test.js         50 tests d'intégration
@@ -279,6 +280,28 @@ distribution — situé dans un fokontany, pas un fokontany lui-même : plusieur
 sites partagent la même commune. Quand un site porte un `geo_pcode`, ses libellés `adm1`
 à `adm4` en sont **dérivés côté serveur** et ne peuvent plus diverger du référentiel. Ses
 coordonnées propres priment : une école n'est pas au centroïde de son fokontany.
+
+#### Enregistrer des sources ODK Central depuis leurs XLSForms
+
+Paramètres → ODK Central permet de joindre un XLSForm au navigateur pour en extraire les
+libellés (feuille `survey`). Pour enregistrer plusieurs formulaires d'un coup, ou avant
+même d'avoir l'adresse du serveur et le jeton, `import-odk-forms.js` fait la même lecture
+en ligne de commande :
+
+```bash
+node src/import-odk-forms.js suivi_gd.xlsx suivi_smp.xlsx           # analyse, sans écrire
+node src/import-odk-forms.js suivi_smp.xlsx --write --tag SMP       # enregistre la source
+```
+
+Le script lit `form_id` et `form_title` dans la feuille `settings`, construit le
+dictionnaire nom → libellé depuis `survey` (`label::Français (fr)`, à défaut
+`label::English (en)`), et devine le champ qui identifie le site ainsi que celui qui porte
+la date de l'enquête à partir des noms usuels des formulaires de suivi de processus
+(`DPName`, `POIName`, `SvyDate`…) — à corriger avec `--site-field` / `--date-field` si la
+détection se trompe sur un formulaire de forme différente. Une source déjà enregistrée
+(même `form_id`) est mise à jour, pas dupliquée. Le jeton d'accès et l'identifiant de
+projet ne sont **jamais** lus dans le fichier : ce sont des informations de déploiement, à
+saisir ensuite dans Paramètres → ODK Central.
 
 ### Contours administratifs et fond de carte
 
