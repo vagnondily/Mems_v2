@@ -91,8 +91,33 @@ async function versionCourante(){
   }catch(e){ return { erreur:"ce serveur n'est pas un dépôt git : " + e.message }; }
 }
 
+/* ── Les dépendances ──────────────────────────────────────────────────
+   C'est le trou le plus dangereux d'une mise à jour automatique, et il est silencieux :
+   le code arrive, il importe une bibliothèque que la version précédente n'avait pas, et
+   personne ne l'installe. Le serveur redémarre alors sur « Cannot find module », c'est-
+   à-dire qu'il ne redémarre pas du tout — et l'on découvre la panne au moment où plus
+   personne ne peut se connecter pour la comprendre.
+
+   On regarde donc ce que la mise à jour touche AVANT de l'appliquer, et l'on
+   réinstalle ce qu'il faut, là où il faut : `npm ci` plutôt que `npm install`, parce
+   qu'on veut exactement le verrou versionné et rien d'autre — une résolution qui
+   diffère du dépôt donnerait un serveur qui ne ressemble à aucun autre. */
+const ESPACES = [
+  { nom:"server", chemin:"server", verrou:/^server\/package(-lock)?\.json$/ },
+  { nom:"web",    chemin:"web",    verrou:/^web\/package(-lock)?\.json$/ },
+];
+const espacesConcernes = (fichiers) =>
+  ESPACES.filter(e => fichiers.some(f2 => e.verrou.test(f2))).map(e => e.nom);
+
 r.get("/status", requireSuper, async (req, res) => {
-  if(off()) return refus(res);
+  /* Demander l'état n'est pas demander une action : la réponse est 200 et dit que la
+     fonction n'est pas installée. Un 501 ici faisait apparaître un appel en échec dans
+     la console de tout administrateur ouvrant cet écran, pour une situation
+     parfaitement normale — et une alerte qui se déclenche quand tout va bien est une
+     alerte qu'on cesse de lire. */
+  if(off()) return res.json({ mode:"off", disponible:false,
+    message:"la mise à jour depuis le dépôt n'a pas été installée sur ce serveur",
+    remede:"elle se choisit à l'installation (UPDATE_MODE), pas depuis l'application" });
   const derniere = db.prepare(
     `SELECT at, user_label, text, action FROM audit
      WHERE entity='update' ORDER BY at DESC LIMIT 1`).get();
@@ -128,6 +153,15 @@ r.post("/check", requireSuper, async (req, res) => {
     const { stdout: avance } = await git(["rev-list","--count",`${cible}..HEAD`]);
     const { stdout: liste } = await git([
       "log","--format=%h|%cI|%an|%s","-20",`HEAD..${cible}`]);
+    /* Les fichiers qui changent : ce sont eux qui disent si une réinstallation de
+       dépendances sera nécessaire. Une mise à jour qui ajoute une bibliothèque sans
+       la poser fait tomber le serveur au redémarrage, et c'est exactement le genre
+       de panne qu'on ne veut pas découvrir après coup. */
+    const { stdout: fichiers } = await git(["diff","--name-only",`HEAD..${cible}`]);
+    const touches = fichiers.split("\n").filter(Boolean);
+    const deps = espacesConcernes(touches);
+    const moteur = touches.some(f2 => /(^|\/)\.nvmrc$/.test(f2))
+      || touches.some(f2 => /package\.json$/.test(f2));
     const commits = liste.trim().split("\n").filter(Boolean).map(l => {
       const [sha, date, auteur, ...reste] = l.split("|");
       return { sha, date, auteur, sujet: reste.join("|") };
@@ -137,6 +171,12 @@ r.post("/check", requireSuper, async (req, res) => {
       mode:"git", cible,
       enAttente: Number(retard.trim()), enAvance: Number(avance.trim()),
       commits,
+      /* Ce que la mise à jour impliquera au-delà du code lui-même. */
+      dependances: deps.length ? deps : null,
+      fichiersSensibles: touches.filter(f2 =>
+        /package(-lock)?\.json$|^server\/migrations\/|\.nvmrc$|Dockerfile$/.test(f2)).slice(0, 20),
+      migrations: touches.filter(f2 => /^server\/migrations\//.test(f2)).length,
+      moteurPeutChanger: moteur,
       version: await versionCourante(),
       /* Une branche locale en avance signifie des commits qui n'existent pas en
          amont : l'avance rapide échouerait, et écraser serait perdre du travail. */
@@ -180,6 +220,24 @@ async function sauvegardeAvant(req){
    l'interface, et redémarrer en dernier. Chaque étape est rendue avec son issue, car
    une mise à jour qui échoue au milieu doit se raconter — « erreur » tout court
    laisserait à chercher dans les journaux du serveur. */
+/* Revenir au commit d'où l'on partait, et remettre les dépendances de ce commit. On
+   ne prétend pas rejouer une migration à l'envers — une migration appliquée reste
+   appliquée, c'est pour cela que la sauvegarde est prise avant. Mais rendre au code
+   son état antérieur suffit à laisser un serveur qui démarre, ce qui est la seule
+   chose qui compte à cet instant. */
+async function revenir(sha){
+  if(!sha) return { fait:false, motif:"aucun point de retour connu" };
+  try{
+    await exec("git", ["reset","--hard", sha], { cwd:racine, timeout:120_000 });
+    for(const e of ESPACES){
+      try{ await exec("npm", ["ci","--no-audit","--no-fund"],
+        { cwd:path.join(racine, e.chemin), timeout:600_000, maxBuffer:16 * 1024 * 1024 }); }
+      catch(_){ /* on continue : mieux vaut un espace remis que zéro */ }
+    }
+    return { fait:true, commit:sha.slice(0,12) };
+  }catch(e){ return { fait:false, motif:e.message }; }
+}
+
 r.post("/apply", requireSuper, async (req, res) => {
   if(off()) return refus(res);
   const p = z.object({
@@ -193,6 +251,8 @@ r.post("/apply", requireSuper, async (req, res) => {
   const etapes = [];
   const etape = (nom, ok, detail) => { etapes.push({ nom, ok, detail }); return ok; };
   const ms = config.update.delaiSecondes * 1000;
+  let avant = null;              /* le commit d'où l'on part, pour pouvoir y revenir */
+  let deps = [];                 /* les espaces dont les dépendances auront bougé */
 
   try{
     if(config.update.sauvegarder){
@@ -209,6 +269,10 @@ r.post("/apply", requireSuper, async (req, res) => {
 
     if(config.update.mode === "git"){
       const cible = `${config.update.remote}/${config.update.branch}`;
+      /* Le point de retour. Une mise à jour qui échoue à mi-parcours laisserait un
+         serveur dont le code est neuf et les dépendances anciennes — le pire des deux
+         états, et celui qui ne redémarre pas. On note donc où l'on était. */
+      avant = (await git(["rev-parse","HEAD"])).stdout.trim();
       const { stdout: sale } = await git(["status","--porcelain"]);
       if(sale.trim()){
         etape("code", false, "des fichiers sont modifiés localement");
@@ -218,9 +282,13 @@ r.post("/apply", requireSuper, async (req, res) => {
           fichiers: sale.trim().split("\n").slice(0,10), etapes });
       }
       await git(["fetch", config.update.remote, config.update.branch], { timeout:ms });
+      /* Ce que la mise à jour va toucher, LU AVANT de l'appliquer. */
+      const { stdout: changes } = await git(["diff","--name-only",`HEAD..${cible}`]);
+      deps = espacesConcernes(changes.split("\n").filter(Boolean));
       try{
         const { stdout } = await git(["merge","--ff-only", cible], { timeout:ms });
-        etape("code", true, stdout.trim().split("\n").slice(-1)[0] || "à jour");
+        etape("code", true, (stdout.trim().split("\n").slice(-1)[0] || "à jour")
+          + (deps.length ? ` — dépendances modifiées : ${deps.join(", ")}` : ""));
       }catch(e){
         /* Refuser vaut mieux que fusionner : une fusion automatique sur un serveur de
            production, sans personne pour lire le conflit, est une très mauvaise idée. */
@@ -237,6 +305,27 @@ r.post("/apply", requireSuper, async (req, res) => {
       const { stdout, stderr } = await exec("/bin/sh", ["-c", config.update.commande],
         { cwd:racine, timeout:ms, maxBuffer:4 * 1024 * 1024 });
       etape("commande", true, (stdout || stderr).trim().slice(-400));
+    }
+
+    /* Les dépendances AVANT la migration et la construction : la migration lit du
+       code serveur, la construction lit du code web, et l'une comme l'autre échouerait
+       sur une bibliothèque absente. `npm ci` supprime node_modules et repose
+       exactement le verrou — c'est plus long, et c'est le seul résultat reproductible. */
+    for(const nom of deps){
+      const dossier = path.join(racine, nom);
+      try{
+        await exec("npm", ["ci","--no-audit","--no-fund"],
+          { cwd:dossier, timeout:ms, maxBuffer:16 * 1024 * 1024 });
+        etape(`dépendances ${nom}`, true, "npm ci");
+      }catch(e){
+        etape(`dépendances ${nom}`, false, (e.stderr || e.message || "").slice(-400));
+        const retour = await revenir(avant);
+        journal(req, "apply-echec", `Installation des dépendances (${nom}) échouée — retour à ${avant?.slice(0,8) || "?"}`);
+        return res.status(500).json({
+          error:`l'installation des dépendances de « ${nom} » a échoué ; la mise à jour a été annulée`,
+          retourArriere: retour, etapes,
+          note:"Le code a été remis dans son état précédent. Vérifiez l'accès au registre npm depuis ce serveur." });
+      }
     }
 
     if(config.update.migrer){
@@ -266,9 +355,14 @@ r.post("/apply", requireSuper, async (req, res) => {
       note:"Le code est à jour. Redémarrez le service pour qu'il soit chargé." });
   }catch(e){
     etape("erreur", false, (e.stderr || e.message || "").slice(0, 600));
+    /* Migration ou construction en échec : on rend au code son état antérieur plutôt
+       que de laisser un serveur mi-neuf mi-ancien, qui ne redémarrerait pas. */
+    const retour = await revenir(avant);
     journal(req, "apply-echec", `Mise à jour interrompue : ${(e.message||"").slice(0,180)}`);
     res.status(500).json({ error:"la mise à jour s'est interrompue", etapes,
-      note:"Les données n'ont pas été touchées ; une sauvegarde a été prise avant la tentative." });
+      retourArriere: retour,
+      note:"Les données n'ont pas été touchées ; une sauvegarde a été prise avant la tentative." +
+        (retour.fait ? " Le code a été remis dans son état précédent." : "") });
   }
 });
 

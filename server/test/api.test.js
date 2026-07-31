@@ -549,8 +549,9 @@ test("mise à jour : fermée par défaut, et rien ne vient de la requête", asyn
   assert.ok(!enTest || enTest === "off",
     "le jeu d'essai tourne sans mise à jour installée — c'est le défaut attendu");
 
-  for(const [methode, chemin] of [["get","/api/update/status"],
-                                  ["post","/api/update/check"],
+  /* /status répond 200 en disant « non installée » — voir le test dédié. Les ACTIONS,
+     elles, doivent être refusées franchement. */
+  for(const [methode, chemin] of [["post","/api/update/check"],
                                   ["post","/api/update/apply"]]){
     const r = await request(app)[methode](chemin).set("Authorization", `Bearer ${adminToken}`).send({});
     assert.equal(r.status, 501, `${chemin} doit annoncer que la fonction n'est pas installée`);
@@ -665,6 +666,24 @@ test("demande d'accès : c'est l'administrateur qui décide, et lui seul", async
   db.prepare("DELETE FROM users WHERE email LIKE '%example.org'").run();
   db.prepare("DELETE FROM account_request").run();
   db.prepare("DELETE FROM settings WHERE key LIKE 'selfRegistration%'").run();
+});
+
+test("mise à jour : demander l'état n'est pas une action refusée", async () => {
+  /* Un 501 sur /status faisait apparaître un appel en échec dans la console de tout
+     administrateur ouvrant l'écran, pour une situation parfaitement normale — la
+     fonction n'étant simplement pas installée. Une alerte qui se déclenche quand tout
+     va bien est une alerte qu'on cesse de lire. */
+  const r = await request(app).get("/api/update/status")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200, "l'état se demande toujours, même fonction fermée");
+  assert.equal(r.body.disponible, false);
+  assert.ok(r.body.remede, "et l'on dit où cela se règle");
+
+  /* Les ACTIONS, elles, restent refusées. */
+  for(const chemin of ["/api/update/check", "/api/update/apply"]){
+    const a2 = await request(app).post(chemin).set("Authorization", `Bearer ${adminToken}`).send({});
+    assert.equal(a2.status, 501, `${chemin} reste refusé`);
+  }
 });
 
 test("cloisonnement : visites, distributions, paramètres et journal suivent le bureau", async () => {

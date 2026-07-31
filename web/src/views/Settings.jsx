@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api.js";
 import { useGeoCascade, resetGeoCache } from "../lib/geo.js";
-import { Activity, Building2, CalendarRange, Check, ClipboardList, Download, FileText, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
+import { Activity, AlertTriangle, Building2, CalendarRange, Check, ClipboardList, Download, FileText, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
 import { Area, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, n, pct, r2, r5, siteRequirement, siteScore, uid } from "../lib/calc.js";
@@ -1516,7 +1516,7 @@ function MiseAJour({ me, notify }){
   const [busy,setBusy] = useState("");
 
   useEffect(() => { api.updateStatus()
-    .then(r => setEtat({ ...r, loading:false }))
+    .then(r => setEtat({ ...r, loading:false, indisponible: r.disponible === false }))
     .catch(e => setEtat({ loading:false, indisponible:true, err:e.message })); }, []);
 
   if(etat.loading) return null;
@@ -1584,6 +1584,17 @@ function MiseAJour({ me, notify }){
             ? <Note tone="ok">Ce serveur est à jour sur {ecart.cible}.</Note>
             : <Note><b>{ecart.enAttente} mise(s) à jour</b> en attente sur {ecart.cible}.</Note>}
           {ecart.avertissement && <Note tone="warn">{ecart.avertissement}</Note>}
+          {/* Ce que la mise à jour implique au-delà du code : c'est ce qui décide si
+              elle prendra dix secondes ou trois minutes, et si elle a besoin du réseau. */}
+          {(ecart.dependances || ecart.migrations > 0) && <Note tone="warn">
+            {ecart.dependances && <><b>Dépendances modifiées</b> ({ecart.dependances.join(", ")}) :
+              elles seront réinstallées avec « npm ci » avant la migration. Ce serveur doit
+              pouvoir joindre le registre npm ; si l'installation échoue, le code est remis
+              dans son état précédent.{" "}</>}
+            {ecart.migrations > 0 && <><b>{ecart.migrations} migration(s) de base</b> seront
+              appliquées. Une migration appliquée ne se défait pas — c'est pour cela que la
+              sauvegarde est prise avant.</>}
+          </Note>}
           {!!ecart.commits.length && <TableWrap max="mh240">
             <thead><tr><Th>Commit</Th><Th>Date</Th><Th>Auteur</Th><Th>Objet</Th></tr></thead>
             <tbody>{ecart.commits.map(c => (
@@ -1605,7 +1616,9 @@ function MiseAJour({ me, notify }){
 
         {resultat && <div className="mt-2">
           <Note tone={resultat.ok ? "ok" : "warn"}>
-            {resultat.ok ? resultat.note : resultat.erreur}</Note>
+            {resultat.ok ? resultat.note : resultat.erreur}
+            {resultat.retourArriere?.fait && <> Le code est revenu au
+              commit {resultat.retourArriere.commit}.</>}</Note>
           {!!resultat.etapes?.length && <ul className="f115 mt-2 space-y-0.5">
             {resultat.etapes.map((e,i)=>(
               <li key={i} className={e.ok ? "text-slate-700" : "text-rose-700"}>
