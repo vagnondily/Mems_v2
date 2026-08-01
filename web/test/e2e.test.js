@@ -142,7 +142,9 @@ test("sécurité : aucun identifiant n'est affiché ni présent dans le code liv
 });
 
 test("connexion : identifiants erronés refusés avec un message clair", async () => {
-  await type(all("input[type=email]")[0], ADMIN.email);
+  /* Le champ accepte désormais un courriel OU un identifiant (migration 023) : il
+     n'est donc plus `type=email`. On le vise par son rôle d'autocomplétion. */
+  await type(all("input[autocomplete=username]")[0], ADMIN.email);
   await type(all("input[type=password]")[0], "mauvais-mot-de-passe");
   await click(byText("button", "Se connecter"), "bouton de connexion");
   await attendre(() => byText("div", "identifiants incorrects"), "le message d'échec s'affiche");
@@ -693,6 +695,22 @@ test("administration : la destination existe pour le compte super et l'onglet Sa
   await flush();
 
   assert.equal(ctx.errors.length, 0, "aucune erreur sur la console d'administration");
+});
+
+test("mon compte : le self-service s'ouvre depuis le menu du compte", async () => {
+  const menu = all("header.sticky button").pop();
+  await click(menu, "menu du compte"); await flush();
+  await click(byText("button", "Mon compte"), "ouvrir Mon compte"); await flush();
+  assert.ok(byText(".z60 h3", "Mon compte"), "la fiche Mon compte s'affiche");
+  assert.ok(byText(".z60 button", "Changer le mot de passe"), "le changement de mot de passe y est offert");
+  assert.ok(byText(".z60 button", "Définir") || byText(".z60 button", "Mettre à jour"),
+    "l'identifiant de connexion s'y définit");
+  /* Refermer par Échap, pour que le test de déconnexion retrouve un en-tête net. */
+  await act(async () => {
+    window.dispatchEvent(new window.KeyboardEvent("keydown", { key:"Escape", bubbles:true }));
+    await sleep(60);
+  });
+  await flush();
 });
 
 test("déconnexion : la session est fermée et l'écran de connexion revient", async () => {

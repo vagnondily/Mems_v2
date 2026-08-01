@@ -718,6 +718,104 @@ test("mot de passe provisoire : n'ouvre que son propre remplacement", async () =
     .set("Authorization", `Bearer ${apres.body.token}`)).status, 200);
 });
 
+/* Lot S — le mot de passe provisoire est GÉNÉRÉ, pas choisi (demande du 01/08).
+   Sans mot de passe fourni, la création en forge un, le renvoie une seule fois, et
+   il ouvre — borné — jusqu'à son remplacement. */
+test("création sans mot de passe : le provisoire est généré et rendu une fois", async () => {
+  const cree = await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"genere@test.local", first_name:"Généré", role:"viewer", tabs:["home"], active:true });
+  assert.equal(cree.status, 201, JSON.stringify(cree.body));
+  const prov = cree.body.provisionalPassword;
+  assert.ok(prov && prov.length >= 12, "un provisoire est renvoyé");
+  assert.equal(cree.body.user.must_change_pw ?? true, true);
+
+  /* Il ouvre la connexion, avec le drapeau de changement obligatoire. */
+  const lr = await login("genere@test.local", prov);
+  assert.equal(lr.status, 200, "le provisoire généré ouvre la connexion");
+  assert.equal(lr.body.user.must_change_pw, true);
+
+  /* Il n'est jamais renvoyé une seconde fois : /state ne porte aucun secret. */
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const etat = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`)).body;
+  const vu = etat.users.find(x => x.email === "genere@test.local");
+  assert.ok(vu && !("provisionalPassword" in vu) && !("pw_hash" in vu),
+    "aucun secret n'accompagne le compte dans l'état");
+});
+
+/* Lot S — l'administrateur ne connaît pas le mot de passe : il DÉCLENCHE une
+   réinitialisation, le provisoire s'affiche une fois, les sessions tombent. */
+test("réinitialisation admin : provisoire généré, sessions fermées, changement imposé", async () => {
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"reset@test.local", password:"ResetMotDePasse1", first_name:"Reset",
+            role:"editor", tabs:["home"], active:true });
+  motDePasseAdopte("reset@test.local");
+  const ouverte = (await login("reset@test.local", "ResetMotDePasse1")).body.token;
+  assert.equal((await request(app).get("/api/state").set("Authorization", `Bearer ${ouverte}`)).status, 200);
+
+  const cible = db.prepare("SELECT id FROM users WHERE email='reset@test.local'").get();
+  const reset = await request(app).post(`/api/users/${cible.id}/reset-password`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(reset.status, 200, JSON.stringify(reset.body));
+  const prov = reset.body.provisionalPassword;
+  assert.ok(prov && prov.length >= 12);
+
+  /* La session ouverte avant le reset est révoquée. */
+  assert.equal((await request(app).get("/api/state").set("Authorization", `Bearer ${ouverte}`)).status, 401,
+    "la session d'avant le reset ne vaut plus");
+  /* L'ancien mot de passe ne vaut plus ; le provisoire ouvre, avec changement imposé. */
+  assert.equal((await login("reset@test.local", "ResetMotDePasse1")).status, 401);
+  const lr = await login("reset@test.local", prov);
+  assert.equal(lr.status, 200);
+  assert.equal(lr.body.user.must_change_pw, true);
+  /* La route de réinitialisation est sous le garde `requireCap("admin")` du routeur
+     entier (déjà éprouvé : un lecteur reçoit 403 sur /api/users). */
+});
+
+/* Lot S — « créer un username » : identifiant de connexion, unique, utilisable à la
+   place du courriel. */
+test("identifiant : self-service, unicité, et connexion par identifiant", async () => {
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"ident@test.local", password:"IdentMotDePasse1", first_name:"Ident",
+            role:"editor", tabs:["home"], active:true });
+  motDePasseAdopte("ident@test.local");
+  const t = (await login("ident@test.local", "IdentMotDePasse1")).body.token;
+
+  const set = await request(app).put("/api/auth/username").set("Authorization", `Bearer ${t}`)
+    .send({ username:"Ident.Field" });
+  assert.equal(set.status, 200, JSON.stringify(set.body));
+  assert.equal(set.body.user.username, "ident.field", "l'identifiant est normalisé en minuscules");
+
+  /* La connexion aboutit par l'identifiant comme par le courriel. */
+  assert.equal((await login("ident.field", "IdentMotDePasse1")).status, 200,
+    "on se connecte par l'identifiant");
+  assert.equal((await login("ident@test.local", "IdentMotDePasse1")).status, 200,
+    "le courriel reste un moyen de connexion");
+
+  /* Un deuxième compte ne peut pas prendre le même identifiant, ni un identifiant
+     qui usurpe le courriel d'un autre. */
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"ident2@test.local", password:"Ident2MotDePasse1", first_name:"Ident2",
+            role:"editor", tabs:["home"], active:true });
+  motDePasseAdopte("ident2@test.local");
+  const t2 = (await login("ident2@test.local", "Ident2MotDePasse1")).body.token;
+  const collision = await request(app).put("/api/auth/username").set("Authorization", `Bearer ${t2}`)
+    .send({ username:"ident.field" });
+  assert.equal(collision.status, 409, "un identifiant déjà pris est refusé");
+  const usurpe = await request(app).put("/api/auth/username").set("Authorization", `Bearer ${t2}`)
+    .send({ username:"ident@test.local" });
+  assert.equal(usurpe.status, 422, "un « @ » dans l'identifiant est refusé");
+
+  /* Un format hors charte est refusé ; vide, l'identifiant se retire. */
+  assert.equal((await request(app).put("/api/auth/username").set("Authorization", `Bearer ${t}`)
+    .send({ username:"a b" })).status, 422);
+  const vide = await request(app).put("/api/auth/username").set("Authorization", `Bearer ${t}`)
+    .send({ username:"" });
+  assert.equal(vide.status, 200);
+  assert.equal(vide.body.user.username, "");
+  assert.equal((await login("ident.field", "IdentMotDePasse1")).status, 401,
+    "l'identifiant retiré ne connecte plus");
+});
+
 test("déconnexion : le jeton devient inutilisable", async () => {
   const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
   assert.equal((await request(app).post("/api/auth/logout").set("Authorization", `Bearer ${t}`)).status, 200);

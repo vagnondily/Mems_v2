@@ -239,8 +239,8 @@ r.get("/state", (req, res) => {
                     ORDER BY at DESC, rowid DESC LIMIT 60`).all()
     ).map(a => ({ id:a.id, at:a.at, user:a.user_label||"", office:a.office||"", kind:a.kind, text:a.text })),
     users: (u.role==="super" || u.role==="admin")
-      ? db.prepare("SELECT id,email,first_name,last_name,title,office_id,tpm_id,role,tabs,active FROM users ORDER BY first_name").all()
-          .map(x => ({ ...x, tabs:J(x.tabs,[]), active:!!x.active }))
+      ? db.prepare("SELECT id,email,username,first_name,last_name,title,office_id,tpm_id,role,tabs,active FROM users ORDER BY first_name").all()
+          .map(x => ({ ...x, username:x.username||"", tabs:J(x.tabs,[]), active:!!x.active }))
       : [],
   });
 });

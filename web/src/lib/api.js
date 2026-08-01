@@ -92,6 +92,7 @@ export const api = {
   logout:      ()            => call("POST", "/auth/logout", {}),
   me:          ()            => call("GET", "/auth/me"),
   changePassword: (current, next) => call("POST", "/auth/password", { current, next }),
+  setUsername: (username)    => call("PUT", "/auth/username", { username }),
   state:       ()            => call("GET", "/state"),
 
   createSite:  (s)           => call("POST", "/sites", s),
@@ -269,6 +270,7 @@ export const api = {
   createUser: (u)            => call("POST", "/users", u),
   updateUser: (id, u)        => call("PUT", `/users/${encodeURIComponent(id)}`, u),
   deleteUser: (id)           => call("DELETE", `/users/${encodeURIComponent(id)}`),
+  resetUserPassword: (id)    => call("POST", `/users/${encodeURIComponent(id)}/reset-password`, {}),
 
   mapPoints:  (q="")         => call("GET", `/analytics/map${q}`),
   coverage:   (q="")         => call("GET", `/analytics/coverage${q}`),

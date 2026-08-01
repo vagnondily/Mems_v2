@@ -247,7 +247,7 @@ export default function App(){
 
   return (<>
     <Shell db={db} me={me} tab={view} sub={subs[view]} setTab={setTab} allowed={allowed}
-           onLogout={onLogout} sync={sync} notify={notify}>
+           onLogout={onLogout} sync={sync} notify={notify} onMe={u=>setMe(normalizeMe(u))}>
       <Boundary reset={view + "|" + (subs[view] || "")}>
         {view==="home" && <Home db={db} me={me} go={setTab} />}
         {view==="suivi" && <Suivi db={db} set={set} me={me} sub={subs.suivi}

@@ -102,8 +102,10 @@ export function Login({ onLogin, notify }){
             <h2 className="text-3xl font-semibold text-slate-900">Connexion</h2>
             <p className="f13 text-slate-500 mt-2 mb-6">Connectez-vous avec vos identifiants pour accéder au tableau de bord MEMS.</p>
             {err && <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-rose-800">{err}</div>}
-            <Field label="Adresse électronique">
-              <input type="email" value={email} autoComplete="username" className={clsx(inputCls, "bg-slate-50 border-slate-200")}
+            <Field label="Adresse électronique ou identifiant">
+              {/* `type="text"` et non `email` : le champ accepte aussi un identifiant,
+                  qui n'a pas la forme d'un courriel (migration 023). */}
+              <input type="text" value={email} autoComplete="username" className={clsx(inputCls, "bg-slate-50 border-slate-200")}
                 onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} /></Field>
             <Field label="Mot de passe">
               <div className="relative">

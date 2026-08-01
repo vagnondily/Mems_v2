@@ -16,13 +16,24 @@ const id = z.string().min(1).max(64);
 const nullableStr = (max=200) => z.string().max(max).nullish().transform(v => v ?? null);
 
 export const schemas = {
+  /* Le champ reste nommé `email` (le client l'envoie ainsi), mais il accepte
+     désormais un COURRIEL OU un IDENTIFIANT : la connexion cherche l'un ou l'autre
+     (migration 023). Le format e-mail n'est donc plus imposé — un identifiant n'en
+     a pas la forme —, seule une longueur minimale l'est. Le message d'échec reste
+     générique côté route : rien n'est révélé sur ce qui a été saisi. */
   login: z.object({
-    email: z.string().email().max(200),
+    email: z.string().min(3).max(200),
     password: z.string().min(1).max(200),
   }),
   changePassword: z.object({
     current: z.string().min(1).max(200),
     next: z.string().min(12).max(200),
+  }),
+  /* « Créer un username » en self-service. Vide ⇒ on retire l'identifiant ; sinon
+     3 à 40 caractères d'un alphabet sûr (pas d'« @ », pour ne pas le confondre avec
+     un courriel). L'unicité se vérifie dans la route, contre la base. */
+  changeUsername: z.object({
+    username: z.string().trim().max(40),
   }),
   site: z.object({
     id: id.optional(),
@@ -143,6 +154,11 @@ export const schemas = {
   user: z.object({
     id: id.optional(),
     email: z.string().email().max(200),
+    /* Identifiant de connexion facultatif, posé à la création ou plus tard depuis
+       « Mon compte » (migration 023). Le charset est vérifié dans la route. */
+    username: z.string().trim().max(40).nullish(),
+    /* Facultatif : absent, le serveur GÉNÈRE un provisoire et le renvoie une fois
+       (demande du 01/08). Fourni, il doit passer la politique — voir la route. */
     password: z.string().min(12).max(200).optional(),
     first_name: z.string().min(1).max(80),
     last_name: nullableStr(80), title: nullableStr(120),

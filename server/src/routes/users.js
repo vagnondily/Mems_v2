@@ -3,12 +3,28 @@ import { db } from "../db.js";
 import { newId } from "../lib/crypto.js";
 import { requireCap } from "../lib/auth.js";
 import { validate, schemas } from "../lib/validate.js";
-import { hashPassword, passwordProblems } from "../lib/auth.js";
+import { hashPassword, passwordProblems, motDePasseProvisoire } from "../lib/auth.js";
 
 const r = Router();
-const shape = (u) => ({ id:u.id, email:u.email, first_name:u.first_name, last_name:u.last_name,
+const shape = (u) => ({ id:u.id, email:u.email, username:u.username || "",
+  first_name:u.first_name, last_name:u.last_name,
   title:u.title, office_id:u.office_id, tpm_id:u.tpm_id || null, role:u.role,
   tabs:JSON.parse(u.tabs||"[]"), active:!!u.active, last_login:u.last_login });
+
+/* L'identifiant de connexion facultatif, validé comme dans le self-service
+   (routes/auth.js) : même alphabet, même unicité contre courriels ET identifiants.
+   Rend soit { value } (à écrire, éventuellement null), soit { erreur }. */
+const IDENTIFIANT = /^[a-z0-9._-]{3,40}$/;
+function verifierIdentifiant(brutIn, idExclu){
+  if(brutIn == null || String(brutIn).trim() === "") return { value: null };
+  const brut = String(brutIn).trim().toLowerCase();
+  if(!IDENTIFIANT.test(brut) || brut.includes("@"))
+    return { erreur:"identifiant : 3 à 40 caractères, lettres minuscules, chiffres, point, tiret ou tiret bas, sans « @ »" };
+  const pris = db.prepare(`SELECT 1 FROM users WHERE (username=? OR email=?)${idExclu ? " AND id<>?" : ""}`)
+    .get(...(idExclu ? [brut, brut, idExclu] : [brut, brut]));
+  if(pris) return { erreur:"cet identifiant est déjà utilisé" };
+  return { value: brut };
+}
 
 /* Un compte de prestataire n'administre pas l'application. Il est déjà borné à son
    prestataire par lib/scope.js, mais le droit d'administration lui donnerait la
@@ -45,23 +61,54 @@ r.get("/", (req, res) => res.json({ users:
 
 r.post("/", validate(schemas.user), async (req, res) => {
   const b = req.body;
-  if(!b.password) return res.status(422).json({ error:"un mot de passe initial est requis" });
-  const problems = passwordProblems(b.password);
-  if(problems.length) return res.status(422).json({
-    error:"le mot de passe doit contenir " + problems.join(", ") });
+  /* Le mot de passe initial est GÉNÉRÉ par défaut : l'administrateur ne le choisit
+     pas (demande du 01/08). S'il en fournit un — chemin conservé pour l'amorçage et
+     les tests —, il doit passer la politique. Dans les deux cas `must_change_pw=1`,
+     et le provisoire généré n'est renvoyé qu'ICI, une seule fois. */
+  const genere = !b.password;
+  if(b.password){
+    const problems = passwordProblems(b.password);
+    if(problems.length) return res.status(422).json({
+      error:"le mot de passe doit contenir " + problems.join(", ") });
+  }
+  const clair = b.password || motDePasseProvisoire();
   if(db.prepare("SELECT 1 FROM users WHERE email=?").get(b.email))
     return res.status(409).json({ error:"cette adresse est déjà utilisée" });
+  const ident = verifierIdentifiant(b.username, null);
+  if(ident.erreur) return res.status(ident.erreur.includes("déjà")?409:422).json({ error:ident.erreur });
   const interdit = tpmInterdit(b);
   if(interdit) return res.status(422).json({ error:interdit });
   const id = newId("user");
-  db.prepare(`INSERT INTO users (id,email,pw_hash,first_name,last_name,title,office_id,tpm_id,role,tabs,active,must_change_pw)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,1)`)
-    .run(id, b.email, await hashPassword(b.password), b.first_name, b.last_name, b.title,
+  db.prepare(`INSERT INTO users (id,email,username,pw_hash,first_name,last_name,title,office_id,tpm_id,role,tabs,active,must_change_pw)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)`)
+    .run(id, b.email, ident.value, await hashPassword(clair), b.first_name, b.last_name, b.title,
          b.office_id, b.tpm_id, b.role, JSON.stringify(b.tabs), b.active?1:0);
   db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'securite','users',?,'create',?)`)
     .run(newId("aud"), req.user.id, req.user.email, id, `Compte créé — ${b.email}`);
-  res.status(201).json({ user: shape(db.prepare("SELECT * FROM users WHERE id=?").get(id)) });
+  res.status(201).json({
+    user: shape(db.prepare("SELECT * FROM users WHERE id=?").get(id)),
+    /* Le provisoire ne sort QUE s'il a été généré, et jamais une seconde fois. */
+    provisionalPassword: genere ? clair : undefined });
+});
+
+/* Réinitialisation par l'administrateur (demande du 01/08). L'admin ne connaît pas
+   le mot de passe : il en DÉCLENCHE un nouveau, provisoire, généré par le serveur,
+   affiché une seule fois ici pour qu'il le communique. À la connexion suivante,
+   `must_change_pw` impose son remplacement, et toutes les sessions ouvertes tombent. */
+r.post("/:id/reset-password", async (req, res) => {
+  const cur = db.prepare("SELECT * FROM users WHERE id=?").get(req.params.id);
+  if(!cur) return res.status(404).json({ error:"compte introuvable" });
+  if(cur.role === "super" && req.user.role !== "super")
+    return res.status(403).json({ error:"seul un super-utilisateur réinitialise un super-utilisateur" });
+  const clair = motDePasseProvisoire();
+  db.prepare("UPDATE users SET pw_hash=?, must_change_pw=1, updated_at=datetime('now') WHERE id=?")
+    .run(await hashPassword(clair), cur.id);
+  db.prepare("UPDATE sessions SET revoked=1 WHERE user_id=?").run(cur.id);
+  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+              VALUES (?,?,?,'securite','users',?,'password_reset',?)`)
+    .run(newId("aud"), req.user.id, req.user.email, cur.id, `Mot de passe réinitialisé — ${cur.email}`);
+  res.json({ provisionalPassword: clair });
 });
 
 r.put("/:id", validate(userPatch), async (req, res) => {
@@ -71,6 +118,14 @@ r.put("/:id", validate(userPatch), async (req, res) => {
   /* Le compte tel qu'il sera : l'envoi par-dessus l'existant. Tous les contrôles
      ci-dessous portent sur ce résultat, jamais sur le seul corps de la requête —
      sans quoi ils raisonneraient sur des champs que l'appelant n'a pas envoyés. */
+  /* L'identifiant, s'il est envoyé, est validé et son unicité vérifiée avant tout
+     le reste — même règle qu'à la création et qu'en self-service. */
+  let username = cur.username;
+  if(b.username !== undefined){
+    const ident = verifierIdentifiant(b.username, cur.id);
+    if(ident.erreur) return res.status(ident.erreur.includes("déjà")?409:422).json({ error:ident.erreur });
+    username = ident.value;
+  }
   const m = {
     email:      fusion(b.email, cur.email),
     first_name: fusion(b.first_name, cur.first_name),
@@ -100,9 +155,9 @@ r.put("/:id", validate(userPatch), async (req, res) => {
     pwSql = ", pw_hash=?, must_change_pw=1"; pwArg = [await hashPassword(b.password)];
     db.prepare("UPDATE sessions SET revoked=1 WHERE user_id=?").run(cur.id);
   }
-  db.prepare(`UPDATE users SET email=?, first_name=?, last_name=?, title=?, office_id=?,
+  db.prepare(`UPDATE users SET email=?, username=?, first_name=?, last_name=?, title=?, office_id=?,
               tpm_id=?, role=?, tabs=?, active=?, updated_at=datetime('now') ${pwSql} WHERE id=?`)
-    .run(m.email, m.first_name, m.last_name, m.title, m.office_id, m.tpm_id, m.role,
+    .run(m.email, username, m.first_name, m.last_name, m.title, m.office_id, m.tpm_id, m.role,
          m.tabs, m.active, ...pwArg, cur.id);
   db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'securite','users',?,'update',?)`)

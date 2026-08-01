@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api.js";
 import { useGeoCascade, resetGeoCache } from "../lib/geo.js";
-import { Activity, Building2, CalendarRange, Check, ClipboardList, Download, FileText, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
+import { Activity, Building2, CalendarRange, Check, ClipboardList, Copy, Download, FileText, KeyRound, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
 import { Area, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, motifLisible, n, pct, r2, r5, siteRequirement, siteScore, uid, visiteOdk } from "../lib/calc.js";
@@ -2637,6 +2637,9 @@ Accept: application/json`}</pre></div>
 function SetUsers({ db, set, me, notify }){
   const [edit,setEdit] = useState(null);
   const [tpms,setTpms] = useState([]);
+  /* Le mot de passe provisoire, affiché UNE seule fois après création ou
+     réinitialisation, pour que l'administrateur le communique. Jamais restocké. */
+  const [provisoire,setProvisoire] = useState(null);
   /* Les prestataires ne vivent pas dans l'état global (db) : ils sont propres à
      l'écran Suivi tiers, et cet écran n'a besoin que de leur nom pour le
      rattachement d'un compte. Un aller-retour dédié plutôt qu'alourdir /api/state
@@ -2645,16 +2648,27 @@ function SetUsers({ db, set, me, notify }){
   /* Les comptes vivent côté serveur : le navigateur ne calcule aucun condensat
      et ne conserve aucun mot de passe au-delà de la saisie. */
   const save = async (u2) => {
-    const payload = { email:(u2.email||"").trim(), first_name:u2.firstName || u2.first_name || "",
+    /* L'administrateur ne choisit plus de mot de passe : à la création, le serveur
+       en GÉNÈRE un provisoire et le renvoie ici une seule fois. L'identifiant, lui,
+       se pose à la création comme plus tard. */
+    const payload = { email:(u2.email||"").trim(), username:(u2.username||"").trim() || null,
+      first_name:u2.firstName || u2.first_name || "",
       last_name:u2.lastName || u2.last_name || null, title:u2.title || null,
       office_id:u2.office_id || null, tpm_id:u2.tpm_id || null, role:u2.role || "viewer",
       tabs:u2.tabs || [], active:u2.active !== false };
-    if(u2._pw) payload.password = u2._pw;
     try{
       const r = u2.id ? await api.updateUser(u2.id, payload) : await api.createUser(payload);
       set(d => { const i = d.users.findIndex(x => x.id === r.user.id);
         if(i >= 0) d.users[i] = r.user; else d.users.push(r.user); return d; });
-      setEdit(null); notify("Compte enregistré", "ok");
+      setEdit(null);
+      if(r.provisionalPassword) setProvisoire({ email:r.user.email, pw:r.provisionalPassword, cree:true });
+      else notify("Compte enregistré", "ok");
+    }catch(e){ notify(e.message, "err"); }
+  };
+  const reinitialiser = async (u2) => {
+    if(!confirm(`Réinitialiser le mot de passe de ${u2.email} ? Ses sessions ouvertes seront fermées.`)) return;
+    try{ const r = await api.resetUserPassword(u2.id);
+      setProvisoire({ email:u2.email, pw:r.provisionalPassword, cree:false });
     }catch(e){ notify(e.message, "err"); }
   };
   const removeUser = async (id) => {
@@ -2673,7 +2687,7 @@ function SetUsers({ db, set, me, notify }){
         right={<Btn size="sm" icon={Plus} onClick={()=>setEdit({ role:"viewer", active:true, tabs:db.roles.viewer.tabs })}>Ajouter un utilisateur</Btn>}>
         <TableWrap max="mh440">
           <thead><tr><Th>Utilisateur</Th><Th>Fonction</Th><Th>Rattachement</Th><Th>Adresse électronique</Th>
-            <Th>Rôle</Th><Th>Onglets</Th><Th>Statut</Th><Th /></tr></thead>
+            <Th>Identifiant</Th><Th>Rôle</Th><Th>Onglets</Th><Th>Statut</Th><Th /></tr></thead>
           <tbody>{db.users.map((u2,i)=>(
             <tr key={u2.id} className="hover:bg-sky-50">
               <Td><div className="flex items-center gap-2.5">
@@ -2686,13 +2700,16 @@ function SetUsers({ db, set, me, notify }){
                     {(tpms.find(t=>t.id===u2.tpm_id)||{}).name || "—"}</span>
                 : (db.offices.find(o=>o.id===u2.office_id)||{}).name || "Tous"}</Td>
               <Td className="f115">{u2.email}</Td>
+              <Td className="f115 text-slate-500">{u2.username || "—"}</Td>
               <Td><Badge tone={u2.role==="super"||u2.role==="admin"?"r":u2.role==="validator"?"b":u2.role==="editor"?"g":"n"}>
                 {db.roles[u2.role]?.label}</Badge></Td>
               <Td className="text-slate-500">{(u2.tabs||db.roles[u2.role]?.tabs||[]).length} / {TABS_ALL.length}</Td>
               <Td>{u2.active!==false ? <Badge tone="g">Actif</Badge> : <Badge>Inactif</Badge>}</Td>
-              <Td className="text-right">
-                <button onClick={()=>setEdit(u2)} className="text-slate-400 m-ico p-1"><Pencil size={14}/></button>
-                {u2.id!==me.id && <button onClick={()=>{ if(confirm("Supprimer ce compte ?")) removeUser(u2.id); }}
+              <Td className="text-right whitespace-nowrap">
+                <button title="Réinitialiser le mot de passe" onClick={()=>reinitialiser(u2)}
+                  className="text-slate-400 m-ico p-1"><KeyRound size={14}/></button>
+                <button title="Modifier" onClick={()=>setEdit(u2)} className="text-slate-400 m-ico p-1"><Pencil size={14}/></button>
+                {u2.id!==me.id && <button title="Supprimer" onClick={()=>{ if(confirm("Supprimer ce compte ?")) removeUser(u2.id); }}
                   className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={14}/></button>}</Td>
             </tr>))}</tbody>
         </TableWrap>
@@ -2716,7 +2733,29 @@ function SetUsers({ db, set, me, notify }){
         </TableWrap>
       </Card>
       <UserModal open={!!edit} user={edit} db={db} tpms={tpms} onClose={()=>setEdit(null)} onSave={save} />
+      <ProvisionalModal data={provisoire} notify={notify} onClose={()=>setProvisoire(null)} />
     </>);
+}
+
+/* Le mot de passe provisoire, montré UNE fois. L'administrateur le lit, le copie et
+   le communique ; il n'est ni restocké ni renvoyé une seconde fois par le serveur. */
+function ProvisionalModal({ data, notify, onClose }){
+  if(!data) return null;
+  const copier = async () => {
+    try{ await navigator.clipboard.writeText(data.pw); notify("Mot de passe copié", "ok"); }
+    catch{ notify("Copie impossible — sélectionnez le texte manuellement", "err"); }
+  };
+  return (
+    <Modal open onClose={onClose} title={data.cree ? "Compte créé" : "Mot de passe réinitialisé"}
+      subtitle={data.email}
+      footer={<Btn onClick={onClose}>J'ai communiqué le mot de passe</Btn>}>
+      <Note tone="warn">Communiquez ce mot de passe provisoire à l'utilisateur. Il ne sera
+        <b> plus jamais affiché</b>. À sa première connexion, il devra le remplacer.</Note>
+      <div className="flex items-center gap-2 mt-3">
+        <code className="flex-1 f16 font-mono tracking-wide bg-slate-100 border border-slate-200 rounded px-3 py-2.5 text-slate-900 select-all">{data.pw}</code>
+        <Btn kind="sec" icon={Copy} onClick={copier}>Copier</Btn>
+      </div>
+    </Modal>);
 }
 function UserModal({ open, user, db, tpms, onClose, onSave }){
   const [f,setF] = useState({});
@@ -2733,15 +2772,19 @@ function UserModal({ open, user, db, tpms, onClose, onSave }){
     <Modal open onClose={onClose} title={user?.id?"Modifier l'utilisateur":"Nouvel utilisateur"}
       subtitle="Identité, rattachement, rôle et onglets accessibles"
       footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
-        <Btn icon={Save} disabled={!f.firstName||!f.email||(!user?.id&&!f._pw)} onClick={()=>onSave(f)}>Enregistrer</Btn></>}>
+        <Btn icon={Save} disabled={!f.firstName||!f.email} onClick={()=>onSave(f)}>Enregistrer</Btn></>}>
       <div className="grid grid-cols-2 gap-x-4">
         <Field label="Prénom"><Input value={f.firstName||""} onChange={e=>u("firstName",e.target.value)} /></Field>
         <Field label="Nom"><Input value={f.lastName||""} onChange={e=>u("lastName",e.target.value)} /></Field>
         <Field label="Fonction"><Input value={f.title||""} onChange={e=>u("title",e.target.value)} /></Field>
         <Field label="Adresse électronique"><Input type="email" value={f.email||""} onChange={e=>u("email",e.target.value)} /></Field>
-        <Field label={user?.id?"Nouveau mot de passe":"Mot de passe"} hint={user?.id?"Laisser vide pour conserver l'actuel":"Huit caractères au minimum"}>
-          <Input type="password" value={f._pw||""} onChange={e=>u("_pw",e.target.value)} /></Field>
+        <Field label="Identifiant de connexion" className="col-span-2"
+          hint="Facultatif — permet de se connecter à la place du courriel. L'utilisateur peut le changer depuis « Mon compte »">
+          <Input value={f.username||""} onChange={e=>u("username",e.target.value)} placeholder="prenom.nom" /></Field>
       </div>
+      {!user?.id && <Note>À l'enregistrement, un <b>mot de passe provisoire</b> est généré et affiché
+        une seule fois : communiquez-le à l'utilisateur, qui devra le remplacer à sa première connexion.
+        L'administrateur ne choisit pas le mot de passe.</Note>}
       <Field label="Rattachement" hint={tpmInterdit ? "Un administrateur n'est rattaché ni à un bureau ni à un prestataire" : undefined}>
         <div className="grid grid-cols-2 gap-x-4">
           <Select value={f.office_id||""}

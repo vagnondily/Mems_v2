@@ -55,7 +55,7 @@ Ce document décrit un état daté. Ce qui a été livré depuis est consigné i
 qui le porte — le corps du document reste écrit au moment de l'audit, et le lire sans ce
 journal donnerait une image fausse de ce qui reste à faire.
 
-**Tests au dernier commit : 221 côté serveur, 44 côté web, 0 échec. Audit de production :
+**Tests au dernier commit : 224 côté serveur, 45 côté web, 0 échec. Audit de production :
 aucun avis grave, ni serveur ni web.**
 
 | Commit | Ce qui est livré | Effet sur ce document |
@@ -71,7 +71,8 @@ aucun avis grave, ni serveur ni web.**
 | `03eb422` | **La visite saisie à la main devient l'exception justifiée** (migration 019, `lib/visites.js`) et **référentiel de codes d'identification importable** (migration 020, `lib/codes.js`, type d'import `codes`, écran Paramètres → Référentiels de codes) | **SMP est rattachable, pour de bon** : le référentiel chargé pose les alias, et le résolveur rattache la soumission par son code école à confiance 1,0. La ligne « SMP reste non rattachable » du bas de ce document tombe. **Un défaut de destruction de données est fermé** : décocher un mois effaçait la visite du mois quelle qu'elle soit, y compris une visite ODK portant sa soumission. |
 | *(ce commit)* | **Justificatif propre à chaque source de collecte** (migration 021, `lib/authSortante.js`) : schémas d'authentification déclarables (`porteur`/Bearer, `jeton`/Token pour Kobo, `basique`/Basic, session ODK Central renouvelée), **deux secrets** — un justificatif durable et un jeton de session court qui en dérive, mis en cache et renouvelé —, épreuve de connexion réelle qui distingue les cinq causes d'échec, **zoom souris et bascule des contours sur la carte**, et la **synthèse des 27 documents** reçus (indicateurs CRF, rations PDD, shapefile, règles QC) | Répond à « il faut un token à part l'API » : le schéma est une donnée de la source, plus une hypothèse du code — **Kobo, jusqu'ici déclarable mais muet, envoyait `Bearer` au lieu de `Token`**. Le « Jeton général » ODK, qui promettait un repli que le serveur refusait, est supprimé. Ouvre les **chantiers R** (catalogue de rations, fiche de saisie PDD) et **S** (réorganisation produit + UI), et la **synthèse documentaire** transforme les chantiers N et P d'« inventer » en « importer ». |
 | `33a5def` | **Import géo unifié et intégré au pays** : un seul chemin (serveur) monté dans la fiche du pays, les deux anciens flux navigateur retirés, le lecteur client `web/src/lib/shapefile.js` supprimé ; **lecture d'un `.shp` sans `.dbf`** (polygones « Polygone N » à adm3, comme QGIS) ; plafond porté à **150 Mo** ; rattachement du millésime au pays (bascule `is_current` cloisonnée). Vérifié sur le fichier réel Madagascar adm3 (1701 polygones, deux chemins). | Ferme la restriction S3 « trois flux géo coexistants » et la demande « lire un shapefile sans dbf ». L'import du découpage devient une étape de la config pays (S7), non un écran isolé. |
-| *(ce commit)* | **Indicateurs scindés en CRF et XLSForm** (migration 022) : `indicators` porte `kind`/`level`/`activity`, l'écran Paramètres → Indicateurs présente deux sous-onglets (résultats / processus) avec colonnes, fiche et CSV propres à chaque nature ; toute ligne existante devient CRF. Test d'aller-retour des deux natures ajouté (221 serveur). | Livre la **scission structurelle du chantier P** demandée le 01/08. Prépare la colonne « indicateur » de l'étoile polaire S4 et l'étape indicateurs du parcours fondateur S7. |
+| `cb76519` | **Indicateurs scindés en CRF et XLSForm** (migration 022) : `indicators` porte `kind`/`level`/`activity`, l'écran Paramètres → Indicateurs présente deux sous-onglets (résultats / processus) avec colonnes, fiche et CSV propres à chaque nature ; toute ligne existante devient CRF. Test d'aller-retour des deux natures ajouté (221 serveur). | Livre la **scission structurelle du chantier P** demandée le 01/08. Prépare la colonne « indicateur » de l'étoile polaire S4 et l'étape indicateurs du parcours fondateur S7. |
+| *(ce commit)* | **Compte en self-service + mots de passe provisoires générés** (migration 023) : « Mon compte » dans le menu de l'en-tête (infos, changement de mot de passe, **identifiant de connexion** `username` unique — connexion par courriel OU identifiant) ; la **création et la réinitialisation admin GÉNÈRENT** un provisoire affiché une seule fois (`POST /api/users/:id/reset-password`), posent `must_change_pw` et ferment les sessions. Tests : identifiant + connexion par identifiant, provisoire non rejoué, reset qui révoque (224 serveur, 45 web). | Répond à « un user devrait pouvoir regarder ses infos, changer son mot de passe, créer un username » et « l'admin ne connaît pas le mot de passe, il réinitialise et le provisoire s'affiche que lui ». Ferme la partie compte de la réorganisation S. |
 
 ### La visite à la main : ce qui change, et pourquoi
 
@@ -1226,6 +1227,19 @@ contenu à droite :**
 Même principe pour la gestion des listes : des sous-catégories plutôt qu'un écran surchargé.
 Chaque onglet est parcouru, testé et corrigé un par un — l'objectif est que TOUT fonctionne,
 pas seulement que ce soit mieux rangé.
+
+**✅ LIVRÉ (01/08/2026).** Le self-service « Mon compte » est ouvert depuis le menu du compte
+de l'en-tête (composant `AccountModal` dans `Shell.jsx`), donc accessible à TOUT rôle, y
+compris ceux sans l'onglet Paramètres : on y voit ses infos, on change son mot de passe à tout
+moment, on définit son **identifiant de connexion** (migration 023 : `username` unique et
+facultatif, utilisable à la place du courriel — `login` cherche `email = ? OR username = ?`).
+La **réinitialisation admin génère** un provisoire affiché une seule fois
+(`POST /api/users/:id/reset-password`), la **création génère** aussi le provisoire quand
+l'admin n'en fournit pas (il ne le choisit plus), les deux posant `must_change_pw` et fermant
+les sessions ouvertes. Tests : aller-retour identifiant + connexion par identifiant, provisoire
+généré non rejoué, reset qui ferme les sessions (224 serveur, 45 web). **Reste** : brancher
+« Mon compte » aussi dans la future réorganisation Paramètres (groupe Système) si l'on veut un
+second point d'entrée pour les admins.
 
 **« Mon compte » (demande du 01/08) — self-service du compte, distinct de l'administration
 des utilisateurs.** Aujourd'hui l'écran Utilisateurs est réservé aux administrateurs, et un
