@@ -416,6 +416,14 @@ r.post("/bulk", requireCap("edit"), (req, res) => {
   if(!BULK_FIELDS.has(field))
     return res.status(422).json({ error:`le champ « ${field} » n'est pas modifiable en masse` });
   const scope = scopeOf(req.user);
+  /* Le WHERE ci-dessous limite QUELLES lignes sont touchées (celles du bureau du
+     compte), mais pas la VALEUR écrite : sans ce garde, un compte cloisonné
+     pourrait réaffecter en masse ses propres sites à un AUTRE bureau — les
+     transférer ou les orpheliner. `POST /` et `PUT /:id` forcent déjà
+     office_id=scope pour l'interdire à l'unité ; on tient le même invariant en
+     masse. Un compte national/super (scope null) reste libre de réaffecter. */
+  if(field === "office_id" && scope)
+    return res.status(403).json({ error:"un compte rattaché à un bureau ne peut pas réaffecter ses sites à un autre bureau en masse" });
   const stmt = db.prepare(`UPDATE sites SET ${field}=?, updated_at=datetime('now')
                            WHERE id=? ${scope ? "AND office_id=?" : ""}`);
   let n = 0;

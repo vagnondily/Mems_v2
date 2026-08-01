@@ -721,7 +721,7 @@ function TargetingView({ db, notify, can }){
                   <Td num className="text-slate-500">{fmt(r.targetedHh)}</Td>
                   <Td className="f11">{r.gender || <span className="text-slate-400">—</span>}</Td>
                   <Td>{r.reason ? <Badge>{r.reason}</Badge> : <span className="f11 text-slate-400">—</span>}</Td>
-                  <Td className="text-right">{can("edit") && <button onClick={()=>supprimer(r.id)}
+                  <Td className="text-right">{can("del") && <button onClick={()=>supprimer(r.id)}
                     className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</Td>
                 </tr>
                 {ouvert && h.slice(1).map(x=>(
@@ -732,7 +732,7 @@ function TargetingView({ db, notify, can }){
                     <Td num className="text-slate-400">{fmt(x.targetedHh)}</Td>
                     <Td className="f11 text-slate-400">{x.gender||"—"}</Td>
                     <Td className="f11 text-slate-400">{x.reason||"—"}</Td>
-                    <Td className="text-right">{can("edit") && <button onClick={()=>supprimer(x.id)}
+                    <Td className="text-right">{can("del") && <button onClick={()=>supprimer(x.id)}
                       className="text-slate-300 hover:text-rose-600 p-1"><Trash2 size={12}/></button>}</Td>
                   </tr>))}
               </Fragment>); })}</tbody>

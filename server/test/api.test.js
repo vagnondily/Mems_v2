@@ -211,6 +211,39 @@ test("modification groupée : seuls les champs autorisés passent", async () => 
   assert.equal(ko.status, 422);
 });
 
+test("modification groupée : un compte cloisonné ne peut pas réaffecter ses sites à un autre bureau", async () => {
+  /* Le WHERE de la requête borne QUELLES lignes sont touchées, pas la VALEUR
+     écrite : sans garde, un éditeur cloisonné transférerait ses sites en masse. */
+  const deux = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 2").all();
+  const [officeA, officeB] = deux;
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"bulk-borne@test.local", password:"BulkBorneMotDePasse1", first_name:"Borné",
+            role:"editor", office_id:officeA.id, tabs:["home"], active:true });
+  motDePasseAdopte("bulk-borne@test.local");
+  const t = (await login("bulk-borne@test.local", "BulkBorneMotDePasse1")).body.token;
+  const mesSites = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`))
+    .body.sites.slice(0, 3).map(s => s.id);
+
+  /* Réaffecter office_id vers un autre bureau : refusé pour un compte cloisonné. */
+  const transfert = await request(app).post("/api/sites/bulk").set("Authorization", `Bearer ${t}`)
+    .send({ ids:mesSites, field:"office_id", value:officeB.id });
+  assert.equal(transfert.status, 403, JSON.stringify(transfert.body));
+  /* Les sites n'ont pas bougé. */
+  const apres = db.prepare(`SELECT COUNT(*) c FROM sites WHERE id IN (${mesSites.map(()=>"?").join(",")}) AND office_id=?`)
+    .get(...mesSites, officeA.id).c;
+  assert.equal(apres, mesSites.length, "aucun site n'a été transféré");
+
+  /* Un autre champ passe toujours : la borne ne bloque que la réaffectation de bureau. */
+  const modalite = await request(app).post("/api/sites/bulk").set("Authorization", `Bearer ${t}`)
+    .send({ ids:mesSites, field:"modality", value:"Food" });
+  assert.equal(modalite.status, 200);
+
+  /* Un compte national (admin non borné) reste libre de réaffecter en masse. */
+  const adminTransfert = await request(app).post("/api/sites/bulk").set("Authorization", `Bearer ${adminToken}`)
+    .send({ ids:mesSites, field:"office_id", value:officeB.id });
+  assert.equal(adminTransfert.status, 200);
+});
+
 test("collections : la synchronisation crée, met à jour et supprime en une transaction", async () => {
   const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
   const rows = st.body.reportTemplates.map(t => ({ ...t }));
