@@ -105,6 +105,9 @@ export const api = {
   syncCollection: (name, rows, deletes = []) =>
     call("PUT", `/collections/${encodeURIComponent(name)}`, { rows, deletes }),
   saveSettings:   (obj)        => call("PUT", "/settings", obj),
+  /* MRE + calendrier de collecte, en droit éditeur (S6). Le serveur écrit le
+     calendrier dans sa table `outcome_plan`, non dans le blob settings. */
+  savePlanningConfig: (obj)    => call("PUT", "/planning-config", obj),
   setVisitStatus: (id, status) => call("PUT", `/visits/${encodeURIComponent(id)}/status`, { status }),
 
   geo:          (q="")            => call("GET", `/geo${q}`),
@@ -347,6 +350,9 @@ export function createSyncQueue({ onStatus = () => {}, onConflict = null, delay 
     inflight++; onStatus({ state:"saving", inflight, failures });
     try{
       if(name === "settings") await api.saveSettings(job.rows);
+      /* La configuration de planification (MRE + calendrier de collecte) a sa
+         propre route en droit éditeur — voir S6. Elle ne passe pas par settings. */
+      else if(name === "planningConfig") await api.savePlanningConfig(job.rows);
       else await api.syncCollection(name, job.rows, job.deletes);
       failures = 0;
     }catch(e){

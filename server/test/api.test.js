@@ -1536,6 +1536,64 @@ test("indicateurs : les natures CRF et XLSForm font l'aller-retour", async () =>
   assert.equal(refus.status, 422, "un niveau de cadre logique inconnu est rejeté");
 });
 
+/* Chantier S6 — « un éditeur peut être attribué à planifier les suivis ». La
+   configuration de planification (MRE + calendrier de collecte) se persiste par une
+   route en droit ÉDITEUR, distincte des réglages admin ; le calendrier va dans sa
+   table `outcome_plan`, plus dans le blob settings. */
+test("planification : un éditeur enregistre MRE et calendrier, hors des réglages admin", async () => {
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"planif@test.local", password:"PlanifMotDePasse1", first_name:"Planif",
+            role:"editor", tabs:["home","suivi"], active:true });
+  motDePasseAdopte("planif@test.local");
+  const t = (await login("planif@test.local", "PlanifMotDePasse1")).body.token;
+
+  /* L'éditeur n'a PAS le droit sur les réglages admin : la séparation est réelle. */
+  const settings = await request(app).put("/api/settings").set("Authorization", `Bearer ${t}`)
+    .send({ mmr:[{ id:"x" }] });
+  assert.equal(settings.status, 403, "les réglages restent réservés à l'admin");
+
+  /* Un code d'indicateur réel, pour le calendrier. */
+  const etat0 = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`)).body;
+  const code = etat0.indicators[0].id;
+
+  const enreg = await request(app).put("/api/planning-config").set("Authorization", `Bearer ${t}`)
+    .send({ mmr:[{ id:"mmr0", area:"School Feeding", coef:1.5, duration:"6-12 months",
+                   siteType:"School", monitoring:"Distribution monitoring" }],
+            outcomePlan:{ [code]: [true,false,false,true,false,false,false,false,false,false,false,false] } });
+  assert.equal(enreg.status, 200, JSON.stringify(enreg.body));
+
+  const etat = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`)).body;
+  assert.equal(etat.settings.mmr[0].coef, 1.5, "le MRE est relu du dictionnaire de réglages");
+  assert.deepEqual(etat.outcomePlan[code].map(Boolean),
+    [true,false,false,true,false,false,false,false,false,false,false,false],
+    "le calendrier est relu de sa table, mois par mois");
+
+  /* La table `outcome_plan` porte les deux mois cochés, et rien de plus pour ce code. */
+  const année = new Date().getFullYear();
+  const ind = db.prepare("SELECT id FROM indicators WHERE code=?").get(code);
+  const mois = db.prepare("SELECT month FROM outcome_plan WHERE indicator_id=? AND year=? ORDER BY month")
+    .all(ind.id, année).map(r => r.month);
+  assert.deepEqual(mois, [0,3], "seuls les mois cochés existent dans la table");
+  /* Le reflet dans settings est purgé : il n'ombre plus la table. */
+  assert.equal(db.prepare("SELECT 1 FROM settings WHERE key='outcomePlan'").get(), undefined);
+
+  /* Décocher un mois le fait DISPARAÎTRE (remplacement de l'année, pas ajout). */
+  await request(app).put("/api/planning-config").set("Authorization", `Bearer ${t}`)
+    .send({ outcomePlan:{ [code]: [true,false,false,false,false,false,false,false,false,false,false,false] } });
+  const apres = db.prepare("SELECT month FROM outcome_plan WHERE indicator_id=? AND year=?").all(ind.id, année);
+  assert.deepEqual(apres.map(r=>r.month), [0], "le mois décoché a bien disparu");
+
+  /* Un lecteur ne planifie pas : la route exige le droit d'édition. */
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"lecplan@test.local", password:"LecPlanMotDePasse1", first_name:"LecPlan",
+            role:"viewer", tabs:["home"], active:true });
+  motDePasseAdopte("lecplan@test.local");
+  const tv = (await login("lecplan@test.local", "LecPlanMotDePasse1")).body.token;
+  const refus = await request(app).put("/api/planning-config").set("Authorization", `Bearer ${tv}`)
+    .send({ mmr:[{ id:"y" }] });
+  assert.equal(refus.status, 403, "un lecteur ne peut pas planifier");
+});
+
 test("concurrence : un client qui n'envoie pas de révision reste accepté", async () => {
   /* Compatibilité : la révision est facultative. Sans elle, on retombe sur le
      comportement « dernier écrivain gagne », mais sans suppression implicite. */

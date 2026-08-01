@@ -26,9 +26,16 @@ const SYNCED = ["params","outputs","indicators","outcomes","population","pdd",
    saisie était perdue. On les fait voyager dans la collection `settings`, la
    seule que `PUT /api/settings` persiste sous une clé quelconque. `hydrate` les
    relit de là (repli sur le défaut D_*), et `set` les y recopie quand ils
-   changent — barème de priorité, matrice des rôles, exigences MMR, formules de
-   calcul, catégories d'activité, listes éditables et calendrier de collecte. */
-const PERSISTED_SETTINGS = ["scoring","roles","mmr","formulas","actCategories","lists","outcomePlan"];
+   changent — barème de priorité, matrice des rôles, formules de calcul,
+   catégories d'activité et listes éditables.
+
+   `mmr` (exigences MRE) et `outcomePlan` (calendrier de collecte) n'y sont PLUS :
+   ce sont des objets de PLANIFICATION, éditables par un éditeur (S6), et ils
+   voyagent par leur propre route `PUT /api/planning-config` (droit éditeur) — pas
+   par le blob settings réservé à l'admin. Voir PLANNING_KEYS ci-dessous. */
+const PERSISTED_SETTINGS = ["scoring","roles","formulas","actCategories","lists"];
+/* Objets de planification, transportés hors settings, en droit éditeur (S6). */
+const PLANNING_KEYS = ["mmr","outcomePlan"];
 
 /* Les projections vers le serveur conservent `rev` : c'est la révision lue, que le
    serveur compare à la sienne pour détecter qu'un collègue a modifié la même ligne. */
@@ -119,11 +126,14 @@ export default function App(){
     /* `weights` reste codé en dur : D_WEIGHTS n'alimente que le score hérité, que
        plus aucun écran vivant n'atteint (siteScore reçoit toujours `db`). */
     roles: cfg.roles || D_ROLES, weights: D_WEIGHTS, scoring: cfg.scoring || D_SCORING,
-    formulas: cfg.formulas || D_FORMULAS, mmr: cfg.mmr || D_MMR,
-    /* Le calendrier de collecte a bien une table (outcome_plan), lue par /state,
-       mais aucune route ne l'écrit : la saisie passe donc, elle aussi, par les
-       réglages, qui l'emportent alors sur la table quand ils existent. */
-    outcomePlan: cfg.outcomePlan ?? state.outcomePlan,
+    formulas: cfg.formulas || D_FORMULAS,
+    /* MRE : réglage sans table, écrit désormais par PUT /api/planning-config (droit
+       éditeur) sous la clé `mmr` du même dictionnaire settings, d'où on le relit. */
+    mmr: cfg.mmr || D_MMR,
+    /* Le calendrier de collecte vit dans sa TABLE `outcome_plan` (lue par /state) :
+       la route de planification l'y écrit, et le reflet dans settings est purgé. On
+       lit donc la table, sans plus la laisser ombrer par le blob. */
+    outcomePlan: state.outcomePlan || {},
     settings: { org:"Bureau pays", unit:"Unité suivi et évaluation", logo:"", currency:"MGA",
       dateFmt:"DD/MM/YYYY", pageSize:25, syncInterval:30, notifications:true,
       odkBase:"https://odk-central.example.org", apiEnabled:false, opSize:"Large",
@@ -190,6 +200,13 @@ export default function App(){
         if(JSON.stringify(before[key]) === JSON.stringify(next[key])) continue;
         next.settings = { ...(next.settings || {}), [key]: next[key] };
       }
+      /* La planification (MRE + calendrier) part par sa route éditeur, pas par
+         settings : dès que l'un des deux change, on pousse l'ensemble courant. */
+      const planChange = PLANNING_KEYS.some(k =>
+        JSON.stringify(before[k]) !== JSON.stringify(next[k]));
+      if(planChange)
+        queue.current?.push("planningConfig",
+          { mmr: next.mmr, outcomePlan: next.outcomePlan || {} }, []);
       for(const name of SYNCED){
         if(before[name] === next[name]) continue;
         if(JSON.stringify(before[name]) === JSON.stringify(next[name])) continue;

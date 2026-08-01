@@ -55,7 +55,7 @@ Ce document décrit un état daté. Ce qui a été livré depuis est consigné i
 qui le porte — le corps du document reste écrit au moment de l'audit, et le lire sans ce
 journal donnerait une image fausse de ce qui reste à faire.
 
-**Tests au dernier commit : 224 côté serveur, 45 côté web, 0 échec. Audit de production :
+**Tests au dernier commit : 225 côté serveur, 45 côté web, 0 échec. Audit de production :
 aucun avis grave, ni serveur ni web.**
 
 | Commit | Ce qui est livré | Effet sur ce document |
@@ -72,7 +72,8 @@ aucun avis grave, ni serveur ni web.**
 | *(ce commit)* | **Justificatif propre à chaque source de collecte** (migration 021, `lib/authSortante.js`) : schémas d'authentification déclarables (`porteur`/Bearer, `jeton`/Token pour Kobo, `basique`/Basic, session ODK Central renouvelée), **deux secrets** — un justificatif durable et un jeton de session court qui en dérive, mis en cache et renouvelé —, épreuve de connexion réelle qui distingue les cinq causes d'échec, **zoom souris et bascule des contours sur la carte**, et la **synthèse des 27 documents** reçus (indicateurs CRF, rations PDD, shapefile, règles QC) | Répond à « il faut un token à part l'API » : le schéma est une donnée de la source, plus une hypothèse du code — **Kobo, jusqu'ici déclarable mais muet, envoyait `Bearer` au lieu de `Token`**. Le « Jeton général » ODK, qui promettait un repli que le serveur refusait, est supprimé. Ouvre les **chantiers R** (catalogue de rations, fiche de saisie PDD) et **S** (réorganisation produit + UI), et la **synthèse documentaire** transforme les chantiers N et P d'« inventer » en « importer ». |
 | `33a5def` | **Import géo unifié et intégré au pays** : un seul chemin (serveur) monté dans la fiche du pays, les deux anciens flux navigateur retirés, le lecteur client `web/src/lib/shapefile.js` supprimé ; **lecture d'un `.shp` sans `.dbf`** (polygones « Polygone N » à adm3, comme QGIS) ; plafond porté à **150 Mo** ; rattachement du millésime au pays (bascule `is_current` cloisonnée). Vérifié sur le fichier réel Madagascar adm3 (1701 polygones, deux chemins). | Ferme la restriction S3 « trois flux géo coexistants » et la demande « lire un shapefile sans dbf ». L'import du découpage devient une étape de la config pays (S7), non un écran isolé. |
 | `cb76519` | **Indicateurs scindés en CRF et XLSForm** (migration 022) : `indicators` porte `kind`/`level`/`activity`, l'écran Paramètres → Indicateurs présente deux sous-onglets (résultats / processus) avec colonnes, fiche et CSV propres à chaque nature ; toute ligne existante devient CRF. Test d'aller-retour des deux natures ajouté (221 serveur). | Livre la **scission structurelle du chantier P** demandée le 01/08. Prépare la colonne « indicateur » de l'étoile polaire S4 et l'étape indicateurs du parcours fondateur S7. |
-| *(ce commit)* | **Compte en self-service + mots de passe provisoires générés** (migration 023) : « Mon compte » dans le menu de l'en-tête (infos, changement de mot de passe, **identifiant de connexion** `username` unique — connexion par courriel OU identifiant) ; la **création et la réinitialisation admin GÉNÈRENT** un provisoire affiché une seule fois (`POST /api/users/:id/reset-password`), posent `must_change_pw` et ferment les sessions. Tests : identifiant + connexion par identifiant, provisoire non rejoué, reset qui révoque (224 serveur, 45 web). | Répond à « un user devrait pouvoir regarder ses infos, changer son mot de passe, créer un username » et « l'admin ne connaît pas le mot de passe, il réinitialise et le provisoire s'affiche que lui ». Ferme la partie compte de la réorganisation S. |
+| `a475818` | **Compte en self-service + mots de passe provisoires générés** (migration 023) : « Mon compte » dans le menu de l'en-tête (infos, changement de mot de passe, **identifiant de connexion** `username` unique — connexion par courriel OU identifiant) ; la **création et la réinitialisation admin GÉNÈRENT** un provisoire affiché une seule fois (`POST /api/users/:id/reset-password`), posent `must_change_pw` et ferment les sessions. Tests : identifiant + connexion par identifiant, provisoire non rejoué, reset qui révoque (224 serveur, 45 web). | Répond à « un user devrait pouvoir regarder ses infos, changer son mot de passe, créer un username » et « l'admin ne connaît pas le mot de passe, il réinitialise et le provisoire s'affiche que lui ». Ferme la partie compte de la réorganisation S. |
+| *(ce commit)* | **Un éditeur peut planifier les suivis** (S6) : route `PUT /api/planning-config` en droit éditeur pour les **paramètres MRE** et le **calendrier de collecte**, ce dernier écrit dans sa **table `outcome_plan`** (migration 024 reprend puis purge l'ancien reflet dans `settings`). L'édition MRE + calendrier passe de `admin` à `edit` ; `mmr`/`outcomePlan` quittent le transport `settings` pour le leur. Tests : éditeur autorisé, lecteur refusé, décochage qui efface, reflet purgé (225 serveur). | Ferme S6 et la « restriction 2 » (le blob ombrait la table). L'opérationnel — planifier, saisir — est bien délégué à l'éditeur ; l'admin garde la vraie configuration. |
 
 ### La visite à la main : ce qui change, et pourquoi
 
@@ -1278,6 +1279,16 @@ prend plus de mot de passe en entrée pour ces deux cas) — le brief du prochai
   des tours à sonder minute par minute. (Correction : ce n'était pas « CL »/Cadre Logique.)
 
 ### S6 — DÉCISION : un éditeur peut planifier les suivis (01/08/2026)
+
+**✅ LIVRÉ (01/08/2026).** Route dédiée `PUT /api/planning-config` en droit **éditeur**
+(distincte de `PUT /api/settings`, qui reste admin) : elle persiste les **paramètres MRE**
+(`mmr`) et le **calendrier de collecte** (`outcomePlan`). Le calendrier va désormais dans sa
+**table `outcome_plan`** — migration 024 reprend l'ancien reflet `settings.outcomePlan` puis le
+purge, réglant la « restriction 2 » (le blob ombrait la table). Côté client, `mmr`/`outcomePlan`
+quittent `PERSISTED_SETTINGS` et voyagent par leur propre transport (`planningConfig`), et
+l'édition des paramètres MRE + du calendrier passe de `can("admin")` à `can("edit")`. Tests :
+un éditeur enregistre, un lecteur est refusé, le décochage fait disparaître le mois, le reflet
+est purgé (225 serveur).
 
 Tranche la restriction 4 du lot de persistance (PR #13). Le propriétaire : « un éditeur peut
 être attribué à planifier les suivis. » État :
