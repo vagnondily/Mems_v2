@@ -8308,6 +8308,76 @@ test("dérivation : refusée sans contours, et réservée à l'administration", 
     .set("Authorization", `Bearer ${te}`).send({})).status, 403);
 });
 
+test("contours : redéposer un niveau fin dérive AUTOMATIQUEMENT les niveaux au-dessus", async () => {
+  /* Demande utilisateur : « si je remplace le niveau 3 ou 4 seulement, le
+     dériver devrait se faire automatiquement ». On repart d'un millésime
+     propre à trois communes, sans niveaux supérieurs. */
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const commit = await commitShp(t, { label:"Millésime pour dérivation auto" });
+  assert.equal(commit.status, 200, JSON.stringify(commit.body));
+  const vid = commit.body.versionId;
+  const compte = (l) => db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level=?").get(vid, l).c;
+  assert.equal(compte("adm3"), 3);
+  assert.equal(compte("adm2"), 0, "rien au-dessus au départ");
+  assert.equal(compte("adm1"), 0);
+
+  /* Un dépôt du niveau le plus fin (les communes), remplaçant. Aucune requête
+     de dérivation n'est envoyée : elle doit partir seule. */
+  const r = await deposerContours(t, "adm3", { remplacer:true });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.ok(r.body.écrites > 0, JSON.stringify(r.body));
+  /* Le district et la région sont nés sans qu'on les demande. */
+  assert.equal(compte("adm2"), 1, "le district dérivé automatiquement");
+  assert.equal(compte("adm1"), 1, "la région dérivée automatiquement");
+  /* Et la réponse le dit, en clair et par niveau. */
+  assert.ok(r.body.derivation, "la réponse porte le compte-rendu de dérivation");
+  assert.ok(r.body.derivation.etapes.some(e => e.niveau === "adm2" && e.ecrites > 0),
+    JSON.stringify(r.body.derivation));
+  assert.ok(r.body.derivation.etapes.some(e => e.niveau === "adm1" && e.ecrites > 0),
+    JSON.stringify(r.body.derivation));
+  assert.ok(/dériv/i.test(r.body.message), r.body.message);
+  const niveaux = Object.fromEntries(r.body.parNiveau.map(x => [x.level, x.units]));
+  assert.equal(niveaux.adm1, 1, "le bilan par niveau inclut les niveaux dérivés");
+  assert.equal(niveaux.adm2, 1);
+
+  /* Les contours dérivés portent bien la marque « dérivé de … » : c'est elle
+     qui autorisera un futur rafraîchissement automatique sans écraser un import. */
+  const src = db.prepare(
+    "SELECT source FROM geo_geom WHERE version_id=? AND level='adm2' LIMIT 1").get(vid).source;
+  assert.ok(/^dérivé/.test(src), src);
+});
+
+test("contours : la dérivation auto n'écrase PAS un niveau supérieur importé à la main", async () => {
+  /* Le garde-fou : un contour officiel vaut mieux qu'un calcul. Si la région a
+     été importée depuis un vrai fichier, redéposer les communes ne doit pas la
+     remplacer par une dissolution. */
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const commit = await commitShp(t, { label:"Millésime dérivation vs import" });
+  const vid = commit.body.versionId;
+
+  /* On importe une région « officielle » — source = nom de fichier, pas « dérivé ». */
+  const dbfRegion = forgeDbf([{ nom:"ADM1_PCODE", len:10 }, { nom:"ADM1_EN", len:12 }],
+    LIGNES_MDG.map(l => ({ ADM1_PCODE:l.ADM1_PCODE, ADM1_EN:l.ADM1_EN })));
+  const imp = await deposerContours(t, "adm1", { dbf:dbfRegion });
+  assert.equal(imp.status, 200, JSON.stringify(imp.body));
+  const srcAvant = db.prepare(
+    "SELECT source FROM geo_geom WHERE version_id=? AND level='adm1' LIMIT 1").get(vid).source;
+  assert.ok(!/^dérivé/.test(srcAvant), `la région importée n'est pas marquée dérivée : ${srcAvant}`);
+
+  /* On redépose les communes : adm2 (vide) doit se dériver, adm1 (officiel) NON. */
+  const r = await deposerContours(t, "adm3", { remplacer:true });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const srcApres = db.prepare(
+    "SELECT source FROM geo_geom WHERE version_id=? AND level='adm1' LIMIT 1").get(vid).source;
+  assert.equal(srcApres, srcAvant, "la région officielle est intacte");
+  assert.ok((r.body.derivation?.etapes || []).some(e => e.niveau === "adm1" && e.saute),
+    JSON.stringify(r.body.derivation));
+  /* Le district, lui, était vide : il se dérive. */
+  assert.equal(db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm2'").get(vid).c, 1);
+});
+
 /* ═══════════════════════════════════════════════════════════════════════
    « Liste des activités = activity tag (valeur unique) ».
 

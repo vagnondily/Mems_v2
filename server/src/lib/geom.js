@@ -167,13 +167,13 @@ export function writeGeometries({ versionId, features, reset, source, niveau = n
   };
 
   const ins = db.prepare(`INSERT INTO geo_geom
-    (pcode,version_id,level,geometry,simple,min_lon,min_lat,max_lon,max_lat,points,points_simple)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    (pcode,version_id,level,geometry,simple,min_lon,min_lat,max_lon,max_lat,points,points_simple,source)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(pcode,version_id) DO UPDATE SET
       level=excluded.level, geometry=excluded.geometry, simple=excluded.simple,
       min_lon=excluded.min_lon, min_lat=excluded.min_lat,
       max_lon=excluded.max_lon, max_lat=excluded.max_lat,
-      points=excluded.points, points_simple=excluded.points_simple`);
+      points=excluded.points, points_simple=excluded.points_simple, source=excluded.source`);
   /* Un contour donne un point : on comble les unités sans coordonnées, sans
      écraser celles qui en ont déjà — le référentiel peut porter des centroïdes
      officiels, meilleurs qu'un calcul. */
@@ -215,7 +215,7 @@ export function writeGeometries({ versionId, features, reset, source, niveau = n
       const s = simplify(g, TOLERANCE[u.level] ?? 0.002);
       const np = compte(g), ns = compte(s);
       ins.run(pcode, versionId, u.level, JSON.stringify(g), JSON.stringify(s),
-        box.min_lon, box.min_lat, box.max_lon, box.max_lat, np, ns);
+        box.min_lon, box.min_lat, box.max_lon, box.max_lat, np, ns, source || null);
       const c = centroid(s);
       if(c) majPoint.run(c[1], c[0], pcode, versionId);
       écrites++; points += np; simples += ns;
@@ -293,7 +293,7 @@ export function extent({ versionId, level, parent }){
    Vit ici et non dans la route, parce que le semis des données réelles
    (`seed-reel.js`) en a besoin autant qu'elle : deux implémentations de la
    même remontée finiraient par diverger. */
-export function deriverNiveaux({ versionId, source = null, remplacerExistants = false }){
+export function deriverNiveaux({ versionId, source = null, remplacerExistants = false, auto = false }){
   const porte = Object.fromEntries(geomSummary(versionId).map(x => [x.level, x.units]));
   const depart = source || [...LEVELS].reverse().find(l => porte[l] > 0);
   if(!depart) return { erreur:"aucun contour dans ce millésime", statut:409 };
@@ -306,6 +306,16 @@ export function deriverNiveaux({ versionId, source = null, remplacerExistants = 
     `SELECT g.geometry FROM geo_geom g
      JOIN geo_unit u ON u.pcode=g.pcode AND u.version_id=g.version_id
      WHERE g.version_id=? AND g.level=? AND u.parent_pcode=?`);
+  /* Un niveau porte-t-il des contours DÉRIVÉS (par opposition à un fichier
+     officiel) ? La dérivation automatique ne rafraîchit QUE ce qui a été
+     calculé — jamais un contour importé à la main, qui vaut mieux qu'un
+     calcul. La marque est la source, posée par writeGeometries. */
+  const estDerive = (niveau) => {
+    const r = db.prepare(
+      "SELECT COUNT(*) c, SUM(source LIKE 'dérivé%') d FROM geo_geom WHERE version_id=? AND level=?")
+      .get(versionId, niveau);
+    return r.c > 0 && r.d === r.c;
+  };
 
   const etapes = [];
   for(let i = i0; i > 0; i--){
@@ -314,10 +324,18 @@ export function deriverNiveaux({ versionId, source = null, remplacerExistants = 
       .all(versionId, parent);
     if(!parents.length){ etapes.push({ niveau:parent, saute:"aucune unité à ce niveau" }); continue; }
     /* Un contour officiel vaut mieux qu'un contour calculé : un niveau déjà
-       pourvu n'est pas écrasé sans qu'on le demande. */
-    if(porte[parent] && !remplacerExistants){
+       pourvu n'est pas écrasé sans qu'on le demande.
+       — Mode manuel : `remplacerExistants` tranche.
+       — Mode AUTO (après (re)dépôt d'un niveau plus fin) : on rafraîchit un
+         niveau supérieur s'il est VIDE ou entièrement DÉRIVÉ, jamais s'il
+         porte des contours officiels. */
+    const bloque = porte[parent]
+      && (auto ? !estDerive(parent) : !remplacerExistants);
+    if(bloque){
       etapes.push({ niveau:parent,
-        saute:`${porte[parent]} contour(s) déjà présents — cochez le remplacement pour recalculer` });
+        saute: auto
+          ? `${porte[parent]} contour(s) officiels — non écrasés par la dérivation automatique`
+          : `${porte[parent]} contour(s) déjà présents — cochez le remplacement pour recalculer` });
       continue;
     }
 

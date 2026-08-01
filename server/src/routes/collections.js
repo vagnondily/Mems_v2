@@ -56,10 +56,16 @@ const COLLECTIONS = {
       /* La catégorie thématique du classeur institutionnel — la maille à
          laquelle un bureau cherche un indicateur, et celle que l'écran filtre. */
       category:S(160),
+      /* La pertinence (migration 029) : activités concernées et cibles.
+         `activityTags` arrive en tableau du client, stocké en texte joint. */
+      activityTags: z.array(z.string().trim().max(40)).max(80).optional(),
+      targets:S(300),
       activity:S(40) }),
     map: (x) => ({ code:x.code, name:x.name, basket:x.basket, unit:x.unit,
       target:x.target, direction:x.direction, method:x.method, frequency:x.frequency,
-      kind:x.kind, level:x.level, category:x.category, activity:x.activity }) },
+      kind:x.kind, level:x.level, category:x.category, activity:x.activity,
+      ...(x.activityTags !== undefined ? { activity_tags: x.activityTags.join(",") } : {}),
+      ...(x.targets !== undefined ? { targets: x.targets } : {}) }) },
 
   outcomes: { table:"outcomes", cap:"edit",
     schema: z.object({ id:S(64), indicator_id:z.string().min(1).max(64), adm1:S(120),

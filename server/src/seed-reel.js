@@ -99,7 +99,13 @@ function lireOnglet(wb, nom, premiereLigne, colonnes){
     const cat = g(colonnes.categorie);
     if(cat) derniereCat = cat;
     out.push({ code, libelle, categorie: derniereCat,
-      statut: g(colonnes.statut), unite: g(colonnes.unite), extra: g(colonnes.extra) });
+      statut: g(colonnes.statut), unite: g(colonnes.unite), extra: g(colonnes.extra),
+      /* Colonnes de PERTINENCE, lues telles quelles : les activity tags
+         auxquels l'indicateur s'applique, et ses cibles (genre, tiers de
+         bénéficiaires). C'est ce que l'écran restitue « à quelles activités,
+         pour quelles cibles ». */
+      tags: g(colonnes.tags), gender: g(colonnes.gender),
+      tier1: g(colonnes.tier1), tier23: g(colonnes.tier23), gran: g(colonnes.gran) });
   }
   return out;
 }
@@ -200,14 +206,54 @@ function semerActivites(wb){
    dernière que l'écran filtre. */
 const ONGLETS_INDICATEURS = [
   { nom:"Annex 2 Outcome Indicators", premiere:3, level:"outcome",
-    cols:{ categorie:1, statut:3, code:4, nom:5 } },
+    cols:{ categorie:1, statut:3, code:4, nom:5, tags:12, gender:13 } },
   { nom:"Annex 3 Output Indicators", premiere:3, level:"output",
-    cols:{ categorie:1, statut:3, code:4, nom:5 } },
+    cols:{ categorie:1, statut:3, code:4, nom:5, tags:12, gender:13 } },
   { nom:"Detailed Output Indicators", premiere:2, level:"other_output",
     cols:{ categorie:1, code:4, nom:5, statut:6, unite:8 } },
   { nom:"Annex 4 Crosscutting indicators", premiere:3, level:"crosscutting",
-    cols:{ categorie:1, statut:2, code:3, nom:4 } },
+    cols:{ categorie:1, statut:2, code:3, nom:4, tags:12, tier1:9, tier23:10, gran:13 } },
 ];
+
+/* ── Pertinence : à quelles ACTIVITÉS l'indicateur s'applique ─────────
+   Le classeur écrit les tags de trois façons selon l'onglet :
+     · Annex 2 : « *General Distribution (GD) *Food assistance for asset (FFA)… »
+       → les codes sont entre parenthèses ;
+     · Annex 4 : « GD, HIV/TB_M&SN, PMD, PREV… » → liste séparée par des virgules ;
+     · Annex 3 : souvent une phrase (« All where direct beneficiaries… »).
+   On extrait les jetons, on les confronte aux tags RÉELS chargés (Annex 5),
+   et on ne retient que ceux qui existent — le reste est du texte d'aide, pas
+   un rattachement. `tagsConnus` est un Set des tags normalisés. */
+const normTag = (t) => String(t || "").replace(/\s+/g, "").toUpperCase();
+function tagsDe(raw, tagsConnus){
+  if(!raw) return [];
+  const jetons = new Set();
+  /* Codes entre parenthèses (Annex 2). */
+  for(const m of raw.matchAll(/\(([^)]+)\)/g)) jetons.add(normTag(m[1]));
+  /* Liste séparée par virgules / points-virgules / astérisques (Annex 4, et
+     le reste des phrases : on tente chaque mot-jeton). */
+  for(const part of raw.split(/[,;*\n]/)) {
+    const t = normTag(part);
+    if(t) jetons.add(t);
+    /* Un fragment « Food assistance for asset (FFA) » : on a déjà (FFA) ;
+       on tente aussi le dernier mot en capitales comme code. */
+  }
+  return [...jetons].filter(t => tagsConnus.has(t));
+}
+
+/* ── Cibles : genre et tiers de bénéficiaires ────────────────────────── */
+function ciblesDe(l){
+  const parts = [];
+  const g = (l.gender || "").toLowerCase();
+  if(/mandatory/.test(g)) parts.push("Désagrégation par genre (obligatoire)");
+  else if(/optional/.test(g)) parts.push("Désagrégation par genre (facultative)");
+  /* Annex 4 : tiers de ciblage CSP. « Applicable », « Yes »… = concerné. */
+  const concerne = (v) => v && !/^(not applicable|no|n\/a|-)?$/i.test(v.trim()) && !/not applicable/i.test(v);
+  if(concerne(l.tier1)) parts.push("Bénéficiaires Tier 1");
+  if(concerne(l.tier23)) parts.push("Bénéficiaires Tier 2 & 3");
+  if(l.gran && /activity/i.test(l.gran)) parts.push("Collecte par activité");
+  return parts.join(" · ");
+}
 
 /* Le classeur écrit le statut de six façons (« Deactivated », « Inactive »,
    « Deacivated », « Deactivated in 2024 »…). Un indicateur retiré du cadre
@@ -216,8 +262,10 @@ const ONGLETS_INDICATEURS = [
 const estActif = (s) => !/deac|inactiv/i.test(s || "");
 
 function semerIndicateurs(wb){
-  const bilan = { lues:0, crees:0, majs:0, parNiveau:{} };
+  const bilan = { lues:0, crees:0, majs:0, parNiveau:{}, avecTags:0 };
   const existants = new Map(db.prepare("SELECT * FROM indicators").all().map(i => [i.code, i]));
+  /* Les tags réels, pour ne rattacher qu'à ce qui existe (Annex 5 déjà chargée). */
+  const tagsConnus = new Set(db.prepare("SELECT tag FROM activity_categories").all().map(x => normTag(x.tag)));
 
   tx(() => {
     for(const onglet of ONGLETS_INDICATEURS){
@@ -226,6 +274,10 @@ function semerIndicateurs(wb){
       bilan.lues += lignes.length;
       for(const l of lignes){
         const actif = estActif(l.statut);
+        const tags = tagsDe(l.tags, tagsConnus);
+        const activityTags = tags.join(",");
+        const cibles = ciblesDe(l);
+        if(tags.length) bilan.avecTags++;
         /* L'unité n'est donnée que par l'onglet détaillé ; ailleurs elle se
            déduit de l'intitulé — « Percentage of… » est un pourcentage,
            « Number of… » un nombre. Mieux vaut cette lecture, vérifiable sur
@@ -239,17 +291,18 @@ function semerIndicateurs(wb){
              est laissé tel quel. Un chargement de référentiel ne défait pas
              une saisie. */
           db.prepare(`UPDATE indicators SET name=?, kind='crf', level=?, category=?,
+                      activity_tags=?, targets=?,
                       method=COALESCE(NULLIF(method,''),?), rev=rev+1 WHERE id=?`)
-            .run(l.libelle, onglet.level, l.categorie || null,
+            .run(l.libelle, onglet.level, l.categorie || null, activityTags, cibles || null,
                  actif ? null : "Retiré du cadre de résultats", ex.id);
           bilan.majs++;
         } else {
           db.prepare(`INSERT INTO indicators (id,code,name,basket,unit,target,direction,
-                      method,frequency,kind,level,category)
-                      VALUES (?,?,?,?,?,0,'up',?,?,'crf',?,?)`)
+                      method,frequency,kind,level,category,activity_tags,targets)
+                      VALUES (?,?,?,?,?,0,'up',?,?,'crf',?,?,?,?)`)
             .run(newId("ind"), l.code, l.libelle, l.categorie || null, unite,
                  actif ? null : "Retiré du cadre de résultats", null,
-                 onglet.level, l.categorie || null);
+                 onglet.level, l.categorie || null, activityTags, cibles || null);
           bilan.crees++;
         }
       }

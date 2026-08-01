@@ -103,7 +103,11 @@ r.get("/state", (req, res) => {
     kind:i.kind||"crf", level:i.level||"", activity:i.activity||"",
     /* La catégorie thématique de la masterlist (migration 027) : c'est par
        elle que l'écran filtre 842 indicateurs, elle voyage donc avec eux. */
-    category:i.category||"" }));
+    category:i.category||"",
+    /* La PERTINENCE (migration 029) : à quelles activités l'indicateur
+       s'applique, et pour quelles cibles. Ce que l'écran restitue. */
+    activityTags: i.activity_tags ? i.activity_tags.split(",").filter(Boolean) : [],
+    targets: i.targets || "" }));
   const indByKey = Object.fromEntries(indicators.map(i=>[i.key, i.id]));
 
   /* Les résultats n'ont aucune dimension « bureau » dans le schéma : ils sont mesurés par

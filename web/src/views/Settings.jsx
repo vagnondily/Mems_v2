@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api.js";
 import { useGeoCascade, resetGeoCache } from "../lib/geo.js";
-import { Activity, ArrowRightLeft, Building2, CalendarRange, Check, ClipboardList, Copy, Download, FileText, KeyRound, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
+import { Activity, ArrowRightLeft, Building2, CalendarRange, Check, ChevronDown, ChevronUp, ClipboardList, Copy, Download, FileText, HelpCircle, KeyRound, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
 import { Area, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, motifLisible, n, pct, r2, r5, siteRequirement, siteScore, uid, visiteOdk } from "../lib/calc.js";
@@ -185,35 +185,48 @@ function SetGuided({ db, setSub }){
     </div>);
 }
 
-/* ══════════════════ Rail maître-détail réutilisable ══════════════════
-   Le même rail à gauche que la navigation des Paramètres, mais AU SEIN d'un
-   écran : les sujets d'un écran (les sections de Général, les niveaux
-   d'indicateurs, les calculs) se choisissent à gauche, se configurent à
-   droite. « Regroupé à gauche comme des sous-menus, à droite les
-   informations à configurer. » Une seule implémentation pour ne pas
-   réinventer trois fois la même liste. */
+/* ══════════════════ Sous-navigation d'écran, EN HAUT ══════════════════
+   Le rail des CATÉGORIES (Configuration, Référentiels…) reste seul à gauche.
+   La sous-navigation propre à un écran — les sections de Général, les niveaux
+   d'indicateurs, les calculs — n'est PLUS une seconde colonne (« trois écrans,
+   c'est trop ») : elle passe en une barre horizontale EN HAUT, et la
+   configuration vient juste en dessous, à bords égaux. Une seule
+   implémentation, réutilisée par les trois écrans. */
+/* Aide repliable : « enlève les commentaires inutiles ou cache-les en
+   hide/show ». Les longues notes explicatives ne s'imposent plus à l'écran ;
+   elles se dévoilent d'un clic pour qui les veut, et se replient sinon. */
+function Aide({ children, titre = "À quoi sert cet écran ?", ouvert = false }){
+  const [open,setOpen] = useState(ouvert);
+  return (
+    <div className="mb-1">
+      <button onClick={()=>setOpen(o=>!o)}
+        className="inline-flex items-center gap-1.5 f11 font-semibold text-slate-500 hover:text-slate-800">
+        <HelpCircle size={13}/> {titre} {open ? <ChevronUp size={12}/> : <ChevronDown size={12}/>}
+      </button>
+      {open && <div className="mt-2"><Note>{children}</Note></div>}
+    </div>);
+}
+
 function SideRail({ groups, active, onPick, right }){
   return (
-    <div className="grid gap-4 items-start" style={{ gridTemplateColumns:"240px minmax(0,1fr)" }}>
-      <nav className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-auto sticky"
-        style={{ top:"0.75rem", maxHeight:"calc(100vh - 120px)" }}>
-        <div className="py-1.5">
-          {groups.map((g,gi) => (
-            <div key={g.label || gi} className="mb-0.5">
-              {g.label && <div className="px-4 pt-3 pb-1 f10 font-bold uppercase tracking-wider text-slate-400">{g.label}</div>}
-              {g.items.map(it => (
-                <button key={it.value} onClick={()=>onPick(it.value)}
-                  className={clsx("w-full text-left px-4 py-2 f125 border-l-2 transition-colors flex items-center gap-2",
-                    active===it.value
-                      ? "bg-sky-50 bd-brand c-bd font-semibold"
-                      : "border-l-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-900")}>
-                  <span className="truncate flex-1">{it.label}</span>
-                  {it.count != null && <span className={clsx("f10 tabular-nums shrink-0",
-                    active===it.value ? "c-bd" : "text-slate-400")}>{it.count}</span>}
-                </button>))}
-            </div>))}
-        </div>
-      </nav>
+    <div className="space-y-4">
+      <div className="bg-white border border-slate-200 rounded-2xl shadow-sm px-3 py-2.5
+                      flex items-center gap-x-5 gap-y-2 flex-wrap">
+        {groups.map((g,gi) => (
+          <div key={g.label || gi} className="flex items-center gap-2 flex-wrap">
+            {g.label && <span className="f10 font-bold uppercase tracking-wider text-slate-400 shrink-0">{g.label}</span>}
+            {g.items.map(it => (
+              <button key={it.value} onClick={()=>onPick(it.value)}
+                className={clsx("px-3 py-1.5 rounded-full f125 font-semibold transition-colors flex items-center gap-1.5",
+                  active===it.value
+                    ? "bg-brand text-white shadow-sm"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200")}>
+                <span>{it.label}</span>
+                {it.count != null && <span className={clsx("f10 tabular-nums px-1.5 rounded-full",
+                  active===it.value ? "bg-white/25" : "bg-white text-slate-500")}>{it.count}</span>}
+              </button>))}
+          </div>))}
+      </div>
       <div className="min-w-0 space-y-4">{right}</div>
     </div>);
 }
@@ -286,10 +299,10 @@ function SetGeneral({ db, set }){
   return (
     <SideRail groups={groups} active={sec} onPick={setSec}
       right={<>
-        <Note>Les listes — partenaires, modalités, sous-types de point d'intérêt, activity tags,
+        <Aide>Les listes — partenaires, modalités, sous-types de point d'intérêt, activity tags,
           catégories… — se configurent désormais dans <b>Référentiels → Listes paramétrables</b> et
           l'onglet <b>Activités</b> : une liste, un seul endroit. Général ne garde que ce qui lui est
-          propre — l'identité de l'instance et le barème de priorité.</Note>
+          propre — l'identité de l'instance et le barème de priorité.</Aide>
         {sec==="identity" && identity}
         {sec==="scoring" && scoring}
       </>} />
@@ -1700,9 +1713,24 @@ function SetContoursNiveaux({ db, notify, can, onCommitted, inline }){
           </div>
         </div>)}
 
+      {bilan?.niveau && !bilan.erreur && (
+        <div className="mt-3">
+          <Note tone={bilan.écrites ? (bilan.rejetes ? "warn" : "ok") : "err"}>{bilan.message}</Note>
+          {!!bilan.rejets?.length && (
+            <TableWrap max="mh200">
+              <thead><tr><Th>Unité</Th><Th>Motif du rejet</Th></tr></thead>
+              <tbody>{bilan.rejets.map((r,i)=>(
+                <tr key={i}><Td className="f115">{r.pcode || "—"}</Td>
+                  <Td className="text-slate-600 f11" style={{whiteSpace:"normal"}}>{r.message}</Td></tr>))}</tbody>
+            </TableWrap>)}
+        </div>)}
+
       {bilan?.derivation && (
         <div className="mt-3">
-          <Note tone={bilan.derivation.total ? "ok" : "warn"}>{bilan.derivation.message}</Note>
+          {/* Après un dépôt, ce tableau est le DÉTAIL de la dérivation automatique
+              annoncée dans la note ci-dessus ; après un clic « Dériver », il en
+              est le seul compte-rendu. Même structure dans les deux cas. */}
+          {!bilan.niveau && <Note tone={bilan.derivation.total ? "ok" : "warn"}>{bilan.derivation.message}</Note>}
           <TableWrap max="mh240">
             <thead><tr><Th>Niveau</Th><Th>Dérivé de</Th><Th num>Unités</Th><Th num>Contours</Th>
               <Th>Remarque</Th></tr></thead>
@@ -1720,18 +1748,6 @@ function SetContoursNiveaux({ db, notify, can, onCommitted, inline }){
                     : e.ecrites ? "frontières intérieures dissoutes" : "")}</Td>
               </tr>))}</tbody>
           </TableWrap>
-        </div>)}
-
-      {bilan && !bilan.erreur && !bilan.derivation && (
-        <div className="mt-3">
-          <Note tone={bilan.écrites ? (bilan.rejetes ? "warn" : "ok") : "err"}>{bilan.message}</Note>
-          {!!bilan.rejets?.length && (
-            <TableWrap max="mh200">
-              <thead><tr><Th>Unité</Th><Th>Motif du rejet</Th></tr></thead>
-              <tbody>{bilan.rejets.map((r,i)=>(
-                <tr key={i}><Td className="f115">{r.pcode || "—"}</Td>
-                  <Td className="text-slate-600 f11" style={{whiteSpace:"normal"}}>{r.message}</Td></tr>))}</tbody>
-            </TableWrap>)}
         </div>)}
       {bilan?.erreur && <Note tone="err">{bilan.erreur}</Note>}
     </Wrap>
@@ -2072,6 +2088,7 @@ function SetIndicators({ db, set, notify, can }){
      recherche restent au-dessus du tableau, à droite. */
   const [active,setActive] = useState("crf:outcome");
   const [cat,setCat] = useState("");
+  const [act,setAct] = useState("");
   const [q,setQ]     = useState("");
   const [page,setPage] = useState(1);
   const nature = active === "xls" ? "xlsform" : "crf";
@@ -2088,9 +2105,12 @@ function SetIndicators({ db, set, notify, can }){
   ];
   const listeNature = db.indicators.filter(ind => kindOf(ind) === nature && (!crf || ind.level === niv));
   const categories = [...new Set(listeNature.map(i => i.category).filter(Boolean))].sort();
+  const tagsPresents = [...new Set(listeNature.flatMap(i => i.activityTags || []))].sort();
   const liste = listeNature.filter(i =>
     (!cat || i.category === cat)
-    && (!q.trim() || `${i.id} ${i.name} ${i.category || ""}`.toLowerCase().includes(q.trim().toLowerCase())));
+    && (!act || (i.activityTags || []).includes(act))
+    && (!q.trim() || `${i.id} ${i.name} ${i.category || ""} ${(i.activityTags||[]).join(" ")} ${i.targets||""}`
+         .toLowerCase().includes(q.trim().toLowerCase())));
   const pages = Math.max(1, Math.ceil(liste.length / IND_PAGE));
   const pageSure = Math.min(page, pages);
   const visibles = liste.slice((pageSure-1)*IND_PAGE, pageSure*IND_PAGE);
@@ -2120,15 +2140,16 @@ function SetIndicators({ db, set, notify, can }){
     rd.readAsText(file,"utf-8"); };
 
   return (
-    <SideRail groups={groups} active={active} onPick={v=>{ setActive(v); setCat(""); setPage(1); }}
+    <SideRail groups={groups} active={active} onPick={v=>{ setActive(v); setCat(""); setAct(""); setPage(1); }}
       right={<>
-        <Note>{crf
-          ? <>Le <b>CRF</b> est le cadre de résultats. Choisissez le niveau à gauche
-            (<b>{activeLabel.toLowerCase()}</b> ici), puis affinez par catégorie thématique ou
-            recherche. Il alimente le plan de collecte et Programme → Résultats.</>
+        <Aide>{crf
+          ? <>Le <b>CRF</b> est le cadre de résultats. Choisissez le niveau en haut, puis affinez par
+            catégorie thématique ou recherche. Chaque indicateur montre <b>à quelles activités</b> il
+            s'applique et <b>quelles cibles</b> il vise. Il alimente le plan de collecte et
+            Programme → Résultats.</>
           : <>Les indicateurs de <b>processus</b> issus des <b>XLSForms</b> suivent l'exécution d'une
             activité. Ils sont stockés comme référentiel et alimentent le tableau de bord de suivi.</>}
-          {" "}La liste s'exporte en CSV et se réimporte pour une mise à jour groupée.</Note>
+          {" "}La liste s'exporte en CSV et se réimporte pour une mise à jour groupée.</Aide>
         <Card flush title={crf ? `CRF · ${activeLabel}` : "Indicateurs de processus (XLSForm)"}
           subtitle={`${fmt(liste.length)} indicateur${liste.length>1?"s":""}`
             + (liste.length !== listeNature.length ? ` sur ${fmt(listeNature.length)}` : "")}
@@ -2143,13 +2164,17 @@ function SetIndicators({ db, set, notify, can }){
             {crf && !!categories.length && <Select value={cat} onChange={e=>{ setCat(e.target.value); setPage(1); }}
               empty={`Toutes les catégories (${categories.length})`} options={categories}
               className="mi-py1 mi-xs mi-wauto" />}
+            {crf && !!tagsPresents.length && <Select value={act} onChange={e=>{ setAct(e.target.value); setPage(1); }}
+              empty={`Toutes les activités (${tagsPresents.length})`}
+              options={tagsPresents.map(t=>[t, `${t} — ${activiteLabel(t)}`])}
+              className="mi-py1 mi-xs mi-wauto" />}
             <div className="relative">
               <Search size={13} className="absolute left-2 top-2 text-slate-400" />
               <Input value={q} onChange={e=>{ setQ(e.target.value); setPage(1); }}
                 placeholder="Code, intitulé ou catégorie" className="mi-py1 mi-xs pl-7" style={{width:240}} />
             </div>
-            {(cat || q) && <Btn size="sm" kind="ghost"
-              onClick={()=>{ setCat(""); setQ(""); setPage(1); }}>Effacer les filtres</Btn>}
+            {(cat || act || q) && <Btn size="sm" kind="ghost"
+              onClick={()=>{ setCat(""); setAct(""); setQ(""); setPage(1); }}>Effacer les filtres</Btn>}
           </div>
           {!liste.length
             ? <Empty title={listeNature.length ? "Aucun indicateur ne correspond" : "Aucun indicateur à ce niveau"}
@@ -2158,21 +2183,35 @@ function SetIndicators({ db, set, notify, can }){
                   : crf ? "Ajoutez-en un, ou chargez la masterlist réelle (npm run seed:reel)."
                         : "Ajoutez-en un rattaché à une activité, ou importez-le."} />
             : <><TableWrap>
-            <thead><tr><Th>Code</Th><Th>Intitulé</Th>{crf ? <Th>Catégorie</Th> : <Th>Activité</Th>}
-              {crf && <Th>Panier</Th>}<Th>Unité</Th><Th num>Cible</Th>
-              <Th>Sens</Th><Th>Méthode</Th><Th>Fréquence</Th>{crf && <Th num>Valeurs</Th>}<Th /></tr></thead>
+            {/* Le tableau ne PLANIFIE pas : il LISTE, et rend lisible la
+                pertinence. Pour un indicateur du CRF, ce qui compte n'est pas
+                tant l'unité ou le sens (dans la fiche) que : à QUELLES ACTIVITÉS
+                il s'applique, et pour QUELLES CIBLES. Ce sont les deux colonnes
+                mises en avant ; le reste vit dans la fiche. */}
+            <thead><tr><Th>Code</Th><Th>Intitulé</Th>
+              {crf ? <><Th>Activités concernées</Th><Th>Cibles / groupes</Th><Th>Catégorie</Th></>
+                   : <><Th>Activité</Th><Th>Unité</Th><Th>Fréquence</Th></>}<Th /></tr></thead>
             <tbody>{visibles.map(ind=>(
-              <tr key={ind.id} className="hover:bg-sky-50">
+              <tr key={ind.id} className="hover:bg-sky-50 align-top">
                 <Td><Badge tone="b">{ind.id}</Badge></Td>
-                <Td className="mw420 truncate font-medium text-slate-800" title={ind.name}>{ind.name}</Td>
-                {crf
-                  ? <Td className="text-slate-600 mw240 truncate" title={ind.category}>{ind.category || "—"}</Td>
-                  : <Td className="text-slate-600">{ind.activity ? <span title={activiteLabel(ind.activity)}>{ind.activity}</span> : "—"}</Td>}
-                {crf && <Td className="text-slate-600">{ind.basket}</Td>}
-                <Td>{ind.unit}</Td><Td num>{ind.target}</Td>
-                <Td><Badge tone="n">{ind.dir==="up"?"↑ maximiser":"↓ minimiser"}</Badge></Td>
-                <Td className="text-slate-600">{ind.method}</Td><Td>{ind.freq}</Td>
-                {crf && <Td num className="text-slate-500">{db.outcomes.filter(o=>o.indicator===ind.id).length}</Td>}
+                <Td className="mw420 font-medium text-slate-800" style={{whiteSpace:"normal"}} title={ind.name}>{ind.name}</Td>
+                {crf ? <>
+                  <Td style={{whiteSpace:"normal",maxWidth:280}}>
+                    {(ind.activityTags||[]).length
+                      ? <div className="flex flex-wrap gap-1">
+                          {ind.activityTags.slice(0,8).map(t=>(
+                            <span key={t} title={activiteLabel(t)}
+                              className="px-1.5 py-0.5 rounded bg-sky-50 text-sky-800 border border-sky-200 f10 font-semibold">{t}</span>))}
+                          {ind.activityTags.length>8 && <span className="f10 text-slate-400">+{ind.activityTags.length-8}</span>}
+                        </div>
+                      : <span className="text-slate-400 f11">toutes / non précisé</span>}
+                  </Td>
+                  <Td className="text-slate-600 f11" style={{whiteSpace:"normal",maxWidth:200}}>{ind.targets || "—"}</Td>
+                  <Td className="text-slate-600 mw240 truncate" title={ind.category}>{ind.category || "—"}</Td>
+                </> : <>
+                  <Td className="text-slate-600">{ind.activity ? <span title={activiteLabel(ind.activity)}>{ind.activity}</span> : "—"}</Td>
+                  <Td>{ind.unit}</Td><Td>{ind.freq}</Td>
+                </>}
                 <Td className="text-right">
                   {can("edit") && <button onClick={()=>setEdit(ind)} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
                   {can("del") && <button onClick={()=>set(d=>{ d.indicators=d.indicators.filter(x=>x.id!==ind.id); return d; })}
