@@ -335,4 +335,40 @@ r.post("/restauration", validate(restaurationBody), async (req, res, next) => {
   finally{ rendreVerrou(); }
 });
 
+/* ── Charger les données de référence DEPUIS LE SERVEUR ───────────────
+   « Je n'ai pas mes jeux de données réels dans le serveur » ; « erreur 413
+   quand j'insère les shapefiles ou dbf ». Les fichiers réels sont déjà présents
+   dans `docs/` (versionnés) : plutôt que de les RÉ-TÉLÉVERSER — 23 Mo qui butent
+   sur la limite d'un proxy —, le serveur les lit sur place. Un clic charge le
+   découpage, la masterlist ou les sites, sans aucun envoi de fichier.
+
+   Découpé par `quoi` : chaque appel reste court (quelques secondes) plutôt qu'un
+   seul très long qui gèlerait le serveur ou dépasserait le délai du proxy. */
+r.post("/reference", async (req, res, next) => {
+  const p = z.object({
+    quoi: z.enum(["decoupage", "indicateurs", "sites"]),
+    forceGeo: z.boolean().optional(),
+  }).safeParse(req.body || {});
+  if(!p.success) return res.status(422).json({
+    error: "paramètre « quoi » attendu : decoupage, indicateurs ou sites" });
+  const { quoi, forceGeo } = p.data;
+  try{
+    let bilan;
+    if(quoi === "sites"){
+      const { importerSites } = await import("../import-sites.js");
+      bilan = await importerSites();
+    } else {
+      const { semerReel } = await import("../seed-reel.js");
+      bilan = await semerReel({ quoi, forceGeo });
+    }
+    if(bilan?.erreur) return res.status(422).json({ error: bilan.erreur });
+
+    tracer(req, { entity:"reference", entity_id:quoi,
+      action:"charger", text:`Données de référence chargées depuis docs/ — ${quoi}`
+        + (bilan.geo?.unites ? ` (${bilan.geo.unites} unités, ${bilan.geo.contours} contours)` : "")
+        + (bilan.crees != null ? ` (${bilan.crees} créés, ${bilan.majs} mis à jour)` : "") });
+    res.json({ ok:true, quoi, bilan });
+  }catch(e){ next(e); }
+});
+
 export default r;

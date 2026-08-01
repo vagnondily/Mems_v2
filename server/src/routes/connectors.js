@@ -9,7 +9,7 @@ import { champ, champsObligatoires, champs as champsDe, entite, entites,
          registrePublic, TRANSFORM_PAR_TYPE } from "../lib/champs.js";
 import { appliquerLot, NOMS_TRANSFORMATIONS, transformationsPubliques } from "../lib/mapping.js";
 import { cheminFoundry, lireDatasetFoundry, lireJsonHttp, lireKobo, verifierBaseSortante,
-         CHEMIN_DONNEES_KOBO_DEFAUT } from "../lib/foundry.js";
+         CHEMIN_DONNEES_KOBO_DEFAUT, CHEMIN_DONNEES_KOBO_V1_DEFAUT } from "../lib/foundry.js";
 import { porteurAuth, sonder, schemasAuthPublics, indicesSecret, CAUSES_AUTH,
          NOMS_SCHEMAS_AUTH, SCHEMAS_AUTH, CHEMIN_EPREUVE_KOBO_DEFAUT,
          CHEMIN_EPREUVE_ODK_DEFAUT } from "../lib/authSortante.js";
@@ -313,8 +313,10 @@ async function lireEchantillonDistant(c, limite){
         porteur, branche: cfg.branche || cfg.branchName || "master",
         limite, format: cfg.format || "CSV", chemin: cfg.chemin, pointeur: cfg.pointeur })
     : c.kind === "kobo"
-    ? await lireKobo({ baseUrl: c.base_url, uid: cfg.uid, porteur,
-        chemin: cfg.chemin || CHEMIN_DONNEES_KOBO_DEFAUT, pointeur: cfg.pointeur, limite })
+    ? await lireKobo({ baseUrl: c.base_url, uid: cfg.uid, formId: cfg.formId,
+        apiVersion: cfg.apiVersion === "v1" ? "v1" : "v2", porteur,
+        chemin: cfg.chemin || (cfg.apiVersion === "v1" ? CHEMIN_DONNEES_KOBO_V1_DEFAUT : CHEMIN_DONNEES_KOBO_DEFAUT),
+        pointeur: cfg.pointeur, limite })
     : await lireJsonHttp({ baseUrl: c.base_url, chemin: cfg.chemin, porteur,
         pointeur: cfg.pointeur, limite });
   return { lignes: (lu.rows || []).slice(0, limite), format: lu.format };
@@ -359,10 +361,21 @@ function verifierConfig(d, existant){
      identifiant d'asset que personne n'avait eu à saisir. Ils restent illisibles
      tant que l'uid manque, et c'est `lireKobo` qui le dit, au moment où l'on
      essaie de lire, avec le geste à faire. */
-  const uidExistant = existant ? J(existant.config, {}).uid : null;
-  if(d.kind === "kobo" && !d.config?.uid && (!existant || uidExistant))
-    return "un connecteur KoboToolbox a besoin de l'identifiant du formulaire (config.uid). "
+  /* v1 (MoDa / ONA) désigne un formulaire par son NUMÉRO (config.formId), v2 par
+     l'uid de l'asset (config.uid). On exige l'un OU l'autre selon la version — pas
+     les deux — et, comme pour l'uid, seulement lorsque l'existant en portait déjà
+     un : un connecteur v2 d'avant ne doit pas devenir immodifiable parce que la
+     branche v1 est apparue. */
+  const cfgExistant = existant ? J(existant.config, {}) : null;
+  const v1 = d.config?.apiVersion === "v1";
+  if(d.kind === "kobo" && v1){
+    if(!d.config?.formId && (!existant || cfgExistant?.formId))
+      return "un connecteur MoDa/Kobo (API v1) a besoin du NUMÉRO du formulaire (config.formId) — "
+        + "celui de l'adresse …/api/v1/data/340943.";
+  } else if(d.kind === "kobo" && !d.config?.uid && (!existant || cfgExistant?.uid)){
+    return "un connecteur KoboToolbox (API v2) a besoin de l'identifiant du formulaire (config.uid). "
       + "Kobo n'a pas de « projet » au sens d'ODK Central : un formulaire y est désigné par son seul uid.";
+  }
   /* Le schéma choisi dit lui-même ce qu'il exige. Le contrôle est fait ici plutôt
      qu'au premier appel sortant, pour la même raison que l'adresse de base : une
      source à qui il manque de quoi s'authentifier doit le dire à la déclaration,
@@ -631,8 +644,17 @@ r.post("/connectors/:id/variables", requireCap("admin"), async (req, res, next) 
    longueur, qui diagnostique un copier-coller tronqué. Jamais sa valeur, jamais
    ses derniers caractères. */
 const POINT_EPREUVE = {
-  kobo:    (cfg) => ({ chemin: cfg.cheminEpreuve || CHEMIN_EPREUVE_KOBO_DEFAUT,
-                       exigeAuth: !cfg.cheminEpreuve }),
+  /* v2 : `/me/` valide le justificatif sans lire de données. v1 (MoDa) n'a pas
+     d'équivalent universel ; on éprouve alors l'adresse même que le tirage vise,
+     `/api/v1/data/{formId}` bornée à une ligne — un point protégé, donc un 2xx y
+     prouve l'authentification ET l'existence du formulaire, ce que l'on veut au
+     moment d'« enregistrer si ça marche ». */
+  kobo:    (cfg) => cfg.apiVersion === "v1"
+             ? ({ chemin: cfg.cheminEpreuve
+                   || (cfg.formId ? `/api/v1/data/${encodeURIComponent(cfg.formId)}?limit=1` : "/api/v1/user.json"),
+                  exigeAuth: !cfg.cheminEpreuve })
+             : ({ chemin: cfg.cheminEpreuve || CHEMIN_EPREUVE_KOBO_DEFAUT,
+                  exigeAuth: !cfg.cheminEpreuve }),
   odk:     (cfg) => ({ chemin: cfg.cheminEpreuve || CHEMIN_EPREUVE_ODK_DEFAUT,
                        exigeAuth: !cfg.cheminEpreuve }),
   /* Le gabarit `{rid}` est résolu par la fonction de lecture elle-même : l'épreuve

@@ -40,7 +40,7 @@ const SETTINGS_GROUPS = (superUser) => [
   { cle:"org", label:"Organisation & lieux", items:[
     ["offices","Bureaux"], ["scope","Périmètre des bureaux"], ["locations","Localités"] ] },
   { cle:"src", label:"Collecte & sources", items:[
-    ["odk","ODK Central"], ["connectors","Connecteurs"] ] },
+    ["sources","Sources de données"] ] },
   { cle:"calc", label:"Calculs & rations", items:[
     ["calc","Calculs"], ["rations","Rations"] ] },
   { cle:"acces", label:"Restitution & accès", items:[
@@ -93,15 +93,16 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
       {active==="country" && <SetCountry db={db} notify={notify} can={can} reload={reload} />}
       {active==="offices" && <SetOffices db={db} notify={notify} can={can} reload={reload} />}
       {active==="about" && <SetAbout db={db} />}
-      {active==="locations" && <SetLocations db={db} notify={notify} can={can} reload={reload} />}
+      {active==="locations" && <SetLocations db={db} notify={notify} can={can} reload={reload} me={me} />}
       {active==="scope" && <SetScope db={db} notify={notify} can={can} />}
       {active==="activities" && <SetActivities db={db} notify={notify} can={can} reload={reload} me={me} />}
       {active==="listes" && <SetListes notify={notify} can={can} me={me} />}
       {active==="indicators" && <SetIndicators db={db} set={set} notify={notify} can={can} />}
       {active==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
       {active==="rations" && <SetRations db={db} set={set} notify={notify} can={can} />}
-      {active==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} reload={reload} />}
-      {active==="connectors" && <SetConnectors notify={notify} can={can} />}
+      {(active==="sources" || active==="odk" || active==="connectors") &&
+        <SetSources db={db} set={set} notify={notify} can={can} reload={reload}
+          depart={active==="odk" ? "odk" : "connectors"} />}
       {active==="codes" && <SetCodeReferentiels notify={notify} can={can} />}
       {active==="templates" && <SetTemplates db={db} set={set} notify={notify} can={can} />}
       {active==="api" && <SetApi db={db} notify={notify} />}
@@ -142,7 +143,7 @@ function SetGuided({ db, setSub }){
       etat: (db.indicators || []).length ? `${fmt(crf)} CRF · ${fmt(xls)} processus` : "Aucun indicateur" },
     { cle:"sources", icon:Link2, titre:"Sources de données",
       desc:"Les formulaires ODK Central et les connecteurs qui alimentent la collecte.",
-      pret: (db.odkForms || []).length > 0, tab:"odk",
+      pret: (db.odkForms || []).length > 0, tab:"sources",
       etat: (db.odkForms || []).length ? `${fmt(db.odkForms.length)} formulaire(s) ODK` : "Aucune source configurée" },
   ];
   const prets = etapes.filter(e => e.pret).length;
@@ -1718,8 +1719,9 @@ function SetContoursNiveaux({ db, notify, can, onCommitted, inline }){
    (région → district → commune → fokontany) chargé par millésime. Sites, population
    et distributions s'y raccrochent, donc il ne se modifie pas à la main — on importe
    un nouveau millésime, et l'ancien reste disponible. */
-function SetLocations({ db, notify, can, reload }){
+function SetLocations({ db, notify, can, reload, me }){
   const [versions,setVersions] = useState([]);
+  const [refBusy,setRefBusy]   = useState("");   /* chargement des données de référence */
   /* La suppression des contours reste une action de maintenance (le millésime
      garde son arbre, on n'en retire que le fond de carte) : un seul verrou suffit. */
   const [geomBusy,setGeomBusy] = useState(false);
@@ -1743,10 +1745,17 @@ function SetLocations({ db, notify, can, reload }){
   const [refresh,setRefresh] = useState(0);
   /* Le parent le plus profond réellement choisi borne la requête. */
   const parent = geo.codes.adm3 || geo.codes.adm2 || geo.codes.adm1 || "";
+  /* Le niveau le plus PROFOND réellement chargé. Le répertoire visait « adm4 »
+     en dur — or le shapefile officiel de Madagascar s'arrête aux COMMUNES
+     (adm3), sans fokontany : la requête ne rendait alors rien, et l'écran
+     paraissait vide (« dans l'onglet localité je ne vois rien »). On affiche
+     donc la maille la plus fine qui existe dans le millésime courant. */
+  const niveauProfond = ["adm4","adm3","adm2","adm1"]
+    .find(l => (db.geoVersion?.counts?.[l] || 0) > 0) || "adm4";
   useEffect(()=>{
     let alive = true;
     setDir(d=>({ ...d, loading:true }));
-    const qs = new URLSearchParams({ level:"adm4", limit:String(PER), offset:String(page*PER) });
+    const qs = new URLSearchParams({ level:niveauProfond, limit:String(PER), offset:String(page*PER) });
     if(parent) qs.set("parent", parent);
     if(q.trim()) qs.set("search", q.trim());
     const id = setTimeout(() => {
@@ -1754,7 +1763,7 @@ function SetLocations({ db, notify, can, reload }){
         .catch(e => { if(alive) setDir({ rows:[], total:0, version:null, loading:false, error:e.message }); });
     }, q ? 280 : 0);                       /* la recherche attend la fin de la frappe */
     return () => { alive = false; clearTimeout(id); };
-  }, [parent, q, page, refresh]);
+  }, [parent, q, page, refresh, niveauProfond]);
   useEffect(()=>{ setPage(0); }, [parent, q]);
 
   const activate = async (id, lb) => {
@@ -1773,7 +1782,7 @@ function SetLocations({ db, notify, can, reload }){
   const exp = async () => {
     setExportEnCours(true);
     const lecteur = (offset, limit) => {
-      const qs = new URLSearchParams({ level:"adm4", limit:String(limit), offset:String(offset) });
+      const qs = new URLSearchParams({ level:niveauProfond, limit:String(limit), offset:String(offset) });
       if(parent) qs.set("parent", parent);
       if(q.trim()) qs.set("search", q.trim());
       return api.geo("?"+qs);
@@ -1804,6 +1813,40 @@ function SetLocations({ db, notify, can, reload }){
         fichier sans le charger en mémoire :
         <code className="bg-white px-1 rounded mx-1">node src/import-geo.js fichier.csv --label "COD-AB v2023.1"</code>
       </Aide>
+
+      {/* Chargement des données de référence DEPUIS LE SERVEUR — aucun téléversement,
+          donc aucune limite de taille (le « 413 » sur un shapefile de 23 Mo). Les
+          fichiers réels sont déjà dans docs/ ; le serveur les lit sur place. */}
+      {me?.role==="super" && (() => {
+        const load = async (quoi) => { setRefBusy(quoi);
+          try{ const r = await api.chargerReference(quoi);
+            const b = r.bilan||{};
+            notify(quoi==="decoupage" ? `Découpage chargé : ${fmt(b.geo?.unites||0)} unités, ${fmt(b.geo?.contours||0)} contours`
+              : quoi==="indicateurs" ? `Référentiels chargés : ${fmt(b.activites?.lues||0)} activités, ${fmt(b.indicateurs?.lues||0)} indicateurs`
+              : `Sites chargés : ${fmt(b.crees||0)} créés, ${fmt(b.majs||0)} mis à jour`, "ok");
+            await reload?.(); await loadVersions();
+          }catch(e){ notify(e.message,"err"); } setRefBusy(""); };
+        const geoCount = db.geoVersion?.counts ? Object.values(db.geoVersion.counts).reduce((a,b)=>a+b,0) : 0;
+        return (
+          <Card title="Données de référence (chargement serveur)"
+            subtitle="Chargées depuis les fichiers du serveur (docs/) — aucun téléversement, aucune limite de taille">
+            <Note tone="tool">Le serveur lit directement les fichiers officiels déjà présents : le
+              <b> découpage Madagascar</b> (shapefile), la <b>masterlist</b> (activités + indicateurs) et les
+              <b> sites par tag</b> (2 872 POI géolocalisés). C'est la voie à prendre si un téléversement
+              échoue en <b>413 (fichier trop volumineux)</b> — ici rien n'est envoyé.</Note>
+            <div className="flex flex-wrap gap-2">
+              <Btn kind="sec" icon={MapPin} disabled={!!refBusy}
+                onClick={()=>load("decoupage")}>{refBusy==="decoupage"?"Chargement…":`Découpage Madagascar${geoCount?" (recharger)":""}`}</Btn>
+              <Btn kind="sec" icon={Target} disabled={!!refBusy}
+                onClick={()=>load("indicateurs")}>{refBusy==="indicateurs"?"Chargement…":`Activités + indicateurs${(db.indicators||[]).length?" (recharger)":""}`}</Btn>
+              <Btn kind="sec" icon={MapPin} disabled={!!refBusy||!geoCount}
+                onClick={()=>load("sites")} title={geoCount?"":"Chargez d'abord le découpage"}>{refBusy==="sites"?"Chargement…":`Sites par tag${(db.sites||[]).length?" (recharger)":""}`}</Btn>
+            </div>
+            <div className="f11 text-slate-500 mt-2">
+              État actuel : {fmt(geoCount)} unités géo · {fmt((db.indicators||[]).length)} indicateurs ·
+              {" "}{fmt((db.sites||[]).length)} sites. Chargez le découpage AVANT les sites (ils s'y rattachent).</div>
+          </Card>);
+      })()}
 
       {cur ? (
         <Card title="Référentiel courant" subtitle={`« ${cur.label} » — importé le ${String(cur.importedAt||"").slice(0,10)}`}>
@@ -1903,7 +1946,7 @@ function SetLocations({ db, notify, can, reload }){
 
       <Card flush title="Répertoire des localités"
         subtitle={dir.loading ? "Chargement…"
-          : `${fmt(dir.total)} fokontany dans la sélection · page ${page+1} sur ${Math.max(1,pages)}`}
+          : `${fmt(dir.total)} ${niveau(db, niveauProfond, false).toLowerCase()}(s) dans la sélection · page ${page+1} sur ${Math.max(1,pages)}`}
         right={<>
           <Btn size="sm" kind="sec" icon={Download} onClick={exp} disabled={exportEnCours || !dir.total}>
             {exportEnCours ? "Export…" : "Exporter tout"}</Btn>
@@ -1918,18 +1961,26 @@ function SetLocations({ db, notify, can, reload }){
           <div className="relative"><Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
             <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Rechercher…" className={clsx(inputCls,"pl-7 mi-py1 w-44")} /></div></>}>
         <TableWrap>
-          <thead><tr>{[...niveaux(db, { from:"adm1", to:"adm4", plural:false }).map(x=>x[1]),
-            "P-code"].map(h=><Th key={h}>{h}</Th>)}
-            <Th num>Latitude</Th><Th num>Longitude</Th><Th num>Sites</Th></tr></thead>
-          <tbody>{dir.rows.map(g=>{
-            const cnt = db.sites.filter(s=>g.adm3 && s.adm3===g.adm3).length;
-            return (<tr key={g.pcode} className="hover:bg-sky-50">
-              <Td className="text-slate-500">{g.adm1||"—"}</Td><Td className="text-slate-500">{g.adm2||"—"}</Td>
-              <Td>{g.adm3||"—"}</Td><Td className="font-medium text-slate-800">{g.name}</Td>
-              <Td className="f115 c-bd">{g.pcode}</Td>
-              <Td num className="f115">{g.lat ?? "—"}</Td><Td num className="f115">{g.lon ?? "—"}</Td>
-              <Td num className="text-slate-500">{cnt||""}</Td>
-            </tr>); })}</tbody>
+          {(() => {
+            /* Colonnes jusqu'à la maille la plus fine réellement chargée : pour un
+               découpage aux communes (adm3), on n'affiche pas une colonne fokontany
+               vide. La dernière colonne porte le nom de l'unité (g.name). */
+            const cols = niveaux(db, { from:"adm1", to:niveauProfond, plural:false });
+            return (<>
+              <thead><tr>{cols.map(([c,l])=><Th key={c}>{l}</Th>)}<Th>P-code</Th>
+                <Th num>Latitude</Th><Th num>Longitude</Th><Th num>Sites</Th></tr></thead>
+              <tbody>{dir.rows.map(g=>{
+                const cnt = db.sites.filter(s => s[niveauProfond]
+                  ? s[niveauProfond]===g.name : (g.adm3 && s.adm3===g.adm3)).length;
+                return (<tr key={g.pcode} className="hover:bg-sky-50">
+                  {cols.map(([c])=><Td key={c} className={c===niveauProfond?"font-medium text-slate-800":"text-slate-500"}>
+                    {c===niveauProfond ? g.name : (g[c]||"—")}</Td>)}
+                  <Td className="f115 c-bd">{g.pcode}</Td>
+                  <Td num className="f115">{g.lat ?? "—"}</Td><Td num className="f115">{g.lon ?? "—"}</Td>
+                  <Td num className="text-slate-500">{cnt||""}</Td>
+                </tr>); })}</tbody>
+            </>);
+          })()}
         </TableWrap>
         {!dir.loading && !dir.rows.length && (
           <div className="px-4 py-8 text-center f125 text-slate-500">
@@ -2665,6 +2716,33 @@ function RationModal({ open, ligne, denrees, activites, labels, onCreateDenree, 
         <Input value={f.note||""} onChange={e=>u("note",e.target.value)}
           placeholder="30 j (demi : 15). Espèces : 120 000 Ar/ménage." /></Field>
     </Modal>);
+}
+
+/* ══════════════════ Sources de données (ODK Central + Connecteurs, réunis) ══════════════════
+   « L'onglet ODK Central est le même que les sources. » Il l'était de fait : deux
+   entrées de menu pour une seule idée — d'où viennent les données. On les réunit
+   sous un seul sujet, avec un aiguillage en haut entre les deux mécanismes qui
+   restent, eux, distincts côté serveur : les connecteurs (déclarer où lire, mettre
+   les variables en face des champs MEMS) et le tirage ODK Central (son cache et son
+   écran de correspondance propres). Une seule porte, deux ateliers derrière. */
+function SetSources({ db, set, notify, can, reload, depart }){
+  const [vue,setVue] = useState(depart === "odk" ? "odk" : "connectors");
+  const onglets = [["connectors","Connecteurs"], ["odk","ODK Central"]];
+  return (
+    <div className="space-y-4">
+      {/* Aiguillage segmenté : même geste que les pastilles de sous-navigation
+          des autres écrans, mais à deux positions seulement — inutile d'un rail. */}
+      <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+        {onglets.map(([cle,label])=>(
+          <button key={cle} onClick={()=>setVue(cle)}
+            className={clsx("px-4 py-1.5 f125 rounded-md font-semibold transition-colors",
+              vue===cle ? "bg-white shadow-sm c-bd" : "text-slate-500 hover:text-slate-800")}>
+            {label}</button>))}
+      </div>
+      {vue==="connectors"
+        ? <SetConnectors notify={notify} can={can} />
+        : <SetOdk db={db} set={set} notify={notify} can={can} reload={reload} />}
+    </div>);
 }
 
 /* ── ODK Central ── */
@@ -3483,17 +3561,39 @@ function ConnectorModal({ open, c, offices, busy, registre, onClose, onSave }){
             <Input value={f.config?.formId||""} onChange={e=>uc("formId",e.target.value)} placeholder="MDG_GD_PREVMA_v2" /></Field>
         </>}
         {/* Kobo n'a pas de « projet » : un formulaire y est désigné par le seul uid
-            de son asset. Afficher le couple projet / formulaire d'ODK laissait
-            croire le contraire, et le champ « Projet » n'était lu par personne. */}
+            de son asset (API v2), ou par son NUMÉRO (API v1, celle de la MoDa du
+            PAM). L'administrateur choisit la version : une même adresse peut servir
+            les deux, seul lui sait laquelle son instance honore. */}
         {f.kind==="kobo" && <>
-          <Field label="Identifiant du formulaire (uid de l'asset)" className="col-span-2">
-            <Input value={f.config?.uid||""} onChange={e=>uc("uid",e.target.value)}
-              placeholder="aBcDeFgHiJkLmNoPqRsTuV" /></Field>
-          <Field label="Chemin de lecture"
-            hint="Laisser vide pour /api/v2/assets/{uid}/data/ — à ajuster si l'instance diffère">
-            <Input value={f.config?.chemin||""} onChange={e=>uc("chemin",e.target.value)} /></Field>
-          <Field label="Pointeur vers les lignes" hint="Vide convient : Kobo emballe ses lignes dans « results »">
-            <Input value={f.config?.pointeur||""} onChange={e=>uc("pointeur",e.target.value)} placeholder="results" /></Field>
+          <Field label="Version de l'API" className="col-span-2"
+            hint="MoDa (moda.wfp.org) et les instances ONA/kobocat utilisent l'API v1 ; KoboToolbox récent, l'API v2.">
+            <Select value={f.config?.apiVersion||"v2"} onChange={e=>uc("apiVersion",e.target.value)}
+              options={[["v1","API v1 — MoDa / ONA (numéro de formulaire)"],["v2","API v2 — KoboToolbox (uid d'asset)"]]} /></Field>
+          {(f.config?.apiVersion||"v2")==="v1" ? <>
+            {/* Le geste demandé, mot pour mot : coller le lien du formulaire au
+                format …/api/v1/data/340943, l'adresse de base et le numéro sont
+                extraits tout seuls. Reste la clé d'API (champ « justificatif »
+                ci-dessus), puis « Tester » — et si ça passe, « Enregistrer ». */}
+            <Field label="Coller le lien complet des données du formulaire" className="col-span-2"
+              hint="Format https://moda.wfp.org/api/v1/data/340943 — l'adresse et le numéro sont extraits automatiquement">
+              <Input placeholder="https://moda.wfp.org/api/v1/data/340943" onChange={e=>{
+                const m = /^(https?:\/\/[^/]+)\/api\/v1\/data\/(\d+)/i.exec((e.target.value||"").trim());
+                if(m) setF(p=>({ ...p, base_url:m[1], config:{ ...(p.config||{}), apiVersion:"v1", formId:m[2] } })); }} /></Field>
+            <Field label="Numéro du formulaire" hint="Celui de l'adresse …/api/v1/data/340943">
+              <Input value={f.config?.formId||""} onChange={e=>uc("formId",e.target.value)} placeholder="340943" /></Field>
+            <Field label="Chemin de lecture"
+              hint="Laisser vide pour /api/v1/data/{formId} — à ajuster si l'instance diffère">
+              <Input value={f.config?.chemin||""} onChange={e=>uc("chemin",e.target.value)} /></Field>
+          </> : <>
+            <Field label="Identifiant du formulaire (uid de l'asset)" className="col-span-2">
+              <Input value={f.config?.uid||""} onChange={e=>uc("uid",e.target.value)}
+                placeholder="aBcDeFgHiJkLmNoPqRsTuV" /></Field>
+            <Field label="Chemin de lecture"
+              hint="Laisser vide pour /api/v2/assets/{uid}/data/ — à ajuster si l'instance diffère">
+              <Input value={f.config?.chemin||""} onChange={e=>uc("chemin",e.target.value)} /></Field>
+            <Field label="Pointeur vers les lignes" hint="Vide convient : Kobo emballe ses lignes dans « results »">
+              <Input value={f.config?.pointeur||""} onChange={e=>uc("pointeur",e.target.value)} placeholder="results" /></Field>
+          </>}
         </>}
       </div>
       <Sw label="Connecteur actif" hint="Un connecteur inactif reste configuré mais n'est plus proposé"

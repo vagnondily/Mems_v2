@@ -364,6 +364,10 @@ export const api = {
   journal:            (q="")    => call("GET", `${ADMIN}/journal${q}`),
   journalFacettes:    ()        => call("GET", `${ADMIN}/journal/facettes`),
 
+  /* Charger les données de référence DEPUIS le serveur (docs/), sans téléverser.
+     `quoi` : "decoupage" | "indicateurs" | "sites". */
+  chargerReference:   (quoi, forceGeo=false) => call("POST", `${ADMIN}/reference`, { quoi, forceGeo }),
+
   baseEtat:           ()        => call("GET", `${ADMIN}/base`),
   baseCheckpoint:     ()        => call("POST", `${ADMIN}/base/checkpoint`, {}),
   baseVacuum:         ()        => call("POST", `${ADMIN}/base/vacuum`, {}),

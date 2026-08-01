@@ -1,7 +1,33 @@
-import { useEffect, useId, useState } from "react";
-import { ChevronDown, ChevronUp, HelpCircle, Layers, X } from "lucide-react";
+import { useEffect, useId, useState, useSyncExternalStore } from "react";
+import { ChevronDown, ChevronUp, HelpCircle, Info, Layers, X } from "lucide-react";
 import { clsx, n } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
+
+/* ══════════════════ Notes explicatives : un interrupteur global ══════════════════
+   « Pour toutes les petites notes dans chaque view, mettre en show and hide. »
+   Les notes explicatives (tons « info » et « tool ») disent à quoi sert un écran ;
+   utiles la première fois, elles encombrent ensuite. Plutôt qu'un pliage par note
+   — vite fastidieux sur des dizaines d'écrans —, un seul interrupteur, dans la
+   barre du haut, les masque toutes d'un coup et les rappelle de même. Les notes de
+   VÉRIFICATION (warn, err, ok) ne sont jamais masquées : ce sont des états réels de
+   la donnée — « cette correspondance ne passera pas » —, pas du commentaire.
+
+   Un magasin externe minuscule plutôt qu'un contexte : `Note` est importée partout
+   et n'a pas de fournisseur commun ; `useSyncExternalStore` lui donne l'état sans
+   envelopper toute l'application. L'état survit au rechargement (localStorage). */
+const NOTES_KEY = "mems.notes.masquees";
+let notesMasquees = (() => { try{ return localStorage.getItem(NOTES_KEY) === "1"; }catch{ return false; } })();
+const notesAbonnes = new Set();
+function setNotesMasquees(v){
+  notesMasquees = !!v;
+  try{ localStorage.setItem(NOTES_KEY, notesMasquees ? "1" : "0"); }catch{}
+  notesAbonnes.forEach(f => f());
+}
+function useNotesMasquees(){
+  return useSyncExternalStore(
+    cb => { notesAbonnes.add(cb); return () => notesAbonnes.delete(cb); },
+    () => notesMasquees, () => notesMasquees);
+}
 
 /* ══════════════════ Composants d'interface ══════════════════ */
 const Card = ({ title, subtitle, right, children, className, flush }) => (
@@ -187,16 +213,40 @@ const Td = ({ children, num, className, ...p }) => (
 const TableWrap = ({ children, max="mh65", className }) => (
   <div className={clsx("tbl-wrap", max, className)}><table className="w-full border-collapse">{children}</table></div>);
 const Note = ({ tone="info", children }) => {
+  /* Les tons explicatifs se masquent avec l'interrupteur global ; les tons d'état
+     (warn, err, ok) restent, quoi qu'il arrive — masquer « cette correspondance ne
+     passera pas » serait cacher un fait, pas alléger un commentaire. */
+  const explicatif = tone === "info" || tone === "tool";
+  const masquees = useNotesMasquees();
+  if(explicatif && masquees) return null;
   const t = { info:"bg-sky-50 bl3 bd-brand text-sky-900", warn:"bg-amber-50 bl3 bd-warn text-amber-900",
     ok:"bg-lime-50 bl3 border-lime-500 text-lime-900", err:"bg-rose-50 bl3 border-rose-500 text-rose-900",
     tool:"bg-slate-50 bl3 border-slate-300 text-slate-700" }[tone] || "bg-sky-50 bl3 bd-brand text-sky-900";
   return <div className={clsx("px-4 py-3 rounded f125 leading-relaxed mb-4", t)}>{children}</div>;
+};
+/* L'interrupteur lui-même : posé dans la barre du haut. Il ne s'affiche que s'il y
+   a des notes explicatives à gouverner — inutile ailleurs. */
+const NotesToggle = ({ className }) => {
+  const masquees = useNotesMasquees();
+  return (
+    <button onClick={()=>setNotesMasquees(!masquees)}
+      title={masquees ? "Afficher les notes explicatives" : "Masquer les notes explicatives"}
+      className={clsx("flex items-center gap-1.5 px-2 h-8 rounded-full f115 transition-colors",
+        masquees ? "bg-white/10 text-white/60 hover:bg-white/20" : "bg-white/15 text-white/90 hover:bg-white/25",
+        className)}>
+      <Info size={15} />
+      <span className="hidden md:inline">{masquees ? "Notes masquées" : "Notes"}</span>
+    </button>);
 };
 /* Aide repliable — « cache les commentaires en hide/show, ils occupent trop de
    place ». Une longue note explicative ne s'impose plus à l'écran : elle se
    dévoile d'un clic pour qui la veut, et reste repliée par défaut. */
 const Aide = ({ children, titre = "À quoi sert cet écran ?", tone, ouvert = false }) => {
   const [open, setOpen] = useState(ouvert);
+  /* L'aide est explicative par nature : l'interrupteur global la masque aussi,
+     déclencheur compris — sinon un « À quoi sert cet écran ? » resterait accroché
+     au-dessus de notes que l'on vient justement de faire taire. */
+  if(useNotesMasquees()) return null;
   return (
     <div className="mb-3">
       <button onClick={()=>setOpen(o=>!o)}
@@ -275,4 +325,4 @@ function parseCSV(txt){
   return rows.filter(r=>r.some(c=>c!=="")).map(r=>Object.fromEntries(head.map((h,i)=>[h,(r[i]??"").trim()])));
 }
 
-export { Aide, Badge, Bar2, BrandMark, Btn, Card, Empty, Field, Input, Logo, Modal, Note, Select, SideRail, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, Toast, download, inputCls, parseCSV, toCSV };
+export { Aide, Badge, Bar2, BrandMark, Btn, Card, Empty, Field, Input, Logo, Modal, Note, NotesToggle, Select, SideRail, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, Toast, download, inputCls, parseCSV, toCSV, useNotesMasquees };

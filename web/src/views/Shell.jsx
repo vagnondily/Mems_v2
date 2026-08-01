@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { BarChart3, Bell, CalendarRange, Check, ChevronDown, Cog, Database, FileText, KeyRound, LayoutDashboard, LogOut, MapPin, Save, ShieldCheck, UserCog } from "lucide-react";
-import { Badge, Btn, BrandMark, Empty, Field, Input, Modal, Note } from "../components/ui.jsx";
+import { Badge, Btn, BrandMark, Empty, Field, Input, Modal, Note, NotesToggle } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
 import { clsx } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
@@ -234,7 +234,13 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, notify, onM
     window.addEventListener("click",h); return ()=>window.removeEventListener("click",h); },[]);
   const initials = (me.firstName?.[0]||"") + (me.lastName?.[0]||"");
   return (
-    <div className="min-h-screen flex flex-col" style={{background:C.bg}}>
+    /* « Fermer la page sur la mesure totale de l'écran, scroll pour le reste. »
+       La coque occupe EXACTEMENT la hauteur de la fenêtre (h-screen) et ne défile
+       pas elle-même (overflow-hidden) : l'en-tête reste en haut, le pied en bas, et
+       seul le contenu défile, dans son propre cadre (main : overflow-y-auto). Les
+       en-têtes de tableau collants (TableWrap) se collent alors au haut de ce
+       cadre, comme demandé. */
+    <div className="h-screen overflow-hidden flex flex-col" style={{background:C.bg}}>
       {/* ── En-tête ────────────────────────────────────────────────────
           Le bloc de marque était un cadre translucide de 44 px contenant un signe
           de 36 px, surmonté de deux lignes de texte dont la seconde à 8 px. Trois
@@ -284,6 +290,9 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, notify, onM
             </button>))}
         </nav>
         <div className="ml-auto flex items-center gap-3 shrink-0">
+          {/* Interrupteur global des notes explicatives — « show and hide » pour
+              toutes les petites notes de tous les écrans, d'un seul geste. */}
+          <NotesToggle />
           <SyncBadge sync={sync} />
           {/* Les tâches urgentes occupaient un tableau au milieu de l'accueil : on ne
               les voyait qu'en s'y rendant, et jamais depuis les autres écrans. Elles
@@ -320,7 +329,9 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, notify, onM
           </div>
         </div>
       </header>
-      <main className="flex-1 mw1520 w-full mx-auto px-5 py-5">{children}</main>
+      <main className="flex-1 min-h-0 overflow-y-auto w-full">
+        <div className="mw1520 w-full mx-auto px-5 py-5">{children}</div>
+      </main>
       {/* L'intitulé complet vit ici : le pied de page est l'endroit où l'on a la
           place de le lire, et il n'a pas à occuper la barre à chaque écran. */}
       <footer className="border-t border-slate-200 bg-white px-5 py-3 flex items-center gap-3 f11 text-slate-500">
