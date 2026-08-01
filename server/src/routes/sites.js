@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db, tx } from "../db.js";
 import { newId } from "../lib/crypto.js";
-import { labelsFor } from "../lib/geo.js";
+import { labelsFor, currentVersion, resolveUnit } from "../lib/geo.js";
 import { requireCap } from "../lib/auth.js";
 import { officeBound as scopeOf } from "../lib/scope.js";
 import { validate, schemas } from "../lib/validate.js";
@@ -61,6 +61,81 @@ r.get("/", (req, res) => {
   const total = db.prepare(`SELECT COUNT(*) c FROM sites ${where.length ? "WHERE "+where.join(" AND ") : ""}`)
     .get(...args).c;
   res.json({ total, rows });
+});
+
+/* ── Audit GPS des points, façon PAM GPS AUDIT TOOL (docs/app.R) ───────
+   L'outil R rattache chaque point à SA commune d'accueil (jointure spatiale),
+   puis mesure la distance entre le GPS relevé et le CENTROÏDE de cette commune
+   pour déceler les points mal localisés — coordonnées inversées, virgule
+   déplacée, saisie dans la mauvaise unité. On fait de même, mais sans serveur de
+   routage : la distance est à vol d'oiseau (haversine), et l'on vérifie en plus
+   que le point tombe dans la boîte englobante de sa commune (l'équivalent léger
+   de « le point est-il DANS le polygone »). app.R majore la distance routière
+   d'un facteur 1,3 en repli ; ici la distance à vol d'oiseau est la borne basse
+   assumée, ce que la note de l'écran dit. */
+const R_TERRE = 6371;
+function haversineKm(aLat, aLon, bLat, bLon){
+  const rad = d => d * Math.PI / 180;
+  const dLat = rad(bLat - aLat), dLon = rad(bLon - aLon);
+  const h = Math.sin(dLat/2)**2 + Math.cos(rad(aLat))*Math.cos(rad(bLat))*Math.sin(dLon/2)**2;
+  return 2 * R_TERRE * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+const RANG_VERDICT = { unmatched:3, outside:2, far:1, ok:0 };
+
+r.get("/gps-audit", (req, res) => {
+  const q = z.object({
+    seuil: z.coerce.number().min(0.5).max(500).default(15),   /* km au-delà desquels on alerte */
+    limit: z.coerce.number().int().min(1).max(6000).default(4000),
+  }).safeParse(req.query);
+  if(!q.success) return res.status(422).json({ error:"paramètres invalides" });
+  const { seuil, limit } = q.data;
+
+  const v = currentVersion();
+  if(!v) return res.status(409).json({ error:"aucun référentiel géographique courant" });
+
+  const scope = scopeOf(req.user);
+  const where = ["lat IS NOT NULL", "lon IS NOT NULL"]; const args = [];
+  if(scope){ where.push("office_id = ?"); args.push(scope); }
+  const sites = db.prepare(
+    `SELECT id, name, code, adm1, adm2, adm3, adm4, lat, lon, geo_pcode, activity_tag
+     FROM sites WHERE ${where.join(" AND ")} LIMIT ?`).all(...args, limit);
+
+  /* Les communes (adm3) du millésime courant, avec leur centroïde (geo_unit.lat/lon)
+     et leur boîte englobante (geo_geom). */
+  const communes = Object.fromEntries(db.prepare(
+    "SELECT pcode, name, lat, lon FROM geo_unit WHERE version_id=? AND level='adm3'").all(v.id)
+    .map(u => [u.pcode, u]));
+  const bbox = Object.fromEntries(db.prepare(
+    "SELECT pcode, min_lon, min_lat, max_lon, max_lat FROM geo_geom WHERE version_id=? AND level='adm3'").all(v.id)
+    .map(g => [g.pcode, g]));
+
+  const bilan = { total:0, ok:0, far:0, outside:0, unmatched:0, sansContour:0 };
+  const rows = [];
+  for(const s of sites){
+    bilan.total++;
+    /* La commune d'accueil : par p-code s'il désigne une commune, sinon résolue
+       par le NOM (adm1→adm3), exactement comme le rattachement du registre. */
+    let u = communes[s.geo_pcode];
+    if(!u){ const rr = resolveUnit({ adm1:s.adm1, adm2:s.adm2, adm3:s.adm3 }, v.id);
+      if(rr.pcode) u = communes[rr.pcode]; }
+    if(!u || u.lat == null || u.lon == null){
+      bilan.unmatched++;
+      rows.push({ id:s.id, name:s.name, code:s.code, tag:s.activity_tag, adm2:s.adm2, adm3:s.adm3, lat:s.lat, lon:s.lon, commune:null, dist:null, inBbox:null, verdict:"unmatched" });
+      continue;
+    }
+    const dist = Math.round(haversineKm(s.lat, s.lon, u.lat, u.lon) * 10) / 10;
+    const bb = bbox[u.pcode];
+    const inBbox = bb ? (s.lon >= bb.min_lon && s.lon <= bb.max_lon && s.lat >= bb.min_lat && s.lat <= bb.max_lat) : null;
+    if(inBbox === null) bilan.sansContour++;
+    let verdict = "ok";
+    if(inBbox === false) verdict = "outside";
+    else if(dist > seuil) verdict = "far";
+    bilan[verdict]++;
+    rows.push({ id:s.id, name:s.name, code:s.code, tag:s.activity_tag, adm2:s.adm2, adm3:s.adm3, lat:s.lat, lon:s.lon, commune:u.name, dist, inBbox, verdict });
+  }
+  rows.sort((a, b) => (RANG_VERDICT[b.verdict] - RANG_VERDICT[a.verdict]) || ((b.dist || 0) - (a.dist || 0)));
+
+  res.json({ seuil, version:{ id:v.id, label:v.label }, bilan, rows: rows.slice(0, 2500) });
 });
 
 r.get("/:id", (req, res) => {

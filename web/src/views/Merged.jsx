@@ -9,6 +9,7 @@ import { ActualSummary, ImportView, OutcomeData, OutputData, ProcessData,
          Sources } from "./ActualData.jsx";
 import { SitesModule } from "./Settings.jsx";
 import { ProcessDashboard } from "./ProcessDashboard.jsx";
+import { GpsAudit } from "./GpsAudit.jsx";
 import MreView from "./Mre.jsx";
 import Soumissions from "./Soumissions.jsx";
 import TpmView from "./Tpm.jsx";
@@ -59,7 +60,7 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
     ["monitoring","Suivi des sites"],
     ["mre","Plan MRE et budget"],["tpm","Suivi tiers"],
     ["coverage","Couverture et MMR"],
-    ["sites","Registre des sites"],["params","Paramètres de couverture"]];
+    ["sites","Registre des sites"],["gps","Vérification GPS"],["params","Paramètres de couverture"]];
   return (
     <div className="space-y-4">
       <PageHead title="Suivi-évaluation"
@@ -89,6 +90,7 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
           de volet, les deux colonnes sont côte à côte. */}
       {sub==="coverage" && <CoveragePlan db={db} set={set} me={me} notify={notify} can={can} />}
       {sub==="sites"    && <SitesModule db={db} set={set} me={me} notify={notify} can={can} context="actual" />}
+      {sub==="gps"      && <GpsAudit notify={notify} />}
       {sub==="params"   && <Overreaching db={db} set={set} notify={notify} can={can} />}
     </div>);
 }

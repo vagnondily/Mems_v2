@@ -1138,6 +1138,32 @@ test("population et ciblage : les valeurs incohérentes sont rejetées avec leur
   assert.equal(r.body.crees + r.body.modifies, 0);
 });
 
+test("audit GPS : chaque point est jugé contre le centroïde de sa commune d'accueil", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(t);
+
+  const r = await request(app).get("/api/sites/gps-audit?seuil=15").set("Authorization", `Bearer ${t}`);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const b = r.body.bilan;
+  assert.ok(b && b.total > 0, "des points GPS sont audités");
+  /* Les quatre verdicts se recomposent en total. */
+  assert.equal(b.ok + b.far + b.outside + b.unmatched, b.total, "chaque point reçoit un verdict, un seul");
+  assert.ok(Array.isArray(r.body.rows) && r.body.rows.length > 0, "les points suspects sont listés");
+  /* Le tri met les cas non conformes en tête : le premier n'est jamais « conforme »
+     s'il existe au moins un cas à contrôler. */
+  if(b.far + b.outside + b.unmatched > 0)
+    assert.notEqual(r.body.rows[0].verdict, "ok", "les cas à contrôler passent devant");
+  /* Un point conforme porte une distance mesurée et une commune d'accueil. */
+  const conforme = r.body.rows.find(x => x.verdict === "ok") || r.body.rows.find(x => x.dist != null);
+  if(conforme){ assert.ok(conforme.commune, "le point rattaché nomme sa commune d'accueil");
+    assert.equal(typeof conforme.dist, "number", "et porte une distance au centroïde"); }
+
+  /* Le seuil déplace la frontière éloigné / conforme : plus il est bas, plus il y
+     a d'éloignés. */
+  const serre = await request(app).get("/api/sites/gps-audit?seuil=2").set("Authorization", `Bearer ${t}`);
+  assert.ok(serre.body.bilan.far >= b.far, "un seuil plus serré n'a jamais moins d'éloignés");
+});
+
 test("ciblage daté : plusieurs ciblages par unité, on garde tout et on montre le dernier", async () => {
   const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
   await activerMillesimeDuSeed(t);
