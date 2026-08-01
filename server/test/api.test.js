@@ -7603,6 +7603,44 @@ test("listes typées : la validation d'une liste tombe dès qu'un item change", 
     "une liste modifiée après sa relecture n'est plus une liste relue");
 });
 
+test("catalogue de rations : la première charge officielle est servie, et la collection se complète", async () => {
+  /* « Une ration, une ligne » : le catalogue officiel (migration 031) est semé,
+     et une convention composée est plusieurs lignes de même libellé. */
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(st.status, 200);
+  const cat = st.body.rationCatalog;
+  assert.ok(Array.isArray(cat) && cat.length >= 20, `le catalogue officiel est semé : ${cat?.length} ligne(s)`);
+  const gd = cat.filter(l => l.label.startsWith("GD / GFD"));
+  assert.ok(gd.length >= 3, "GD standard porte riz + légumineuses + huile");
+  assert.ok(gd.some(l => l.commodity === "Riz" && l.grams === 400), JSON.stringify(gd));
+  assert.ok(gd.every(l => l.activityTag === "GD"), "l'activité par défaut voyage");
+
+  /* Le catalogue est une collection synchronisée : on l'édite comme les autres. */
+  const w = await request(app).put("/api/collections/rationCatalog").set("Authorization", `Bearer ${adminToken}`)
+    .send({ rows: [{ id:"rc_test_conv", label:"Convention d'essai", commodity:"Riz", grams:250,
+      activityTag:"GD", note:"essai", sort:999 }] });
+  assert.equal(w.status, 200, JSON.stringify(w.body));
+  assert.equal(w.body.created, 1);
+  const st2 = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  const ajoute = st2.body.rationCatalog.find(l => l.id === "rc_test_conv");
+  assert.ok(ajoute, "la ligne ajoutée est servie");
+  assert.equal(ajoute.grams, 250);
+  assert.equal(ajoute.activityTag, "GD");
+});
+
+test("catalogue de rations : la denrée qu'il utilise ne se supprime pas (lien en cascade)", async () => {
+  /* Le lien ration_catalog.commodity ajouté au registre des listes : renommer une
+     denrée y cascade, et on ne supprime pas une denrée qu'une convention utilise. */
+  const r = await request(app).get("/api/listes/denrees").set("Authorization", `Bearer ${adminToken}`);
+  const riz = r.body.items.find(x => x.code === "Riz");
+  assert.ok(riz, "la denrée Riz existe");
+  assert.ok(riz.usage.some(u => u.table === "ration_catalog"),
+    `l'usage compte le catalogue de rations : ${JSON.stringify(riz.usage)}`);
+  const del = await request(app).delete(`/api/listes/denrees/${riz.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(del.status, 409, "une denrée utilisée par le catalogue ne se supprime pas");
+});
+
 test("listes typées : lecture ouverte, écriture réservée à l'administration", async () => {
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"listedit@test.local", password:"ListEditMotDePasse1", first_name:"ListEdit",

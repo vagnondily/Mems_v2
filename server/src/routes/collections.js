@@ -99,6 +99,18 @@ const COLLECTIONS = {
       blocks:z.array(z.string().max(40)).max(40).default([]), intro:S(4000) }),
     map: (x) => ({ name:x.name, blocks:JSON.stringify(x.blocks), intro:x.intro }) },
 
+  /* Catalogue de rations (migration 031). « Une ration, une ligne » : un libellé
+     de convention, UNE denrée (son code, = pdd.commodity), un grammage par
+     personne et par jour, une activité par défaut facultative, une note. Une
+     convention composée est plusieurs lignes de même libellé. Le tonnage se
+     calcule à l'usage, jamais stocké. */
+  rationCatalog: { table:"ration_catalog", cap:"edit",
+    schema: z.object({ id:S(64), label:z.string().min(1).max(160),
+      commodity:z.string().min(1).max(120), grams:N(0,1e5),
+      activityTag:S(40), note:S(500), sort:I(0,99999) }),
+    map: (x) => ({ label:x.label, commodity:x.commodity, grams:x.grams,
+      activity_tag:x.activityTag, note:x.note, sort_order:x.sort }) },
+
   dashboards: { table:"dashboards", cap:"edit",
     schema: z.object({ id:S(64), name:z.string().min(1).max(160),
       widgets:z.array(z.record(z.any())).max(60).default([]) }),

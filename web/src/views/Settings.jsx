@@ -2363,49 +2363,254 @@ function SetCalc({ db, set, notify, can }){
   );
 }
 
+/* ══════════════════ Catalogue de rations + denrées (chantier R) ══════════════════
+
+   « Une ration, une ligne » : l'onglet n'est plus une matrice activité × denrée
+   mais un CATALOGUE de conventions. Chaque ligne porte un libellé (« GD standard »,
+   « Stunting FEFA 2023 »…), UNE denrée, un grammage par personne et par jour, une
+   activité par défaut facultative, une note. Une convention composée (riz + huile +
+   légumineuses) est plusieurs lignes de même libellé.
+
+   Et « combiner la config des rations et la création de denrée » : les denrées se
+   gèrent DANS le même écran (panneau du haut), et le sélecteur de denrée d'une ligne
+   de ration offre « + créer une denrée » sans quitter la page. Les denrées vivent
+   dans la liste typée `denrees` (routes/listes.js), servie ici par l'API — le
+   catalogue, lui, est une collection synchronisée comme les autres. */
 function SetRations({ db, set, notify, can }){
-  const [actType,setActType] = useState(PDD_ACTS[0][0]);
-  const table = db.settings.rationTable || {};
-  const row = table[actType] || {};
-  const u = (commodity, v) => set(d => {
-    d.settings.rationTable = d.settings.rationTable || {};
-    d.settings.rationTable[actType] = { ...(d.settings.rationTable[actType]||{}), [commodity]: v };
-    return d; });
-  const clearAct = () => { set(d => { d.settings.rationTable = d.settings.rationTable || {};
-    d.settings.rationTable[actType] = {}; return d; }); notify("Rations réinitialisées pour cette activité","ok"); };
-  const configured = PDD_COMMODITIES.filter(c => n(row[c])>0);
-  const sample = 1000, days = 15;
+  const [edit,setEdit]       = useState(null);   /* ligne de catalogue en édition */
+  const [denrees,setDenrees] = useState(null);   /* liste typée « denree », lue par l'API */
+  const [jours,setJours]     = useState(30);
+  const [effectif,setEff]    = useState(1000);
+  const [menage,setMenage]   = useState(1);       /* diviseur ménage : ÷5 en GFD, 1 sinon */
+  const cat = db.rationCatalog || [];
+  const activites = (db.activities || []).filter(a=>a.active);
+  const actLabel = (tag) => activites.find(a=>a.tag===tag)?.name || "";
+
+  /* Les denrées, chargées à l'ouverture puis après chaque création/renommage :
+     le sélecteur de denrée et la liste du haut partagent la même source. */
+  const chargerDenrees = () => api.liste("denrees")
+    .then(r => setDenrees((r.items||[]).map(x=>({ id:x.id, code:x.code, label:x.label,
+      active:x.active!==false, rev:x.rev, usage:x.usageTotal||0 })))).catch(e=>{ notify(e.message,"err"); setDenrees([]); });
+  useEffect(()=>{ chargerDenrees(); },[]);
+  const denreesActives = (denrees||[]).filter(d=>d.active);
+
+  /* Le catalogue est une collection synchronisée : on l'édite par `set`, comme
+     les indicateurs. Un identifiant client, une révision à 1, le serveur tranche. */
+  const saveLigne = (ligne) => {
+    set(d => { const i = d.rationCatalog.findIndex(x=>x.id===ligne.id);
+      if(i>=0) d.rationCatalog[i] = ligne;
+      else d.rationCatalog.push({ ...ligne, id: ligne.id || uid("rc"), rev:1 });
+      return d; });
+    setEdit(null); notify("Ligne de ration enregistrée","ok");
+  };
+  const delLigne = (id) => set(d => { d.rationCatalog = d.rationCatalog.filter(x=>x.id!==id); return d; });
+
+  /* Création d'une denrée sans quitter l'écran : la liste typée l'accueille, et
+     on recharge pour que le sélecteur la propose aussitôt. Le code EST la valeur
+     que portera `pdd.commodity` et `ration_catalog.commodity` — d'où sa présence. */
+  const creerDenree = async (label) => {
+    const nom = (label||"").trim(); if(!nom) return null;
+    try{
+      const r = await api.createItem("denrees", { code:nom, label:nom });
+      await chargerDenrees();
+      notify(`Denrée « ${nom} » créée`,"ok");
+      return r.item?.code || nom;
+    }catch(e){ notify(e.message,"err"); return null; }
+  };
+
+  /* Les conventions, regroupées par libellé pour l'affichage : une ration composée
+     se lit d'un bloc. Trié par `sort` puis libellé, comme le sert le serveur. */
+  const parConvention = useMemo(()=>{
+    const m = new Map();
+    for(const l of [...cat].sort((a,b)=>(a.sort??0)-(b.sort??0) || (a.label||"").localeCompare(b.label||""))){
+      if(!m.has(l.label)) m.set(l.label, []);
+      m.get(l.label).push(l);
+    }
+    return [...m.entries()];
+  },[cat]);
+
+  const eff = Math.max(0, menage>1 ? effectif/menage : effectif);
+  const tonnage = (g) => g*jours*eff/1e6;         /* tonnes */
+
   return (
     <>
-      <Note>Ration journalière par bénéficiaire (grammes/personne/jour), par denrée et par type d'activité —
-        une donnée de programme propre à chaque opération, à saisir ici plutôt qu'à deviner. Elle alimente le
-        bouton « Générer par commune » du plan de distribution (PDD) : une ligne y est créée automatiquement
-        pour chaque denrée dont la ration est renseignée, avec un tonnage calculé (bénéficiaires × jours de
-        ration × ration ÷ 1 000 000).</Note>
-      <div className="flex items-center gap-2 mb-4">
-        <Select value={actType} onChange={e=>setActType(e.target.value)} options={PDD_ACTS} className="mi-wauto" />
-        {can("edit") && <Btn kind="ghost" size="sm" icon={Trash2} onClick={clearAct}>Réinitialiser cette activité</Btn>}
-      </div>
-      <Card flush title={`Rations — ${(PDD_ACTS.find(a=>a[0]===actType)||[])[1]}`}
-        subtitle={`Aperçu sur ${fmt(sample)} bénéficiaires, ${days} jours de ration`}>
-        <TableWrap>
-          <thead><tr><Th>Denrée</Th><Th num>Ration (g/personne/jour)</Th><Th num>Tonnage d'essai (t)</Th></tr></thead>
-          <tbody>{PDD_COMMODITIES.map(c=>{
-            const g = n(row[c]);
-            const t = r2(sample*days*g/1e6);
-            return (
-              <tr key={c} className="hover:bg-sky-50">
-                <Td className="font-medium">{c}</Td>
-                <Td num><Input type="number" min="0" step="1" disabled={!can("edit")} value={row[c] ?? ""}
-                  onChange={e=>u(c, e.target.value===""?"":Math.max(0,n(e.target.value)))}
-                  className="mi-py1 w-24 text-right ml-auto" /></Td>
-                <Td num className="tabular-nums text-slate-500">{g>0?t:"—"}</Td>
-              </tr>); })}</tbody>
-        </TableWrap>
+      <Aide>Le catalogue applique la règle <b>« une ration, une ligne »</b> : chaque ligne est une
+        convention (un libellé), <b>une denrée</b> et son <b>grammage par personne et par jour</b>. Une
+        ration composée (riz + huile + légumineuses) est <b>plusieurs lignes de même libellé</b>. Les denrées
+        se créent et se gèrent ici même, dans le panneau ci-dessous. Le tonnage n'est pas stocké : il se
+        calcule à l'usage — <b>ration × jours × effectif ÷ 1 000 000</b> — les jours étant saisis au plan de
+        distribution parce qu'ils changent à chaque livraison.</Aide>
+
+      {/* ── Denrées : la création combinée à la config des rations ── */}
+      <DenreesPanel denrees={denrees} can={can} notify={notify}
+        onCreate={creerDenree} onReload={chargerDenrees} />
+
+      {/* ── Le catalogue proprement dit ── */}
+      <Card flush title="Catalogue de rations" subtitle={`${cat.length} ligne(s) · ${parConvention.length} convention(s)`}
+        right={can("edit") && <Btn size="sm" icon={Plus}
+          onClick={()=>setEdit({ id:"", label:"", commodity:denreesActives[0]?.code||"", grams:0,
+            activityTag:"", note:"", sort:(cat.reduce((m,l)=>Math.max(m,l.sort||0),0))+10 })}>
+          Ajouter une ligne</Btn>}>
+        {!cat.length
+          ? <Empty icon={ClipboardList} title="Catalogue vide"
+              text="Ajoutez une convention, ou chargez la première charge officielle (npm run seed:reel / migration 031)." />
+          : <TableWrap max="mh480">
+            <thead><tr><Th>Convention</Th><Th>Denrée</Th><Th num>g/pers/jour</Th>
+              <Th>Activité par défaut</Th><Th>Note</Th><Th /></tr></thead>
+            <tbody>{parConvention.map(([label,lignes])=>lignes.map((l,i)=>(
+              <tr key={l.id} className="hover:bg-sky-50 align-top">
+                <Td className={clsx("font-medium text-slate-800", i>0 && "text-transparent")}
+                  style={{whiteSpace:"normal",maxWidth:220}}>{i===0 ? label : label}</Td>
+                <Td><span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 f11 font-semibold">{l.commodity}</span></Td>
+                <Td num className="tabular-nums font-semibold">{fmt(l.grams)}</Td>
+                <Td>{l.activityTag
+                  ? <span title={actLabel(l.activityTag)} className="f11 text-slate-700">{l.activityTag}</span>
+                  : <span className="f11 text-slate-400">toutes</span>}</Td>
+                <Td className="f105 text-slate-500" style={{whiteSpace:"normal",maxWidth:280}}>{l.note||"—"}</Td>
+                <Td className="text-right whitespace-nowrap">
+                  {can("edit") && <button onClick={()=>setEdit(l)} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
+                  {can("del") && <button onClick={()=>delLigne(l.id)} className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}
+                </Td>
+              </tr>)))}</tbody>
+          </TableWrap>}
       </Card>
-      {!configured.length && <Note tone="warn">Aucune ration n'est encore paramétrée pour cette activité — le
-        bouton « Générer par commune » du PDD n'y proposera aucune denrée tant que ceci n'est pas rempli.</Note>}
+
+      {/* ── Jeu d'essai : jours + effectif → tonnage, par convention ── */}
+      {!!cat.length && (
+        <Card title="Jeu d'essai — tonnage par convention"
+          subtitle="Le tonnage se calcule, il ne se stocke pas : ration × jours × effectif ÷ 1 000 000">
+          <div className="flex items-end gap-3 flex-wrap mb-3">
+            <Field label="Jours de ration" className="mb-0"><Input type="number" min="0" step="1" value={jours}
+              onChange={e=>setJours(Math.max(0,n(e.target.value)))} className="w-28" /></Field>
+            <Field label="Effectif (bénéficiaires)" className="mb-0"><Input type="number" min="0" step="1" value={effectif}
+              onChange={e=>setEff(Math.max(0,n(e.target.value)))} className="w-36" /></Field>
+            <Field label="Diviseur ménage" className="mb-0"
+              hint="÷5 pour une ration par ménage (GFD/FFA) ; 1 en nutrition/école"><Input type="number" min="1" step="1" value={menage}
+              onChange={e=>setMenage(Math.max(1,n(e.target.value)||1))} className="w-24" /></Field>
+            <div className="f11 text-slate-500 pb-1.5">Effectif retenu : <b>{fmt(Math.round(eff))}</b></div>
+          </div>
+          <TableWrap max="mh320">
+            <thead><tr><Th>Convention</Th><Th>Denrées</Th><Th num>Ration totale (g/pers/j)</Th>
+              <Th num>Tonnage (kg)</Th><Th num>Tonnage (t)</Th></tr></thead>
+            <tbody>{parConvention.map(([label,lignes])=>{
+              const gTot = lignes.reduce((s,l)=>s+n(l.grams),0);
+              const t = tonnage(gTot);
+              return (
+                <tr key={label} className="hover:bg-sky-50">
+                  <Td className="font-medium text-slate-800" style={{whiteSpace:"normal",maxWidth:220}}>{label}</Td>
+                  <Td className="f11 text-slate-500">{lignes.map(l=>`${l.commodity} ${fmt(l.grams)}`).join(" + ")}</Td>
+                  <Td num className="tabular-nums font-semibold">{fmt(gTot)}</Td>
+                  <Td num className="tabular-nums text-slate-700">{fmt(r2(t*1000))}</Td>
+                  <Td num className="tabular-nums text-slate-500">{r2(t)}</Td>
+                </tr>); })}</tbody>
+          </TableWrap>
+        </Card>)}
+
+      <RationModal open={!!edit} ligne={edit} denrees={denreesActives} activites={activites}
+        labels={[...new Set(cat.map(l=>l.label))]} onCreateDenree={creerDenree}
+        onClose={()=>setEdit(null)} onSave={saveLigne} />
     </>);
+}
+
+/* Le panneau de denrées, dans l'écran des rations : créer, renommer, retirer une
+   denrée sans quitter la config des rations. Les denrées sont une liste typée
+   (routes/listes.js) — édition réservée à l'administration comme toute liste. */
+function DenreesPanel({ denrees, can, notify, onCreate, onReload }){
+  const [ajout,setAjout] = useState("");
+  const [busy,setBusy]   = useState(false);
+  if(denrees === null) return <Card title="Denrées & commodités"><Empty icon={ClipboardList} title="Chargement des denrées…" /></Card>;
+  const ajouter = async () => { if(!ajout.trim()) return; setBusy(true);
+    const code = await onCreate(ajout.trim()); if(code) setAjout(""); setBusy(false); };
+  const basculer = async (d) => { setBusy(true);
+    try{ await api.activerItem("denrees", d.id, !d.active, d.rev); await onReload(); }
+    catch(e){ notify(e.message,"err"); } setBusy(false); };
+  const retirer = async (d) => {
+    if(d.usage>0){ notify(`« ${d.label} » est utilisée ${d.usage} fois (PDD/catalogue) — désactivez-la plutôt`,"warn"); return; }
+    if(!confirm(`Supprimer la denrée « ${d.label} » ?`)) return; setBusy(true);
+    try{ await api.deleteItem("denrees", d.id); await onReload(); notify("Denrée supprimée","ok"); }
+    catch(e){ notify(e.message,"err"); } setBusy(false);
+  };
+  return (
+    <Card flush title="Denrées & commodités"
+      subtitle="Créées et gérées ici même — le code est la valeur portée par le plan de distribution et le catalogue"
+      right={can("admin") && <div className="flex items-center gap-2">
+        <Input value={ajout} onChange={e=>setAjout(e.target.value)} placeholder="Nouvelle denrée (ex. Farine)"
+          onKeyDown={e=>e.key==="Enter"&&ajouter()} className="mi-py1 mi-xs" style={{width:200}} />
+        <Btn size="sm" icon={Plus} disabled={busy||!ajout.trim()} onClick={ajouter}>Créer</Btn>
+      </div>}>
+      <div className="p-3 flex flex-wrap gap-2">
+        {denrees.length ? denrees.map(d=>(
+          <div key={d.id} className={clsx("inline-flex items-center gap-1.5 rounded-full border pl-3 pr-1.5 py-1 f11",
+            d.active ? "bg-white border-slate-200 text-slate-700" : "bg-slate-50 border-slate-200 text-slate-400")}>
+            <span className="font-semibold">{d.label}</span>
+            {d.usage>0 && <span className="f10 text-slate-400" title="Utilisée dans le PDD ou le catalogue">·{d.usage}</span>}
+            {!d.active && <span className="f10 uppercase tracking-wide">inactif</span>}
+            {can("admin") && <>
+              <button onClick={()=>basculer(d)} disabled={busy} title={d.active?"Désactiver":"Réactiver"}
+                className="text-slate-300 hover:text-slate-600 px-1">{d.active?"⦸":"↺"}</button>
+              {!d.usage && <button onClick={()=>retirer(d)} disabled={busy} title="Supprimer"
+                className="text-slate-300 hover:text-rose-600"><Trash2 size={12}/></button>}
+            </>}
+          </div>)) : <span className="f11 text-slate-400">Aucune denrée — créez-en une ci-dessus.</span>}
+      </div>
+    </Card>);
+}
+
+/* La fiche d'une ligne de ration. Le sélecteur de denrée porte « + créer une
+   denrée » : la création se fait sans quitter la fiche, et la nouvelle denrée est
+   aussitôt choisie. Le libellé propose les conventions existantes (datalist) pour
+   qu'une ration composée reçoive le MÊME libellé sur chacune de ses lignes. */
+function RationModal({ open, ligne, denrees, activites, labels, onCreateDenree, onClose, onSave }){
+  const [f,setF] = useState({});
+  const [creation,setCreation] = useState("");
+  useEffect(()=>{ setF(ligne||{}); setCreation(""); },[ligne]);
+  if(!open) return null;
+  const u = (k,v)=>setF(p=>({...p,[k]:v}));
+  const choisirDenree = async (v) => {
+    if(v==="__new__"){ setCreation(" "); return; }
+    u("commodity", v);
+  };
+  const validerCreation = async () => {
+    const code = await onCreateDenree(creation.trim());
+    if(code){ u("commodity", code); setCreation(""); }
+  };
+  return (
+    <Modal open onClose={onClose} title={ligne?.id ? "Modifier la ligne de ration" : "Nouvelle ligne de ration"}
+      subtitle="Une convention, une denrée, un grammage par personne et par jour"
+      footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
+        <Btn icon={Save} disabled={!(f.label||"").trim() || !(f.commodity||"").trim()}
+          onClick={()=>onSave({ ...f, grams:Math.max(0,n(f.grams)), sort:f.sort??0 })}>Enregistrer</Btn></>}>
+      <Field label="Convention (libellé)" hint="Réutilisez le même libellé pour toutes les denrées d'une ration composée">
+        <Input list="mems-ration-labels" value={f.label||""} onChange={e=>u("label",e.target.value)}
+          placeholder="GD standard, Stunting FEFA 2023…" />
+        <datalist id="mems-ration-labels">{(labels||[]).map(l=><option key={l} value={l} />)}</datalist>
+      </Field>
+      <div className="grid grid-cols-2 gap-x-4">
+        <Field label="Denrée">
+          {creation.trim() || creation===" " ? (
+            <div className="flex items-center gap-1.5">
+              <Input autoFocus value={creation.trim()} onChange={e=>setCreation(e.target.value)}
+                placeholder="Nom de la nouvelle denrée" onKeyDown={e=>e.key==="Enter"&&validerCreation()} />
+              <Btn size="sm" onClick={validerCreation} disabled={!creation.trim()}>Créer</Btn>
+              <Btn size="sm" kind="ghost" onClick={()=>setCreation("")}>×</Btn>
+            </div>
+          ) : (
+            <Select value={f.commodity||""} onChange={e=>choisirDenree(e.target.value)} empty="— choisir —"
+              options={[...denrees.map(d=>[d.code, d.label]), ["__new__","➕ Créer une denrée…"]]} />
+          )}
+        </Field>
+        <Field label="Grammage (g/personne/jour)"><Input type="number" min="0" step="1" value={f.grams??0}
+          onChange={e=>u("grams",n(e.target.value))} /></Field>
+        <Field label="Activité par défaut" hint="Facultatif — présélectionne cette ration pour l'activité au PDD">
+          <Select value={f.activityTag||""} onChange={e=>u("activityTag",e.target.value)} empty="— toutes —"
+            options={activites.map(a=>[a.tag, `${a.tag} — ${a.name}`])} /></Field>
+        <Field label="Ordre d'affichage"><Input type="number" min="0" step="1" value={f.sort??0}
+          onChange={e=>u("sort",Math.max(0,n(e.target.value)))} /></Field>
+      </div>
+      <Field label="Note" hint="Jours typiques, modalité espèces, date de la convention — ce qui la rend relisible">
+        <Input value={f.note||""} onChange={e=>u("note",e.target.value)}
+          placeholder="30 j (demi : 15). Espèces : 120 000 Ar/ménage." /></Field>
+    </Modal>);
 }
 
 /* ── ODK Central ── */

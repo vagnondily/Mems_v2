@@ -622,6 +622,10 @@ function MonthCellModal({ cell, db, set, onClose, notify }){
 /* ══════════════════ Plan de distribution (PDD) ══════════════════ */
 const PDD_ACTS = [["GD","Distribution générale"],["PREVMA","Prévention de la malnutrition"],
   ["PECMAM","Traitement de la malnutrition"],["FFA","Création d'actifs"]];
+/* Le type d'activité du PDD → l'étiquette d'activité par défaut d'une convention
+   du catalogue de rations. Sert à présélectionner une convention plausible ; le
+   choix reste ouvert (une convention sans activité, ou d'une autre, est offerte). */
+const PDD_ACT_TO_TAG = { GD:"GD", PREVMA:"PREV", PECMAM:"MAM", FFA:"FFA" };
 const PDD_MODALITIES = [["Food","Food — vivres en nature"],["Cash","Cash — transfert monétaire"],["Voucher","Coupons"]];
 const PDD_COMMODITIES = ["Riz","Sorgho","Maïs concassé","Maïs en grain","Légumineuses","Huile",
   "Super Cereal CSB+","Super Cereal CSB++","LNS-mq/Plumpy Doz","LNS-sq/Nutributter","Plumpy Sup","Dattes"];
@@ -945,13 +949,27 @@ function PddGenModal({ open, db, onClose, onGenerate }){
   const geo = useGeoCascade({ adm1:f.region, adm2:f.district, adm3:f.commune });
   useEffect(()=>{ if(open) setF({ month:new Date().getMonth(), year:db.year, wbs:"URT1", actType:"GD",
     tag:"URT_GD", actMain:"", bureau:"", region:"", district:"", commune:"",
-    partner:db.lists.partners[0]||"", modality:"Food", benefPlanned:0, households:0, days:15, amount:0 });
+    partner:db.lists.partners[0]||"", modality:"Food", convention:"", benefPlanned:0, households:0, days:30, amount:0 });
   }, [open]);
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
-  const ration = (db.settings.rationTable||{})[f.actType] || {};
-  const items = PDD_COMMODITIES.map(c => ({ commodity:c, grams:n(ration[c]) })).filter(x=>x.grams>0)
+  /* Le catalogue de rations (chantier R) remplace l'ancienne matrice : au plan de
+     distribution, on SÉLECTIONNE une convention, et ses denrées composent les
+     lignes. Les conventions sont regroupées par libellé. */
+  const conventions = useMemo(()=>{
+    const m = new Map();
+    for(const l of [...(db.rationCatalog||[])].sort((a,b)=>(a.sort??0)-(b.sort??0))){
+      if(!m.has(l.label)) m.set(l.label, { label:l.label, activityTag:l.activityTag||"", lines:[] });
+      m.get(l.label).lines.push({ commodity:l.commodity, grams:n(l.grams) });
+    }
+    return [...m.values()];
+  }, [db.rationCatalog]);
+  /* La convention retenue : celle choisie, sinon celle dont l'activité par défaut
+     correspond au type d'activité du PDD, sinon la première. */
+  const conv = conventions.find(c=>c.label===f.convention)
+    || conventions.find(c=>c.activityTag===PDD_ACT_TO_TAG[f.actType]) || conventions[0] || null;
+  const items = (conv?.lines||[]).filter(x=>x.grams>0)
     .map(x => ({ ...x, tonnage: r2(n(f.benefPlanned)*n(f.days)*x.grams/1e6) }));
-  const itemsKey = items.map(i=>i.commodity).join("|");
+  const itemsKey = (conv?.label||"") + "::" + items.map(i=>i.commodity).join("|");
   useEffect(()=>{ setChecked(new Set(items.map(i=>i.commodity))); }, [itemsKey, open]);
   if(!open) return null;
   const regions = geo.adm1.map(x=>x.name);
@@ -974,7 +992,7 @@ function PddGenModal({ open, db, onClose, onGenerate }){
 
   return (
     <Modal open wide onClose={onClose} title="Générer un plan par commune"
-      subtitle="Pour la modalité Food, une ligne est créée par denrée paramétrée dans Paramètres → Rations"
+      subtitle="Pour la modalité Food, une ligne est créée par denrée de la convention de ration choisie"
       footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
         <Btn icon={Save} disabled={!canSubmit} onClick={submit}>
           {f.modality==="Food" ? `Générer ${checked.size} ligne(s)` : "Générer la ligne"}</Btn></>}>
@@ -984,7 +1002,9 @@ function PddGenModal({ open, db, onClose, onGenerate }){
         <Field label="Année"><Input type="number" value={f.year??db.year} onChange={e=>u("year",n(e.target.value))} /></Field>
         <Field label="WBS"><Input value={f.wbs||""} onChange={e=>u("wbs",e.target.value)} /></Field>
         <Field label="Type d'activité"><Select value={f.actType||"GD"} onChange={e=>{ u("actType",e.target.value);
-          u("tag", e.target.value==="GD"?"URT_GD":e.target.value==="PREVMA"?"URT_PREV":""); }} options={PDD_ACTS} /></Field>
+          u("tag", e.target.value==="GD"?"URT_GD":e.target.value==="PREVMA"?"URT_PREV":"");
+          /* Changer l'activité relâche la convention : la présélection reprend. */
+          u("convention",""); }} options={PDD_ACTS} /></Field>
         <Field label="Activité principale" className="col-span-2"><Input value={f.actMain||""} onChange={e=>u("actMain",e.target.value)} /></Field>
         <Field label="Bureau de terrain"><Input value={f.bureau||""} onChange={e=>u("bureau",e.target.value)} /></Field>
         <Field label="Région"><Select value={f.region||""} empty="—" options={withCurrent(regions, f.region)}
@@ -1004,8 +1024,19 @@ function PddGenModal({ open, db, onClose, onGenerate }){
           : <Field label="Montant planifié (MGA)"><Input type="number" value={f.amount??0} onChange={e=>u("amount",n(e.target.value))} /></Field>}
       </div>
       {f.modality==="Food" ? (
-        items.length ? (
-          <Card flush title="Denrées calculées" subtitle={`Tonnage = bénéficiaires × jours × ration ÷ 1 000 000 — total ${totalTonnage} t`}>
+        !conventions.length ? (
+          <Note tone="warn">Le catalogue de rations est vide. Renseignez-le dans <b>Paramètres → Rations</b> —
+            une convention y est une denrée et son grammage — ou saisissez une ligne manuellement.</Note>
+        ) : (
+          <Card flush title="Convention de ration"
+            subtitle={`Choisie dans le catalogue · tonnage = bénéficiaires × jours × ration ÷ 1 000 000 — total ${totalTonnage} t`}>
+            <div className="px-4 pt-3">
+              <Field label="Convention" hint="Présélectionnée selon l'activité — modifiable">
+                <Select value={conv?.label||""} onChange={e=>u("convention",e.target.value)}
+                  options={conventions.map(c=>[c.label, c.activityTag ? `${c.label} (${c.activityTag})` : c.label])} />
+              </Field>
+            </div>
+            {items.length ? (
             <TableWrap>
               <thead><tr><Th className="w-9" /><Th>Denrée</Th><Th num>Ration (g/pers/j)</Th><Th num>Tonnage (t)</Th></tr></thead>
               <tbody>{items.map(i=>(
@@ -1017,10 +1048,8 @@ function PddGenModal({ open, db, onClose, onGenerate }){
                   <Td num className="tabular-nums">{i.tonnage}</Td>
                 </tr>))}</tbody>
             </TableWrap>
+            ) : <div className="px-4 pb-4"><Note tone="warn">Cette convention ne porte aucune denrée avec un grammage.</Note></div>}
           </Card>
-        ) : (
-          <Note tone="warn">Aucune ration n'est paramétrée pour « {(PDD_ACTS.find(a=>a[0]===f.actType)||[])[1]} ».
-            Configurez-la dans Paramètres → Rations, ou saisissez une ligne manuellement avec « Ajouter une ligne ».</Note>
         )
       ) : (
         <Note>Modalité {f.modality} : une seule ligne est créée avec le montant saisi ci-dessus — aucune ration ne s'y applique.</Note>

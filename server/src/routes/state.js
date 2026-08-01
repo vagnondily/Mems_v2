@@ -227,6 +227,11 @@ r.get("/state", (req, res) => {
       code:s.code, notes:s.notes||"", runs:J(s.runs,[]) })),
     reportTemplates: db.prepare("SELECT * FROM report_templates").all().map(t => ({
       id:t.id, rev:t.rev, name:t.name, blocks:J(t.blocks,[]), intro:t.intro||"" })),
+    /* Le catalogue de rations (migration 031) : « une ration, une ligne ». Sert
+       l'onglet Rations et présélectionne le grammage dans le plan de distribution. */
+    rationCatalog: db.prepare("SELECT * FROM ration_catalog ORDER BY sort_order, label").all().map(x => ({
+      id:x.id, rev:x.rev, label:x.label, commodity:x.commodity, grams:x.grams,
+      activityTag:x.activity_tag||"", note:x.note||"", sort:x.sort_order||0 })),
     dashboards: db.prepare("SELECT * FROM dashboards").all().map(d => ({
       id:d.id, rev:d.rev, name:d.name, widgets:J(d.widgets,[]) })),
     /* Le journal révèle qui fait quoi : il suit le même cloisonnement que les données.

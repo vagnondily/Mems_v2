@@ -95,8 +95,12 @@ export const TYPES = [
 
   generique("denrees", "denree", "Denrées et commodités", {
     description: "Les denrées transportées et distribuées. Le code est la valeur portée par "
-      + "la colonne « commodity » du plan de distribution.",
-    liens: [lien("pdd", "commodity", "code", "Plan de distribution")] }),
+      + "la colonne « commodity » du plan de distribution et du catalogue de rations.",
+    liens: [lien("pdd",           "commodity", "code", "Plan de distribution"),
+            /* Le catalogue de rations (migration 031) désigne aussi la denrée par
+               son code : renommer une denrée y réécrit en cascade, et on ne
+               supprime pas une denrée qu'une convention de ration utilise. */
+            lien("ration_catalog", "commodity", "code", "Catalogue de rations")] }),
 
   generique("modalites", "modalite", "Modalités de transfert", {
     description: "Vivres, espèces, coupons… La liste n'est plus enfermée dans le schéma "
