@@ -103,7 +103,20 @@ r.post("/", requireCap("edit"), validate(schemas.site), (req, res) => {
   res.status(201).json({ site: db.prepare("SELECT * FROM sites WHERE id=?").get(id) });
 });
 
-r.put("/:id", requireCap("edit"), validate(schemas.site), (req, res) => {
+/* Modification : schéma PARTIEL, et c'est essentiel.
+ *
+ * Avec le schéma complet, tout champ facultatif absent de la requête ressortait
+ * de zod transformé en `null` (nullableStr fait `.nullish().transform(v => v ?? null)`),
+ * et l'UPDATE ci-dessous, bâti sur Object.keys du corps validé, l'écrivait tel
+ * quel. Autrement dit un PUT ne portant que le nom EFFAÇAIT l'antenne, la
+ * catégorie, l'activité, le type de site, la durée — et le code externe, donc le
+ * rattachement des soumissions à venir. C'est le même défaut que celui corrigé
+ * sur PUT /api/users/:id, sur une table où il fait plus de dégâts encore.
+ *
+ * En partiel, un champ absent reste `undefined` et n'entre pas dans l'UPDATE,
+ * tandis qu'un `null` ENVOYÉ reste un null : effacer volontairement une valeur
+ * reste possible, ce qui n'aurait pas été le cas avec une simple fusion. */
+r.put("/:id", requireCap("edit"), validate(schemas.site.partial()), (req, res) => {
   const cur = db.prepare("SELECT * FROM sites WHERE id=?").get(req.params.id);
   if(!cur) return res.status(404).json({ error:"site introuvable" });
   assertScope(req, cur);
@@ -117,12 +130,18 @@ r.put("/:id", requireCap("edit"), validate(schemas.site), (req, res) => {
       error:"ce site a été modifié pendant votre saisie. Rechargez pour repartir de la version à jour.",
       revEnvoyee:Number(b.rev), revCourante:cur.rev, courant:cur });
   delete b.rev;
-  const dup = db.prepare("SELECT id FROM sites WHERE code=? AND id<>?").get(b.code, cur.id);
+  /* Les contrôles portent sur la valeur qui FERA foi après écriture, donc sur
+     l'existant quand le champ n'est pas envoyé — sinon ils raisonneraient sur
+     un `undefined` et laisseraient passer un doublon de code. */
+  const code = b.code !== undefined ? b.code : cur.code;
+  const nom  = b.name !== undefined ? b.name : cur.name;
+  const dup = db.prepare("SELECT id FROM sites WHERE code=? AND id<>?").get(code, cur.id);
   if(dup) return res.status(409).json({ error:"un autre site porte déjà ce code" });
-  const cols = Object.keys(b).filter(k=>k!=="id");
+  const cols = Object.keys(b).filter(k => k !== "id" && b[k] !== undefined);
+  if(!cols.length) return res.json({ site: cur });   /* rien à écrire, rien à incrémenter */
   db.prepare(`UPDATE sites SET ${cols.map(k=>k+"=?").join(",")}, rev=rev+1, updated_at=datetime('now') WHERE id=?`)
     .run(...cols.map(k=>b[k]), cur.id);
-  audit(req, "update", cur.id, `Site modifié — ${b.name}`);
+  audit(req, "update", cur.id, `Site modifié — ${nom}`);
   res.json({ site: db.prepare("SELECT * FROM sites WHERE id=?").get(cur.id) });
 });
 

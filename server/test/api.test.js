@@ -121,6 +121,49 @@ test("sites : création, unicité du code, modification et suppression", async (
     .set("Authorization", `Bearer ${adminToken}`)).status, 404);
 });
 
+test("sites : un PUT partiel n'efface pas les champs qu'il n'envoie pas", async () => {
+  /* Le corps validé par zod portait TOUS les champs facultatifs, transformés en
+     null quand ils étaient absents ; l'UPDATE les écrivait tels quels. Renommer
+     un site effaçait donc son code externe — et avec lui le rattachement de ses
+     futures soumissions — sans le moindre message. */
+  const cree = await request(app).post("/api/sites").set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"TEST-PARTIEL", name:"Site partiel", external_code:"MG23210070009001",
+            antenne:"Antenne Sud", activity_tag:"URT", site_type:"École",
+            beneficiaries:900, security:1 });
+  assert.equal(cree.status, 201);
+  const id = cree.body.site.id;
+
+  const maj = await request(app).put(`/api/sites/${id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Site partiel renommé" });
+  assert.equal(maj.status, 200);
+
+  const apres = db.prepare("SELECT * FROM sites WHERE id=?").get(id);
+  assert.equal(apres.name, "Site partiel renommé", "le champ envoyé est bien écrit");
+  assert.equal(apres.external_code, "MG23210070009001", "le code externe survit");
+  assert.equal(apres.antenne, "Antenne Sud");
+  assert.equal(apres.activity_tag, "URT");
+  assert.equal(apres.site_type, "École");
+  assert.equal(apres.code, "TEST-PARTIEL");
+  assert.equal(apres.beneficiaries, 900);
+
+  /* Effacer volontairement reste possible : c'est un null ENVOYÉ, pas un champ
+     absent — la distinction que le schéma complet ne savait pas faire. */
+  const vide = await request(app).put(`/api/sites/${id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ external_code:null });
+  assert.equal(vide.status, 200);
+  assert.equal(db.prepare("SELECT external_code FROM sites WHERE id=?").get(id).external_code, null);
+
+  /* Et le code externe voyage jusqu'au client : sans cela la fiche du registre
+     le renverrait vide au prochain enregistrement. */
+  await request(app).put(`/api/sites/${id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ external_code:"MG23209050001" });
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  const vu = st.body.sites.find(s => s.id === id);
+  assert.equal(vu?.externalCode, "MG23209050001", "GET /api/state porte le code externe");
+
+  await request(app).delete(`/api/sites/${id}`).set("Authorization", `Bearer ${adminToken}`);
+});
+
 test("grille mensuelle : cocher « réalisé » crée la visite et met à jour la dernière visite", async () => {
   const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
   const site = st.body.sites.find(s => s.status === "Active");

@@ -44,6 +44,10 @@ r.get("/state", (req, res) => {
 
   const sites = siteRows.map(s => ({
     id:s.id, code:s.code, poi:s.name, status:s.status,
+    /* Le code que porte la source de collecte pour désigner ce site. Il doit
+       voyager jusqu'au navigateur : sans lui, la fiche du registre l'écraserait
+       en enregistrant, et le rattachement des soumissions se romprait. */
+    externalCode: s.external_code || "",
     subOffice: officeName[s.office_id] || "", office_id:s.office_id,
     antenne:s.antenne||"", activityCategory: catName[s.category_id] || "", category_id:s.category_id,
     activityTag:s.activity_tag||"", programArea:s.program_area||"", programTag:s.program_tag||"",

@@ -204,7 +204,11 @@ function SitesModule({ db, set, me, notify, can, context }){
   const stats = { total: scoped.length, active: scoped.filter(s=>s.status!=="Inactive").length,
     toVisit: scoped.filter(s=>s.status!=="Inactive" && s.plan.some(p=>p.planned&&!p.done)).length,
     done: scoped.filter(s=>s.plan.some(p=>p.done)).length,
-    planned: scoped.filter(s=>s.plan.some(p=>p.planned)).length };
+    planned: scoped.filter(s=>s.plan.some(p=>p.planned)).length,
+    /* Un site sans aucune soumission rattachée n'est pas forcément un site sans
+       activité : c'est le plus souvent son code externe qui manque. Le compte est
+       ici pour que l'écart se voie sans ouvrir une fiche. */
+    alimentes: scoped.filter(s=>(s.submissions||0)>0).length };
   const avg = pct(scoped.reduce((t,s)=>t+s.plan.filter(p=>p.done).length,0),
                   scoped.reduce((t,s)=>t+s.plan.filter(p=>p.planned).length,0));
 
@@ -213,6 +217,10 @@ function SitesModule({ db, set, me, notify, can, context }){
     const payload = {
       code: site.code || site.id || ("L" + Date.now().toString(36).toUpperCase()),
       name: site.poi || "", status: site.status || "Active",
+      /* Le serveur écrit TOUTES les colonnes de la fiche à chaque enregistrement :
+         omettre le code externe ici ne le préserverait pas, cela l'effacerait. Il
+         est donc relu à l'ouverture de la fiche (voir SiteModal) et renvoyé tel quel. */
+      external_code: (site.externalCode || "").trim() || null,
       office_id: (db.offices.find(o=>o.name===site.subOffice)||{}).id || site.office_id || null,
       antenne: site.antenne || null,
       category_id: (db.categories.find(c=>c.name===site.activityCategory)||{}).id || site.category_id || null,
@@ -237,7 +245,10 @@ function SitesModule({ db, set, me, notify, can, context }){
       const r = site.id ? await api.updateSite(site.id, payload) : await api.createSite(payload);
       const saved = r.site;
       set(d => { const i = d.sites.findIndex(x=>x.id===saved.id);
-        const merged = { ...site, id:saved.id, code:saved.code, poi:saved.name };
+        /* Le code externe retenu vient de la réponse du serveur, pas du formulaire :
+           c'est la seule version que le résolveur de soumissions comparera. */
+        const merged = { ...site, id:saved.id, code:saved.code, poi:saved.name,
+          externalCode: saved.external_code || "" };
         if(i>=0) d.sites[i] = { ...d.sites[i], ...merged };
         else d.sites.push({ ...merged, plan: Array.from({length:12},()=>(
           { planned:false, done:false, activeMonth:true, cp:"", monitor:"", report:"", moda:"" })) });
@@ -280,9 +291,14 @@ function SitesModule({ db, set, me, notify, can, context }){
   const exportSites = () => download(`sites_${db.year}.csv`,
     toCSV(rows.map(s=>({ ...s, poiSubtypeCode:(db.lists.poiSub.find(p=>p.label===s.poiSubtype)||{}).code||"",
       score: siteScore(s, db.weights, db).pct, priorite: LEVELS[siteScore(s, db.weights, db).level].label,
-      visitesPlanifiees: s.plan.filter(p=>p.planned).length, visitesRealisees: s.plan.filter(p=>p.done).length })),
+      visitesPlanifiees: s.plan.filter(p=>p.planned).length, visitesRealisees: s.plan.filter(p=>p.done).length,
+      /* Les deux dates partent côte à côte : un export qui n'emporterait que la
+         date retenue ferait disparaître la saisie du jour où l'ODK la dépasse. */
+      derniereVisiteOdk: s.lastVisitOdk || "", derniereVisiteRetenue: s.lastVisitEffective || s.lastVisit || "",
+      soumissions: s.submissions || 0 })),
     ["id","status","poi","poiSubtype","poiSubtypeCode","activityTag","subOffice","adm1","adm2","adm3","urbanArea",
-     "lat","lon","security","modality","beneficiaries","partner","responsible","lastVisit","score","priorite",
+     "lat","lon","security","modality","beneficiaries","partner","responsible","lastVisit",
+     "derniereVisiteOdk","derniereVisiteRetenue","soumissions","score","priorite",
      "visitesPlanifiees","visitesRealisees"]), "text/csv");
   const newSite = () => setEdit({ status:"Active", subOffice:db.lists.offices[0],
     activityTag:db.lists.tags[0]?.code, poiSubtype:db.lists.poiSub[0]?.label, urbanArea:"Non", security:0,
@@ -304,12 +320,28 @@ function SitesModule({ db, set, me, notify, can, context }){
     <div className="space-y-4">
       {context==="settings" && <Note>Registre de référence des sites. Toute création ou modification ici alimente
         directement le plan de suivi, les paramètres de couverture et les rapports.</Note>}
+      {/* Le code externe est le seul point du registre par lequel la chaîne de
+          collecte entre : tant qu'il n'est pas renseigné, les soumissions restent
+          non rattachées et les colonnes ci-dessous restent vides. L'explication est
+          ici plutôt que dans la fiche seule, parce qu'elle se lit avant d'ouvrir
+          une fiche — et parce qu'elle vaut aussi pour la lecture du tableau. */}
+      <Note>
+        <b>Code externe et soumissions.</b> Chaque site peut porter le code que le formulaire de
+        collecte emploie pour le désigner — il se saisit dans la fiche, onglet « Identification ».
+        C'est sur lui que les soumissions se rattachent automatiquement à un site ; sans lui, le
+        rapprochement retombe sur le nom, qui ne départage pas deux sites homonymes. La colonne
+        « Soumissions » compte celles qui sont rattachées, et « Dernière visite » affiche la date
+        observée sur le terrain quand il en existe une, la date saisie sinon. Les soumissions qui
+        n'ont trouvé aucun site se relisent sous <b>Programme → Soumissions</b>.
+      </Note>
       <StatRow>
         <Stat label="Total des sites" value={stats.total} sub="Sites gérés" icon={MapPin} />
         <Stat label="Sites actifs" value={stats.active} sub={`${stats.total-stats.active} inactifs`} icon={Activity} />
         <Stat label="Sites planifiés" value={stats.planned} sub="Au moins une échéance" icon={CalendarRange} />
         <Stat label="Sites à visiter" value={stats.toVisit} sub="Échéance non honorée" tone={stats.toVisit?"warn":"ok"} icon={Target} />
         <Stat label="Sites suivis" value={stats.done} sub="Au moins une visite" tone="ok" icon={Check} />
+        <Stat label="Sites alimentés" value={stats.alimentes} tone={stats.alimentes?"ok":"warn"}
+          sub={`${stats.total-stats.alimentes} sans aucune soumission`} icon={Link2} />
         <Stat label="Progression moyenne" value={avg+"%"} tone={avg>=80?"ok":avg>=50?"warn":"bad"} sub="Réalisé ÷ planifié" icon={ClipboardList} />
       </StatRow>
 
@@ -360,7 +392,8 @@ function SitesModule({ db, set, me, notify, can, context }){
               {bulk && <Th className="w-9"><input type="checkbox" checked={sel.size===shown.length&&shown.length>0}
                 onChange={e=>setSel(e.target.checked ? new Set(shown.map(s=>s.id)) : new Set())} /></Th>}
               {COLS.map(h=><Th key={h} num={["GPS-Latitude","GPS-Longitude","Beneficiary number"].includes(h)}>{h}</Th>)}
-              <Th>Priorité de suivi</Th><Th>Dernière visite</Th><Th num>Visites</Th><Th num>À programmer</Th>
+              <Th>Priorité de suivi</Th><Th>Dernière visite</Th><Th num>Soumissions</Th>
+              <Th num>Visites</Th><Th num>À programmer</Th>
               <Th>Suivi</Th><Th>Responsable</Th><Th />
             </tr></thead>
             <tbody>{shown.map(s=>{
@@ -369,6 +402,12 @@ function SitesModule({ db, set, me, notify, can, context }){
               const prog = pct(done, Math.max(planned, req.required||1));
               const code = (db.lists.poiSub.find(p=>p.label===s.poiSubtype)||{}).code || "";
               const sec = (D_SECURITY.find(x=>x[0]===s.security)||[])[1] || String(s.security);
+              /* La date retenue est celle du serveur ; l'origine se déduit de la seule
+                 présence d'une date ODK, puisque c'est elle qui prime quand elle existe.
+                 La valeur saisie n'est pas remplacée, elle passe dans l'info-bulle. */
+              const visite = s.lastVisitEffective || s.lastVisit || "";
+              const visiteOdk = !!s.lastVisitOdk;
+              const soumissions = s.submissions || 0;
               return (
                 <tr key={s.id} className={clsx("hover:bg-sky-50", sel.has(s.id)&&"bg-sky-50", !bulk&&can("edit")&&"cursor-pointer")}
                     onClick={()=>!bulk && can("edit") && setEdit(s)}>
@@ -394,7 +433,19 @@ function SitesModule({ db, set, me, notify, can, context }){
                   <Td num>{fmt(s.beneficiaries)}</Td>
                   <Td><span className={clsx("inline-block px-2 py-0.5 rounded-full f11 font-semibold border", LEVELS[sc.level].cls)}>
                     {LEVELS[sc.level].label} · {sc.pct}</span></Td>
-                  <Td>{s.lastVisit || <span className="text-slate-400">Jamais</span>}</Td>
+                  <Td title={visiteOdk
+                        ? `Observée sur le terrain (ODK) : ${s.lastVisitOdk}. Valeur saisie conservée : ${s.lastVisit || "aucune"}.`
+                        : visite ? "Valeur saisie dans la fiche. Aucune soumission ODK rattachée à ce site."
+                                 : "Aucune visite, ni saisie ni observée."}>
+                    {visite
+                      ? <span className="inline-flex items-center gap-1.5"><span className="tabular-nums">{visite}</span>
+                          <Badge tone={visiteOdk?"b":"n"}>{visiteOdk?"observée":"saisie"}</Badge></span>
+                      : <span className="text-slate-400">Jamais</span>}</Td>
+                  <Td num title={soumissions
+                        ? `${soumissions} soumission(s) rattachée(s) à ce site`
+                        : "Aucune soumission rattachée — vérifiez le code externe de la fiche"}>
+                    {soumissions ? <span className="text-lime-700 font-semibold">{fmt(soumissions)}</span>
+                                 : <span className="text-slate-400">0</span>}</Td>
                   <Td num><span className={done>=req.required?"text-lime-700 font-semibold":"text-slate-700"}>{done}</span>
                     <span className="text-slate-400"> / {req.required||"—"}</span></Td>
                   <Td num className={siteDerived(s,db).visitsToBePlanned?"text-amber-700 font-semibold":"text-slate-400"}>
@@ -491,7 +542,21 @@ function BulkBar({ db, sel, rows, communes, onSelectCommune, onApply, onClear })
 
 function SiteModal({ open, site, db, onClose, onSave }){
   const [tab,setTab] = useState("id"); const [f,setF] = useState({});
-  useEffect(()=>{ setF(site||{}); setTab("id"); },[site]);
+  /* Le code externe ne figure pas dans l'état chargé au démarrage : il est lu sur
+     la fiche du serveur à l'ouverture. Cette lecture n'est pas un confort — sans
+     elle, l'enregistrement renverrait un code vide et effacerait le rattachement
+     automatique des soumissions du site qu'on vient simplement de renommer. */
+  const [lecture,setLecture] = useState("ok");
+  useEffect(()=>{
+    setF(site||{}); setTab("id");
+    if(!site?.id){ setLecture("ok"); return; }
+    let vivant = true; setLecture("encours");
+    api.get(`/sites/${encodeURIComponent(site.id)}`)
+      .then(r => { if(!vivant) return;
+        setF(p => ({ ...p, externalCode: r.site?.external_code || "" })); setLecture("ok"); })
+      .catch(() => { if(vivant) setLecture("echec"); });
+    return () => { vivant = false; };
+  },[site]);
   /* Cascade servie par le serveur, avant tout retour anticipé : un hook ne peut
      pas être conditionnel. Chaque niveau ne demande que les enfants du précédent. */
   const geo = useGeoCascade({ adm1:f.adm1, adm2:f.adm2, adm3:f.adm3, adm4:f.adm4 });
@@ -505,12 +570,23 @@ function SiteModal({ open, site, db, onClose, onSave }){
     <Modal open wide onClose={onClose} title={site?.id?`Site ${site.id}`:"Nouveau site"}
       subtitle="Identification, codification et critères de risque"
       footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
-        <Btn icon={Save} onClick={()=>onSave({ ...f, geo_pcode: geo.pcode })}>{site?.id?"Mettre à jour":"Créer le site"}</Btn></>}>
+        {/* Enregistrer pendant la lecture du code externe reviendrait à l'écraser
+            avec une case vide : le bouton attend que la fiche soit complète. */}
+        <Btn icon={Save} disabled={lecture==="encours"}
+          onClick={()=>onSave({ ...f, geo_pcode: geo.pcode })}>{site?.id?"Mettre à jour":"Créer le site"}</Btn></>}>
       <Tabs className="mb-4" value={tab} onChange={setTab}
         items={[["id","Identification"],["risk","Critères de risque"],["plan","Suivi"]]} />
+      {lecture==="echec" && <Note tone="warn">Le code externe de ce site n'a pas pu être lu.
+        Fermez la fiche et rouvrez-la : enregistrer maintenant effacerait ce code, et les prochaines
+        soumissions de ce site ne se rattacheraient plus automatiquement.</Note>}
       {tab==="id" && (
         <div className="grid grid-cols-3 gap-x-4">
           <Field label="ID"><Input value={f.id||""} onChange={e=>u("id",e.target.value)} placeholder="Généré si vide" /></Field>
+          <Field label="Code externe (ODK)" className="col-span-2"
+            hint="Code que le formulaire de collecte porte pour désigner ce site (par exemple MG23210070009001). C'est sur lui que les soumissions se rattachent automatiquement à ce site ; laissé vide, le rapprochement ne peut plus s'appuyer que sur le nom.">
+            <Input value={f.externalCode||""} onChange={e=>u("externalCode",e.target.value)}
+              disabled={lecture==="encours"} maxLength={80}
+              placeholder={lecture==="encours" ? "Lecture du code enregistré…" : "Aucun — rattachement par le nom seulement"} /></Field>
           <Field label="Status"><Select value={f.status||"Active"} onChange={e=>u("status",e.target.value)} options={D_STATUS} /></Field>
           <Field label="Point of Interest"><Input value={f.poi||""} onChange={e=>u("poi",e.target.value)} /></Field>
           <Field label="POI Subtype"><Select value={f.poiSubtype||""} onChange={e=>u("poiSubtype",e.target.value)}
@@ -586,7 +662,16 @@ function SiteModal({ open, site, db, onClose, onSave }){
         </>)}
       {tab==="plan" && (()=>{ const d2 = siteDerived({ ...f, plan: f.plan || [] }, db); return (
           <div className="grid grid-cols-4 gap-x-4">
-            <Field label="Dernière visite"><Input type="date" value={f.lastVisit||""} onChange={e=>u("lastVisit",e.target.value)} /></Field>
+            {/* Les trois dates côte à côte : la saisie reste modifiable et n'est
+                jamais remplacée, l'observée vient des soumissions rattachées, et la
+                troisième dit seulement laquelle des deux l'emporte à l'affichage. */}
+            <Field label="Dernière visite (saisie)" hint="La grille mensuelle la pose au 15 du mois">
+              <Input type="date" value={f.lastVisit||""} onChange={e=>u("lastVisit",e.target.value)} /></Field>
+            <Field label="Dernière visite observée" hint="Date déclarée sur le terrain dans la soumission">
+              <Input value={f.lastVisitOdk||"—"} readOnly /></Field>
+            <Field label="Dernière visite retenue"
+              hint={f.lastVisitOdk ? "L'observée prime sur la saisie" : "Aucune soumission rattachée à ce site"}>
+              <Input value={f.lastVisitEffective||f.lastVisit||"—"} readOnly /></Field>
             <Field label="Site actif"><Input value={d2.activeSite ? "Oui" : "Non"} readOnly /></Field>
             <Field label="Plan Count" hint="Mois où une visite est prévue"><Input value={d2.planCount} readOnly /></Field>
             <Field label="Visit Count" hint="Visites effectivement réalisées"><Input value={d2.visitCount} readOnly /></Field>

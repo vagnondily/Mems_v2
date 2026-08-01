@@ -345,6 +345,94 @@ test("connecteurs : la table de correspondance est bâtie sur le registre servi 
   assert.equal(ctx.errors.length, 0, "aucune erreur sur l'écran des connecteurs");
 });
 
+test("soumissions ODK : l'écran part du vide, puis montre la file de travail et ses motifs", async () => {
+  const nav = (l) => all("header nav button").find(b => b.textContent.trim().startsWith(l));
+  const sousOnglet = (l) => all("main button").filter(b => b.className.includes("-mb-px"))
+    .find(b => b.textContent.trim() === l);
+
+  await click(nav("Programme"), "destination Programme"); await flush();
+  await click(sousOnglet("Soumissions ODK"), "sous-onglet Soumissions ODK");
+  await flush(); await flush();
+
+  /* Le seed ne verse aucune soumission : l'écran s'ouvre donc sur le premier des
+     deux vides, celui qu'on ne corrige pas en changeant de filtre. Il doit dire
+     d'où viennent les soumissions plutôt que d'afficher un tableau sans lignes. */
+  assert.ok(byText("h4", "Aucune soumission n'a encore été versée"),
+    "l'état vide est explicite");
+  assert.ok(document.body.textContent.includes("Paramètres → ODK Central"),
+    "l'état vide explique d'où viennent les soumissions");
+  assert.ok(byText("button", "Rejouer le rattachement"),
+    "les actions d'administration sont proposées");
+
+  /* Verser une source que personne n'a encore tirée ne verse rien — et c'est
+     précisément le cas qu'un compte rendu doit savoir énoncer. Sans lui, le
+     bouton semblerait sans effet, et l'utilisateur chercherait le défaut du
+     mauvais côté de la chaîne. */
+  const choixSource = all("main select")
+    .find(s => [...s.options].some(o => o.textContent.includes("Suivi de processus")));
+  assert.ok(choixSource, "la source ODK déclarée est proposée au versement");
+  await type(choixSource, [...choixSource.options].find(o => o.value).value);
+  await click(byText("main button", "Verser les soumissions"), "verser");
+  await flush(); await flush();
+  assert.ok(document.body.textContent.includes("cette source n'a aucune soumission en cache"),
+    "le compte rendu dit qu'il faut d'abord tirer la source");
+  assert.ok(byText("div", "Lues"), "le compte rendu du versement est chiffré");
+
+  /* Deux soumissions versées par l'API, exactement ce que fait le bouton une fois
+     la source tirée : l'une désigne un site réel par son code, l'autre un code
+     inventé. C'est le couple minimal qui rend l'écran vérifiable — un
+     rattachement réussi et un échec motivé. */
+  const etat = await (await fetch(`${BASE}/state`)).json();
+  const site = etat.sites[0];
+  assert.ok(site?.code, "le référentiel de test porte au moins un site");
+
+  const rep = await fetch(`${BASE}/submissions/ingest`, {
+    method:"POST", headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ form_id:"E2E_SUIVI", enregistrements:[
+      { instance_id:"e2e-resolue", site_code:site.code, svy_date:"2026-05-04" },
+      { instance_id:"e2e-orpheline", site_code:"CODE-INEXISTANT-E2E",
+        site_name:"Site absent du référentiel", activity_tag:"URT", svy_date:"2026-05-05" },
+    ] }),
+  });
+  const versement = await rep.json();
+  assert.equal(rep.status, 200, JSON.stringify(versement));
+  assert.equal(versement.resolues, 1, "le code d'un site réel se rattache");
+  assert.equal(versement.nonResolues, 1, "le code inventé reste orphelin");
+
+  await click(byText("main button", "Actualiser"), "actualiser l'écran");
+  await flush(); await flush();
+
+  /* L'état s'ouvre sur « non résolues » : c'est une file de travail, pas un
+     inventaire. La soumission rattachée ne doit donc PAS y figurer. */
+  const filtreEtat = all("main select").find(s => [...s.options].some(o => o.value === "non_resolues"));
+  assert.ok(filtreEtat, "le filtre d'état est présent");
+  assert.equal(filtreEtat.value, "non_resolues", "l'écran s'ouvre sur les non résolues");
+
+  const lignes = all("[data-soumission]");
+  assert.equal(lignes.length, 1, `seule la soumission non résolue est listée (${lignes.length})`);
+  const texte = document.body.textContent;
+  assert.ok(texte.includes("Site absent du référentiel"), "le nom brut du formulaire est affiché");
+  assert.ok(texte.includes("non rattachée"), "l'absence de site est dite en toutes lettres");
+  assert.ok(texte.includes("non résolu —"), "le motif explique l'échec");
+  assert.ok(texte.includes("Répartition par passe de rattachement"), "le bandeau détaille les passes");
+
+  /* Toutes les soumissions : la rattachée réapparaît, avec la passe qui l'a
+     rattachée — celle du code externe, la seule qui vaille une égalité. */
+  await type(filtreEtat, "toutes"); await flush(); await flush();
+  assert.equal(all("[data-soumission]").length, 2, "les deux soumissions sont listées");
+  assert.ok(document.body.textContent.includes("Code externe"),
+    "la passe de rattachement est nommée sur la ligne résolue");
+
+  /* Rejouer le rattachement rend un compte rendu chiffré, sans rien re-tirer. */
+  await click(byText("main button", "Rejouer le rattachement"), "rejouer le rattachement");
+  await flush(); await flush();
+  assert.ok(document.body.textContent.includes("Rattachement rejoué sur toutes les soumissions"),
+    "le compte rendu du rattachement s'affiche");
+  assert.ok(byText("div", "Examinées"), "le compte rendu est chiffré");
+
+  assert.equal(ctx.errors.length, 0, "aucune erreur sur l'écran des soumissions");
+});
+
 test("déconnexion : la session est fermée et l'écran de connexion revient", async () => {
   const menu = all("header.sticky button").pop();
   await click(menu, "menu du compte"); await flush();

@@ -183,6 +183,14 @@ export const api = {
   connectorApercu:    (id, corps)    => call("POST", `/connectors/${encodeURIComponent(id)}/apercu`, corps),
   connectorSuggestions:(id, corps)   => call("POST", `/connectors/${encodeURIComponent(id)}/suggestions`, corps),
 
+  /* Chaîne ODK : verser, puis rattacher. Les deux sont réservés à
+     l'administration côté serveur — ils écrivent dans le référentiel
+     opérationnel — et sont volontairement séparés : on doit pouvoir rejouer un
+     rattachement après avoir corrigé un code externe, sans rien re-tirer. */
+  submissions:          (q="")    => call("GET", `/submissions${q}`),
+  ingestSubmissions:    (corps)   => call("POST", "/submissions/ingest", corps),
+  rattacherSubmissions: (corps)   => call("POST", "/submissions/rattacher", corps),
+
   offices:      ()           => call("GET", "/offices"),
   createOffice: (o)          => call("POST", "/offices", o),
   updateOffice: (id, o)      => call("PUT", `/offices/${encodeURIComponent(id)}`, o),

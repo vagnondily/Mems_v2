@@ -102,6 +102,14 @@ export default function MapView({ db, me, notify, go }){
      au lieu d'afficher un damier vide. C'est le défaut qu'avait la première
      version : silencieuse, elle laissait croire à un bogue de l'application. */
   const [tuiles, setTuiles] = useState({ ok:0, ko:0 });
+  /* Relevés GPS des collectes. Ce ne sont PAS les sites : un geopoint enregistre
+     l'endroit où se tenait l'agent au moment du formulaire, ce qui peut différer
+     de la position officielle du site de plusieurs centaines de mètres. On les
+     pose donc en couche distincte, jamais à la place des sites, et on n'écrit
+     rien dans le registre — la question « position déclarée contre position
+     observée » n'est pas tranchée. */
+  const [gps, setGps] = useState(false);
+  const [releves, setReleves] = useState({ points:[], count:0, loading:false, error:"" });
   const GEO_LEVELS = niveaux(db, { from:"adm1", to:"adm4" });
 
   const load = async () => {
@@ -144,6 +152,18 @@ export default function MapView({ db, me, notify, go }){
       .catch(() => { if(alive) setShapes({ features:[], extent:null, tronque:false, loading:false }); });
     return () => { alive = false; };
   }, [geoLevel, geo.codes.adm1, geo.codes.adm2, db.geoVersion?.geom?.units]);
+
+  /* Les relevés ne sont chargés qu'à la demande : c'est une couche d'enquête,
+     pas l'affichage courant, et elle peut peser lourd sur un pays entier. */
+  useEffect(() => {
+    let vivant = true;
+    if(!gps){ setReleves({ points:[], count:0, loading:false, error:"" }); return; }
+    setReleves(r => ({ ...r, loading:true, error:"" }));
+    api.get("/submissions/positions?limit=2000")
+      .then(r => { if(vivant) setReleves({ points:r.points||[], count:r.count||0, loading:false, error:"" }); })
+      .catch(e => { if(vivant) setReleves({ points:[], count:0, loading:false, error:e.message }); });
+    return () => { vivant = false; };
+  }, [gps]);
 
   const adm1s = useMemo(() => names(geo.adm1), [geo.adm1]);
   const adm2s = useMemo(() => names(geo.adm2), [geo.adm2]);
@@ -280,6 +300,7 @@ export default function MapView({ db, me, notify, go }){
   const mapRef = useRef(null);
   const tuilesRef = useRef(null);
   const ptsRef = useRef(null);
+  const gpsRef = useRef(null);
   const shpRef = useRef(null);
   const marqueurs = useRef(new Map());
   const cadreVu = useRef("");
@@ -315,6 +336,7 @@ export default function MapView({ db, me, notify, go }){
     mapRef.current = map;
     shpRef.current = L.layerGroup().addTo(map);
     ptsRef.current = L.layerGroup().addTo(map);
+    gpsRef.current = L.layerGroup().addTo(map);
     map.on("click", () => { setSel(null); setSelShape(null); });
     setPret(v => v + 1);
     return () => {
@@ -322,7 +344,7 @@ export default function MapView({ db, me, notify, go }){
          couches rattaché à une carte détruite fait échouer le prochain ajout
          de couche, et l'erreur est illisible. */
       try{ map.remove(); }catch(e){ /* déjà détruite */ }
-      mapRef.current = null; shpRef.current = null; ptsRef.current = null;
+      mapRef.current = null; shpRef.current = null; ptsRef.current = null; gpsRef.current = null;
       tuilesRef.current = null; marqueurs.current.clear(); cadreVu.current = "";
     };
   }, []);
@@ -416,6 +438,35 @@ export default function MapView({ db, me, notify, go }){
     }
   }, [filtered, colorOf, radiusOf, db, pret]);
 
+  /* Couche des relevés GPS. Volontairement différente à l'œil des points de
+     site — losange creux, teinte violette — pour qu'on ne puisse pas la
+     confondre avec le registre. Un relevé non rattaché à un site est ambré :
+     c'est celui sur lequel il y a du travail. */
+  useEffect(() => {
+    const g = gpsRef.current;
+    if(!g) return;
+    g.clearLayers();
+    if(!gps) return;
+    for(const p of releves.points){
+      if(p.lat == null || p.lon == null) continue;
+      const orphelin = !p.site_id;
+      const m = L.circleMarker([p.lat, p.lon], {
+        radius: 4.5, color: orphelin ? "#b45309" : "#7c3aed", weight: 2,
+        fillColor: "#ffffff", fillOpacity: 0.9,
+      });
+      m.bindPopup(popupReleve(p), { maxWidth:280, className:"mems-popup" });
+      g.addLayer(m);
+      /* Le trait ne se dessine qu'au-delà d'un écart notable : en deçà, il
+         encombrerait la carte sans rien montrer. C'est ce trait qui rend
+         visible la dérive entre position déclarée et position observée — la
+         mesure qui permettra de trancher, plus tard, laquelle fait foi. */
+      if(p.site_lat != null && p.site_lon != null && n(p.ecart_m) > 250){
+        g.addLayer(L.polyline([[p.lat, p.lon], [p.site_lat, p.site_lon]], {
+          color:"#7c3aed", weight:1, opacity:0.5, dashArray:"3 4" }));
+      }
+    }
+  }, [gps, releves.points, pret]);
+
   /* Sélection depuis la liste : on recentre et on ouvre le popup, comme le
      ferait un clic sur le point lui-même. */
   const choisir = (s) => {
@@ -484,6 +535,10 @@ export default function MapView({ db, me, notify, go }){
             taille selon les bénéficiaires</label>
           <Select value={fond} onChange={e=>setFond(e.target.value)}
             options={FONDS.map(f => [f[0], f[1]])} className="mi-py1 mi-xs mi-wauto" />
+          <label className="flex items-center gap-1.5 f115 text-slate-600"
+            title="Positions relevées au GPS par les formulaires de collecte, distinctes de la position déclarée du site">
+            <input type="checkbox" checked={gps} onChange={e=>setGps(e.target.checked)} />
+            relevés GPS{releves.count ? ` (${fmt(releves.count)})` : ""}</label>
           <div className="ml-auto">
             <Btn size="sm" kind="ghost" onClick={recentrer}>Recentrer</Btn>
           </div>
@@ -602,6 +657,45 @@ export default function MapView({ db, me, notify, go }){
                     {!a && <div className="f105 text-amber-700 mt-2">
                       Aucune présence enregistrée dans cette unité.</div>}
                   </div>
+                </div>);
+            })()}
+
+            {gps && (() => {
+              const pts = releves.points;
+              const orphelins = pts.filter(p => !p.site_id).length;
+              const ecarts = pts.map(p => n(p.ecart_m)).filter(v => v > 0).sort((a,b) => a-b);
+              const median = ecarts.length ? ecarts[Math.floor(ecarts.length/2)] : 0;
+              return (
+                <div className="mb-4">
+                  <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">
+                    Relevés GPS des collectes</div>
+                  {releves.error ? <Note tone="err">{releves.error}</Note> : releves.loading ? (
+                    <p className="f115 text-slate-500">Chargement des relevés…</p>
+                  ) : !pts.length ? (
+                    <p className="f115 text-slate-500 leading-relaxed">
+                      Aucun relevé. Ils apparaissent après un tirage ODK Central puis un versement
+                      des soumissions (Programme → Soumissions).</p>
+                  ) : (
+                    <div className="border border-slate-200 rounded p-3">
+                      <dl className="space-y-1 f115">
+                        {[["Relevés affichés", fmt(pts.length)],
+                          ["Non rattachés", fmt(orphelins)],
+                          ["Écart médian au site", median ? `${Math.round(median)} m` : "—"]].map(([k,v]) => (
+                          <div key={k} className="flex justify-between gap-2">
+                            <dt className="text-slate-500">{k}</dt>
+                            <dd className="font-medium tabular-nums">{v}</dd></div>))}
+                      </dl>
+                      <div className="flex items-center gap-2 f105 text-slate-500 mt-2">
+                        <i className="w-2.5 h-2.5 rounded-full border-2 shrink-0" style={{ borderColor:"#7c3aed" }} />
+                        rattaché
+                        <i className="w-2.5 h-2.5 rounded-full border-2 shrink-0 ml-2" style={{ borderColor:"#b45309" }} />
+                        non rattaché
+                      </div>
+                      <p className="f105 text-slate-400 mt-2 leading-relaxed">
+                        Un relevé marque où se tenait l'agent, pas la position officielle du site.
+                        Le trait pointillé signale un écart de plus de 250 m. Le registre n'est
+                        jamais modifié automatiquement.</p>
+                    </div>)}
                 </div>);
             })()}
 
@@ -741,5 +835,28 @@ function popupHtml(s, db){
     ${ligne("Bénéficiaires", fmt(s.beneficiaries))}
     ${ligne("Visites", `${s.done} / ${s.planned || "—"}`)}
     ${ligne("Dernière visite", s.last_visit || "jamais")}
+  </div>`;
+}
+
+/* Fiche d'un relevé GPS. Elle dit d'abord ce que le relevé est — une position
+   observée lors d'une collecte — puis à quel site il se rattache et de combien
+   il s'en écarte. L'écart est l'information utile : c'est lui qui dira si la
+   position déclarée du site mérite d'être corrigée. */
+function popupReleve(p){
+  const ligne = (label, valeur) => valeur
+    ? `<div class="mp-l"><span class="mp-k">${esc(label)}</span><span class="mp-v">${esc(valeur)}</span></div>`
+    : "";
+  const rattache = p.site_id
+    ? `${p.site_name || "site"}${p.site_code ? " · " + p.site_code : ""}`
+    : "";
+  return `<div class="mp">
+    <div class="mp-t">Relevé GPS</div>
+    <div class="mp-s">${esc(p.form_id || "collecte")}${p.svy_date ? " · " + esc(p.svy_date) : ""}</div>
+    ${rattache
+      ? ligne("Site", rattache)
+      : '<div class="mp-l"><span class="mp-k">Site</span><span class="mp-v" style="color:#b45309">non rattaché</span></div>'}
+    ${p.ecart_m != null ? ligne("Écart au site", `${Math.round(p.ecart_m)} m`) : ""}
+    ${p.gps_accuracy != null ? ligne("Précision", `${Math.round(p.gps_accuracy)} m`) : ""}
+    ${ligne("Coordonnées", `${r2(p.lat)}, ${r2(p.lon)}`)}
   </div>`;
 }
