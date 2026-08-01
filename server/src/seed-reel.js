@@ -148,11 +148,16 @@ function semerActivites(wb){
     { nom:3, code:4, categorie:1, extra:5 });
   if(!lignes.length) return { lues:0, crees:0, majs:0 };
 
+  /* L'identité d'une activité est son TAG, et lui seul (migration 028) :
+     « liste des activités = activity tag (valeur unique) ». Le rapprochement
+     se fait donc par tag. Le nom, lui, reste unique en base — s'il est déjà
+     pris par une AUTRE activité, on le désambiguïse par le tag plutôt que
+     de perdre la ligne : les 58 tags du classeur doivent tous exister. */
   const parTag = new Map(db.prepare("SELECT * FROM activity_categories").all()
     .map(a => [a.tag.toUpperCase(), a]));
-  const parNom = new Map(db.prepare("SELECT * FROM activity_categories").all()
+  const nomPris = new Map(db.prepare("SELECT * FROM activity_categories").all()
     .map(a => [a.name.toLowerCase(), a]));
-  let crees = 0, majs = 0, domaines = 0;
+  let crees = 0, majs = 0, domaines = 0, renommes = 0;
 
   tx(() => {
     domaines = assurerDomaines([...new Set(lignes.map(l => domaineDe(l.categorie)))]);
@@ -161,24 +166,32 @@ function semerActivites(wb){
          une coquille de saisie, pas un code différent. */
       const tag = l.code.replace(/\s+/g, "").toUpperCase();
       const domaine = domaineDe(l.categorie);
-      const existant = parTag.get(tag) || parNom.get(l.libelle.toLowerCase());
+      const existant = parTag.get(tag);
       if(existant){
         /* Le nom et le domaine se mettent à jour ; le TAG ne bouge pas —
            c'est la clé de jointure, et la règle du chantier vaut aussi pour
            un chargement en masse. Le renommage a sa route, en cascade. */
+        const autre = nomPris.get(l.libelle.toLowerCase());
+        const nom = (autre && autre.id !== existant.id) ? `${l.libelle} (${tag})` : l.libelle;
+        if(nom !== l.libelle) renommes++;
         db.prepare(`UPDATE activity_categories SET name=?, program_area=?, rev=rev+1 WHERE id=?`)
-          .run(l.libelle, domaine || existant.program_area || null, existant.id);
+          .run(nom, domaine || existant.program_area || null, existant.id);
+        nomPris.set(nom.toLowerCase(), existant);
         majs++;
       } else {
         const id = newId("act");
+        const pris = nomPris.get(l.libelle.toLowerCase());
+        const nom = pris ? `${l.libelle} (${tag})` : l.libelle;
+        if(pris) renommes++;
         db.prepare(`INSERT INTO activity_categories (id,name,tag,program_area,active)
-                    VALUES (?,?,?,?,1)`).run(id, l.libelle, tag, domaine);
-        parTag.set(tag, { id, tag, name:l.libelle });
+                    VALUES (?,?,?,?,1)`).run(id, nom, tag, domaine);
+        parTag.set(tag, { id, tag, name:nom });
+        nomPris.set(nom.toLowerCase(), { id, tag, name:nom });
         crees++;
       }
     }
   })();
-  return { lues:lignes.length, crees, majs, domaines };
+  return { lues:lignes.length, crees, majs, domaines, renommes };
 }
 
 /* ── 2. La masterlist d'indicateurs, par catégorie ───────────────────

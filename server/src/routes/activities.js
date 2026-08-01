@@ -29,8 +29,11 @@ const S = (max) => z.string().trim().max(max).optional().nullable()
 const schema = z.object({
   name:         z.string().trim().min(2).max(120),
   /* Le tag est le CODE de l'activité : court, en majuscules, c'est lui que
-     les sources et les tables portent (activity_tag). */
-  tag:          z.string().trim().min(1).max(24).transform(v => v.toUpperCase()),
+     les sources et les tables portent (activity_tag). Les espaces
+     intérieurs tombent — « FBA _CCS » et « FBA_CCS » sont le même tag, et
+     les laisser cohabiter ferait deux activités pour une (migration 028). */
+  tag:          z.string().trim().min(1).max(24)
+                 .transform(v => v.replace(/\s+/g, "").toUpperCase()),
   program_area: S(120),
   active:       z.boolean().default(true),
   rev:          z.number().int().min(1).optional(),
@@ -76,6 +79,14 @@ r.post("/", requireCap("admin"), (req, res) => {
   if(!p.success) return res.status(422).json({ error:"activité invalide",
     details: p.error.issues.map(i => ({ champ:i.path.join("."), message:i.message })) });
   const b = p.data;
+  /* L'activité EST son tag : le doublon se refuse ici, avec un message qui
+     nomme l'activité déjà en place, plutôt que de laisser remonter la
+     violation d'index sous la forme d'un « doublon » anonyme. */
+  const memeTag = db.prepare("SELECT * FROM activity_categories WHERE tag=? COLLATE NOCASE").get(b.tag);
+  if(memeTag) return res.status(409).json({
+    error:`le tag « ${b.tag} » est déjà celui de « ${memeTag.name} » — un tag désigne une activité `
+      + "et une seule, puisque dix tables le portent comme clé de jointure",
+    activity: shape(memeTag) });
   if(db.prepare("SELECT 1 FROM activity_categories WHERE name=? COLLATE NOCASE").get(b.name))
     return res.status(409).json({ error:"une activité porte déjà ce nom" });
   const id = newId("act");

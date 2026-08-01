@@ -8301,3 +8301,50 @@ test("dérivation : refusée sans contours, et réservée à l'administration", 
   assert.equal((await request(app).post("/api/geo/geometry/deriver")
     .set("Authorization", `Bearer ${te}`).send({})).status, 403);
 });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   « Liste des activités = activity tag (valeur unique) ».
+
+   Le tag est la clé de jointure de dix colonnes de texte : deux activités
+   qui le partagent rendent ces colonnes ambiguës, et aucune requête ne
+   peut dire laquelle des deux elles désignent (migration 028).
+   ═══════════════════════════════════════════════════════════════════════ */
+test("activité : le tag est unique, et le doublon est refusé en nommant l'activité en place", async () => {
+  const existante = db.prepare("SELECT * FROM activity_categories LIMIT 1").get();
+  const r = await request(app).post("/api/activities").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Une autre activité qui vole un tag", tag: existante.tag.toLowerCase() });
+  assert.equal(r.status, 409, JSON.stringify(r.body));
+  assert.ok(new RegExp(existante.name.slice(0, 12)).test(r.body.error), r.body.error);
+  assert.ok(/clé de jointure/.test(r.body.error), r.body.error);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM activity_categories WHERE tag=? COLLATE NOCASE")
+    .get(existante.tag).c, 1);
+});
+
+test("activité : un tag espacé est normalisé, pas dédoublé", async () => {
+  /* « FBA _CCS » et « FBA_CCS » sont le même tag : le classeur du PAM porte
+     les deux écritures, et les laisser cohabiter ferait deux activités. */
+  const a = await request(app).post("/api/activities").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Activité à tag espacé", tag:"  tst _esp  " });
+  assert.equal(a.status, 201, JSON.stringify(a.body));
+  assert.equal(a.body.activity.tag, "TST_ESP");
+
+  const b = await request(app).post("/api/activities").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Le même tag autrement écrit", tag:"TST _ ESP" });
+  assert.equal(b.status, 409, "la seconde écriture du même tag est refusée");
+
+  /* Et la base elle-même refuse, index unique à l'appui : la garde de la
+     route n'est pas la seule défense. */
+  assert.throws(() => db.prepare(
+    "INSERT INTO activity_categories (id,name,tag) VALUES ('act_dbl','Doublon direct','tst_esp')").run(),
+    /UNIQUE/);
+  await request(app).delete(`/api/activities/${a.body.activity.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+});
+
+test("activité : aucun tag en double dans le référentiel servi", async () => {
+  const r = await request(app).get("/api/activities").set("Authorization", `Bearer ${adminToken}`);
+  const tags = r.body.activities.map(a => a.tag.toUpperCase());
+  assert.equal(new Set(tags).size, tags.length,
+    "la liste des activités est la liste des tags, chacun une fois");
+  assert.ok(tags.every(t => t && !/\s/.test(t)), "aucun tag vide ni espacé");
+});

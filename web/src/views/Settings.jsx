@@ -1826,6 +1826,10 @@ function SetActivities({ db, notify, can, reload }){
         son intitulé et son domaine. C'est la source unique réutilisée pour rattacher un site, suivre un
         indicateur de processus et planifier. Désactiver une activité la retire des choix sans effacer
         l'historique.</Note>
+      <Note>La liste des activités <b>est</b> la liste des <b>tags</b> : un tag désigne une activité et
+        une seule. Le référentiel chargé depuis le classeur du PAM en compte 58 (onglet
+        « Annex 5 Activity tags ») ; les espaces intérieurs sont retirés à la saisie, et un tag déjà
+        pris est refusé en nommant l'activité qui le porte.</Note>
       <Note tone="warn">Le <b>tag</b> est le code d'identification : dix tables le portent en texte
         (sites, couverture, plan de distribution, produits, visites, formulaires ODK, caseload,
         zones TPM, soumissions, indicateurs). Il ne se modifie donc pas à l'édition — un
@@ -1882,7 +1886,7 @@ function ActivityModal({ open, act, busy, onClose, onSave }){
           ? "Non modifiable — clé de jointure ; un super le renomme en cascade (Listes paramétrables)"
           : "Court, en majuscules — porté par les sources"}><Input value={f.tag||""}
           readOnly={!!act?.id} disabled={!!act?.id}
-          onChange={e=>u("tag",e.target.value.toUpperCase())} placeholder="URT" /></Field>
+          onChange={e=>u("tag",e.target.value.replace(/\s+/g,"").toUpperCase())} placeholder="URT" /></Field>
         <Field label="Domaine programme"><Select value={f.programArea||""} onChange={e=>u("programArea",e.target.value)}
           empty="— aucun —" options={PROG_AREAS.map(p=>p[0])} /></Field>
         <Field label="Intitulé" className="col-span-2"><Input value={f.name||""}
