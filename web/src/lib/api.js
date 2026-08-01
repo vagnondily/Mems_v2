@@ -10,7 +10,13 @@ export const setToken = (t) => { token = t; };
 export const setUnauthorizedHandler = (fn) => { onUnauthorized = fn; };
 
 export class ApiError extends Error {
-  constructor(status, message, details){ super(message); this.status = status; this.details = details; }
+  /* Le corps complet de la réponse voyage avec l'erreur. Un refus d'intégrité
+     référentielle (409) porte le détail de ce qui retient l'objet — table,
+     colonne, nombre de lignes ; ne garder que `message` et `details` obligeait
+     l'écran à afficher « impossible » sans jamais pouvoir dire pourquoi. */
+  constructor(status, message, details, payload){
+    super(message); this.status = status; this.details = details; this.payload = payload || {};
+  }
 }
 
 async function call(method, path, body, opts = {}){
@@ -33,7 +39,7 @@ async function call(method, path, body, opts = {}){
   if(type.includes("application/json")) { try{ payload = await res.json(); }catch(e){ payload = null; } }
   if(!res.ok){
     if(res.status === 401 && path !== "/auth/login"){ token = null; onUnauthorized(); }
-    throw new ApiError(res.status, payload?.error || `erreur ${res.status}`, payload?.details);
+    throw new ApiError(res.status, payload?.error || `erreur ${res.status}`, payload?.details, payload);
   }
   return payload;
 }
@@ -58,7 +64,7 @@ async function postFile(path, file, field = "file"){
   const res = await fetch(BASE + path, { method:"POST", headers, credentials:"include", body });
   let payload = null;
   try{ payload = await res.json(); }catch(e){}
-  if(!res.ok) throw new ApiError(res.status, payload?.error || `erreur ${res.status}`, payload?.details);
+  if(!res.ok) throw new ApiError(res.status, payload?.error || `erreur ${res.status}`, payload?.details, payload);
   return payload;
 }
 /* Plusieurs fichiers d'un coup (le shapefile : .shp + .dbf + .prj, ou un .zip),
@@ -73,7 +79,7 @@ async function postFiles(path, files, fields = {}){
   const res = await fetch(BASE + path, { method:"POST", headers, credentials:"include", body });
   let payload = null;
   try{ payload = await res.json(); }catch(e){}
-  if(!res.ok) throw new ApiError(res.status, payload?.error || `erreur ${res.status}`, payload?.details);
+  if(!res.ok) throw new ApiError(res.status, payload?.error || `erreur ${res.status}`, payload?.details, payload);
   return payload;
 }
 
@@ -273,6 +279,16 @@ export const api = {
   createActivity: (a)        => call("POST", "/activities", a),
   updateActivity: (id, a)    => call("PUT", `/activities/${encodeURIComponent(id)}`, a),
   deleteActivity: (id)       => call("DELETE", `/activities/${encodeURIComponent(id)}`),
+
+  /* Listes paramétrables typées (chantier S8). Une seule famille d'appels pour
+     onze référentiels : le type est un segment d'URL, jamais un cas particulier
+     du client. `listes()` sert le rail de gauche, `liste(cle)` le volet droit. */
+  listes:       ()           => call("GET", "/listes"),
+  liste:        (cle)        => call("GET", `/listes/${encodeURIComponent(cle)}`),
+  createItem:   (cle, it)    => call("POST", `/listes/${encodeURIComponent(cle)}`, it),
+  updateItem:   (cle, id, it)=> call("PUT", `/listes/${encodeURIComponent(cle)}/${encodeURIComponent(id)}`, it),
+  deleteItem:   (cle, id)    => call("DELETE", `/listes/${encodeURIComponent(cle)}/${encodeURIComponent(id)}`),
+  validerListe: (cle, note)  => call("POST", `/listes/${encodeURIComponent(cle)}/valider`, { note }),
 
   users:      ()             => call("GET", "/users"),
   createUser: (u)            => call("POST", "/users", u),

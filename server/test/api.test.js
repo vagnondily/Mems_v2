@@ -7425,3 +7425,176 @@ test("shapefile : les p-codes en double sont présentés à l'aperçu, et le com
   assert.equal(ok.body.counts.adm4, 2, "les deux fokontany sont importés");
   assert.equal(ok.body.collisions, 1, "le doublon reste signalé");
 });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Chantier S8 — Listes paramétrables typées, en maître-détail.
+
+   Une route pour onze référentiels : ce qui doit être vérifié, c'est que
+   le comportement soit LE MÊME pour une liste générique (`list_item`) et
+   pour une liste native (`activity_categories`, `partners`…), et que
+   l'usage soit compté sur les VRAIES tables filles.
+   ═══════════════════════════════════════════════════════════════════════ */
+test("listes typées : le rail des types est servi avec ses compteurs", async () => {
+  const r = await request(app).get("/api/listes").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200);
+  const cles = r.body.types.map(t => t.cle);
+  for(const attendu of ["activites","denrees","modalites","partenaires","types_partenariat",
+                        "tiers","sous_types_pi","types_site","types_suivi","durees","domaines"])
+    assert.ok(cles.includes(attendu), `le type « ${attendu} » figure au rail : ${cles.join(", ")}`);
+
+  const denrees = r.body.types.find(t => t.cle === "denrees");
+  assert.equal(denrees.native, false, "les denrées vivent dans la table générique");
+  assert.ok(denrees.items >= 12, "les denrées sont semées par la migration");
+  const activites = r.body.types.find(t => t.cle === "activites");
+  assert.equal(activites.native, true, "les activités gardent leur table dédiée");
+});
+
+test("listes typées : une liste générique se lit, se crée, se modifie et se supprime", async () => {
+  const lu = await request(app).get("/api/listes/denrees").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(lu.status, 200);
+  assert.equal(lu.body.type.label, "Denrées et commodités");
+  assert.ok(lu.body.items.some(x => x.code === "Riz"), "le code est la valeur portée par pdd.commodity");
+  assert.ok(lu.body.type.liens.some(l => l.table === "pdd" && l.colonne === "commodity"),
+    "l'écran reçoit la déclaration des tables filles, il ne la recopie pas");
+
+  const cree = await request(app).post("/api/listes/denrees").set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"Manioc", label:"Manioc séché", ordre:20 });
+  assert.equal(cree.status, 201, JSON.stringify(cree.body));
+  const item = cree.body.item;
+  assert.equal(item.usageTotal, 0, "un item neuf n'est référencé nulle part");
+
+  /* Doublon de code, puis de libellé — les deux sont refusés, par type. */
+  assert.equal((await request(app).post("/api/listes/denrees").set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"Manioc", label:"Autre chose" })).status, 409);
+  assert.equal((await request(app).post("/api/listes/denrees").set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"Manioc2", label:"manioc séché" })).status, 409);
+  /* Mais le même code dans une AUTRE liste passe : les listes ne se mélangent pas. */
+  const ailleurs = await request(app).post("/api/listes/types_site")
+    .set("Authorization", `Bearer ${adminToken}`).send({ code:"Manioc", label:"Champ de manioc" });
+  assert.equal(ailleurs.status, 201, JSON.stringify(ailleurs.body));
+  await request(app).delete(`/api/listes/types_site/${ailleurs.body.item.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+
+  /* Verrou optimiste. */
+  const stale = await request(app).put(`/api/listes/denrees/${item.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:item.code, label:"Manioc frais", rev:999 });
+  assert.equal(stale.status, 409, "une révision périmée est refusée");
+  const maj = await request(app).put(`/api/listes/denrees/${item.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:item.code, label:"Manioc frais", rev:item.rev });
+  assert.equal(maj.status, 200, JSON.stringify(maj.body));
+  assert.equal(maj.body.item.label, "Manioc frais");
+
+  const del = await request(app).delete(`/api/listes/denrees/${item.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(del.status, 200);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM list_item WHERE id=?").get(item.id).c, 0);
+});
+
+test("listes typées : un champ propre est contrôlé contre la liste qu'il désigne", async () => {
+  /* Le type de partenariat d'un partenaire est le CODE d'une autre liste :
+     un code inconnu fabriquerait exactement l'orphelin que le gestionnaire
+     est censé empêcher. */
+  const faux = await request(app).post("/api/listes/partenaires")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"PART_X", label:"Partenaire d'essai", champs:{ partnership_type:"INEXISTANT" } });
+  assert.equal(faux.status, 422, JSON.stringify(faux.body));
+  assert.ok(/n'existe pas dans la liste/.test(faux.body.details[0].message), faux.body.details[0].message);
+
+  const bon = await request(app).post("/api/listes/partenaires")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"PART_X", label:"Partenaire d'essai", champs:{ partnership_type:"ONG_NAT" } });
+  assert.equal(bon.status, 201, JSON.stringify(bon.body));
+  assert.equal(bon.body.item.champs.partnership_type, "ONG_NAT");
+  /* Et le type de partenariat compte désormais un usage : il ne se supprime plus. */
+  const typePart = (await request(app).get("/api/listes/types_partenariat")
+    .set("Authorization", `Bearer ${adminToken}`)).body.items.find(x => x.code === "ONG_NAT");
+  assert.equal(typePart.usageTotal, 1, "l'usage remonte depuis partners.partnership_type");
+  const refus = await request(app).delete(`/api/listes/types_partenariat/${typePart.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(refus.status, 409);
+
+  await request(app).delete(`/api/listes/partenaires/${bon.body.item.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+});
+
+test("listes typées : l'usage se compte sur les vraies tables filles, et retient la suppression", async () => {
+  /* Une activité du semis est portée par des sites : la liste doit le voir
+     par sa clé étrangère ET par le tag. */
+  const r = await request(app).get("/api/listes/activites").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200);
+  const utilisee = r.body.items.find(x => x.usageTotal > 0);
+  assert.ok(utilisee, "au moins une activité du semis est référencée");
+  assert.ok(utilisee.usage.some(u => u.table === "sites"), JSON.stringify(utilisee.usage));
+
+  const avant = db.prepare("SELECT COUNT(*) c FROM sites WHERE category_id IS NULL").get().c;
+  const refus = await request(app).delete(`/api/listes/activites/${utilisee.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(refus.status, 409);
+  assert.ok(refus.body.usage.length, "le refus énumère ce qui retient l'item");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM sites WHERE category_id IS NULL").get().c, avant,
+    "aucun site n'a été détaché par la tentative");
+
+  /* La désactivation, elle, passe — c'est l'issue que le refus propose. */
+  const off = await request(app).put(`/api/listes/activites/${utilisee.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:utilisee.code, label:utilisee.label, active:false, rev:utilisee.rev,
+            champs:utilisee.champs });
+  assert.equal(off.status, 200);
+  assert.equal(off.body.item.active, false);
+  await request(app).put(`/api/listes/activites/${utilisee.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:utilisee.code, label:utilisee.label, active:true, rev:off.body.item.rev,
+            champs:utilisee.champs });
+});
+
+test("listes typées : la validation d'une liste tombe dès qu'un item change", async () => {
+  const val = await request(app).post("/api/listes/durees/valider")
+    .set("Authorization", `Bearer ${adminToken}`).send({});
+  assert.equal(val.status, 200);
+  assert.ok(val.body.validation.at, "la validation est datée");
+  assert.ok(val.body.validation.par, "et signée");
+
+  const lu = await request(app).get("/api/listes/durees").set("Authorization", `Bearer ${adminToken}`);
+  assert.ok(lu.body.validation, "l'écran voit la liste comme validée");
+
+  const it = lu.body.items[0];
+  await request(app).put(`/api/listes/durees/${it.id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:it.code, label:it.label + " ", rev:it.rev });
+  const apres = await request(app).get("/api/listes/durees").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(apres.body.validation, null,
+    "une liste modifiée après sa relecture n'est plus une liste relue");
+});
+
+test("listes typées : lecture ouverte, écriture réservée à l'administration", async () => {
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"listedit@test.local", password:"ListEditMotDePasse1", first_name:"ListEdit",
+            role:"editor", tabs:["home"], active:true });
+  motDePasseAdopte("listedit@test.local");
+  const t = (await login("listedit@test.local", "ListEditMotDePasse1")).body.token;
+  assert.equal((await request(app).get("/api/listes").set("Authorization", `Bearer ${t}`)).status, 200);
+  assert.equal((await request(app).get("/api/listes/denrees").set("Authorization", `Bearer ${t}`)).status, 200);
+  const refus = await request(app).post("/api/listes/denrees").set("Authorization", `Bearer ${t}`)
+    .send({ code:"Interdit", label:"Interdit" });
+  assert.equal(refus.status, 403, "un éditeur ne configure pas les référentiels");
+  assert.equal((await request(app).get("/api/listes/inconnue").set("Authorization", `Bearer ${t}`)).status, 404);
+});
+
+test("listes typées : le plan de distribution accepte une modalité hors des trois d'origine", async () => {
+  /* La migration 026 lève l'énumération de `pdd.modality` : la liste des
+     modalités se paramètre, donc le schéma ne peut plus la figer. Les
+     fichiers réels du bureau portent déjà une modalité hybride. */
+  const ligne = db.prepare("SELECT * FROM pdd LIMIT 1").get();
+  assert.ok(ligne, "le semis a rempli le plan de distribution");
+  db.prepare("UPDATE pdd SET modality='Mix' WHERE id=?").run(ligne.id);
+  assert.equal(db.prepare("SELECT modality FROM pdd WHERE id=?").get(ligne.id).modality, "Mix");
+  db.prepare("UPDATE pdd SET modality=? WHERE id=?").run(ligne.modality, ligne.id);
+  /* Et la reconstruction de la table n'a rien perdu : la contrainte de statut
+     et les index sont toujours là. */
+  assert.throws(() => db.prepare("UPDATE pdd SET status='n''importe quoi' WHERE id=?").run(ligne.id));
+  const idx = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='pdd'")
+    .all().map(x => x.name);
+  for(const n of ["idx_pdd_period","idx_pdd_bureau","idx_pdd_geo_pcode"])
+    assert.ok(idx.includes(n), `l'index ${n} a été recréé (${idx.join(", ")})`);
+});

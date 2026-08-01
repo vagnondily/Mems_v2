@@ -10,6 +10,7 @@ import { collecterLocalites, csvLocalites } from "../lib/exportGeo.js";
 import { niveau, niveaux } from "../lib/levels.js";
 import { Sources } from "./ActualData.jsx";
 import { MonthCellModal, MonthGrid, MonthLegend, PDD_ACTS, PDD_COMMODITIES } from "./Planning.jsx";
+import { SetListes } from "./Listes.jsx";
 import { SetCodeReferentiels } from "./Referentiels.jsx";
 import { BLOCKS } from "./Reports.jsx";
 import { PageHead } from "./Shell.jsx";
@@ -31,7 +32,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
     ...(me?.role === "super" ? [["guided","Configuration guidée"]] : []),
     ["general","Général"],["country","Pays"],["offices","Bureaux"],
     ["locations","Localités"],["scope","Périmètre des bureaux"],
-    ["activities","Activités"],["indicators","Indicateurs"],
+    ["activities","Activités"],["listes","Listes paramétrables"],["indicators","Indicateurs"],
     ["calc","Calculs"],["rations","Rations"],["odk","ODK Central"],["connectors","Connecteurs"],
     ["codes","Référentiels de codes"],["templates","Modèles de rapport"],
     ["api","API"],["users","Utilisateurs"],["about","À propos"]];
@@ -47,6 +48,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
       {sub==="locations" && <SetLocations db={db} notify={notify} can={can} reload={reload} />}
       {sub==="scope" && <SetScope db={db} notify={notify} can={can} />}
       {sub==="activities" && <SetActivities db={db} notify={notify} can={can} reload={reload} />}
+      {sub==="listes" && <SetListes notify={notify} can={can} me={me} />}
       {sub==="indicators" && <SetIndicators db={db} set={set} notify={notify} can={can} />}
       {sub==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
       {sub==="rations" && <SetRations db={db} set={set} notify={notify} can={can} />}
