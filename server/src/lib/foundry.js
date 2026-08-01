@@ -298,19 +298,34 @@ export async function lireJsonHttp({ baseUrl, chemin = "", porteur, pointeur = "
    celle refermée sur `@odata.nextLink` (lib/odkClient.js). Un import complet, le
    jour où il existera, devra la suivre et la revérifier. */
 export const CHEMIN_DONNEES_KOBO_DEFAUT = "/api/v2/assets/{uid}/data/";
+/* L'API historique, celle des déploiements ONA/kobocat comme la MoDa du PAM
+   (moda.wfp.org). Elle NE répond PAS 410 sur ces instances — c'est la seule que
+   MoDa expose : `GET /api/v1/data/{id}` où l'identifiant est le NUMÉRO du
+   formulaire (ex. 340943), pas l'uid d'un asset. La réponse est un tableau JSON
+   direct, sans l'emballage {count, results} du paginateur v2. Le justificatif y
+   est le même jeton `Token …`. On ne devine pas la version : l'administrateur la
+   choisit (config.apiVersion), parce qu'une même adresse peut servir les deux et
+   que seul lui sait laquelle son instance honore. */
+export const CHEMIN_DONNEES_KOBO_V1_DEFAUT = "/api/v1/data/{formId}";
 const PLAFOND_KOBO = 1000;
 
-export async function lireKobo({ baseUrl, uid, porteur, chemin = CHEMIN_DONNEES_KOBO_DEFAUT,
-  pointeur = "", limite = 100 } = {}){
+export async function lireKobo({ baseUrl, uid, formId, apiVersion = "v2", porteur,
+  chemin, pointeur = "", limite = 100 } = {}){
 
-  if(!uid) throw refus(
-    "identifiant du formulaire Kobo (uid de l'asset) absent : renseignez-le dans la configuration "
-    + "du connecteur. KoboToolbox n'a pas de « projet » au sens d'ODK Central — un formulaire y est "
-    + "désigné par son seul uid.", "SOURCE_CONFIG");
-  const u = await verifierBaseSortante(baseUrl, "le serveur KoboToolbox");
+  const v1 = apiVersion === "v1";
+  const identifiant = v1 ? formId : uid;
+  if(!identifiant) throw refus(v1
+    ? "numéro du formulaire MoDa/Kobo v1 absent : renseignez-le dans la configuration du connecteur. "
+      + "L'API v1 désigne un formulaire par son NUMÉRO (celui de l'adresse …/api/v1/data/340943)."
+    : "identifiant du formulaire Kobo (uid de l'asset) absent : renseignez-le dans la configuration "
+      + "du connecteur. KoboToolbox n'a pas de « projet » au sens d'ODK Central — un formulaire y est "
+      + "désigné par son seul uid.", "SOURCE_CONFIG");
+  const u = await verifierBaseSortante(baseUrl, v1 ? "le serveur MoDa/Kobo (API v1)" : "le serveur KoboToolbox");
 
   const base = u.toString().replace(/\/+$/, "");
-  const suffixe = String(chemin || CHEMIN_DONNEES_KOBO_DEFAUT).replace("{uid}", encodeURIComponent(uid));
+  const gabarit = String(chemin || (v1 ? CHEMIN_DONNEES_KOBO_V1_DEFAUT : CHEMIN_DONNEES_KOBO_DEFAUT));
+  const suffixe = gabarit.replace("{uid}", encodeURIComponent(uid || ""))
+                         .replace("{formId}", encodeURIComponent(formId || ""));
   const url = new URL(base + (suffixe.startsWith("/") ? suffixe : "/" + suffixe));
   url.searchParams.set("format", "json");
   url.searchParams.set("limit", String(Math.min(Math.max(1, Number(limite) || 100), PLAFOND_KOBO)));
@@ -320,8 +335,9 @@ export async function lireKobo({ baseUrl, uid, porteur, chemin = CHEMIN_DONNEES_
   let payload;
   try{ payload = JSON.parse(texte); }
   catch(e){ throw refus("réponse de KoboToolbox illisible : ce n'est pas du JSON valide.", "SOURCE_HTTP"); }
-  /* `results` est la clé du paginateur ; `extraireLignes` la connaît déjà, et le
-     pointeur reste disponible pour une instance qui emballerait autrement. */
+  /* v2 : `results` est la clé du paginateur ; `extraireLignes` la connaît déjà.
+     v1 : la réponse est un tableau JSON direct, que `extraireLignes` rend tel quel.
+     Le pointeur reste disponible pour une instance qui emballerait autrement. */
   return { rows: extraireLignes(payload, pointeur).slice(0, Number(limite) || 100), format: "JSON",
            total: Number.isFinite(payload?.count) ? payload.count : null };
 }

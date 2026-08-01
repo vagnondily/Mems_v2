@@ -40,7 +40,7 @@ const SETTINGS_GROUPS = (superUser) => [
   { cle:"org", label:"Organisation & lieux", items:[
     ["offices","Bureaux"], ["scope","Périmètre des bureaux"], ["locations","Localités"] ] },
   { cle:"src", label:"Collecte & sources", items:[
-    ["odk","ODK Central"], ["connectors","Connecteurs"] ] },
+    ["sources","Sources de données"] ] },
   { cle:"calc", label:"Calculs & rations", items:[
     ["calc","Calculs"], ["rations","Rations"] ] },
   { cle:"acces", label:"Restitution & accès", items:[
@@ -100,8 +100,9 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
       {active==="indicators" && <SetIndicators db={db} set={set} notify={notify} can={can} />}
       {active==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
       {active==="rations" && <SetRations db={db} set={set} notify={notify} can={can} />}
-      {active==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} reload={reload} />}
-      {active==="connectors" && <SetConnectors notify={notify} can={can} />}
+      {(active==="sources" || active==="odk" || active==="connectors") &&
+        <SetSources db={db} set={set} notify={notify} can={can} reload={reload}
+          depart={active==="odk" ? "odk" : "connectors"} />}
       {active==="codes" && <SetCodeReferentiels notify={notify} can={can} />}
       {active==="templates" && <SetTemplates db={db} set={set} notify={notify} can={can} />}
       {active==="api" && <SetApi db={db} notify={notify} />}
@@ -142,7 +143,7 @@ function SetGuided({ db, setSub }){
       etat: (db.indicators || []).length ? `${fmt(crf)} CRF · ${fmt(xls)} processus` : "Aucun indicateur" },
     { cle:"sources", icon:Link2, titre:"Sources de données",
       desc:"Les formulaires ODK Central et les connecteurs qui alimentent la collecte.",
-      pret: (db.odkForms || []).length > 0, tab:"odk",
+      pret: (db.odkForms || []).length > 0, tab:"sources",
       etat: (db.odkForms || []).length ? `${fmt(db.odkForms.length)} formulaire(s) ODK` : "Aucune source configurée" },
   ];
   const prets = etapes.filter(e => e.pret).length;
@@ -2717,6 +2718,33 @@ function RationModal({ open, ligne, denrees, activites, labels, onCreateDenree, 
     </Modal>);
 }
 
+/* ══════════════════ Sources de données (ODK Central + Connecteurs, réunis) ══════════════════
+   « L'onglet ODK Central est le même que les sources. » Il l'était de fait : deux
+   entrées de menu pour une seule idée — d'où viennent les données. On les réunit
+   sous un seul sujet, avec un aiguillage en haut entre les deux mécanismes qui
+   restent, eux, distincts côté serveur : les connecteurs (déclarer où lire, mettre
+   les variables en face des champs MEMS) et le tirage ODK Central (son cache et son
+   écran de correspondance propres). Une seule porte, deux ateliers derrière. */
+function SetSources({ db, set, notify, can, reload, depart }){
+  const [vue,setVue] = useState(depart === "odk" ? "odk" : "connectors");
+  const onglets = [["connectors","Connecteurs"], ["odk","ODK Central"]];
+  return (
+    <div className="space-y-4">
+      {/* Aiguillage segmenté : même geste que les pastilles de sous-navigation
+          des autres écrans, mais à deux positions seulement — inutile d'un rail. */}
+      <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+        {onglets.map(([cle,label])=>(
+          <button key={cle} onClick={()=>setVue(cle)}
+            className={clsx("px-4 py-1.5 f125 rounded-md font-semibold transition-colors",
+              vue===cle ? "bg-white shadow-sm c-bd" : "text-slate-500 hover:text-slate-800")}>
+            {label}</button>))}
+      </div>
+      {vue==="connectors"
+        ? <SetConnectors notify={notify} can={can} />
+        : <SetOdk db={db} set={set} notify={notify} can={can} reload={reload} />}
+    </div>);
+}
+
 /* ── ODK Central ── */
 function SetOdk({ db, set, notify, can, reload }){
   const [edit,setEdit] = useState(null);
@@ -3533,17 +3561,39 @@ function ConnectorModal({ open, c, offices, busy, registre, onClose, onSave }){
             <Input value={f.config?.formId||""} onChange={e=>uc("formId",e.target.value)} placeholder="MDG_GD_PREVMA_v2" /></Field>
         </>}
         {/* Kobo n'a pas de « projet » : un formulaire y est désigné par le seul uid
-            de son asset. Afficher le couple projet / formulaire d'ODK laissait
-            croire le contraire, et le champ « Projet » n'était lu par personne. */}
+            de son asset (API v2), ou par son NUMÉRO (API v1, celle de la MoDa du
+            PAM). L'administrateur choisit la version : une même adresse peut servir
+            les deux, seul lui sait laquelle son instance honore. */}
         {f.kind==="kobo" && <>
-          <Field label="Identifiant du formulaire (uid de l'asset)" className="col-span-2">
-            <Input value={f.config?.uid||""} onChange={e=>uc("uid",e.target.value)}
-              placeholder="aBcDeFgHiJkLmNoPqRsTuV" /></Field>
-          <Field label="Chemin de lecture"
-            hint="Laisser vide pour /api/v2/assets/{uid}/data/ — à ajuster si l'instance diffère">
-            <Input value={f.config?.chemin||""} onChange={e=>uc("chemin",e.target.value)} /></Field>
-          <Field label="Pointeur vers les lignes" hint="Vide convient : Kobo emballe ses lignes dans « results »">
-            <Input value={f.config?.pointeur||""} onChange={e=>uc("pointeur",e.target.value)} placeholder="results" /></Field>
+          <Field label="Version de l'API" className="col-span-2"
+            hint="MoDa (moda.wfp.org) et les instances ONA/kobocat utilisent l'API v1 ; KoboToolbox récent, l'API v2.">
+            <Select value={f.config?.apiVersion||"v2"} onChange={e=>uc("apiVersion",e.target.value)}
+              options={[["v1","API v1 — MoDa / ONA (numéro de formulaire)"],["v2","API v2 — KoboToolbox (uid d'asset)"]]} /></Field>
+          {(f.config?.apiVersion||"v2")==="v1" ? <>
+            {/* Le geste demandé, mot pour mot : coller le lien du formulaire au
+                format …/api/v1/data/340943, l'adresse de base et le numéro sont
+                extraits tout seuls. Reste la clé d'API (champ « justificatif »
+                ci-dessus), puis « Tester » — et si ça passe, « Enregistrer ». */}
+            <Field label="Coller le lien complet des données du formulaire" className="col-span-2"
+              hint="Format https://moda.wfp.org/api/v1/data/340943 — l'adresse et le numéro sont extraits automatiquement">
+              <Input placeholder="https://moda.wfp.org/api/v1/data/340943" onChange={e=>{
+                const m = /^(https?:\/\/[^/]+)\/api\/v1\/data\/(\d+)/i.exec((e.target.value||"").trim());
+                if(m) setF(p=>({ ...p, base_url:m[1], config:{ ...(p.config||{}), apiVersion:"v1", formId:m[2] } })); }} /></Field>
+            <Field label="Numéro du formulaire" hint="Celui de l'adresse …/api/v1/data/340943">
+              <Input value={f.config?.formId||""} onChange={e=>uc("formId",e.target.value)} placeholder="340943" /></Field>
+            <Field label="Chemin de lecture"
+              hint="Laisser vide pour /api/v1/data/{formId} — à ajuster si l'instance diffère">
+              <Input value={f.config?.chemin||""} onChange={e=>uc("chemin",e.target.value)} /></Field>
+          </> : <>
+            <Field label="Identifiant du formulaire (uid de l'asset)" className="col-span-2">
+              <Input value={f.config?.uid||""} onChange={e=>uc("uid",e.target.value)}
+                placeholder="aBcDeFgHiJkLmNoPqRsTuV" /></Field>
+            <Field label="Chemin de lecture"
+              hint="Laisser vide pour /api/v2/assets/{uid}/data/ — à ajuster si l'instance diffère">
+              <Input value={f.config?.chemin||""} onChange={e=>uc("chemin",e.target.value)} /></Field>
+            <Field label="Pointeur vers les lignes" hint="Vide convient : Kobo emballe ses lignes dans « results »">
+              <Input value={f.config?.pointeur||""} onChange={e=>uc("pointeur",e.target.value)} placeholder="results" /></Field>
+          </>}
         </>}
       </div>
       <Sw label="Connecteur actif" hint="Un connecteur inactif reste configuré mais n'est plus proposé"

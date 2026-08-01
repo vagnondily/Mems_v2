@@ -3464,6 +3464,15 @@ let srcMock, srcUrl, srcRequetes, srcSessions;
         { pcode: "mg 232 09050001", annee: "2026", mois: "4", planifie: "1 400", atteint: "1 380" },
         { pcode: "MG23209050002", annee: "2026", mois: "4", planifie: "700", atteint: "690" }] });
     }
+    /* ── API v1 façon MoDa (moda.wfp.org) / ONA : tableau JSON DIRECT, sans
+       l'emballage {count, results} du paginateur v2, le formulaire désigné par son
+       NUMÉRO. Le justificatif reste `Token …`. ── */
+    if(/^\/api\/v1\/data\/\d+$/.test(chemin)){
+      if(koboRefuse(AUTH.cleKobo)) return;
+      return json(res, 200, [
+        { pcode: "mg 232 09050001", annee: "2026", mois: "4", planifie: "1 400", atteint: "1 380" },
+        { pcode: "MG23209050002", annee: "2026", mois: "4", planifie: "700", atteint: "690" }]);
+    }
 
     /* ── Points d'entrée neutres, pour lire l'en-tête réellement émis ── */
     if(chemin === "/entetes")
@@ -3877,6 +3886,49 @@ test("connecteur KoboToolbox : la nature « kobo » est réellement lue, avec le
     base_url: srcUrl, config: {}, auth_schema: "jeton", secret: "x" });
   assert.equal(sansUid.status, 422);
   assert.match(sansUid.body.error, /uid/);
+});
+
+test("connecteur MoDa/Kobo (API v1) : le lien …/api/v1/data/{numéro} est lu, tableau JSON direct", async () => {
+  /* La demande, mot pour mot : brancher la MoDa du PAM en collant le lien du
+     formulaire au format https://moda.wfp.org/api/v1/data/340943 + la clé d'API,
+     tester, enregistrer. La v1 désigne le formulaire par son NUMÉRO et rend un
+     tableau JSON DIRECT, sans l'emballage {count, results} de la v2. */
+  const c = (await creerConnecteur({ name: "MoDa — GD PREVMA", kind: "kobo",
+    base_url: srcUrl, config: { apiVersion: "v1", formId: "340943" },
+    auth_schema: "jeton", secret: AUTH.cleKobo })).body.connector;
+
+  await request(app).put(`/api/connectors/${c.id}/mappings`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ entity: "beneficiaire", mappings: [
+      { entity: "beneficiaire", mems_field: "geo_pcode", source_path: "pcode", transform: "pcode" },
+      { entity: "beneficiaire", mems_field: "annee", source_path: "annee", transform: "entier" },
+      { entity: "beneficiaire", mems_field: "mois", source_path: "mois", transform: "entier" },
+      { entity: "beneficiaire", mems_field: "planifies", source_path: "planifie", transform: "entier" },
+      { entity: "beneficiaire", mems_field: "atteints", source_path: "atteint", transform: "entier" }] });
+
+  const r = await request(app).post(`/api/connectors/${c.id}/apercu`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ entity: "beneficiaire", limite: 5 });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.lignesLues, 2, "les deux lignes du tableau v1 sont lues");
+  assert.equal(r.body.ok, true, JSON.stringify(r.body.manquants));
+  assert.equal(r.body.lignes[0].apres.geo_pcode, "MG23209050001");
+
+  const appel = dernierAppel("/api/v1/data/340943");
+  assert.ok(appel, "le serveur lit bien le point v1 des données");
+  assert.equal(appel.auth, `Token ${AUTH.cleKobo}`, "mot-clé « Token », comme la v2");
+
+  /* L'épreuve de connexion v1 vise ce même point (borné à une ligne) : un 2xx y
+     prouve à la fois le justificatif et l'existence du formulaire. */
+  const rc = await request(app).post(`/api/connectors/${c.id}/test`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(rc.status, 200, JSON.stringify(rc.body));
+  assert.equal(rc.body.ok, true, JSON.stringify(rc.body));
+
+  /* Un numéro manquant se dit à la déclaration, comme l'uid côté v2. */
+  const sansNum = await creerConnecteur({ name: "MoDa sans numéro", kind: "kobo",
+    base_url: srcUrl, config: { apiVersion: "v1" }, auth_schema: "jeton", secret: "x" });
+  assert.equal(sansNum.status, 422);
+  assert.match(sansNum.body.error, /formId|numéro/i);
 });
 
 test("épreuve de connexion : un diagnostic utilisable, et jamais le secret", async () => {
