@@ -106,6 +106,7 @@ export const api = {
   deleteSite:  (id)          => call("DELETE", `/sites/${encodeURIComponent(id)}`),
   saveMonth:   (id, m)       => call("PUT", `/sites/${encodeURIComponent(id)}/months`, m),
   bulkSites:   (ids, field, value) => call("POST", "/sites/bulk", { ids, field, value }),
+  gpsAudit:    (q="")        => call("GET", `/sites/gps-audit${q}`),
 
   /* Les suppressions sont explicites : le serveur ne déduit plus ce qui manque. */
   syncCollection: (name, rows, deletes = []) =>
