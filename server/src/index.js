@@ -28,6 +28,7 @@ import importRoutes from "./routes/import.js";
 import xlsformRoutes from "./routes/xlsform.js";
 import odkRoutes from "./routes/odk.js";
 import submissionRoutes from "./routes/submissions.js";
+import aliasRoutes from "./routes/aliases.js";
 import connectorRoutes from "./routes/connectors.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -128,6 +129,10 @@ app.use("/api", authenticate, odkRoutes);
 /* Suite immédiate du tirage ODK : `odk-forms/:id/pull` remplit le cache,
    `submissions/ingest` en tire des lignes rattachées à des sites. */
 app.use("/api", authenticate, submissionRoutes);
+/* Les codes externes des sites : monté sous /api et APRÈS le routeur des sites,
+   parce qu'il sert « /sites/:id/aliases » — deux segments, que `/:id` du routeur
+   des sites ne capte pas, et qui lui reviennent donc naturellement. */
+app.use("/api", authenticate, aliasRoutes);
 app.use("/api", authenticate, xlsformRoutes);
 /* Connecteurs et correspondance des variables : monté sous /api comme les deux
    précédents, dont il prolonge le travail — le XLSForm dit ce que la source

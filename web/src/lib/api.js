@@ -191,6 +191,24 @@ export const api = {
   ingestSubmissions:    (corps)   => call("POST", "/submissions/ingest", corps),
   rattacherSubmissions: (corps)   => call("POST", "/submissions/rattacher", corps),
 
+  /* Le rattachement décidé par un humain, soumission par soumission — ce que le
+     résolveur refuse de deviner et qu'aucun code externe ne tranchera.
+
+     `creer_alias` demande en plus que le code brut de la soumission soit retenu
+     comme code de reconnaissance du site : sans lui, la décision ne vaut que
+     pour cette ligne et le geste est à refaire à chaque collecte du même site.
+
+     Le détachement a sa propre route plutôt qu'un `site_id` nul sur celle-ci :
+     les deux gestes ne conservent pas la même chose. Rattacher pose une passe
+     « manuel » qui résiste au rejeu ; détacher la retire et rend la question au
+     résolveur. Un seul point d'entrée pour deux effets contraires obligerait à
+     lire le corps de la requête pour savoir laquelle des deux on a demandée. */
+  rattacherSubmissionA: (id, { site_id, creer_alias = false } = {}) =>
+    call("POST", `/submissions/${encodeURIComponent(id)}/rattacher-a`,
+         { site_id, creer_alias: !!creer_alias }),
+  detacherSubmission:   (id) =>
+    call("POST", `/submissions/${encodeURIComponent(id)}/detacher`, {}),
+
   offices:      ()           => call("GET", "/offices"),
   createOffice: (o)          => call("POST", "/offices", o),
   updateOffice: (id, o)      => call("PUT", `/offices/${encodeURIComponent(id)}`, o),

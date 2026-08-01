@@ -15,6 +15,46 @@ Toute affirmation ci-dessous a été vérifiée dans le code. Là où une vérif
 
 ---
 
+# Journal de livraison
+
+Ce document décrit un état daté. Ce qui a été livré depuis est consigné ici, avec le commit
+qui le porte — le corps du document reste écrit au moment de l'audit, et le lire sans ce
+journal donnerait une image fausse de ce qui reste à faire.
+
+**Tests au dernier commit : 134 côté serveur, 28 côté web, 0 échec. Audit de production :
+aucun avis grave, ni serveur ni web.**
+
+| Commit | Ce qui est livré | Effet sur ce document |
+|---|---|---|
+| `a189dce` | Carte réécrite sur Leaflet avec fond libre, **`xlsx` supprimé du frontend** (le XLSForm est lu par le serveur, `POST /api/xlsform/parse`), **huit correctifs du chantier A**, `.dockerignore`, audit de CI qui échoue vraiment, Vite sur `127.0.0.1` | **Chantier 3 clos autrement** : la dépendance vulnérable est retirée au lieu d'être mise à jour depuis un CDN tiers — le risque de chaîne d'approvisionnement est supprimé, pas déplacé. **Chantier A : 8 points sur 10 faits.** **Chantier C : 4 points sur 10 faits.** |
+| `cf42bf8` | Couche générique de connecteurs et de correspondance des variables (migration 016, `lib/champs.js`, `lib/mapping.js`, `routes/connectors.js`, écran Paramètres → Connecteurs), client Foundry | Répond à la demande « un système de mapping des variables à chaque liaison ». **La migration `submissions` prend le n° 017.** |
+| `49062d9` | Fonds de carte au choix et échec de tuiles **visible**, vue d'ensemble dans le panneau de droite, cartographie promue au premier niveau, nouveau logo | **M1 tranché autrement que prévu : le fond est libre et sans clé, pas Google.** Le propriétaire du produit a demandé un affichage gratuit ; Google Maps facture chaque ouverture. **Q20, Q24 et Q29 tombent donc d'elles-mêmes.** M2, M3 et M4 restent. |
+| `68de783` | Cloche de notifications (**K3**), sélecteur d'année et filtre de période (**Q9 appliquée, K1 partiel**), chaîne ODK côté serveur (migration 017, résolveur, « déjà suivi », GPS), **menus déroulants de l'en-tête supprimés** | **K3 fait. L4/13d fait côté serveur.** Le défaut d'affichage des menus est corrigé à la racine : `overflow-x-auto` sur la barre empêchait le panneau d'être visible, et le bouton naviguait *et* ouvrait le menu. |
+| `f0a6cdd` | Écran Programme → Soumissions ODK, code externe dans la fiche de site, double date de dernière visite, couche GPS sur la carte, **correction d'une perte de données sur `PUT /api/sites/:id`** | **Chantier O largement fait.** Le `PUT` n'était pas partiel : renommer un site effaçait antenne, catégorie, activité, type et code externe. Même défaut que sur les comptes, sur une table où il fait plus de dégâts. |
+
+| *(ce commit)* | **Codes externes multiples** (migration 018 : un site peut être désigné différemment par chaque formulaire), import d'une table de correspondance, **rattachement manuel tracé** avec création d'alias à la volée, et **score de risque aligné sur la date qui fait foi** | **SMP devient rattachable dès que le bureau fournit sa table.** Le rattachement manuel est protégé de tout rejeu et de tout re-versement. La divergence entre score, cloche et carte est résorbée : les trois lisent la même date. |
+
+## Ce qui reste ouvert, et pourquoi
+
+- **Chantier A, points 6 et 10** : un compte prestataire n'est toujours pas cloisonné hors du
+  module TPM, et la fuite de périmètre à l'agrégation de `GET /caseload` n'est pas traitée.
+- **Chantier B** : `exceljs` reste un cul-de-sac amont (dernière version publiée en 2023) et
+  `better-sqlite3` embarque toujours une SQLite en deçà du seuil de CVE-2025-6965. Node 20 est
+  en fin de vie et épinglé à quatre endroits.
+- **Chantiers D, E, F, G** : intacts. La persistance des sept réglages perdus au rechargement
+  reste le plus gênant à l'usage.
+- **Chantiers N et P** : intacts. Les référentiels MRE et le modèle d'indicateurs ne
+  correspondent toujours à aucun référentiel du PAM.
+- **SMP reste non rattachable** : ses codes sont des entiers hors du référentiel p-code. Le
+  mécanisme d'alias est en cours de livraison ; la table de correspondance des 1 251 codes
+  école, elle, doit venir du bureau — elle ne s'invente pas.
+- **Q15c** (sur quelle période un site compte comme « déjà suivi »), **Q25** et **Q26**
+  (position déclarée contre position observée) restent des décisions métier. Le code les
+  prépare — la fenêtre est un paramètre, l'écart en mètres est mesuré et affiché — mais ne les
+  prend pas.
+
+---
+
 ## Statut corrigé des chantiers précédents
 
 ### Chantier 1 — PDD, calcul automatique des rations — était « FAIT », en réalité **partiel**

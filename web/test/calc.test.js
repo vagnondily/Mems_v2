@@ -15,19 +15,25 @@ import { makeDom } from "./harness.mjs";
    chargé nativement par Node.
    ───────────────────────────────────────────────────────────────────── */
 const OUT = path.resolve("test/_calc.mjs");
-let calc, periode;
+const OUT_CONST = path.resolve("test/_constants.mjs");
+let calc, constants, periode;
 before(async () => {
   makeDom("http://127.0.0.1:1/api");
-  execFileSync("npx", ["esbuild", "src/lib/calc.js", "--bundle", "--format=esm",
+  const bundle = (src, out) => execFileSync("npx", ["esbuild", src, "--bundle", "--format=esm",
     "--loader:.jsx=jsx", "--jsx=automatic",
     "--external:react", "--external:react-dom", "--external:recharts", "--external:lucide-react",
-    `--outfile=${OUT}`], { stdio:"pipe" });
+    `--outfile=${out}`], { stdio:"pipe" });
+  bundle("src/lib/calc.js", OUT);
+  /* Le barème de priorité vit dans constants.js, qui entre dans le même cycle
+     d'imports : il se bundle donc de la même façon. */
+  bundle("src/lib/constants.js", OUT_CONST);
   calc = await import(OUT);
+  constants = await import(OUT_CONST);
   /* periode.js ne dépend d'aucun composant : il se charge tel quel, sans passer
      par esbuild — ce qui vérifie au passage qu'il reste bien sans dépendance. */
   periode = await import(path.resolve("src/lib/periode.js"));
 });
-after(() => { try{ fs.unlinkSync(OUT); }catch(e){} });
+after(() => { for(const f of [OUT, OUT_CONST]){ try{ fs.unlinkSync(f); }catch(e){} } });
 
 test("evalIndicator : arithmétique, comparaisons, ternaire et chaînes", () => {
   const r1 = calc.evalIndicator("a + b * 2", { a:1, b:2 });
@@ -66,6 +72,111 @@ test("applyFormulas : enchaîne les formules et journalise les erreurs par varia
   assert.equal(out[1].score_recep, 0); assert.equal(out[1].classe, "Insuffisant");
   assert.equal(out[0].casse, null);
   assert.equal(errors.f3.count, 2);
+});
+
+/* ─────────────────────────────────────────────────────────────────────
+   Score de risque et date de dernière visite.
+   Le serveur sert trois dates par site : celle cochée dans la grille mensuelle,
+   celle observée dans les soumissions ODK, et l'arbitrage des deux. Ce qui se
+   teste ici est que le CALCUL suit l'arbitrage — un site réellement visité ne
+   doit plus remonter en tête des priorités faute de case cochée — sans rien
+   changer aux sites qu'aucune soumission n'a jamais touchés.
+   ───────────────────────────────────────────────────────────────────── */
+const ilYAMois = (m) => new Date(Date.now() - m * 30.44 * 86400000).toISOString().slice(0, 10);
+
+/* Site nu : aucun drapeau levé, charge sous le premier seuil. Tout ce qui bouge
+   d'un cas à l'autre ne peut donc venir que de la date de dernière visite. */
+const siteNu = (id, dates) => ({ id, poi:"Site " + id, subOffice:"BT", activityTag:"URT",
+  status:"Active", beneficiaries:100, security:0, synergies:0, newPartner:0, expPartner:0,
+  issueIPM:0, issueReport:0, issueCFM:0, fraud:0, plan:[], ...dates });
+
+/* Le nombre de sites entre dans le calcul de l'intervalle requis : on complète
+   toujours à quatre pour que cet intervalle vaille 4 mois quel que soit le cas
+   testé — ni les 12 mois ni le 1 mois des jeux d'essai ne l'encadrent par hasard. */
+const dbPour = (...sites) => ({
+  sites: [...sites, ...Array.from({ length: Math.max(0, 4 - sites.length) },
+    (_, i) => siteNu("remplissage" + i, { lastVisit:"" }))],
+  visits: [],
+  params: [{ id:"p1", office:"BT", tag:"URT", duration:12, riskLevel:3, feasiblePerMonth:1 }],
+});
+
+test("dernière visite : l'observée prime sur la saisie, une donnée sans ODK ne bouge pas", () => {
+  const d = calc.derniereVisite;
+  assert.equal(d({ lastVisit:"2025-03-04" }), "2025-03-04");
+  assert.equal(d({ lastVisit:"2025-03-04", lastVisitOdk:"2026-06-10", lastVisitEffective:"2026-06-10" }), "2026-06-10");
+  /* Arbitrage absent — site chargé par un serveur plus ancien, ou objet fabriqué
+     par un test : l'observée reste la référence. */
+  assert.equal(d({ lastVisit:"2025-03-04", lastVisitOdk:"2026-06-10" }), "2026-06-10");
+  /* Champs servis mais vides : on retombe sur la saisie, pas sur « jamais visité ». */
+  assert.equal(d({ lastVisit:"2025-03-04", lastVisitOdk:"", lastVisitEffective:"" }), "2025-03-04");
+  assert.equal(d({}), "");
+  assert.equal(d(undefined), "");
+});
+
+test("score de risque : un site visité selon ODK cesse d'être prioritaire", () => {
+  const saisieSeule = siteNu("saisie", { lastVisit: ilYAMois(12) });
+  const vuParOdk = siteNu("odk", { lastVisit: ilYAMois(12),
+    lastVisitOdk: ilYAMois(1), lastVisitEffective: ilYAMois(1) });
+  const db = dbPour(saisieSeule, vuParOdk);
+  assert.equal(calc.siteRequirement(db, vuParOdk).interval, 4, "intervalle requis du jeu d'essai");
+
+  const pSaisie = constants.sitePriority(saisieSeule, db);
+  const pOdk = constants.sitePriority(vuParOdk, db);
+  assert.equal(pSaisie.scoreLastVisit, 3);      /* 12 mois pour un intervalle de 4 : en retard */
+  assert.equal(pOdk.scoreLastVisit, 0);         /* visité il y a 1 mois : dans les temps */
+  assert.equal(pOdk.monthsSinceVisit < 2, true, "l'ancienneté se compte depuis la date observée");
+  assert.equal(pSaisie.priority, 2); assert.equal(pSaisie.level, 3);
+  assert.equal(pOdk.priority, 0);    assert.equal(pOdk.level, 1);
+
+  /* Le score sur 100 du registre et le barème historique suivent la même bascule. */
+  assert.equal(calc.siteScore(saisieSeule, null, db).pct, 33);
+  assert.equal(calc.siteScore(vuParOdk, null, db).pct, 0);
+  assert.equal(calc.legacyScore(saisieSeule).points, 7);
+  assert.equal(calc.legacyScore(vuParOdk).points, 2);
+
+  /* siteDerived relaie sitePriority : ce qu'il reste à planifier suit aussi. */
+  assert.equal(constants.siteDerived(saisieSeule, db).sitesToBePlanned, 2);
+  assert.equal(constants.siteDerived(vuParOdk, db).sitesToBePlanned, 0);
+});
+
+test("score de risque : sans aucune donnée ODK, le score est celui d'avant", () => {
+  const ancien = siteNu("ancien", { lastVisit: ilYAMois(12) });
+  const jamais = siteNu("jamais", { lastVisit:"" });
+  const db = dbPour(ancien, jamais);
+
+  const p = constants.sitePriority(ancien, db);
+  assert.equal(p.scoreLastVisit, 3); assert.equal(p.newPartnerTime, 2);
+  assert.equal(p.priority, 2); assert.equal(p.level, 3);
+  assert.equal(p.monthsSinceVisit, 12);
+  assert.deepEqual(calc.legacyScore(ancien), { points:7, max:39, pct:18, level:1 });
+
+  /* Jamais visité : le calcul ne connaît toujours aucune date, et pénalise au maximum. */
+  const pJamais = constants.sitePriority(jamais, db);
+  assert.equal(pJamais.monthsSinceVisit, null);
+  assert.equal(pJamais.scoreLastVisit, 3);
+  assert.equal(calc.legacyScore(jamais).points, 7);
+
+  /* Un site dont l'arbitrage servi pointe sur la saisie se comporte exactement
+     comme le site fabriqué qui ne porte que la saisie. */
+  const arbitre = siteNu("arbitre", { lastVisit: ilYAMois(12), lastVisitEffective: ilYAMois(12) });
+  assert.deepEqual(constants.sitePriority(arbitre, db), p);
+  assert.deepEqual(calc.legacyScore(arbitre), calc.legacyScore(ancien));
+});
+
+test("score de risque : l'ordre de priorité change quand l'observée est plus récente", () => {
+  const a = siteNu("a", { lastVisit: ilYAMois(12) });
+  const b = siteNu("b", { lastVisit: ilYAMois(12),
+    lastVisitOdk: ilYAMois(1), lastVisitEffective: ilYAMois(1) });
+  const db = dbPour(a, b);
+  const parScore = (liste) => liste.slice()
+    .sort((x, y) => calc.siteScore(y, null, db).pct - calc.siteScore(x, null, db).pct)
+    .map(s => s.id);
+
+  /* Privés de leurs champs ODK, les deux sites sont indiscernables : c'est donc
+     bien la date observée, et elle seule, qui renvoie « b » en fin de liste. */
+  const sansOdk = (s) => ({ ...s, lastVisitOdk:undefined, lastVisitEffective:undefined });
+  assert.equal(calc.siteScore(sansOdk(a), null, db).pct, calc.siteScore(sansOdk(b), null, db).pct);
+  assert.deepEqual(parScore([b, a]), ["a", "b"]);
 });
 
 /* ─────────────────────────────────────────────────────────────────────

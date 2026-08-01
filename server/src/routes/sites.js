@@ -6,6 +6,7 @@ import { requireCap } from "../lib/auth.js";
 import { officeBound as scopeOf } from "../lib/scope.js";
 import { validate, schemas } from "../lib/validate.js";
 import { combinerDerniereVisite, derniereVisiteOdk } from "../lib/soumissions.js";
+import { listerAlias, synchroniserCodeParDefaut } from "../lib/alias.js";
 import { z } from "zod";
 
 const r = Router();
@@ -68,7 +69,12 @@ r.get("/:id", (req, res) => {
   /* La fiche porte les DEUX dates de dernière visite. Le site garde la sienne,
      saisie ; la date issue des soumissions ODK est calculée à la demande et
      prime à l'affichage — voir lib/soumissions.js pour le pourquoi. */
+  /* `aliases` s'ajoute, il ne remplace rien : `site.external_code` reste le code
+     par défaut que la fiche affiche et modifie. Un site désigné autrement par
+     chaque formulaire porte plusieurs codes (migration 018), et la fiche est le
+     seul endroit où l'on peut les voir tous. */
   res.json({ site:s, months: db.prepare("SELECT * FROM site_months WHERE site_id=?").all(s.id),
+    aliases: listerAlias(s.id),
     derniereVisite: combinerDerniereVisite(s.last_visit, derniereVisiteOdk(s.id)) });
 });
 
@@ -99,6 +105,9 @@ r.post("/", requireCap("edit"), validate(schemas.site), (req, res) => {
   const cols = Object.keys(b).filter(k=>k!=="id");
   db.prepare(`INSERT INTO sites (id,${cols.join(",")}) VALUES (?,${cols.map(()=>"?").join(",")})`)
     .run(id, ...cols.map(k=>b[k]));
+  /* Le code par défaut est miroité dans la table des codes externes, pour que la
+     liste des codes d'un site soit complète en une requête. Voir lib/alias.js. */
+  synchroniserCodeParDefaut(id, b.external_code);
   audit(req, "create", id, `Site créé — ${b.name}`);
   res.status(201).json({ site: db.prepare("SELECT * FROM sites WHERE id=?").get(id) });
 });
@@ -141,6 +150,11 @@ r.put("/:id", requireCap("edit"), validate(schemas.site.partial()), (req, res) =
   if(!cols.length) return res.json({ site: cur });   /* rien à écrire, rien à incrémenter */
   db.prepare(`UPDATE sites SET ${cols.map(k=>k+"=?").join(",")}, rev=rev+1, updated_at=datetime('now') WHERE id=?`)
     .run(...cols.map(k=>b[k]), cur.id);
+  /* Seulement si le code par défaut est ENVOYÉ : un PUT partiel qui ne le
+     mentionne pas n'a pas à toucher aux codes du site. Et corriger ce code
+     retire l'ancien du jeu — un code désavoué ne doit pas continuer à rattacher
+     des soumissions en douce. Les alias importés, eux, ne bougent pas. */
+  if(b.external_code !== undefined) synchroniserCodeParDefaut(cur.id, b.external_code);
   audit(req, "update", cur.id, `Site modifié — ${nom}`);
   res.json({ site: db.prepare("SELECT * FROM sites WHERE id=?").get(cur.id) });
 });

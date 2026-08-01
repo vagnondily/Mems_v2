@@ -16,11 +16,12 @@
 
 import { Router } from "express";
 import { z } from "zod";
-import { db } from "../db.js";
+import { db, tx } from "../db.js";
 import { requireCap } from "../lib/auth.js";
 import { officeBound } from "../lib/scope.js";
 import { newId } from "../lib/crypto.js";
-import { rejouerRattachement } from "../lib/rattachement.js";
+import { rejouerRattachement, PASSE_MANUELLE } from "../lib/rattachement.js";
+import { ajouterAlias } from "../lib/alias.js";
 import { ingerer, suiviParPeriode, appliquerSuivi, positionsObservees,
          dernieresVisitesOdk, combinerDerniereVisite } from "../lib/soumissions.js";
 
@@ -168,8 +169,123 @@ r.post("/submissions/rattacher", requireCap("admin"), (req, res) => {
     seulementNonResolues: !p.data.toutes, office_id: officeBound(req.user) });
   audit(req, "rattacher", null,
     `Rattachement rejoué — ${bilan.examinees} examinée(s), ${bilan.rattachees} rattachée(s), `
-    + `${bilan.detachees} détachée(s)`);
+    + `${bilan.detachees} détachée(s), ${bilan.protegees} décision(s) manuelle(s) préservée(s)`);
   res.json(bilan);
+});
+
+/* ── Rattachement manuel ──────────────────────────────────────────────
+   Le résolveur refuse de deviner : sept codes GD_PREVMA désignent deux sites,
+   un nom d'école existe en trois exemplaires, un code SMP n'appartient à aucun
+   référentiel. Ces cas-là n'ont pas de solution automatique — ils ont une
+   solution HUMAINE, et jusqu'ici l'application ne lui offrait aucun geste. La
+   file de travail montrait le problème sans permettre de le résoudre.
+
+   Trois exigences tiennent ensemble dans cette route :
+
+     — la décision est TRACÉE. Le motif nomme la personne, la confiance vaut 1
+       parce qu'un humain qui désigne un site ne « ressemble » pas à ce site, et
+       l'audit garde la trace de qui, quand, depuis quel bureau ;
+     — la décision RÉSISTE. `resolution_passe = 'manuel'` est exclue du rejeu
+       automatique (lib/rattachement.js) et de l'upsert d'ingestion
+       (lib/soumissions.js). Sans cela, le prochain tirage ODK l'effacerait ;
+     — la décision APPREND, si on le lui demande. `creer_alias` transforme le
+       geste en règle : le code brut de cette soumission devient un code externe
+       du site, et les soumissions suivantes qui le portent se rattacheront
+       seules. C'est la différence entre corriger mille lignes et corriger une
+       fois. Le lien reste facultatif, parce qu'un code peut être bon pour CETTE
+       soumission (une faute de frappe de l'agent) sans devoir devenir une règle. */
+const auteur = (u) => `${u.first_name || ""} ${u.last_name || ""}`.trim() || u.email;
+/* Même forme que celle du résolveur (lib/rattachement.js) : un motif manuel et
+   un motif automatique se lisent dans la même colonne, ils doivent se lire pareil. */
+const nommerSite = (s) => `« ${s.name} » (${s.code})`;
+
+r.post("/submissions/:id/rattacher-a", requireCap("edit"), (req, res) => {
+  const p = z.object({
+    site_id: z.string().min(1).max(64),
+    /* `z.boolean()` et non `z.coerce.boolean()` : la coercition de zod rend
+       `true` pour la CHAÎNE "false", et créer un alias est une écriture
+       durable — un drapeau qu'on croit à faux ne doit pas la déclencher. */
+    creer_alias: z.boolean().default(false),
+  }).safeParse(req.body || {});
+  if(!p.success) return res.status(422).json({ error:
+    "demande de rattachement manuel invalide : indiquez le site (site_id)." });
+
+  const s = db.prepare("SELECT * FROM submissions WHERE id=?").get(req.params.id);
+  if(!s) return res.status(404).json({ error: "soumission introuvable" });
+  const bureau = officeBound(req.user);
+  /* Une soumission déjà rattachée au site d'un autre bureau ne se réattribue pas
+     depuis ce bureau-ci : ce serait lui prendre son observation. */
+  if(bureau && s.site_id){
+    const actuel = db.prepare("SELECT office_id FROM sites WHERE id=?").get(s.site_id);
+    if(actuel && actuel.office_id !== bureau)
+      return res.status(404).json({ error: "soumission introuvable" });
+  }
+  const site = db.prepare("SELECT id, code, name, office_id FROM sites WHERE id=?").get(p.data.site_id);
+  if(!site || (bureau && site.office_id !== bureau))
+    return res.status(404).json({ error: "site introuvable" });
+
+  const qui = auteur(req.user);
+  const brut = s.site_code_raw || null;
+  /* Le motif dit QUI a décidé, et sur quoi il a décidé. Six mois plus tard,
+     « rattaché manuellement » sans nom ni code d'origine ne se conteste pas. */
+  const motif = `rattaché à la main par ${qui} au site ${nommerSite(site)}`
+    + (brut ? ` — la soumission portait le code « ${brut} »`
+            : " — la soumission ne portait aucun code de site")
+    + (s.resolution_motif ? ` ; le résolveur avait conclu : ${s.resolution_motif}` : "");
+
+  let alias = { cree: false, motif: "non demandé" };
+  tx(() => {
+    db.prepare(`UPDATE submissions
+                SET site_id=?, resolution_passe=?, resolution_motif=?, resolution_confiance=1,
+                    resolution_at=datetime('now'), updated_at=datetime('now')
+                WHERE id=?`).run(site.id, PASSE_MANUELLE, motif, s.id);
+    if(p.data.creer_alias){
+      alias = brut
+        ? { ...ajouterAlias({ site_id: site.id, code: brut, source: s.form_id,
+              note: `créé au rattachement manuel de la soumission ${s.instance_id} par ${qui}` }),
+            code: brut, source: s.form_id }
+        : { cree: false, motif: "la soumission ne porte aucun code brut à mémoriser" };
+    }
+  })();
+
+  audit(req, "rattacher-manuel", s.id,
+    `Rattachement manuel — soumission ${s.instance_id} (${s.form_id}) rattachée au site `
+    + `${site.name} (${site.code}) par ${qui}`
+    + (alias.cree ? ` ; code externe « ${brut} » mémorisé pour la source ${s.form_id}` : ""));
+
+  res.json({ ok: true, alias,
+    submission: db.prepare(`SELECT s.*, si.code AS site_code, si.name AS site_name
+                            FROM submissions s LEFT JOIN sites si ON si.id = s.site_id
+                            WHERE s.id=?`).get(s.id) });
+});
+
+/* Le geste inverse, tout aussi tracé. Il existe parce que la protection du
+   rattachement manuel est absolue : sans porte de sortie explicite, une erreur
+   de désignation serait définitive. */
+r.post("/submissions/:id/detacher", requireCap("edit"), (req, res) => {
+  const s = db.prepare("SELECT * FROM submissions WHERE id=?").get(req.params.id);
+  if(!s) return res.status(404).json({ error: "soumission introuvable" });
+  if(!s.site_id) return res.status(409).json({ error: "cette soumission n'est rattachée à aucun site" });
+  const bureau = officeBound(req.user);
+  const site = db.prepare("SELECT id, code, name, office_id FROM sites WHERE id=?").get(s.site_id);
+  if(bureau && site && site.office_id !== bureau)
+    return res.status(404).json({ error: "soumission introuvable" });
+
+  const qui = auteur(req.user);
+  /* `resolution_passe` repasse à NULL, et pas à une passe « détaché » : c'est ce
+     qui rend la soumission de nouveau éligible au rejeu automatique. Détacher,
+     c'est rendre la question au résolveur, pas la fermer autrement. */
+  const motif = `non résolu — détaché à la main par ${qui}, qui était rattaché à `
+    + `${site ? nommerSite(site) : "un site supprimé depuis"}`;
+  db.prepare(`UPDATE submissions
+              SET site_id=NULL, resolution_passe=NULL, resolution_motif=?, resolution_confiance=0,
+                  resolution_at=datetime('now'), updated_at=datetime('now')
+              WHERE id=?`).run(motif, s.id);
+  audit(req, "detacher", s.id,
+    `Détachement manuel — soumission ${s.instance_id} (${s.form_id}) détachée du site `
+    + `${site ? `${site.name} (${site.code})` : "supprimé"} par ${qui}`);
+  res.json({ ok: true,
+    submission: db.prepare("SELECT * FROM submissions WHERE id=?").get(s.id) });
 });
 
 /* ── Dernière visite ──────────────────────────────────────────────────

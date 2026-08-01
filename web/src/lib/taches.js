@@ -1,4 +1,4 @@
-import { monthsSince, n, r1, siteRequirement } from "./calc.js";
+import { derniereVisite, monthsSince, n, r1, siteRequirement } from "./calc.js";
 import { D_ROLES, MONTHS_L } from "./constants.js";
 
 /* ══════════════════ Tâches et notifications ══════════════════
@@ -56,7 +56,11 @@ function tachesUtilisateur(db, me, onglets){
       detail:`${s.poi} — ${manquees} échéance(s) de visite non honorée(s)`,
       contexte:`${s.subOffice} · ${s.adm3}`, vers:["suivi","monitoring"] });
 
-    const ms = monthsSince(s.lastVisit); const req = siteRequirement(db, s);
+    /* La date qui fait foi, pas la valeur saisie : un site relevé par ODK mais
+       dont personne n'a coché la grille déclencherait sinon une notification
+       « jamais visité » — et la cloche contredirait le score de risque, qui
+       suit désormais la même règle (voir derniereVisite dans lib/calc.js). */
+    const ms = monthsSince(derniereVisite(s)); const req = siteRequirement(db, s);
     if(req.interval && (ms === null || ms > req.interval * 1.5))
       poser({ id:`intervalle:${s.id}`, severite: ms === null ? "urgent" : "a_surveiller",
         titre:"Intervalle de suivi dépassé",

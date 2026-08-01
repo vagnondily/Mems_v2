@@ -3392,3 +3392,252 @@ test("soumissions : le tirage ODK conserve l'identifiant d'instance, et le cache
   assert.equal(parChamp.svy_date, "SvyDate");
   assert.equal(parChamp.site_code, "DPName");
 });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Codes externes multiples et rattachement manuel (chantier O, lot A).
+
+   Trois manques que la chaîne ODK laissait ouverts :
+
+     — un site n'a pas UN code externe. GD_PREVMA l'appelle par un p-code
+       fokontany, MIARO par ce p-code suivi d'un numéro d'ordre, SMP par un
+       ENTIER hors référentiel (603140007). Avec une colonne unique, brancher
+       le second formulaire écrasait le premier ;
+     — le bureau possède la liste des 1 251 codes école, et MEMS n'avait aucun
+       moyen de l'avaler ;
+     — devant une soumission que le résolveur refuse (à raison) de trancher,
+       aucun geste humain n'existait. La file de travail montrait le problème
+       sans permettre de le résoudre.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+const ajouterCode = (siteId, corps) => request(app).post(`/api/sites/${siteId}/aliases`)
+  .set("Authorization", `Bearer ${adminToken}`).send(corps);
+const listerCodes = (siteId) => request(app).get(`/api/sites/${siteId}/aliases`)
+  .set("Authorization", `Bearer ${adminToken}`);
+const importerCodes = (corps) => request(app).post("/api/site-aliases/import")
+  .set("Authorization", `Bearer ${adminToken}`).send(corps);
+const soumission = (instance) =>
+  db.prepare("SELECT * FROM submissions WHERE instance_id=?").get(instance);
+
+test("codes externes : un même site porte plusieurs codes selon la source qui le désigne", async () => {
+  /* Volontairement sans p-code : c'est le cas SMP, où le code de la source
+     n'appartient à aucun référentiel géographique et ne se déduit de rien. Seule
+     une correspondance déclarée peut rattacher. */
+  const site = await creerSiteLotC({ code:"LOTA-SMP", external_code:"GDPREV-99001",
+    name:"EPP Ambovombe Sud", activity_tag:"SMP" });
+
+  /* Le code par défaut de la fiche est miroité dans la liste des codes : la
+     fiche et la liste ne peuvent pas se contredire. */
+  const avant = await listerCodes(site.id);
+  assert.equal(avant.status, 200);
+  assert.equal(avant.body.defaut, "GDPREV-99001");
+  assert.deepEqual(avant.body.rows.map(x => x.code), ["GDPREV-99001"]);
+
+  const ajout = await ajouterCode(site.id, { code:"603140007", source:"SMP_2025",
+    note:"liste des 1 251 codes école du bureau" });
+  assert.equal(ajout.status, 201, JSON.stringify(ajout.body));
+  assert.equal(ajout.body.rows.length, 2,
+    "un site porte PLUSIEURS codes : déclarer le second n'efface pas le premier");
+
+  /* La fiche de site les sert tous, à côté du code par défaut qu'elle continue
+     d'afficher — le frontend existant n'a rien à changer pour continuer à
+     fonctionner, et tout à lire pour montrer le reste. */
+  const fiche = await request(app).get(`/api/sites/${site.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(fiche.body.site.external_code, "GDPREV-99001");
+  assert.equal(fiche.body.aliases.length, 2);
+
+  /* Chacun des deux codes rattache — et le motif dit LEQUEL a servi. Deux
+     versements distincts : la détection par défaut choisit une seule variable
+     source par champ pour tout un lot, ce qui est le comportement attendu. */
+  const parSmp = await verser({ form_id:"SMP_2025", enregistrements: [
+    { instance_id:"lota-smp-1", Adm4Code_SMP:"603140007", SvyDate:"2026-07-02" }]});
+  assert.equal(parSmp.status, 200, JSON.stringify(parSmp.body));
+  const s1 = soumission("lota-smp-1");
+  assert.equal(s1.site_id, site.id,
+    "un code hors référentiel p-code rattache quand même, dès qu'une correspondance le déclare");
+  assert.equal(s1.resolution_passe, "code_externe");
+  assert.equal(s1.resolution_confiance, 1);
+  assert.match(s1.resolution_motif, /SMP_2025/, "le motif nomme l'alias par lequel il a conclu");
+
+  const parDefaut = await verser({ form_id:"GD_PREVMA_v2", enregistrements: [
+    { instance_id:"lota-smp-2", DPName:"GDPREV-99001", SvyDate:"2026-07-03" }]});
+  assert.equal(parDefaut.status, 200, JSON.stringify(parDefaut.body));
+  const s2 = soumission("lota-smp-2");
+  assert.equal(s2.site_id, site.id);
+  assert.match(s2.resolution_motif, /fiche du site/,
+    "un rattachement par la colonne et un rattachement par alias ne se lisent pas pareil");
+
+  /* Corriger le code par défaut REMPLACE son miroir et lui seul : l'alias
+     importé ne bouge pas, et l'ancien code cesse de rattacher. Un code
+     explicitement désavoué qui continuerait à opérer en douce serait le
+     reproche exact qu'on ferait à une table qui ne serait qu'un historique. */
+  const maj = await request(app).put(`/api/sites/${site.id}`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ external_code:"GDPREV-99002" });
+  assert.equal(maj.status, 200, JSON.stringify(maj.body));
+  const apres = await listerCodes(site.id);
+  assert.deepEqual(apres.body.rows.map(x => x.code).sort(), ["603140007", "GDPREV-99002"]);
+
+  const ancien = await verser({ form_id:"GD_PREVMA_v2", enregistrements: [
+    { instance_id:"lota-ancien", DPName:"GDPREV-99001", SvyDate:"2026-07-04" }]});
+  assert.equal(ancien.status, 200, JSON.stringify(ancien.body));
+  assert.equal(soumission("lota-ancien").site_id, null,
+    "le code retiré de la fiche ne rattache plus rien");
+
+  /* Le miroir ne se supprime pas par la porte des alias : la fiche est le seul
+     endroit d'où l'on modifie le code par défaut. */
+  const miroir = apres.body.rows.find(x => x.code === "GDPREV-99002");
+  const refus = await request(app).delete(`/api/site-aliases/${miroir.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(refus.status, 409);
+  assert.match(refus.body.error, /code par défaut/);
+});
+
+test("codes externes : l'import d'une table de correspondance est idempotent et n'escamote rien", async () => {
+  const un = await creerSiteLotC({ code:"LOTA-I1", name:"EPP Import Un", activity_tag:"SMP" });
+  const deux = await creerSiteLotC({ code:"LOTA-I2", name:"EPP Import Deux", activity_tag:"SMP" });
+
+  const premier = await importerCodes({ source:"SMP_2025", lignes: [
+    /* Un tableur livre les codes SMP en NOMBRE : les refuser obligerait chaque
+       appelant à les convertir, donc à se tromper une fois. */
+    { code: 603140021, site_code:"LOTA-I1" },
+    { code: "603140022", site_code:"LOTA-I2" },
+    /* Un second code pour la même école, désignée cette fois par son identifiant. */
+    { code: "603140023", site_id: un.id, note:"code de l'ancien recensement" },
+    { code: "603140099", site_code:"LOTA-INCONNU" },
+    { site_code:"LOTA-I1" },
+  ]});
+  assert.equal(premier.status, 200, JSON.stringify(premier.body));
+  assert.equal(premier.body.lues, 5);
+  assert.equal(premier.body.crees, 3);
+  /* Les lignes perdues sont LISTÉES. Un import qui avalerait 1 251 lignes en
+     n'en rattachant que 900 sans dire lesquelles manquent ne serait pas un
+     import, ce serait une perte de données lente. */
+  assert.equal(premier.body.sitesIntrouvables.length, 1);
+  assert.equal(premier.body.sitesIntrouvables[0].site_code, "LOTA-INCONNU");
+  assert.equal(premier.body.sitesIntrouvables[0].code, "603140099");
+  assert.equal(premier.body.invalides.length, 1);
+  assert.match(premier.body.avertissement, /n'ont PAS été importées/);
+
+  const second = await importerCodes({ source:"SMP_2025", lignes: [
+    { code: 603140021, site_code:"LOTA-I1" },
+    { code: "603140022", site_code:"LOTA-I2" },
+    { code: "603140023", site_id: un.id },
+  ]});
+  assert.equal(second.status, 200, JSON.stringify(second.body));
+  assert.equal(second.body.crees, 0, "rejouer le même fichier ne crée rien");
+  assert.equal(second.body.dejaPresents, 3);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM site_external_code WHERE source='SMP_2025'").get().c,
+    4, "trois lignes importées, plus celle du test précédent : aucun doublon");
+
+  /* Le rattachement s'en sert immédiatement, sans re-tirer depuis ODK. */
+  const r = await verser({ form_id:"SMP_2025", enregistrements: [
+    { instance_id:"lota-imp-1", Adm4Code_SMP:"603140022", SvyDate:"2026-07-10" }]});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(soumission("lota-imp-1").site_id, deux.id);
+
+  /* Un code déclaré pour deux sites reste ambigu. L'import le dit au lieu de le
+     laisser découvrir au premier tirage — et ce qu'il annonce comme ambigu est
+     exactement ce que le résolveur refusera de trancher. */
+  const doublon = await importerCodes({ source:"GD_PREVMA", lignes: [
+    { code:"603140021", site_code:"LOTA-I2" }]});
+  assert.equal(doublon.status, 200, JSON.stringify(doublon.body));
+  assert.equal(doublon.body.crees, 1);
+  assert.equal(doublon.body.codesAmbigus.length, 1);
+  assert.equal(doublon.body.codesAmbigus[0].code, "603140021");
+  assert.equal(doublon.body.codesAmbigus[0].sites.length, 2);
+  assert.match(doublon.body.remarque, /plusieurs sites/);
+
+  const ambigu = await verser({ form_id:"SMP_2025", enregistrements: [
+    { instance_id:"lota-imp-2", Adm4Code_SMP:"603140021", SvyDate:"2026-07-11" }]});
+  assert.equal(ambigu.status, 200, JSON.stringify(ambigu.body));
+  const a = soumission("lota-imp-2");
+  assert.equal(a.site_id, null, "deux sites pour un code : aucun n'est choisi au hasard");
+  assert.match(a.resolution_motif, /désigne 2 sites/);
+});
+
+test("soumissions : le rattachement manuel est tracé, il apprend, et rien ne l'écrase", async () => {
+  const site = await creerSiteLotC({ code:"LOTA-M", name:"EPP Manuelle", activity_tag:"SMP" });
+  const versement = await verser({ form_id:"SMP_2025", enregistrements: [
+    { instance_id:"lota-manuel-1", Adm4Code_SMP:"603140777", SvyDate:"2026-07-20" }]});
+  assert.equal(versement.status, 200, JSON.stringify(versement.body));
+  const brute = soumission("lota-manuel-1");
+  assert.equal(brute.site_id, null, "le résolveur ne devine pas un code qu'il ne connaît pas");
+
+  const fait = await request(app).post(`/api/submissions/${brute.id}/rattacher-a`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ site_id: site.id, creer_alias: true });
+  assert.equal(fait.status, 200, JSON.stringify(fait.body));
+  assert.equal(fait.body.alias.cree, true);
+
+  const decidee = db.prepare("SELECT * FROM submissions WHERE id=?").get(brute.id);
+  assert.equal(decidee.site_id, site.id);
+  assert.equal(decidee.resolution_passe, "manuel");
+  assert.equal(decidee.resolution_confiance, 1,
+    "un humain qui désigne un site ne « ressemble » pas à ce site : il l'identifie");
+  assert.match(decidee.resolution_motif, /à la main par/);
+  assert.match(decidee.resolution_motif, /603140777/, "le motif garde le code d'origine");
+
+  const trace = db.prepare(`SELECT * FROM audit WHERE entity='submissions' AND entity_id=?
+                            AND action='rattacher-manuel'`).get(brute.id);
+  assert.ok(trace, "la décision entre au journal : qui, quoi, depuis quel bureau");
+  assert.match(trace.text, /EPP Manuelle/);
+  assert.ok(trace.user_id, "le journal nomme un compte, pas « le système »");
+
+  /* L'alias créé à la volée est ce qui fait qu'on ne refait pas le geste à la
+     soumission suivante : celle-ci se rattache toute seule. */
+  const suivante = await verser({ form_id:"SMP_2025", enregistrements: [
+    { instance_id:"lota-manuel-2", Adm4Code_SMP:"603140777", SvyDate:"2026-07-21" }]});
+  assert.equal(suivante.status, 200, JSON.stringify(suivante.body));
+  const auto = soumission("lota-manuel-2");
+  assert.equal(auto.site_id, site.id);
+  assert.equal(auto.resolution_passe, "code_externe");
+  assert.match(auto.resolution_motif, /SMP_2025/);
+
+  /* Le rejeu automatique, même demandé sur TOUTES les soumissions, ne défait
+     jamais une décision humaine — et il dit combien il en a préservées. */
+  const rejeu = await request(app).post("/api/submissions/rattacher")
+    .set("Authorization", `Bearer ${adminToken}`).send({ toutes: true });
+  assert.equal(rejeu.status, 200, JSON.stringify(rejeu.body));
+  assert.ok(rejeu.body.protegees >= 1, JSON.stringify(rejeu.body));
+  const apresRejeu = db.prepare("SELECT * FROM submissions WHERE id=?").get(brute.id);
+  assert.equal(apresRejeu.resolution_passe, "manuel");
+  assert.equal(apresRejeu.resolution_confiance, 1);
+
+  /* Ni le re-versement du même tirage, qui ramène les mêmes instance_id à
+     chaque appel d'ODK Central. La garantie est portée par la base. */
+  const reverse = await verser({ form_id:"SMP_2025", enregistrements: [
+    { instance_id:"lota-manuel-1", Adm4Code_SMP:"603140777", SvyDate:"2026-07-20" }]});
+  assert.equal(reverse.status, 200, JSON.stringify(reverse.body));
+  assert.equal(reverse.body.manuelsPreserves, 1);
+  assert.equal(db.prepare("SELECT resolution_passe FROM submissions WHERE id=?")
+    .get(brute.id).resolution_passe, "manuel");
+
+  /* Le détachement, tout aussi tracé : c'est la porte de sortie sans laquelle
+     une erreur de désignation serait définitive. */
+  const detache = await request(app).post(`/api/submissions/${brute.id}/detacher`)
+    .set("Authorization", `Bearer ${adminToken}`).send({});
+  assert.equal(detache.status, 200, JSON.stringify(detache.body));
+  const nue = db.prepare("SELECT * FROM submissions WHERE id=?").get(brute.id);
+  assert.equal(nue.site_id, null);
+  assert.equal(nue.resolution_passe, null, "détacher rend la question au résolveur");
+  assert.equal(nue.resolution_confiance, 0);
+  assert.match(nue.resolution_motif, /détaché à la main par/);
+  assert.ok(db.prepare(`SELECT 1 FROM audit WHERE entity='submissions' AND entity_id=?
+                        AND action='detacher'`).get(brute.id), "le détachement est journalisé");
+
+  /* Et puisque la question lui est rendue, le rejeu la reprend — l'alias créé
+     plus haut la tranche désormais sans intervention. */
+  const rejeu2 = await request(app).post("/api/submissions/rattacher")
+    .set("Authorization", `Bearer ${adminToken}`).send({});
+  assert.equal(rejeu2.status, 200, JSON.stringify(rejeu2.body));
+  const reprise = db.prepare("SELECT * FROM submissions WHERE id=?").get(brute.id);
+  assert.equal(reprise.site_id, site.id);
+  assert.equal(reprise.resolution_passe, "code_externe");
+
+  const deuxFois = await request(app).post(`/api/submissions/${brute.id}/detacher`)
+    .set("Authorization", `Bearer ${adminToken}`).send({});
+  assert.equal(deuxFois.status, 200);
+  const encore = await request(app).post(`/api/submissions/${brute.id}/detacher`)
+    .set("Authorization", `Bearer ${adminToken}`).send({});
+  assert.equal(encore.status, 409, "détacher ce qui ne l'est pas est refusé, pas ignoré");
+});

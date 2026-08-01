@@ -22,6 +22,17 @@ async function sha256(txt){
 const KEY = "mems:v4";
 
 /* ══════════════════ Calculs métier ══════════════════ */
+
+/* La date de dernière visite qui fait foi, et le seul endroit où cette règle
+   s'écrit. Le serveur en sert trois : ce que quelqu'un a coché dans la grille
+   mensuelle (lastVisit), ce que le terrain a déclaré dans ODK (lastVisitOdk),
+   et l'arbitrage des deux (lastVisitEffective, l'observée primant sur la saisie).
+   Mesurer l'ancienneté sur la seule valeur cochée faisait remonter en tête des
+   priorités des sites visités la semaine passée, au seul motif que personne
+   n'avait tenu la grille — le suivi partait donc là où il n'y avait rien à voir.
+   Un site d'avant la chaîne ODK ne porte que lastVisit et retombe sur elle. */
+const derniereVisite = (s) => (s && (s.lastVisitEffective || s.lastVisitOdk || s.lastVisit)) || "";
+
 function siteScore(s, weights, db){
   if(db){ const p = sitePriority(s, db);
     return { points:p.priority, max:6, pct: Math.min(100, Math.round(p.priority/6*100)),
@@ -37,7 +48,7 @@ function legacyScore(s, weights){
   add("issueCFM", s.issueCFM ?? 0); add("fraud", s.fraud ?? 0);
   const th = W.benef?.th || [500,2000,5000]; const b = n(s.beneficiaries);
   add("benef", b<th[0]?0 : b<th[1]?1 : b<th[2]?2 : 3);
-  const ms = monthsSince(s.lastVisit);
+  const ms = monthsSince(derniereVisite(s));
   add("recency", ms===null ? 5 : Math.min(5, Math.floor(ms/2)));
   let max = 0; Object.values(W).forEach(w => { max += Math.max(0, ...Object.values(w.pts||{}).map(n)); });
   const p = max ? Math.round(total/max*100) : 0;
@@ -218,4 +229,4 @@ function profileColumn(rows, field){
   return stat;
 }
 
-export { FNS, IND_FNS, KEY, LEVELS, POP_BASE_YEAR, RULE_TYPES, SAFE_CHARS, applyFormulas, applyRules, clsx, codeOf, computeMMR, computeParam, evalFormula, evalIndicator, fmt, legacyScore, monthsSince, n, paramFor, pct, populationFor, profileColumn, r1, r2, r5, siteRequirement, siteScore, uid };
+export { FNS, IND_FNS, KEY, LEVELS, POP_BASE_YEAR, RULE_TYPES, SAFE_CHARS, applyFormulas, applyRules, clsx, codeOf, computeMMR, computeParam, derniereVisite, evalFormula, evalIndicator, fmt, legacyScore, monthsSince, n, paramFor, pct, populationFor, profileColumn, r1, r2, r5, siteRequirement, siteScore, uid };

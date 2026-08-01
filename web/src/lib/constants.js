@@ -1,6 +1,6 @@
 import { Activity } from "lucide-react";
 import { Planning } from "../views/Planning.jsx";
-import { monthsSince, n, pct, r1, r2, siteRequirement } from "./calc.js";
+import { derniereVisite, monthsSince, n, pct, r1, r2, siteRequirement } from "./calc.js";
 
 /* ══════════════════════════════════════════════════════════════════════
    MEMS — Monitoring Evaluation Management System
@@ -242,7 +242,7 @@ function caseloadScore(benef, sc){
 function sitePriority(s, db){
   const sc = (db && db.scoring) || D_SCORING;
   const req = db ? siteRequirement(db, s) : { interval:0 };
-  const months = monthsSince(s.lastVisit);
+  const months = monthsSince(derniereVisite(s));
   /* 0 si l'intervalle requis n'est pas encore atteint, sinon pénalité */
   const scoreLastVisit = (!s.subOffice || !(s.poi||s.siteName)) ? 0
     : (req.interval && months !== null && req.interval > months) ? 0 : n(sc.overdue.pts);
