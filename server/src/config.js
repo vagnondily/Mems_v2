@@ -59,9 +59,12 @@ export const config = {
      Madagascar en fait 23,5. Il ne passe donc pas sous `maxBodyMb`, qui protège
      le corps JSON. Cette borne-ci ne s'applique QUE au téléversement du
      découpage (multer, route /geo/shapefile), jamais au corps JSON global : un
-     corps JSON de 64 Mo resterait un vecteur d'abus. Un .zip compresse bien et
-     passe largement en dessous ; la marge couvre le dépôt des fichiers séparés. */
-  maxShapefileMb: int(process.env.MAX_SHAPEFILE_MB, 64),
+     corps JSON de cette taille resterait un vecteur d'abus. Le plafond est à
+     150 Mo pour couvrir un dépôt de fichiers SÉPARÉS non compressés (.shp + .dbf
+     + .prj d'un pays au fokontany) ; une archive .zip compresse fortement le .shp
+     et passe très en dessous. Un proxy en amont peut plafonner le corps plus bas
+     encore : l'échec apparaît alors côté client, et le message le dit. */
+  maxShapefileMb: int(process.env.MAX_SHAPEFILE_MB, 150),
   bcryptRounds: int(process.env.BCRYPT_ROUNDS, 12),
   lockAfter: int(process.env.LOCK_AFTER_FAILED, 8),
   lockMinutes: int(process.env.LOCK_MINUTES, 15),

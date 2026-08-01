@@ -6,11 +6,6 @@ import { Area, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, Respon
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, motifLisible, n, pct, r2, r5, siteRequirement, siteScore, uid, visiteOdk } from "../lib/calc.js";
 import { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, DURATIONS, D_FORMULAS, D_SECURITY, D_STATUS, D_URBAN, MONITORING_TYPES, PROG_AREAS, SITE_TYPES, TABS_ALL, siteDerived, sitePriority } from "../lib/constants.js";
-/* `readGeoFile` était APPELÉ sans être importé : l'import de découpage depuis
-   l'interface levait « readGeoFile is not defined » dès le choix du fichier. Le
-   référentiel de production avait été chargé par le script src/import-geo.js, si
-   bien que ce chemin-là n'avait jamais été emprunté. */
-import { GUESS, guessField, readGeoFile } from "../lib/shapefile.js";
 import { collecterLocalites, csvLocalites } from "../lib/exportGeo.js";
 import { niveau, niveaux } from "../lib/levels.js";
 import { Sources } from "./ActualData.jsx";
@@ -807,6 +802,23 @@ function SetCountry({ db, notify, can, reload }){
         </TableWrap>
       </Card>
 
+      {/* ── Le découpage fait partie de la fiche du pays ──────────────────
+          Le propriétaire l'a demandé : configurer le shapefile À PART du pays
+          « bugge en multi-pays ». On le monte donc ici, rattaché au pays COURANT,
+          et le millésime importé s'attache à lui — la bascule du courant reste
+          cloisonnée par pays (voir lib/geo.js). */}
+      {data.current?.code
+        ? <SetShapefileServer db={db} notify={notify} can={can} country={data.current}
+            onCommitted={async ()=>{
+              /* Le découpage importé devient le référentiel courant du pays : on
+                 rafraîchit la fiche (compteur de millésimes), on vide le cache
+                 géographique et on remonte les libellés — sans quoi les écrans
+                 garderaient l'ancien découpage jusqu'au prochain rechargement. */
+              resetGeoCache(); await charger(); if(reload) await reload();
+            }} />
+        : <Note tone="warn">Rendez d'abord un pays courant : le découpage administratif se rattache
+            au pays courant, et il n'y en a pas encore.</Note>}
+
       <Modal open={!!edit} wide onClose={()=>setEdit(null)}
         title={edit?._existe ? `Configuration de ${edit.name}` : "Nouveau pays"}
         subtitle="Identité, devise locale et libellés des cinq niveaux administratifs"
@@ -1167,7 +1179,7 @@ function SetScope({ db, notify, can }){
    l'aperçu, puis valide, ce qui bascule le millésime en une transaction. Le coût
    du basculement (les sites que le nouveau découpage rend orphelins) est chiffré
    AVANT toute écriture, jamais masqué. */
-function SetShapefileServer({ db, notify, can, onCommitted }){
+function SetShapefileServer({ db, notify, can, onCommitted, country }){
   const [files,setFiles] = useState([]);
   const [apercu,setApercu] = useState(null);
   const [mapping,setMapping] = useState({});
@@ -1180,10 +1192,11 @@ function SetShapefileServer({ db, notify, can, onCommitted }){
     if(!fs.length) return;
     setBusy(true); setStat({ kind:"info", text:"Lecture du shapefile par le serveur…" });
     try{
-      const r = await api.shapefilePreview(fs, map, dup);
+      const r = await api.shapefilePreview(fs, map, dup, country?.code);
       setApercu(r); setMapping(r.mapping || {});
       setStat({ kind: r.resume.typeShp === 5 ? "ok" : "warn",
-        text:`${fmt(r.resume.records)} enregistrement(s) · ${fmt(r.resume.avecGeometrie)} avec contour` });
+        text:`${fmt(r.resume.records)} enregistrement(s) · ${fmt(r.resume.avecGeometrie)} avec contour`
+          + (r.resume.sansDbf ? " · polygones seuls (aucun .dbf)" : "") });
     }catch(e){ setApercu(null); setStat({ kind:"err", text:e.message }); }
     setBusy(false);
   };
@@ -1210,7 +1223,7 @@ function SetShapefileServer({ db, notify, can, onCommitted }){
       return;
     setBusy(true);
     try{
-      const r = await api.shapefileCommit(files, mapping, label, "shapefile", allowDup);
+      const r = await api.shapefileCommit(files, mapping, label, "shapefile", allowDup, country?.code);
       setStat({ kind: r.orphelins.orphelins ? "warn" : "ok", text: r.message });
       notify(`Découpage importé : ${fmt(r.imported)} unités, ${fmt(r.geom.écrites)} contours`,
         r.orphelins.orphelins ? "warn" : "ok");
@@ -1226,10 +1239,22 @@ function SetShapefileServer({ db, notify, can, onCommitted }){
 
   const R = apercu?.resume;
   const nbCol = apercu?.collisionsTotal || 0;
+  const sansDbf = !!R?.sansDbf;
   return (
-    <Card title="Téléverser un shapefile — les vraies communes"
-      subtitle="Lu par le serveur. Déposez le .zip, ou le .shp avec son .dbf (et son .prj).">
+    <Card title="Découpage administratif — téléverser le shapefile"
+      subtitle={`Lu par le serveur, rattaché à ${country?.name || "ce pays"}. Déposez le .zip, ou le .shp avec son .dbf (et son .prj).`}>
       {!can("admin") && <Note tone="warn">Le téléversement du découpage est réservé aux administrateurs.</Note>}
+
+      <Note>Ce découpage devient la <b>référence adm0→adm4 de MEMS</b> pour {country?.name || "le pays courant"} :
+        sites, population et distributions s'y rattachent. L'archive <b>.zip</b> doit contenir le
+        <b> .shp</b> (les contours), le <b>.dbf</b> (les noms et p-codes) et le <b>.prj</b> (la projection,
+        qui doit être WGS 84 / EPSG:4326).
+        <br /><br />
+        <b>Déposez juste le .shp pour voir les polygones</b> tout de suite sur la carte, sous des noms
+        provisoires « Polygone 1, 2, … » ; <b>ajoutez le .dbf pour les nommer et les rattacher</b> à
+        l'arbre région → district → commune → fokontany. Le fichier peut aller jusqu'à 150 Mo ; au-delà,
+        ou si un proxy plafonne l'envoi, préférez l'archive .zip (elle compresse fortement le .shp).</Note>
+
       <div className="grid grid-cols-2 gap-x-4">
         <Field label="Shapefile (.zip, ou .shp + .dbf + .prj)">
           <input type="file" multiple accept=".zip,.shp,.dbf,.prj" disabled={!can("admin") || busy}
@@ -1242,7 +1267,7 @@ function SetShapefileServer({ db, notify, can, onCommitted }){
         <StatRow>
           <Stat label="Enregistrements" value={fmt(R.records)}
             sub={`type ${R.typeShp} · ${fmt(R.avecGeometrie)} avec contour`} />
-          <Stat label="Communes" value={fmt(apercu.arbre.counts.adm3 || 0)}
+          <Stat label={sansDbf ? "Polygones" : "Communes"} value={fmt(apercu.arbre.counts.adm3 || 0)}
             sub={`${fmt(apercu.arbre.total)} unités au total`} />
           <Stat label="P-codes en double" value={fmt(nbCol)} tone={nbCol ? "warn" : undefined}
             sub="mêmes codes, chemins différents" />
@@ -1251,23 +1276,32 @@ function SetShapefileServer({ db, notify, can, onCommitted }){
             sub={`sur ${fmt(apercu.orphelins.sitesRattaches)} rattachés aujourd'hui`} />
         </StatRow>
 
-        <Note>Chaque colonne du fichier se met en face d'une variable MEMS. La proposition ci-dessous
-          vient des intitulés reconnus ; ajustez-la, puis relisez l'aperçu.</Note>
-        <div className="grid grid-cols-3 gap-x-3">
-          {apercu.cibles.map(c=>(
-            <Field key={c.cle} label={c.label}>
-              <Select value={mapping[c.cle]||""} onChange={e=>setMapping(m=>({...m,[c.cle]:e.target.value}))}
-                empty="— aucune —" options={apercu.colonnes.map(x=>x.nom)} className="mi-py1" /></Field>))}
-        </div>
-        <div className="flex items-center gap-3 mb-4">
-          <Btn kind="sec" icon={RefreshCw} disabled={busy} onClick={()=>analyser(files, mapping, allowDup)}>
-            Relire l'aperçu</Btn>
-          <span className="f115 text-slate-500">La correspondance choisie alimente l'arbre et le rattachement des contours.</span>
-        </div>
+        {/* Sans .dbf : aucune colonne à mettre en face. On importe les polygones
+            seuls, nommés « Polygone N », pour les voir tout de suite. */}
+        {sansDbf ? (
+          <Note tone="warn">Aucune table attributaire (<b>.dbf</b>) : import des <b>polygones seuls</b>,
+            nommés « Polygone 1, 2, … » au niveau commune. Ils s'afficheront sur la carte, mais sans nom
+            ni rattachement. <b>Ajoutez le .dbf</b> (dans la même archive, ou à côté du .shp) pour les
+            nommer et les rattacher à l'arbre adm0→adm4.</Note>
+        ) : (<>
+          <Note>Chaque colonne du fichier se met en face d'une variable MEMS. La proposition ci-dessous
+            vient des intitulés reconnus ; ajustez-la, puis relisez l'aperçu.</Note>
+          <div className="grid grid-cols-3 gap-x-3">
+            {apercu.cibles.map(c=>(
+              <Field key={c.cle} label={c.label}>
+                <Select value={mapping[c.cle]||""} onChange={e=>setMapping(m=>({...m,[c.cle]:e.target.value}))}
+                  empty="— aucune —" options={apercu.colonnes.map(x=>x.nom)} className="mi-py1" /></Field>))}
+          </div>
+          <div className="flex items-center gap-3 mb-4">
+            <Btn kind="sec" icon={RefreshCw} disabled={busy} onClick={()=>analyser(files, mapping, allowDup)}>
+              Relire l'aperçu</Btn>
+            <span className="f115 text-slate-500">La correspondance choisie alimente l'arbre et le rattachement des contours.</span>
+          </div>
+        </>)}
 
         {!!apercu.echantillon?.length && (
           <TableWrap max="mh200">
-            <thead><tr><Th>Commune (échantillon)</Th><Th>P-code</Th></tr></thead>
+            <thead><tr><Th>{sansDbf ? "Polygone (échantillon)" : "Commune (échantillon)"}</Th><Th>P-code</Th></tr></thead>
             <tbody>{apercu.echantillon.map(u=>(
               <tr key={u.pcode}><Td>{u.name}</Td><Td className="f115 text-slate-500">{u.pcode}</Td></tr>))}</tbody>
           </TableWrap>)}
@@ -1320,15 +1354,9 @@ function SetShapefileServer({ db, notify, can, onCommitted }){
    et distributions s'y raccrochent, donc il ne se modifie pas à la main — on importe
    un nouveau millésime, et l'ancien reste disponible. */
 function SetLocations({ db, notify, can, reload }){
-  const [draft,setDraft] = useState(null); const [status,setStatus] = useState(null);
-  const [map,setMap] = useState({}); const [label,setLabel] = useState("");
-  const [depth,setDepth] = useState("adm4"); const [busy,setBusy] = useState(false);
   const [versions,setVersions] = useState([]);
-  /* Import des contours — indépendant de l'import du découpage : on charge d'abord
-     l'arbre (qui donne les p-codes), les géométries s'y rattachent ensuite. */
-  const [geomDraft,setGeomDraft] = useState(null);
-  const [geomMap,setGeomMap] = useState({});
-  const [geomStat,setGeomStat] = useState(null);
+  /* La suppression des contours reste une action de maintenance (le millésime
+     garde son arbre, on n'en retire que le fond de carte) : un seul verrou suffit. */
   const [geomBusy,setGeomBusy] = useState(false);
 
   /* Répertoire : filtres en cascade et pagination, tout vient du serveur. */
@@ -1364,79 +1392,6 @@ function SetLocations({ db, notify, can, reload }){
   }, [parent, q, page, refresh]);
   useEffect(()=>{ setPage(0); }, [parent, q]);
 
-  const onFile = async (file) => {
-    setStatus({ kind:"info", text:"Lecture du fichier…" });
-    try{
-      const d = await readGeoFile(file);
-      if(!d.rows.length) throw new Error("Aucun objet trouvé");
-      const bad = d.cent.filter(Boolean).some(c => Math.abs(c[0])>180 || Math.abs(c[1])>90);
-      if(bad) throw new Error("Les coordonnées sortent de la plage géographique : reprojetez le fichier en WGS 84 (EPSG:4326)");
-      setDraft(d);
-      setMap({ adm0:guessField(d.fields,GUESS.adm0), adm1:guessField(d.fields,GUESS.adm1),
-        adm2:guessField(d.fields,GUESS.adm2), adm3:guessField(d.fields,GUESS.adm3),
-        adm4:guessField(d.fields,GUESS.adm4), code:guessField(d.fields,GUESS.code) });
-      setDepth(guessField(d.fields,GUESS.adm4) ? "adm4" : "adm3");
-      setLabel(file.name.replace(/\.[^.]+$/,"") + " — " + new Date().toISOString().slice(0,10));
-      setStatus({ kind:"ok", text:`${d.rows.length.toLocaleString("fr-FR")} objets lus depuis ${d.src} · ${d.fields.length} champs attributaires`
-        + (d.geomSkipped ? " · centroïdes repris des attributs, la géométrie n'a pas eu besoin d'être ouverte" : "") });
-    }catch(e){ setDraft(null); setStatus({ kind:"err", text:e.message }); }
-  };
-
-  /* Ce que l'on retiendra du fichier : au-delà du niveau choisi, les doublons sont regroupés. */
-  const preview = useMemo(() => {
-    if(!draft) return [];
-    const order = ["adm0","adm1","adm2","adm3","adm4"];
-    const keep = order.slice(0, order.indexOf(depth) + 1);
-    const seen = new Set(); const out = [];
-    draft.rows.forEach((r, i) => {
-      const c = draft.cent[i];
-      const g = {};
-      order.forEach(k => { g[k] = (keep.includes(k) && map[k]) ? String(r[map[k]] ?? "") : ""; });
-      g.code = map.code ? String(r[map.code] ?? "") : "";
-      g.lat = c ? r5(c[1]) : ""; g.lon = c ? r5(c[0]) : "";
-      if(!(g.adm1 || g.adm2 || g.adm3 || g.adm4)) return;
-      if(depth !== "adm4"){
-        const k = keep.map(x => g[x]).join("|");
-        if(seen.has(k)) return;
-        seen.add(k); g.code = "";
-      }
-      out.push(g);
-    });
-    return out;
-  }, [draft, map, depth]);
-
-  /* L'écriture passe par le serveur : il reconstruit l'arbre, en une transaction. */
-  const commit = async () => {
-    if(!draft || !preview.length){
-      notify("Aucune localité exploitable : vérifiez la correspondance des champs", "err"); return;
-    }
-    setBusy(true);
-    try{
-      const rows = preview.map(g => ({ adm0:g.adm0 || null, adm1:g.adm1 || null, adm2:g.adm2 || null,
-        adm3:g.adm3 || null, adm4:g.adm4 || null, pcode:g.code || null,
-        lat: g.lat === "" ? null : Number(g.lat), lon: g.lon === "" ? null : Number(g.lon) }));
-      const r = await api.importGeo(rows, label.trim() || `Import du ${new Date().toISOString().slice(0,10)}`,
-        draft.src || null);
-      resetGeoCache(); setDraft(null); setSel({ adm1:"", adm2:"", adm3:"" }); setPage(0);
-      setRefresh(x=>x+1);
-      await loadVersions();
-      /* db.geoVersion (carte « Référentiel courant ») vient de l'état global, chargé
-         une fois au démarrage : sans ce rechargement, elle continue d'afficher
-         l'ancien millésime bien après que le nouveau soit devenu courant. */
-      if(reload) await reload();
-      const c = r.counts || {};
-      setStatus({ kind:"ok", text:`${r.imported.toLocaleString("fr-FR")} unités enregistrées — `
-        + [["adm1","régions"],["adm2","districts"],["adm3","communes"],["adm4","fokontany"]]
-            .filter(([k])=>c[k]).map(([k,l])=>`${c[k].toLocaleString("fr-FR")} ${l}`).join(", ")
-        + (r.rejected ? ` · ${r.rejected} ligne(s) écartée(s)` : "") });
-      notify(`Référentiel importé : ${r.imported.toLocaleString("fr-FR")} unités`, "ok");
-    }catch(e){
-      setStatus({ kind:"err", text:e.message + (e.details ? " — " + JSON.stringify(e.details).slice(0,180) : "") });
-      notify("Import refusé : " + e.message, "err");
-    }
-    setBusy(false);
-  };
-
   const activate = async (id, lb) => {
     try{ await api.setGeoVersion(id); resetGeoCache();
       setSel({ adm1:"", adm2:"", adm3:"" }); setPage(0); setRefresh(x=>x+1); await loadVersions();
@@ -1470,75 +1425,16 @@ function SetLocations({ db, notify, can, reload }){
     setExportEnCours(false);
   };
 
-  /* ── Contours ───────────────────────────────────────────────────────
-     La lecture se fait dans le navigateur, comme pour le découpage ; ce qui part
-     au serveur est la géométrie déjà extraite, par lots. Le serveur la simplifie
-     et en garde deux résolutions : la version fine ne s'affiche qu'au zoom, et
-     servir 18 000 contours en pleine résolution arrêterait le navigateur. */
-  const onGeomFile = async (file) => {
-    setGeomStat({ kind:"info", text:"Lecture des contours… cela peut prendre un moment sur un fichier de fokontany." });
-    try{
-      const d = await readGeoFile(file, { withGeometry:true });
-      const avec = (d.geom || []).filter(Boolean).length;
-      if(!avec) throw new Error("Aucun contour trouvé : ce fichier ne contient que des points ou une table attributaire. Il faut le .shp, ou un .geojson de polygones.");
-      setGeomDraft(d);
-      setGeomMap({ adm1:guessField(d.fields,GUESS.adm1), adm2:guessField(d.fields,GUESS.adm2),
-        adm3:guessField(d.fields,GUESS.adm3), adm4:guessField(d.fields,GUESS.adm4),
-        code:guessField(d.fields,GUESS.code) });
-      setGeomStat({ kind:"ok", text:`${fmt(avec)} contour(s) lus sur ${fmt(d.rows.length)} objets · ${d.fields.length} champs attributaires` });
-    }catch(e){ setGeomDraft(null); setGeomStat({ kind:"err", text:e.message }); }
-  };
-
-  const commitGeom = async () => {
-    if(!geomDraft) return;
-    setGeomBusy(true);
-    const LOT = 120;   /* un lot de contours de commune pèse déjà quelques mégaoctets */
-    let envoyes = 0, ecrites = 0, rejetes = 0; const motifs = [];
-    try{
-      const items = geomDraft.rows.map((r, i) => {
-        const g = geomDraft.geom[i];
-        if(!g) return null;
-        const names = {};
-        for(const k of ["adm1","adm2","adm3","adm4"])
-          if(geomMap[k] && r[geomMap[k]]) names[k] = String(r[geomMap[k]]);
-        if(!Object.keys(names).length && !geomMap.code) return null;
-        return { pcode: geomMap.code ? String(r[geomMap.code] ?? "") || undefined : undefined,
-                 names, geometry:g };
-      }).filter(Boolean);
-      if(!items.length) throw new Error("Aucun contour rattachable : indiquez au moins un champ de nom administratif");
-
-      for(let i = 0; i < items.length; i += LOT){
-        const lot = items.slice(i, i + LOT);
-        const r = await api.importGeometry(lot, { reset: i === 0, source: geomDraft.src });
-        envoyes += lot.length; ecrites += r.écrites; rejetes += r.rejetes;
-        if(r.rejets?.length && motifs.length < 8) motifs.push(...r.rejets.slice(0, 3));
-        setGeomStat({ kind:"info",
-          text:`Envoi… ${fmt(envoyes)} / ${fmt(items.length)} — ${fmt(ecrites)} rattaché(s)` });
-        /* On libère au fur et à mesure : garder tous les contours en mémoire pendant
-           l'envoi ferait doubler l'empreinte pour rien. */
-        for(let k = i; k < i + LOT && k < geomDraft.geom.length; k++) geomDraft.geom[k] = null;
-      }
-      await loadVersions();
-      setGeomDraft(null);
-      setGeomStat({ kind: rejetes ? "warn" : "ok",
-        text: `${fmt(ecrites)} contour(s) enregistré(s)` +
-          (rejetes ? ` · ${fmt(rejetes)} non rattaché(s) : ${motifs.map(m=>m.pcode).filter(Boolean).slice(0,3).join(", ")}…` : "") });
-      notify(`Contours administratifs enregistrés — ${fmt(ecrites)} unité(s)`, rejetes ? "warn" : "ok");
-    }catch(e){ setGeomStat({ kind:"err", text:e.message }); notify(e.message, "err"); }
-    setGeomBusy(false);
-  };
-
   const cur = db.geoVersion;
   const pages = Math.ceil(dir.total / PER);
   return (
     <>
-      <Note>Le moyen recommandé est le <b>téléversement du shapefile</b> ci-dessous : le fichier
-        (un <b>.zip</b>, ou le <b>.shp</b> avec son <b>.dbf</b> et son <b>.prj</b>) est lu <b>par le serveur</b>,
-        qui reconstruit le découpage ET ses contours en un seul geste, après que vous ayez mis chaque colonne
-        en face d'une variable MEMS. Les coordonnées doivent être en WGS 84.
+      <Note>Le découpage administratif se configure désormais dans l'onglet <b>Pays</b> : on y dépose
+        le shapefile (un <b>.zip</b>, ou le <b>.shp</b> avec son <b>.dbf</b> et son <b>.prj</b>), lu
+        <b> par le serveur</b>, qui reconstruit le découpage ET ses contours et rattache le millésime au
+        pays courant. Cet écran-ci sert à <b>consulter</b> le référentiel courant, ses millésimes et le
+        répertoire des localités.
         <br /><br />
-        Les deux cartes suivantes — import du découpage seul, puis des contours — sont l'ancienne voie, lue
-        dans le navigateur ; elles restent disponibles, notamment pour un <b>.geojson</b> déjà projeté.
         Pour le référentiel complet de Madagascar — environ 18 000 fokontany — la ligne de commande lit le
         fichier sans le charger en mémoire :
         <code className="bg-white px-1 rounded mx-1">node src/import-geo.js fichier.csv --label "COD-AB v2023.1"</code>
@@ -1555,122 +1451,44 @@ function SetLocations({ db, notify, can, reload }){
         </Card>
       ) : (
         <Note tone="warn"><b>Aucun référentiel chargé.</b> Les listes administratives resteront vides
-          tant qu'un découpage n'aura pas été importé.</Note>
+          tant qu'un découpage n'aura pas été importé depuis l'onglet <b>Pays</b>.</Note>
       )}
 
-      {/* Le téléversement lu par le serveur : le shapefile en entier (découpage ET
-          contours), en un seul geste, avec sa correspondance de colonnes. */}
-      <SetShapefileServer db={db} notify={notify} can={can} onCommitted={async ()=>{
-        resetGeoCache(); setSel({ adm1:"", adm2:"", adm3:"" }); setPage(0); setRefresh(x=>x+1);
-        await loadVersions(); if(reload) await reload(); }} />
-
       {/* ── Contours administratifs ──────────────────────────────────────
-          Le référentiel ne portait que des points, et la carte projetait des cercles
-          sur un fond vide : une commune non couverte n'apparaissait nulle part. Les
-          contours sont ce qui permet de la dessiner — et donc de la voir. */}
+          Les contours arrivent désormais AVEC le shapefile importé depuis l'onglet
+          Pays (le .shp les porte, le serveur les simplifie et les rattache). Cette
+          carte n'en montre plus que l'état par niveau et permet de les retirer —
+          une maintenance qui laisse l'arbre administratif intact. */}
       <Card title="Contours administratifs — fond de carte"
         subtitle={cur?.geom?.units
           ? `${fmt(cur.geom.units)} unité(s) avec contour${cur.geom.source ? ` · ${cur.geom.source}` : ""}`
           : "aucun contour : la cartographie n'a pas de fond"}
         right={can("admin") && cur?.geom?.units > 0 &&
           <Btn size="sm" kind="sec" icon={Trash2} disabled={geomBusy}
-            onClick={async ()=>{ if(!confirm("Retirer tous les contours de ce millésime ?")) return;
+            onClick={async ()=>{ if(!confirm("Retirer tous les contours de ce millésime ? L'arbre administratif est conservé.")) return;
+              setGeomBusy(true);
               try{ const r = await api.clearGeometry(); await loadVersions();
+                if(reload) await reload();
                 notify(`${fmt(r.supprimes)} contour(s) retiré(s)`, "ok");
-              }catch(e){ notify(e.message, "err"); } }}>Retirer les contours</Btn>}>
+              }catch(e){ notify(e.message, "err"); }
+              setGeomBusy(false); }}>Retirer les contours</Btn>}>
 
         {!cur ? (
-          <Note tone="warn">Chargez d'abord un découpage : les contours se rattachent à
-            l'arbre administratif, ils ne le créent pas.</Note>
-        ) : (<>
-          {!!cur.geom?.parNiveau?.length && (
+          <Note tone="warn">Aucun référentiel chargé : importez un découpage depuis l'onglet <b>Pays</b>.
+            Les contours s'y rattachent, ils ne le créent pas.</Note>
+        ) : cur.geom?.units ? (
+          !!cur.geom?.parNiveau?.length && (
             <StatRow>
               {cur.geom.parNiveau.map(x=>(
                 <Stat key={x.level} label={niveau(db, x.level, true)}
                   value={fmt(x.units)}
                   sub={`${fmt(x.points_simple)} sommets affichés sur ${fmt(x.points)}`} />))}
-            </StatRow>)}
-
-          <Note>Chargez le <b>.shp</b> (ou son archive <b>.zip</b>, ou un <b>.geojson</b> de polygones)
-            du niveau voulu. Le fichier est lu <b>dans le navigateur</b> ; seules les géométries
-            extraites partent au serveur, par lots. Le serveur les <b>simplifie</b> et en conserve
-            deux résolutions : la version allégée pour la vue d'ensemble, la version fine pour le zoom —
-            sans quoi un pays de 18 000 fokontany ne s'afficherait pas.
-            <br /><br />
-            Le rattachement se fait par <b>chemin de noms</b> (région, district, commune, fokontany),
-            comme pour les sites : les p-codes du référentiel sont dérivés du chemin, et un fichier de
-            contours porte rarement les mêmes que celui du découpage. Importez un niveau à la fois.</Note>
-
-          <div className="grid grid-cols-2 gap-x-4">
-            <Field label="Fichier de contours">
-              <input type="file" accept=".zip,.shp,.geojson,.json" disabled={!can("admin") || geomBusy}
-                onChange={e=>e.target.files[0]&&onGeomFile(e.target.files[0])}
-                className="w-full f125 border border-dashed border-slate-300 rounded p-2 bg-slate-50 cursor-pointer" /></Field>
-            <div className="self-center">{geomStat && <Note tone={geomStat.kind}>{geomStat.text}</Note>}</div>
-          </div>
-
-          {geomDraft && (<>
-            <div className="grid grid-cols-5 gap-x-3">
-              {[...niveaux(db, { from:"adm1", to:"adm4", plural:false }),
-                ["code","P-code (optionnel)"]].map(([k,l])=>(
-                <Field key={k} label={l}>
-                  <Select value={geomMap[k]||""} onChange={e=>setGeomMap(m=>({...m,[k]:e.target.value}))}
-                    empty="—" options={geomDraft.fields} className="mi-py1" /></Field>))}
-            </div>
-            <div className="flex items-center gap-3">
-              <Btn icon={Upload} disabled={geomBusy || !can("admin")} onClick={commitGeom}>
-                {geomBusy ? "Envoi en cours…" : "Enregistrer les contours"}</Btn>
-              <Btn kind="sec" disabled={geomBusy} onClick={()=>{ setGeomDraft(null); setGeomStat(null); }}>
-                Annuler</Btn>
-              <span className="f115 text-slate-500">
-                Le niveau est déduit du champ de nom le plus profond que vous désignez.</span>
-            </div>
-          </>)}
-        </>)}
-      </Card>
-
-      <Card title="Importer un découpage administratif"
-        right={<Btn size="sm" kind="sec" icon={Download} onClick={exp} disabled={exportEnCours || !dir.total}>
-          {exportEnCours ? "Export en cours…" : "Exporter tout"}</Btn>}>
-        <div className="grid grid-cols-2 gap-x-4">
-          <Field label="Fichier du découpage">
-            <input type="file" accept=".zip,.shp,.dbf,.geojson,.json" disabled={!can("admin")}
-              onChange={e=>e.target.files[0]&&onFile(e.target.files[0])}
-              className="w-full f125 border border-dashed border-slate-300 rounded p-2 bg-slate-50 cursor-pointer" /></Field>
-          <div className="self-center">{status && <Note tone={status.kind}>{status.text}</Note>}</div>
-        </div>
-        {!can("admin") && <Note tone="warn">L'import du découpage est réservé aux administrateurs.</Note>}
-        {draft && (
-          <>
-            <div className="grid grid-cols-4 gap-x-3">
-              {[["adm0","Niveau 0 — pays"],["adm1","Niveau 1 — région"],["adm2","Niveau 2 — district"],
-                ["adm3","Niveau 3 — commune"],["adm4","Niveau 4 — fokontany"],["code","Code administratif"]].map(([k,l])=>(
-                <Field key={k} label={l}><Select value={map[k]||""} onChange={e=>setMap(m=>({...m,[k]:e.target.value}))}
-                  empty="— aucun —" options={draft.fields} /></Field>))}
-              <Field label="Niveau de détail à conserver"
-                hint="Le niveau le plus fin peut représenter des dizaines de milliers d'entrées">
-                <Select value={depth} onChange={e=>setDepth(e.target.value)}
-                  options={[["adm1","Jusqu'au niveau 1"],["adm2","Jusqu'au niveau 2"],
-                            ["adm3","Jusqu'au niveau 3"],["adm4","Niveau 4 complet"]]} /></Field>
-              <Field label="Nom du millésime" hint="Il identifie ce chargement dans l'historique">
-                <Input value={label} onChange={e=>setLabel(e.target.value)} placeholder="COD-AB v2023.1" /></Field>
-            </div>
-            <Note tone="info">
-              <b>{preview.length.toLocaleString("fr-FR")} lignes</b> seront envoyées
-              {depth !== "adm4" && " après regroupement des doublons"}, dont{" "}
-              {preview.filter(g => g.lat !== "").length.toLocaleString("fr-FR")} avec coordonnées.
-              Le serveur en déduit l'arbre complet : les niveaux supérieurs sont créés une seule fois,
-              quel que soit le nombre de lignes qui les répètent.
-            </Note>
-            <TableWrap max="mh240">
-              <thead><tr>{["Niveau 0","Niveau 1","Niveau 2","Niveau 3","Niveau 4","Code","Latitude","Longitude"].map(h=><Th key={h}>{h}</Th>)}</tr></thead>
-              <tbody>{preview.slice(0,8).map((g,i)=>(
-                <tr key={i}>{["adm0","adm1","adm2","adm3","adm4","code"].map(k=><Td key={k}>{g[k]}</Td>)}
-                  <Td num className="f11">{g.lat}</Td><Td num className="f11">{g.lon}</Td></tr>))}</tbody>
-            </TableWrap>
-            <Btn className="mt-3" icon={Upload} disabled={busy || !preview.length || !can("admin")} onClick={commit}>
-              {busy ? "Import en cours…" : `Importer ${preview.length.toLocaleString("fr-FR")} lignes`}</Btn>
-          </>)}
+            </StatRow>)
+        ) : (
+          <Note>Ce millésime n'a pas de contours. Ils arrivent avec le shapefile importé depuis l'onglet
+            <b> Pays</b> : le fichier de géométries (.shp) y est lu en même temps que la table (.dbf), et le
+            serveur les simplifie pour la carte.</Note>
+        )}
       </Card>
 
       {versions.length > 1 && (
@@ -1694,6 +1512,8 @@ function SetLocations({ db, notify, can, reload }){
         subtitle={dir.loading ? "Chargement…"
           : `${fmt(dir.total)} fokontany dans la sélection · page ${page+1} sur ${Math.max(1,pages)}`}
         right={<>
+          <Btn size="sm" kind="sec" icon={Download} onClick={exp} disabled={exportEnCours || !dir.total}>
+            {exportEnCours ? "Export…" : "Exporter tout"}</Btn>
           <Select value={sel.adm1} onChange={e=>setSel({ adm1:e.target.value, adm2:"", adm3:"" })}
             empty="Toutes les régions" options={geo.adm1.map(x=>x.name)} className="mi-py1 mi-xs mi-wauto" />
           <Select value={sel.adm2} onChange={e=>setSel(s=>({ ...s, adm2:e.target.value, adm3:"" }))}

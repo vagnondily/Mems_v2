@@ -9,8 +9,8 @@ import { validate, schemas } from "../lib/validate.js";
 import { buildUnits, writeVersion, currentVersion, LEVELS } from "../lib/geo.js";
 import { scopeOf, declaredFor, unitsIn, outsideDeclared } from "../lib/scope.js";
 import { extent, geomSummary, readGeometries, writeGeometries } from "../lib/geom.js";
-import { construire, lireTable, attributsContour, parcourirGeometriesShp,
-         extraireArchiveGeo } from "../lib/shapefile.js";
+import { construire, lireTable, tableProvisoire, attributsContour,
+         parcourirGeometriesShp, extraireArchiveGeo } from "../lib/shapefile.js";
 
 const r = Router();
 
@@ -304,6 +304,34 @@ const echantillonUnites = (units, level, n = 8) =>
 
 const veutDoublons = (req) => /^(1|true|on|yes|oui)$/i.test(String(req.body?.allowDuplicates || ""));
 
+/* multer signale un dépassement de taille par un code technique et un message
+   anglais. On le rend en clair — avec la limite effective, et le rappel qu'un
+   proxy en amont peut plafonner le corps AVANT le serveur, auquel cas l'échec se
+   voit côté client et non ici. */
+function messageMulter(err){
+  if(err?.code === "LIMIT_FILE_SIZE")
+    return `fichier trop volumineux : la limite est de ${config.maxShapefileMb} Mo. `
+      + "Déposez plutôt une archive .zip — elle compresse fortement le .shp. Si l'envoi échoue "
+      + "avant même d'atteindre le serveur, c'est qu'un proxy en amont plafonne la taille du corps.";
+  return err?.message || "téléversement refusé";
+}
+
+/* Le pays auquel rattacher le millésime. Le découpage est configuré depuis la
+   fiche du pays courant, qui envoie ici son code : le rattachement est ainsi
+   EXPLICITE, et la bascule du millésime courant ne touche que CE pays — l'unicité
+   de `is_current` est cloisonnée par pays (voir lib/geo.js). Vide, writeVersion
+   retombe sur le pays courant, qui est le bon repli au tout premier import. */
+const paysSchema = z.string().trim().length(3).regex(/^[A-Za-z]{3}$/).transform(v => v.toUpperCase());
+function lirePays(req){
+  const brut = req.body?.country;
+  if(brut == null || String(brut).trim() === "") return { code: null };
+  const p = paysSchema.safeParse(brut);
+  if(!p.success) return { erreur: "code pays invalide : trois lettres (ISO 3166-1 alpha-3)" };
+  if(!db.prepare("SELECT 1 FROM country WHERE code=?").get(p.data))
+    return { erreur: `pays inconnu : ${p.data} n'est pas configuré` };
+  return { code: p.data };
+}
+
 /* ① Aperçu : lecture, correspondance, comptages — RIEN n'est écrit.
    Sans mapping, la réponse porte les colonnes détectées et la correspondance
    proposée : l'écran remplit son volet, l'utilisateur ajuste, et rappelle cette
@@ -315,11 +343,14 @@ const veutDoublons = (req) => /^(1|true|on|yes|oui)$/i.test(String(req.body?.all
    navigateur. On ne rend que des compteurs et un échantillon. */
 r.post("/shapefile/apercu", requireCap("admin"), (req, res, next) => {
   televerseShapefile.any()(req, res, async (err) => {
-    if(err) return res.status(422).json({ error: err.message });
+    if(err) return res.status(422).json({ error: messageMulter(err) });
     try{
       const { shp, dbf, prj } = await fichiersDuDepot(req.files);
-      if(!dbf) return res.status(422).json({
-        error: "table attributaire .dbf absente : déposez le .zip complet, ou le .shp ET le .dbf" });
+      /* Le .dbf n'est plus exigé : sans lui, on importe les polygones seuls (voir
+         construire). Il faut au moins le .shp — sans géométrie ni attribut, il n'y
+         a rien à lire. */
+      if(!shp && !dbf) return res.status(422).json({
+        error: "aucun fichier lisible : déposez le .shp (et son .dbf pour nommer les unités), ou une archive .zip" });
 
       const allowDuplicates = veutDoublons(req);
       const données = construire({ shp, dbf, prj, mapping: lireMapping(req.body?.mapping) },
@@ -366,18 +397,27 @@ r.post("/shapefile/apercu", requireCap("admin"), (req, res, next) => {
    le second passage streame les géométries et les libère au fil de l'écriture. */
 r.post("/shapefile/commit", requireCap("admin"), (req, res, next) => {
   televerseShapefile.any()(req, res, async (err) => {
-    if(err) return res.status(422).json({ error: err.message });
+    if(err) return res.status(422).json({ error: messageMulter(err) });
     try{
       const { shp, dbf } = await fichiersDuDepot(req.files);
-      if(!dbf) return res.status(422).json({
-        error: "table attributaire .dbf absente : déposez le .zip complet, ou le .shp ET le .dbf" });
+      /* Le .dbf n'est plus exigé : sans lui, on importe les polygones seuls, nommés
+         « Polygone N ». Il faut au moins le .shp, qui porte les géométries. */
+      if(!shp && !dbf) return res.status(422).json({
+        error: "aucun fichier lisible : déposez au moins le .shp, ou une archive .zip" });
+
+      const pays = lirePays(req);
+      if(pays?.erreur) return res.status(422).json({ error: pays.erreur });
 
       const label = String(req.body?.label || "").trim()
         || `Shapefile du ${new Date().toISOString().slice(0, 10)}`;
       const source = String(req.body?.source || "").trim() || null;
       const allowDuplicates = veutDoublons(req);
 
-      const table = lireTable({ dbf, mapping: lireMapping(req.body?.mapping) });
+      /* Avec .dbf : la table attributaire, sa correspondance de colonnes. Sans :
+         une identité provisoire par polygone, pour l'afficher tout de suite. */
+      const table = dbf
+        ? lireTable({ dbf, mapping: lireMapping(req.body?.mapping) })
+        : tableProvisoire(shp);
       const { units, collisions, counts } = buildUnits(table.lignes, { allowDuplicates });
       if(!units.length) return res.status(422).json({
         error: "aucune unité exploitable : vérifiez la correspondance des colonnes",
@@ -403,7 +443,8 @@ r.post("/shapefile/commit", requireCap("admin"), (req, res, next) => {
          imbriquées dans celle-ci, better-sqlite3 les traite en points de reprise
          (SAVEPOINT), si bien que l'ensemble reste tout-ou-rien. */
       tx(() => {
-        versionId = writeVersion({ label, source, units, userId: req.user.id, makeCurrent: true });
+        versionId = writeVersion({ label, source, units, userId: req.user.id, makeCurrent: true,
+          country: pays.code });
         if(shp){
           let lot = [], premier = true;
           const vider = () => {

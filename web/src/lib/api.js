@@ -138,27 +138,26 @@ export const api = {
   importCommit:   (id)            => call("POST", `/import/batches/${encodeURIComponent(id)}/commit`, {}),
   importCancel:   (id)            => call("POST", `/import/batches/${encodeURIComponent(id)}/cancel`, {}),
   setGeoVersion:(id)              => call("PUT", `/geo/versions/${encodeURIComponent(id)}/current`),
-  /* Un import crée un millésime complet : le serveur reconstruit l'arbre. */
-  importGeo:    (rows, label, source) => call("POST", "/geo/bulk", { rows, label, source }),
-
   /* Téléversement d'un shapefile, lu par le SERVEUR (le navigateur n'embarque plus
      de parseur). `files` est un tableau de .shp/.dbf/.prj, ou un unique .zip.
      `mapping` associe chaque colonne du .dbf à une variable MEMS (adm0…adm4,
-     pcode0…pcode4). L'aperçu ne rien écrit ; le commit bascule le millésime. */
-  shapefilePreview: (files, mapping, allowDuplicates = false) =>
+     pcode0…pcode4). Sans .dbf, le serveur importe les polygones seuls sous des
+     identités provisoires. `country` rattache le millésime au pays configuré : la
+     bascule du courant est cloisonnée par pays. L'aperçu ne rien écrit ; le commit
+     reconstruit l'arbre ET ses contours en un seul geste, et bascule le millésime. */
+  shapefilePreview: (files, mapping, allowDuplicates = false, country = null) =>
     postFiles("/geo/shapefile/apercu", files,
-      { mapping: JSON.stringify(mapping || {}), allowDuplicates: allowDuplicates ? "true" : "" }),
-  shapefileCommit:  (files, mapping, label, source, allowDuplicates = false) =>
+      { mapping: JSON.stringify(mapping || {}), allowDuplicates: allowDuplicates ? "true" : "",
+        country: country || "" }),
+  shapefileCommit:  (files, mapping, label, source, allowDuplicates = false, country = null) =>
     postFiles("/geo/shapefile/commit", files,
       { mapping: JSON.stringify(mapping || {}), label, source,
-        allowDuplicates: allowDuplicates ? "true" : "" }),
+        allowDuplicates: allowDuplicates ? "true" : "", country: country || "" }),
 
-  /* Contours administratifs. L'import est envoyé par lots — les contours d'un pays
-     entier ne passent pas dans un corps de requête — et le premier lot porte
-     `reset` : sans lui, deux imports successifs mêleraient leurs géométries. */
+  /* Contours administratifs. Ils sont désormais écrits PAR LE COMMIT du shapefile
+     (le .shp les porte, le serveur les simplifie et les rattache) : la lecture sert
+     la carte, la suppression est une action de maintenance. */
   geoGeometry:      (q="")                => call("GET", `/geo/geometry${q}`),
-  importGeometry:   (features, opts = {}) => call("POST", "/geo/geometry",
-                        { features, reset:!!opts.reset, source:opts.source, versionId:opts.versionId }),
   clearGeometry:    ()                    => call("DELETE", "/geo/geometry"),
 
   mre:          (q="")       => call("GET", `/mre${q}`),

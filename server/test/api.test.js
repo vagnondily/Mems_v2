@@ -6999,6 +6999,97 @@ test("shapefile : téléversement réservé aux administrateurs", async () => {
   assert.equal((await commitShp(te)).status, 403);
 });
 
+/* ── Un .shp SANS .dbf : les polygones seuls ────────────────────────────
+   « Comme QGIS » : le seul .shp doit afficher les contours tout de suite, sous
+   des identités provisoires « Polygone N », sans exiger la table attributaire.
+   Le .dbf déposé ensuite les nomme et les rattache — le flux avec-.dbf, lui,
+   reste intact (tous les tests ci-dessus le prouvent). */
+const apercuShpSeul = (token, shp) =>
+  request(app).post("/api/geo/shapefile/apercu").set("Authorization", `Bearer ${token}`)
+    .attach("fichier", shp ?? shpMdg(), "d.shp");
+
+test("shapefile : sans .dbf, l'aperçu propose des identités « Polygone N » et ne rien écrit", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const avant = db.prepare("SELECT COUNT(*) c FROM geo_version").get().c;
+
+  const r = await apercuShpSeul(t);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.resume.sansDbf, true, "l'aperçu signale l'absence de table attributaire");
+  assert.equal(r.body.resume.records, 3);
+  assert.equal(r.body.resume.avecGeometrie, 3);
+  assert.equal(r.body.colonnes.length, 0, "aucune colonne attributaire sans .dbf");
+  /* Trois polygones provisoires, à un niveau unique, prêts à s'afficher. */
+  assert.equal(r.body.arbre.counts.adm3, 3);
+  assert.equal(r.body.arbre.total, 3);
+  assert.ok(r.body.echantillon.some(u => /Polygone 1/.test(u.name)), JSON.stringify(r.body.echantillon));
+
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM geo_version").get().c, avant,
+    "l'aperçu n'a créé aucun millésime");
+});
+
+test("shapefile : sans .dbf, le commit importe les polygones seuls, devient courant et les affiche", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const r = await request(app).post("/api/geo/shapefile/commit").set("Authorization", `Bearer ${t}`)
+    .attach("fichier", shpMdg(), "d.shp").field("label", "Polygones seuls");
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.imported, 3, "trois polygones provisoires");
+  assert.equal(r.body.geom.écrites, 3, "trois contours affichables");
+
+  const v = await request(app).get("/api/geo/versions").set("Authorization", `Bearer ${t}`);
+  const courant = v.body.rows.find(x => x.current);
+  assert.equal(courant.label, "Polygones seuls");
+  assert.equal(courant.geom.units, 3);
+
+  /* Les contours s'affichent : le service de géométries les rend au niveau adm3,
+     nommés « Polygone N » — appariés PAR ORDRE aux enregistrements du .shp. */
+  const lu = await request(app).get("/api/geo/geometry?level=adm3")
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(lu.body.features.length, 3, "les polygones seuls s'affichent sur la carte");
+  assert.ok(lu.body.features.every(f => /Polygone/.test(f.properties.name)), JSON.stringify(
+    lu.body.features.map(f => f.properties.name)));
+});
+
+/* ── Rattachement du millésime au PAYS ──────────────────────────────────
+   Le découpage se configure depuis la fiche du pays courant, qui envoie son code.
+   Le millésime doit s'y rattacher, et la bascule du courant ne toucher que CE
+   pays : c'est ce qui évite le bug multi-pays (importer sous un pays écraserait
+   le référentiel d'un autre). */
+test("shapefile : le millésime est rattaché au pays passé, et la bascule ne touche que ce pays", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  /* Un second pays configuré, laissé non courant : Madagascar reste courant. */
+  const niv = { adm0:{one:"Pays",many:"Pays"}, adm1:{one:"Province",many:"Provinces"},
+    adm2:{one:"Territoire",many:"Territoires"}, adm3:{one:"Secteur",many:"Secteurs"},
+    adm4:{one:"Groupement",many:"Groupements"} };
+  await request(app).post("/api/country").set("Authorization", `Bearer ${t}`)
+    .send({ code:"ETH", name:"Éthiopie", currency:"ETB", levels:niv });
+
+  const mdgAvant = db.prepare("SELECT id FROM geo_version WHERE country='MDG' AND is_current=1").get();
+
+  const r = await request(app).post("/api/geo/shapefile/commit").set("Authorization", `Bearer ${t}`)
+    .attach("fichier", shpMdg(), "d.shp").attach("fichier", dbfMdg(), "d.dbf")
+    .field("country", "eth").field("label", "Découpage ETH");
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+
+  const row = db.prepare("SELECT country, is_current FROM geo_version WHERE id=?").get(r.body.versionId);
+  assert.equal(row.country, "ETH", "le millésime est rattaché au pays passé (code normalisé)");
+  assert.equal(row.is_current, 1, "et courant DANS son pays");
+
+  /* Le millésime malgache n'est pas touché : la bascule est cloisonnée par pays. */
+  assert.equal(db.prepare("SELECT is_current FROM geo_version WHERE id=?").get(mdgAvant.id).is_current, 1,
+    "le millésime courant de Madagascar reste courant");
+  /* Et l'application, dont le pays courant reste Madagascar, sert toujours SON
+     découpage, pas celui d'Éthiopie qu'on vient d'importer. */
+  const g = await request(app).get("/api/geo/levels").set("Authorization", `Bearer ${t}`);
+  assert.ok(g.body.rows.length > 0, "le référentiel servi reste celui du pays courant");
+
+  /* Un code pays inconnu est refusé avec son motif — l'écriture est validée. */
+  const mauvais = await request(app).post("/api/geo/shapefile/commit").set("Authorization", `Bearer ${t}`)
+    .attach("fichier", shpMdg(), "d.shp").attach("fichier", dbfMdg(), "d.dbf")
+    .field("country", "ZZZ");
+  assert.equal(mauvais.status, 422);
+  assert.ok(/inconnu/.test(mauvais.body.error), mauvais.body.error);
+});
+
 /* ═══════════════════════════════════════════════════════════════════════
    P-codes en double : présentés, jamais fatals.
 
