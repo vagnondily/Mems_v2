@@ -1250,9 +1250,10 @@ prend plus de mot de passe en entrée pour ces deux cas) — le brief du prochai
   prod. » Ne pas investir dans le jeu de démonstration / le seed ; construire pour l'usage
   réel. (La base de démo reste utile à MES vérifications, mais les fonctionnalités visent la
   prod.)
-- **« CL » différé** jusqu'à ce que les Paramètres soient bien configurés et réorganisés
-  professionnellement. *(Interprétation à confirmer : « CL » = Cadre Logique / cadre de
-  résultats ? ou Caseload ? — je le note comme différé quoi qu'il en soit ; à préciser.)*
+- **Ne pas babysitter la CI.** « Les tests CI, ne t'en préoccupe pas pour le moment, laisse-le
+  tourner. » La vérification LOCALE (deux suites, build, audits, navigateur, migration) reste
+  le vrai filet avant chaque push ; la CI tourne en fond comme backstop, sans que j'y consacre
+  des tours à sonder minute par minute. (Correction : ce n'était pas « CL »/Cadre Logique.)
 
 ### S6 — DÉCISION : un éditeur peut planifier les suivis (01/08/2026)
 
