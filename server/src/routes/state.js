@@ -97,7 +97,10 @@ r.get("/state", (req, res) => {
 
   const indicators = db.prepare("SELECT * FROM indicators ORDER BY code").all().map(i => ({
     id:i.code, key:i.id, rev:i.rev, name:i.name, basket:i.basket||"", unit:i.unit,
-    target:i.target, dir:i.direction, method:i.method||"", freq:i.frequency||"" }));
+    target:i.target, dir:i.direction, method:i.method||"", freq:i.frequency||"",
+    /* Deux natures d'un même objet (migration 022) : le CRF porte un `level`
+       de cadre logique, l'XLSForm de processus porte l'`activity` qu'il suit. */
+    kind:i.kind||"crf", level:i.level||"", activity:i.activity||"" }));
   const indByKey = Object.fromEntries(indicators.map(i=>[i.key, i.id]));
 
   /* Les résultats n'ont aucune dimension « bureau » dans le schéma : ils sont mesurés par

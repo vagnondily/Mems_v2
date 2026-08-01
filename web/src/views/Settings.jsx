@@ -1551,69 +1551,116 @@ function SetLocations({ db, notify, can, reload }){
     </>);
 }
 
+/* Les deux natures d'indicateur (migration 022). Le CRF est le cadre de résultats
+   institutionnel — outcome, output, other output ; l'XLSForm porte les indicateurs
+   de PROCESSUS d'une activité. Une seule bibliothèque, deux sous-onglets. */
+const IND_NATURES = [["crf","CRF — résultats"],["xlsform","XLSForm — processus"]];
+const IND_LEVELS = [["outcome","Outcome"],["output","Output"],["other_output","Other output"]];
+const indLevelLabel = (v) => IND_LEVELS.find(([k])=>k===v)?.[1] || "";
+
 function SetIndicators({ db, set, notify, can }){
+  const [nat,setNat] = useState("crf");
   const [edit,setEdit] = useState(null);
+  /* Une ligne sans `kind` est un indicateur d'avant la migration : c'est un CRF. */
+  const kindOf = (ind) => ind.kind || "crf";
+  const liste = db.indicators.filter(ind => kindOf(ind) === nat);
+  /* Les tags d'activité servent d'options pour rattacher un indicateur de
+     processus à SON activité, en attendant le référentiel Activités dédié. */
+  const activites = (db.lists?.tags || []).map(t => [t.code, `${t.code} — ${t.label}`]);
+  const activiteLabel = (code) => (db.lists?.tags || []).find(t=>t.code===code)?.label || code || "";
+
   const save = (ind) => { set(d => { const i=d.indicators.findIndex(x=>x.id===ind.id);
       if(i>=0) d.indicators[i]=ind; else d.indicators.push(ind); return d; });
     setEdit(null); notify("Indicateur enregistré","ok"); };
-  const exp = () => download("masterlist_indicateurs.csv",
-    toCSV(db.indicators, ["id","name","basket","unit","target","dir","method","freq"]), "text/csv");
+  /* L'export ne sort que la nature affichée, mais porte `kind`/`level`/`activity`
+     pour qu'un réimport les rétablisse sans ambiguïté. */
+  const exp = () => download(`indicateurs_${nat}.csv`,
+    toCSV(liste, ["id","name","kind","level","activity","basket","unit","target","dir","method","freq"]), "text/csv");
   const imp = (file) => { const rd=new FileReader();
     rd.onload=()=>{ const rows=parseCSV(rd.result);
       if(!rows.length){ notify("Fichier vide","err"); return; }
       set(d=>{ rows.forEach(r=>{ if(!r.id) return;
-        const rec = { id:r.id, name:r.name||r.id, basket:r.basket||"", unit:r.unit||"%",
+        const kind = r.kind==="xlsform" ? "xlsform" : "crf";
+        const rec = { id:r.id, name:r.name||r.id, kind,
+          level: kind==="crf" ? (IND_LEVELS.some(([k])=>k===r.level) ? r.level : "") : "",
+          activity: kind==="xlsform" ? (r.activity||"") : "",
+          basket:r.basket||"", unit:r.unit||"%",
           target:n(r.target), dir:(r.dir==="down"?"down":"up"), method:r.method||"", freq:r.freq||"" };
         const i=d.indicators.findIndex(x=>x.id===rec.id);
         if(i>=0) d.indicators[i]=rec; else d.indicators.push(rec); }); return d; });
       notify(`${rows.length} indicateur(s) importé(s)`,"ok"); };
     rd.readAsText(file,"utf-8"); };
+
+  const crf = nat==="crf";
   return (
     <>
-      <Note>Cette masterlist alimente le plan de collecte et la saisie des valeurs dans
-        Programme → Résultats.
-        Elle s'exporte en CSV pour être partagée, et se réimporte pour une mise à jour groupée.</Note>
-      <Card flush title="Masterlist des indicateurs" subtitle={`${db.indicators.length} indicateurs`}
+      <Tabs items={IND_NATURES} value={nat} onChange={setNat} />
+      <Note>{crf
+        ? <>Le <b>CRF</b> est le cadre de résultats : indicateurs <b>outcome</b> et <b>output</b> (y compris
+          <i> other output</i>), mesurés par région. Il alimente le plan de collecte et la saisie dans
+          Programme → Résultats.</>
+        : <>Les indicateurs de <b>processus</b> issus des <b>XLSForms</b> suivent l'exécution d'une activité
+          (couverture des visites, complétude des distributions…). Ils sont <b>stockés</b> comme référentiel et
+          alimentent le tableau de bord de suivi.</>}
+        {" "}La liste s'exporte en CSV et se réimporte pour une mise à jour groupée.</Note>
+      <Card flush title={crf ? "Indicateurs CRF" : "Indicateurs de processus (XLSForm)"}
+        subtitle={`${liste.length} indicateur${liste.length>1?"s":""}`}
         right={<>
           <label><input type="file" accept=".csv" className="hidden" onChange={e=>e.target.files[0]&&imp(e.target.files[0])} />
             <span className="inline-flex items-center gap-1.5 border rounded font-semibold px-2.5 py-1 f11 m-btn-sec cursor-pointer"><Upload size={13}/> Importer</span></label>
-          <Btn size="sm" kind="sec" icon={Download} onClick={exp}>Exporter</Btn>
-          {can("edit") && <Btn size="sm" icon={Plus} onClick={()=>setEdit({ id:"", name:"", basket:"", unit:"%",
+          <Btn size="sm" kind="sec" icon={Download} onClick={exp} disabled={!liste.length}>Exporter</Btn>
+          {can("edit") && <Btn size="sm" icon={Plus} onClick={()=>setEdit({ id:"", name:"",
+            kind:nat, level:crf?"outcome":"", activity:"", basket:"", unit:"%",
             target:0, dir:"up", method:"", freq:"Annuel" })}>Ajouter</Btn>}</>}>
-        <TableWrap>
-          <thead><tr><Th>Code</Th><Th>Intitulé</Th><Th>Panier</Th><Th>Unité</Th><Th num>Cible</Th>
-            <Th>Sens</Th><Th>Méthode</Th><Th>Fréquence</Th><Th num>Valeurs</Th><Th /></tr></thead>
-          <tbody>{db.indicators.map(ind=>(
+        {!liste.length
+          ? <Empty>{crf ? "Aucun indicateur CRF. Ajoutez un outcome ou un output, ou importez la masterlist."
+              : "Aucun indicateur de processus. Ajoutez-en un rattaché à une activité, ou importez-le."}</Empty>
+          : <TableWrap>
+          <thead><tr><Th>Code</Th><Th>Intitulé</Th><Th>{crf?"Niveau":"Activité"}</Th>
+            {crf && <Th>Panier</Th>}<Th>Unité</Th><Th num>Cible</Th>
+            <Th>Sens</Th><Th>Méthode</Th><Th>Fréquence</Th>{crf && <Th num>Valeurs</Th>}<Th /></tr></thead>
+          <tbody>{liste.map(ind=>(
             <tr key={ind.id} className="hover:bg-sky-50">
               <Td><Badge tone="b">{ind.id}</Badge></Td>
               <Td className="mw420 truncate font-medium text-slate-800" title={ind.name}>{ind.name}</Td>
-              <Td className="text-slate-600">{ind.basket}</Td><Td>{ind.unit}</Td><Td num>{ind.target}</Td>
+              <Td className="text-slate-600">{crf
+                ? (ind.level ? <Badge tone="n">{indLevelLabel(ind.level)}</Badge> : "—")
+                : (ind.activity ? <span title={activiteLabel(ind.activity)}>{ind.activity}</span> : "—")}</Td>
+              {crf && <Td className="text-slate-600">{ind.basket}</Td>}
+              <Td>{ind.unit}</Td><Td num>{ind.target}</Td>
               <Td><Badge tone="n">{ind.dir==="up"?"↑ maximiser":"↓ minimiser"}</Badge></Td>
               <Td className="text-slate-600">{ind.method}</Td><Td>{ind.freq}</Td>
-              <Td num className="text-slate-500">{db.outcomes.filter(o=>o.indicator===ind.id).length}</Td>
+              {crf && <Td num className="text-slate-500">{db.outcomes.filter(o=>o.indicator===ind.id).length}</Td>}
               <Td className="text-right">
                 {can("edit") && <button onClick={()=>setEdit(ind)} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
                 {can("del") && <button onClick={()=>set(d=>{ d.indicators=d.indicators.filter(x=>x.id!==ind.id); return d; })}
                   className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</Td>
             </tr>))}</tbody>
-        </TableWrap>
+        </TableWrap>}
       </Card>
-      <IndicatorModal open={!!edit} ind={edit} onClose={()=>setEdit(null)} onSave={save} />
+      <IndicatorModal open={!!edit} ind={edit} activites={activites} onClose={()=>setEdit(null)} onSave={save} />
     </>);
 }
-function IndicatorModal({ open, ind, onClose, onSave }){
+function IndicatorModal({ open, ind, activites, onClose, onSave }){
   const [f,setF] = useState({});
   useEffect(()=>{ setF(ind||{}); },[ind]);
   if(!open) return null;
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
+  const crf = (f.kind||"crf") === "crf";
   return (
-    <Modal open onClose={onClose} title={ind?.id?"Modifier l'indicateur":"Nouvel indicateur"}
+    <Modal open onClose={onClose}
+      title={`${ind?.id?"Modifier":"Nouvel"} indicateur ${crf?"CRF":"de processus"}`}
       footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
         <Btn icon={Save} disabled={!f.id||!f.name} onClick={()=>onSave(f)}>Enregistrer</Btn></>}>
       <div className="grid grid-cols-2 gap-x-4">
-        <Field label="Code"><Input value={f.id||""} onChange={e=>u("id",e.target.value.toUpperCase())} placeholder="FCS" /></Field>
-        <Field label="Panier thématique"><Input value={f.basket||""} onChange={e=>u("basket",e.target.value)} /></Field>
+        <Field label="Code"><Input value={f.id||""} onChange={e=>u("id",e.target.value.toUpperCase())} placeholder={crf?"FCS":"PROC-01"} /></Field>
+        {crf
+          ? <Field label="Niveau du cadre de résultats"><Select value={f.level||"outcome"} onChange={e=>u("level",e.target.value)}
+              options={IND_LEVELS} /></Field>
+          : <Field label="Activité suivie"><Select value={f.activity||""} onChange={e=>u("activity",e.target.value)}
+              empty="— aucune —" options={activites} /></Field>}
         <Field label="Intitulé" className="col-span-2"><Input value={f.name||""} onChange={e=>u("name",e.target.value)} /></Field>
+        {crf && <Field label="Panier thématique" className="col-span-2"><Input value={f.basket||""} onChange={e=>u("basket",e.target.value)} /></Field>}
         <Field label="Unité"><Select value={f.unit||"%"} onChange={e=>u("unit",e.target.value)} options={["%","idx","nombre","ratio"]} /></Field>
         <Field label="Valeur cible"><Input type="number" step="0.1" value={f.target??0} onChange={e=>u("target",n(e.target.value))} /></Field>
         <Field label="Sens de progression"><Select value={f.dir||"up"} onChange={e=>u("dir",e.target.value)}
@@ -1621,7 +1668,7 @@ function IndicatorModal({ open, ind, onClose, onSave }){
         <Field label="Fréquence de collecte"><Select value={f.freq||"Annuel"} onChange={e=>u("freq",e.target.value)}
           options={["Mensuel","Trimestriel","Semestriel","Annuel"]} /></Field>
         <Field label="Méthode de collecte" className="col-span-2"><Input value={f.method||""} onChange={e=>u("method",e.target.value)}
-          placeholder="Enquête ménage, registres, suivi post-distribution" /></Field>
+          placeholder={crf?"Enquête ménage, registres, suivi post-distribution":"Extraction XLSForm, agrégation des soumissions"} /></Field>
       </div>
     </Modal>);
 }

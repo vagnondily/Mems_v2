@@ -42,9 +42,16 @@ const COLLECTIONS = {
   indicators: { table:"indicators", cap:"edit",
     schema: z.object({ id:S(64), code:z.string().min(1).max(20), name:z.string().min(1).max(300),
       basket:S(120), unit:z.string().max(20).default("%"), target:N(-1e6,1e6),
-      direction:z.enum(["up","down"]).default("up"), method:S(200), frequency:S(40) }),
+      direction:z.enum(["up","down"]).default("up"), method:S(200), frequency:S(40),
+      /* Nature de l'indicateur (migration 022). `level` n'a de sens que pour le
+         CRF, `activity` que pour l'XLSForm : tous deux sont donc facultatifs, le
+         serveur ne les impose pas selon `kind` — l'écran s'en charge. */
+      kind:z.enum(["crf","xlsform"]).default("crf"),
+      level:z.enum(["outcome","output","other_output"]).nullish().transform(v => v ?? null),
+      activity:S(40) }),
     map: (x) => ({ code:x.code, name:x.name, basket:x.basket, unit:x.unit,
-      target:x.target, direction:x.direction, method:x.method, frequency:x.frequency }) },
+      target:x.target, direction:x.direction, method:x.method, frequency:x.frequency,
+      kind:x.kind, level:x.level, activity:x.activity }) },
 
   outcomes: { table:"outcomes", cap:"edit",
     schema: z.object({ id:S(64), indicator_id:z.string().min(1).max(64), adm1:S(120),

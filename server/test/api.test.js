@@ -1395,6 +1395,49 @@ test("concurrence : modifier la même ligne à deux est refusé, pas écrasé", 
     "Intitulé final de A");
 });
 
+/* Chantier P — deux natures d'indicateur (migration 022). Un CRF porte un niveau
+   de cadre logique, un XLSForm porte l'activité qu'il suit ; les deux transitent
+   par la même collection et se relisent avec leur nature intacte. */
+test("indicateurs : les natures CRF et XLSForm font l'aller-retour", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+
+  const ecrit = await request(app).put("/api/collections/indicators")
+    .set("Authorization", `Bearer ${t}`)
+    .send({ rows: [
+      { code:"OUT-PROC", name:"Couverture des visites", kind:"xlsform",
+        activity:"ACT1", unit:"%", target:80, direction:"up", frequency:"Mensuel" },
+      { code:"OTH-OUT", name:"Other output test", kind:"crf",
+        level:"other_output", basket:"Nutrition", unit:"nombre", target:12, direction:"up" },
+    ] });
+  assert.equal(ecrit.status, 200, JSON.stringify(ecrit.body));
+  assert.equal(ecrit.body.created, 2);
+
+  /* Le stockage porte bien les colonnes de la migration. */
+  const proc = db.prepare("SELECT * FROM indicators WHERE code=?").get("OUT-PROC");
+  assert.equal(proc.kind, "xlsform");
+  assert.equal(proc.activity, "ACT1");
+  assert.equal(proc.level, null, "un XLSForm n'a pas de niveau de cadre logique");
+  const oth = db.prepare("SELECT * FROM indicators WHERE code=?").get("OTH-OUT");
+  assert.equal(oth.kind, "crf");
+  assert.equal(oth.level, "other_output");
+
+  /* La projection d'état rend les deux natures, l'ancienne masterlist restant CRF. */
+  const etat = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`)).body;
+  const vuProc = etat.indicators.find(i => i.id === "OUT-PROC");
+  assert.equal(vuProc.kind, "xlsform");
+  assert.equal(vuProc.activity, "ACT1");
+  assert.ok(etat.indicators.every(i => i.kind === "crf" || i.kind === "xlsform"),
+    "toute ligne a une nature");
+  assert.ok(etat.indicators.some(i => i.kind === "crf"),
+    "les indicateurs d'avant la migration sont des CRF");
+
+  /* Un niveau hors liste est refusé : le champ est contraint, pas libre. */
+  const refus = await request(app).put("/api/collections/indicators")
+    .set("Authorization", `Bearer ${t}`)
+    .send({ rows: [{ code:"BAD", name:"x", kind:"crf", level:"impact", direction:"up" }] });
+  assert.equal(refus.status, 422, "un niveau de cadre logique inconnu est rejeté");
+});
+
 test("concurrence : un client qui n'envoie pas de révision reste accepté", async () => {
   /* Compatibilité : la révision est facultative. Sans elle, on retombe sur le
      comportement « dernier écrivain gagne », mais sans suppression implicite. */
