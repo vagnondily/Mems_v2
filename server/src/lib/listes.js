@@ -96,11 +96,21 @@ export const TYPES = [
   generique("denrees", "denree", "Denrées et commodités", {
     description: "Les denrées transportées et distribuées. Le code est la valeur portée par "
       + "la colonne « commodity » du plan de distribution et du catalogue de rations.",
+    /* Le GROUPE ALIMENTAIRE (migration 033), à la manière de COMET : un champ
+       propre à la denrée, validé contre la liste des groupes. La colonne
+       `food_group` de list_item le porte. */
+    champs: [{ cle:"food_group", colonne:"food_group", label:"Groupe alimentaire",
+               max:60, liste:"groupes_denree" }],
     liens: [lien("pdd",           "commodity", "code", "Plan de distribution"),
             /* Le catalogue de rations (migration 031) désigne aussi la denrée par
                son code : renommer une denrée y réécrit en cascade, et on ne
                supprime pas une denrée qu'une convention de ration utilise. */
             lien("ration_catalog", "commodity", "code", "Catalogue de rations")] }),
+
+  generique("groupes_denree", "groupe_denree", "Groupes alimentaires", {
+    description: "Les familles de denrées — céréales, huiles, aliments composés, "
+      + "légumineuses… — à la manière de la sélection des commodités de COMET.",
+    liens: [lien("list_item", "food_group", "code", "Denrées")] }),
 
   generique("modalites", "modalite", "Modalités de transfert", {
     description: "Vivres, espèces, coupons… La liste n'est plus enfermée dans le schéma "

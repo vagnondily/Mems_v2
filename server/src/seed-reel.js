@@ -76,7 +76,15 @@ const txt = (v) => {
   }
   return String(v);
 };
-const propre = (v) => txt(v).replace(/\s+/g, " ").trim();
+/* Le classeur SDG (Annex 1) porte des « Not available » COLLÉS au milieu de mots
+   — « newNot availableborns », « workNot availableinjury » — vestige d'un
+   rechercher-remplacer malheureux dans le fichier source, où un trait d'union a
+   été remplacé par ce texte. Un « Not available » légitime est toujours entouré
+   d'espaces ; celui-ci, coincé entre deux lettres, ne l'est jamais. On rétablit
+   le trait d'union, sans toucher aux « Not available » isolés. */
+const propre = (v) => txt(v)
+  .replace(/([A-Za-z])Not available([A-Za-z])/g, "$1-$2")
+  .replace(/\s+/g, " ").trim();
 
 /* Lecture d'un onglet en lignes plates.
 
@@ -105,7 +113,14 @@ function lireOnglet(wb, nom, premiereLigne, colonnes){
          bénéficiaires). C'est ce que l'écran restitue « à quelles activités,
          pour quelles cibles ». */
       tags: g(colonnes.tags), gender: g(colonnes.gender),
-      tier1: g(colonnes.tier1), tier23: g(colonnes.tier23), gran: g(colonnes.gran) });
+      tier1: g(colonnes.tier1), tier23: g(colonnes.tier23), gran: g(colonnes.gran),
+      /* Colonnes riches de la masterlist (migration 032), lues telles quelles.
+         Une colonne absente de l'onglet reste vide — `g()` rend "" sur un index
+         indéfini. */
+      applicability: g(colonnes.applicability), reporting: g(colonnes.reporting),
+      outputType: g(colonnes.outputType), unitInterp: g(colonnes.unitInterp),
+      flexibility: g(colonnes.flexibility), followValue: g(colonnes.followValue),
+      intermediate: g(colonnes.intermediate) });
   }
   return out;
 }
@@ -206,13 +221,22 @@ function semerActivites(wb){
    dernière que l'écran filtre. */
 const ONGLETS_INDICATEURS = [
   { nom:"Annex 2 Outcome Indicators", premiere:3, level:"outcome",
-    cols:{ categorie:1, statut:3, code:4, nom:5, tags:12, gender:13 } },
+    cols:{ categorie:1, statut:3, code:4, nom:5, applicability:10, tags:12, gender:13,
+           reporting:9 } },
   { nom:"Annex 3 Output Indicators", premiere:3, level:"output",
-    cols:{ categorie:1, statut:3, code:4, nom:5, tags:12, gender:13 } },
+    cols:{ categorie:1, statut:3, code:4, nom:5, applicability:10, tags:12, gender:13,
+           outputType:14, reporting:15, followValue:16 } },
   { nom:"Detailed Output Indicators", premiere:2, level:"other_output",
-    cols:{ categorie:1, code:4, nom:5, statut:6, unite:8 } },
+    cols:{ categorie:1, outputType:2, intermediate:3, code:4, nom:5, statut:6, unite:8,
+           unitInterp:9, flexibility:10, followValue:12 } },
   { nom:"Annex 4 Crosscutting indicators", premiere:3, level:"crosscutting",
-    cols:{ categorie:1, statut:2, code:3, nom:4, tags:12, tier1:9, tier23:10, gran:13 } },
+    cols:{ categorie:1, statut:2, code:3, nom:4, applicability:9, tags:12,
+           tier1:9, tier23:10, gran:13 } },
+  /* Annex 1 : les cibles et indicateurs des ODD (SDGs) auxquels le PAM
+     contribue. Cinquième sous-groupe. Le nom d'onglet porte une espace finale
+     dans le classeur — elle est reproduite telle quelle. */
+  { nom:"Annex 1 SDGs ", premiere:2, level:"sdg",
+    cols:{ categorie:3, code:4, nom:5, unite:8, statut:10 } },
 ];
 
 /* ── Pertinence : à quelles ACTIVITÉS l'indicateur s'applique ─────────
@@ -266,6 +290,11 @@ function semerIndicateurs(wb){
   const existants = new Map(db.prepare("SELECT * FROM indicators").all().map(i => [i.code, i]));
   /* Les tags réels, pour ne rattacher qu'à ce qui existe (Annex 5 déjà chargée). */
   const tagsConnus = new Set(db.prepare("SELECT tag FROM activity_categories").all().map(x => normTag(x.tag)));
+  /* Un même code ne s'écrit qu'une fois par passage : l'onglet SDG répète le
+     code d'un indicateur sur chacun de ses « related indicators », et deux
+     onglets peuvent se croiser. Premier vu, premier gardé — sans quoi le second
+     INSERT viole l'unicité de `code`. */
+  const vus = new Set();
 
   tx(() => {
     for(const onglet of ONGLETS_INDICATEURS){
@@ -273,6 +302,8 @@ function semerIndicateurs(wb){
       bilan.parNiveau[onglet.level] = lignes.length;
       bilan.lues += lignes.length;
       for(const l of lignes){
+        if(vus.has(l.code)) continue;
+        vus.add(l.code);
         const actif = estActif(l.statut);
         const tags = tagsDe(l.tags, tagsConnus);
         const activityTags = tags.join(",");
@@ -284,6 +315,13 @@ function semerIndicateurs(wb){
            le texte, qu'un « % » posé sur tout. */
         const unite = l.unite || (/^percentage|^proportion|rate$/i.test(l.libelle) ? "%"
           : /^number|^total/i.test(l.libelle) ? "nb" : "%");
+        /* Colonnes riches de la masterlist (migration 032). `nn(v)` : une chaîne
+           vide devient NULL, pour ne pas encombrer la base de "". */
+        const nn = (v) => (v && String(v).trim()) ? String(v).trim() : null;
+        const status = nn(l.statut), applicability = nn(l.applicability),
+              reportingReq = nn(l.reporting), outputType = nn(l.outputType),
+              unitInterp = nn(l.unitInterp), flexibility = nn(l.flexibility),
+              followValue = nn(l.followValue), intermediate = nn(l.intermediate);
         const ex = existants.get(l.code);
         if(ex){
           /* Ce que le classeur porte est mis à jour ; ce qu'il ne porte pas
@@ -291,18 +329,25 @@ function semerIndicateurs(wb){
              est laissé tel quel. Un chargement de référentiel ne défait pas
              une saisie. */
           db.prepare(`UPDATE indicators SET name=?, kind='crf', level=?, category=?,
-                      activity_tags=?, targets=?,
+                      activity_tags=?, targets=?, status=?, applicability=?, reporting_req=?,
+                      output_type=?, unit_interp=?, flexibility=?, follow_value=?, intermediate=?,
                       method=COALESCE(NULLIF(method,''),?), rev=rev+1 WHERE id=?`)
             .run(l.libelle, onglet.level, l.categorie || null, activityTags, cibles || null,
+                 status, applicability, reportingReq, outputType, unitInterp, flexibility,
+                 followValue, intermediate,
                  actif ? null : "Retiré du cadre de résultats", ex.id);
           bilan.majs++;
         } else {
           db.prepare(`INSERT INTO indicators (id,code,name,basket,unit,target,direction,
-                      method,frequency,kind,level,category,activity_tags,targets)
-                      VALUES (?,?,?,?,?,0,'up',?,?,'crf',?,?,?,?)`)
+                      method,frequency,kind,level,category,activity_tags,targets,
+                      status,applicability,reporting_req,output_type,unit_interp,flexibility,
+                      follow_value,intermediate)
+                      VALUES (?,?,?,?,?,0,'up',?,?,'crf',?,?,?,?,?,?,?,?,?,?,?,?)`)
             .run(newId("ind"), l.code, l.libelle, l.categorie || null, unite,
                  actif ? null : "Retiré du cadre de résultats", null,
-                 onglet.level, l.categorie || null, activityTags, cibles || null);
+                 onglet.level, l.categorie || null, activityTags, cibles || null,
+                 status, applicability, reportingReq, outputType, unitInterp, flexibility,
+                 followValue, intermediate);
           bilan.crees++;
         }
       }

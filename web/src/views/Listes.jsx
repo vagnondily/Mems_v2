@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api.js";
 import { ArrowRightLeft, Check, ListChecks, Pencil, Plus, Save, Search, ShieldCheck,
          Trash2 } from "lucide-react";
-import { Badge, Btn, Card, Empty, Field, Input, Modal, Note, Select, Sw,
+import { Aide, Badge, Btn, Card, Empty, Field, Input, Modal, Note, Select, SideRail, Sw,
          TableWrap, Td, Th } from "../components/ui.jsx";
 import { clsx, fmt } from "../lib/calc.js";
 
@@ -109,10 +109,15 @@ function SetListes({ notify, can, me }){
   const t = detail?.type;
   const val = detail?.validation;
 
+  /* Les TYPES de liste deviennent la sous-navigation EN HAUT (pastilles) ; la
+     liste choisie et ses quatre gestes s'affichent EN DESSOUS. */
+  const groups = [{ label:"Référentiels",
+    items: types.map(x => ({ value:x.cle, label:x.label, count:x.items })) }];
+
   return (
     <>
-      <Note>Toutes les listes paramétrables de MEMS, <b>par type</b> : choisissez la liste à gauche,
-        configurez-la à droite. Un item porte un <b>code d'identification</b> — c'est lui que les
+      <Aide>Toutes les listes paramétrables de MEMS, <b>par type</b> : choisissez la liste en haut,
+        configurez-la en dessous. Un item porte un <b>code d'identification</b> — c'est lui que les
         autres tables enregistrent — et un libellé. Le code ne change pas à la modification :
         il est la clé de jointure, et le casser perdrait le lien avec les données déjà saisies.
         Un item <b>déjà utilisé ne se supprime pas</b> ; il se désactive, ce qui le retire des choix
@@ -120,34 +125,11 @@ function SetListes({ notify, can, me }){
         {superUser && <> Un super-utilisateur peut <b>renommer un code</b> (icône <ArrowRightLeft
           size={12} className="inline" />) : la correspondance ancien → nouveau est calculée et
           montrée, puis appliquée <b>en une transaction</b> qui réécrit toutes les tables filles.</>}
-      </Note>
+      </Aide>
 
-      <div className="grid gap-4" style={{gridTemplateColumns:"300px 1fr"}}>
-        {/* ── Rail de gauche : les TYPES ── */}
-        <Card flush title="Types de liste" subtitle={`${types.length} référentiel(s)`}>
-          <div className="mh65 overflow-auto">
-            {types.map(x => (
-              <button key={x.cle} onClick={()=>setCle(x.cle)}
-                className={clsx("w-full text-left px-4 py-2.5 border-b border-slate-100 transition-colors",
-                  x.cle === cle ? "bg-sky-50 bl3 bd-brand" : "hover:bg-slate-50 bl3 border-l-transparent")}>
-                <div className="flex items-center gap-2">
-                  <span className={clsx("f13 font-semibold truncate",
-                    x.cle === cle ? "c-bd" : "text-slate-800")}>{x.label}</span>
-                  {x.validation && <ShieldCheck size={13} className="text-lime-600 shrink-0" />}
-                </div>
-                <div className="f11 text-slate-500 mt-0.5">
-                  {fmt(x.items)} item{x.items>1?"s":""}
-                  {x.items !== x.actifs && ` · ${fmt(x.items - x.actifs)} inactif(s)`}
-                  {x.native && " · table propre"}
-                </div>
-              </button>))}
-          </div>
-        </Card>
-
-        {/* ── Volet de droite : la liste choisie ── */}
-        <div>
-          {!t ? <Card><Empty icon={ListChecks} title="Choisissez une liste"
-                  text="Le rail de gauche porte les types de liste paramétrables." /></Card>
+      <SideRail groups={groups} active={cle} onPick={setCle} right={
+          !t ? <Card><Empty icon={ListChecks} title="Choisissez une liste"
+                  text="La barre du haut porte les types de liste paramétrables." /></Card>
           : (<>
             <Card flush title={t.label}
               subtitle={`${fmt(detail.items.length)} item(s)` + (t.native ? " · table dédiée" : "")}
@@ -228,9 +210,8 @@ function SetListes({ notify, can, me }){
                       </tr>))}</tbody>
                   </TableWrap>}
             </Card>
-          </>)}
-        </div>
-      </div>
+          </>)
+      } />
 
       <ItemModal open={!!edit} item={edit} type={t} busy={busy}
         onClose={()=>setEdit(null)} onSave={enregistrer} />

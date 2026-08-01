@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api.js";
 import { Check, Download, Link2, Search } from "lucide-react";
-import { Badge, Btn, Card, Empty, Field, Input, Note, Select, Stat, StatRow,
+import { Aide, Badge, Btn, Card, Empty, Field, Input, Note, Select, Stat, StatRow,
          TableWrap, Td, Th } from "../components/ui.jsx";
 import { fmt } from "../lib/calc.js";
 
@@ -144,13 +144,13 @@ function SetCodeReferentiels({ notify, can }){
 
   return (
     <>
-      <Note>Ces listes sont les codes par lesquels une source désigne un site quand elle
+      <Aide>Ces listes sont les codes par lesquels une source désigne un site quand elle
         n'emploie pas le découpage administratif — les <b>codes école de SMP</b> en sont le
         premier exemple : des entiers qui ne sont le p-code de rien. Chargez la liste depuis un
         fichier Excel, puis lancez le rapprochement : chaque entrée reconnue pose un
         <b> code de reconnaissance</b> sur son site, et les soumissions de cette source se
         rattachent enfin toutes seules. Un référentiel est <b>national</b> : il n'appartient à
-        aucun bureau, et son chargement est réservé à l'administration.</Note>
+        aucun bureau, et son chargement est réservé à l'administration.</Aide>
 
       <StatRow>
         <Stat label="Codes chargés" value={fmt(total)}

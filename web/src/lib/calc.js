@@ -90,6 +90,94 @@ const LEVELS = { 1:{label:"Faible", cls:"bg-lime-50 text-lime-800 border-lime-20
 
 const FNS = ["max","min","round","abs","sqrt","floor","ceil"];
 const SAFE_CHARS = /^[a-zA-Z0-9_+\-*/() ,.]*$/;
+
+/* ── Évaluateur d'expression SANS `new Function` ──────────────────────
+   La politique de sécurité du build SERVI (CSP `script-src 'self'`, sans
+   `unsafe-eval`) interdit `new Function` et `eval`. Le « jeu d'essai » des
+   calculs s'en servait : il marchait sous le serveur de développement et
+   échouait en production, silencieusement. Voici un petit analyseur à descente
+   récursive — on tokenise, on construit un arbre, on l'évalue. Il n'exécute
+   JAMAIS de code : il ne connaît que les nombres, les chaînes, les variables du
+   `scope`, la liste blanche `FN_MAP` et les opérateurs. Même cloisonnement
+   qu'avant (aucun accès aux propriétés, aucune affectation, aucun appel hors
+   liste blanche), mais sans compilateur JavaScript sous la main.
+
+   Les fonctions autorisées — la seule chose que l'évaluateur sait appeler.
+   Aucune n'a d'effet de bord ni n'atteint l'extérieur. */
+const FN_MAP = { max:Math.max, min:Math.min, round:Math.round, abs:Math.abs,
+                 sqrt:Math.sqrt, floor:Math.floor, ceil:Math.ceil };
+const EXPR_OPS = ["===","!==","==","!=","<=",">=","&&","||","+","-","*","/","%","(",")",",","<",">","!","?",":"];
+/* Tokenise puis construit l'arbre, en un seul passage de descente récursive.
+   Lève une erreur sur une expression malformée. */
+function safeParse(expr){
+  const toks = []; let i = 0;
+  while(i < expr.length){
+    const c = expr[i];
+    if(c === " " || c === "\t" || c === "\n" || c === "\r"){ i++; continue; }
+    if(c === "'" || c === '"'){ let j = i + 1; while(j < expr.length && expr[j] !== c) j++;
+      if(j >= expr.length) throw new Error("chaîne non terminée"); toks.push({ t:"str", v:expr.slice(i+1, j) }); i = j + 1; continue; }
+    if((c >= "0" && c <= "9") || c === "."){ let j = i; while(j < expr.length && ((expr[j] >= "0" && expr[j] <= "9") || expr[j] === ".")) j++;
+      toks.push({ t:"num", v:parseFloat(expr.slice(i, j)) }); i = j; continue; }
+    if(/[a-zA-Z_]/.test(c)){ let j = i; while(j < expr.length && /[a-zA-Z0-9_]/.test(expr[j])) j++;
+      toks.push({ t:"id", v:expr.slice(i, j) }); i = j; continue; }
+    const op = EXPR_OPS.find(o => expr.startsWith(o, i));
+    if(!op) throw new Error(`caractère inattendu « ${c} »`); toks.push({ t:"op", v:op }); i += op.length;
+  }
+  let p = 0;
+  const isOp = (v) => { const t = toks[p]; return t && t.t === "op" && t.v === v; };
+  const eat = (v) => { if(!isOp(v)) throw new Error(`« ${v} » attendu`); p++; };
+  const prim = () => {
+    const t = toks[p];
+    if(!t) throw new Error("expression incomplète");
+    if(t.t === "num" || t.t === "str"){ p++; return { type:t.t, v:t.v }; }
+    if(isOp("(")){ p++; const e = tern(); eat(")"); return e; }
+    if(t.t === "id"){ p++;
+      if(isOp("(")){ p++; const args = [];
+        if(!isOp(")")){ args.push(tern()); while(isOp(",")){ p++; args.push(tern()); } }
+        eat(")"); return { type:"call", name:t.v, args }; }
+      return { type:"var", name:t.v }; }
+    throw new Error("jeton inattendu");
+  };
+  const unary = () => { if(isOp("-") || isOp("+") || isOp("!")){ const op = toks[p++].v; return { type:"un", op, x:unary() }; } return prim(); };
+  const binL = (next, ops) => { let l = next(); while(toks[p] && toks[p].t === "op" && ops.includes(toks[p].v)){ const op = toks[p++].v; l = { type:"bin", op, l, r:next() }; } return l; };
+  const mul = () => binL(unary, ["*","/","%"]);
+  const add = () => binL(mul, ["+","-"]);
+  const rel = () => binL(add, ["<",">","<=",">="]);
+  const eq  = () => binL(rel, ["==","!=","===","!=="]);
+  const and = () => { let l = eq();  while(isOp("&&")){ p++; l = { type:"and", l, r:eq() }; }  return l; };
+  const or  = () => { let l = and(); while(isOp("||")){ p++; l = { type:"or",  l, r:and() }; } return l; };
+  function tern(){ const c = or(); if(isOp("?")){ p++; const a = tern(); eat(":"); const b = tern(); return { type:"tern", c, a, b }; } return c; }
+  const ast = tern();
+  if(p < toks.length) throw new Error("jeton en trop");
+  return ast;
+}
+function applyBin(op, a, b){
+  switch(op){
+    case "+": return a + b;  case "-": return a - b;  case "*": return a * b;  case "/": return a / b;  case "%": return a % b;
+    case "<": return a < b;  case ">": return a > b;  case "<=": return a <= b; case ">=": return a >= b;
+    case "==": return a == b; case "!=": return a != b; case "===": return a === b; case "!==": return a !== b;
+  }
+  throw new Error(`opérateur inconnu : ${op}`);
+}
+/* Évaluation de l'arbre. `&&`, `||` et le ternaire court-circuitent — la branche
+   non prise n'est jamais calculée, exactement comme en JavaScript. */
+function safeRun(node, scope){
+  switch(node.type){
+    case "num": case "str": return node.v;
+    case "var": return Object.prototype.hasOwnProperty.call(scope, node.name) ? scope[node.name] : undefined;
+    case "call": { const fn = FN_MAP[node.name];
+      if(typeof fn !== "function") throw new Error(`fonction inconnue : ${node.name}`);
+      return fn(...node.args.map(a => safeRun(a, scope))); }
+    case "un": { const x = safeRun(node.x, scope); return node.op === "-" ? -x : node.op === "+" ? +x : !x; }
+    case "and": { const l = safeRun(node.l, scope); return l && safeRun(node.r, scope); }
+    case "or":  { const l = safeRun(node.l, scope); return l || safeRun(node.r, scope); }
+    case "tern": return safeRun(node.c, scope) ? safeRun(node.a, scope) : safeRun(node.b, scope);
+    case "bin": return applyBin(node.op, safeRun(node.l, scope), safeRun(node.r, scope));
+  }
+  throw new Error("nœud inconnu");
+}
+const safeEval = (expr, scope) => safeRun(safeParse(expr), scope);
+
 function evalFormula(expr, scope){
   if(!expr || !SAFE_CHARS.test(expr)) return { ok:false, value:0, err:"Caractère non autorisé dans l'expression" };
   if(/\.\s*[a-zA-Z_]/.test(expr)) return { ok:false, value:0, err:"L'accès aux propriétés est interdit" };
@@ -98,8 +186,7 @@ function evalFormula(expr, scope){
   const bad = (expr.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || []).find(t => !allowed.has(t));
   if(bad) return { ok:false, value:0, err:`Variable inconnue : ${bad}` };
   try{
-    const fn = new Function(...keys, ...FNS, `"use strict"; return (${expr});`);
-    const v = fn(...keys.map(k=>scope[k]), Math.max, Math.min, Math.round, Math.abs, Math.sqrt, Math.floor, Math.ceil);
+    const v = safeEval(expr, scope);
     return Number.isFinite(v) ? { ok:true, value:v } : { ok:false, value:0, err:"Résultat non numérique" };
   }catch(e){ return { ok:false, value:0, err:e.message }; }
 }
@@ -214,8 +301,7 @@ function evalIndicator(expr, scope){
   const bad = (masked.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || []).find(t => !allowed.has(t));
   if(bad) return { ok:false, value:null, err:`variable ou fonction inconnue : ${bad}` };
   try{
-    const fn = new Function(...keys, ...IND_FNS, `"use strict"; return (${expr});`);
-    const v = fn(...keys.map(k=>scope[k]), Math.max, Math.min, Math.round, Math.abs, Math.sqrt, Math.floor, Math.ceil);
+    const v = safeEval(expr, scope);
     if(v === undefined || (typeof v === "number" && !Number.isFinite(v)))
       return { ok:false, value:null, err:"résultat non calculable (division par zéro ?)" };
     if(typeof v === "object") return { ok:false, value:null, err:"une formule doit renvoyer un nombre, un texte ou vrai/faux" };

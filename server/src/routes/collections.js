@@ -51,7 +51,10 @@ const COLLECTIONS = {
          l'Annex 4 de la masterlist (migration 027). Elle s'ajoute aux trois
          d'origine : la colonne est du TEXT sans contrainte, c'est cette
          énumération-ci qui fait foi. */
-      level:z.enum(["outcome","output","other_output","crosscutting"]).nullish()
+      /* « sdg » (migration 032) est le cinquième sous-groupe : les ODD de
+         l'Annex 1. La colonne DB est du TEXT sans contrainte, cette énumération
+         fait foi. */
+      level:z.enum(["outcome","output","other_output","crosscutting","sdg"]).nullish()
         .transform(v => v ?? null),
       /* La catégorie thématique du classeur institutionnel — la maille à
          laquelle un bureau cherche un indicateur, et celle que l'écran filtre. */
@@ -60,12 +63,23 @@ const COLLECTIONS = {
          `activityTags` arrive en tableau du client, stocké en texte joint. */
       activityTags: z.array(z.string().trim().max(40)).max(80).optional(),
       targets:S(300),
+      /* Colonnes riches de la masterlist (migration 032), toutes facultatives. */
+      status:S(80), applicability:S(200), reportingReq:S(200), outputType:S(120),
+      unitInterp:S(200), flexibility:S(80), followValue:S(200), intermediate:S(300),
       activity:S(40) }),
     map: (x) => ({ code:x.code, name:x.name, basket:x.basket, unit:x.unit,
       target:x.target, direction:x.direction, method:x.method, frequency:x.frequency,
       kind:x.kind, level:x.level, category:x.category, activity:x.activity,
       ...(x.activityTags !== undefined ? { activity_tags: x.activityTags.join(",") } : {}),
-      ...(x.targets !== undefined ? { targets: x.targets } : {}) }) },
+      ...(x.targets !== undefined ? { targets: x.targets } : {}),
+      ...(x.status !== undefined ? { status: x.status } : {}),
+      ...(x.applicability !== undefined ? { applicability: x.applicability } : {}),
+      ...(x.reportingReq !== undefined ? { reporting_req: x.reportingReq } : {}),
+      ...(x.outputType !== undefined ? { output_type: x.outputType } : {}),
+      ...(x.unitInterp !== undefined ? { unit_interp: x.unitInterp } : {}),
+      ...(x.flexibility !== undefined ? { flexibility: x.flexibility } : {}),
+      ...(x.followValue !== undefined ? { follow_value: x.followValue } : {}),
+      ...(x.intermediate !== undefined ? { intermediate: x.intermediate } : {}) }) },
 
   outcomes: { table:"outcomes", cap:"edit",
     schema: z.object({ id:S(64), indicator_id:z.string().min(1).max(64), adm1:S(120),
