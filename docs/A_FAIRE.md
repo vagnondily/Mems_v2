@@ -1336,6 +1336,76 @@ faire par le super user), avec possibilité de mise à jour. » Quatre exigences
    bloc (pays, découpage, activités, indicateurs, sources) se rouvre et se révise, avec la
    traçabilité déjà en place (audit, révisions `rev`, millésimes pour le géo).
 
+### S8 — Listes paramétrables typées, intégrité référentielle, seed données réelles, multi-shapefile (01/08/2026)
+
+**Demandes du propriétaire (01/08), mot pour mot consignées pour la session suivante.**
+
+1. **Gestionnaire de listes typées, en maître-détail.** « J'aurai besoin des listes à
+   paramétrer par types (activité, denrées, tiers, partenaire, type de partenariat, etc.) en
+   sous-groupe sélectionnable à gauche et à droite la configuration des listes (ajout,
+   modification, suppression, validation). » → Un écran **maître-détail** : rail GAUCHE = les
+   TYPES de liste (activités, denrées/commodités, tiers/TPM, partenaires, types de partenariat,
+   modalités, sous-types de PI, catégories…), volet DROIT = CRUD + **validation** de la liste
+   choisie. C'est la forme aboutie de la « réorganisation maître-détail » déjà cadrée (voir plus
+   haut, tableau des groupes) : ici on l'applique d'abord aux LISTES.
+
+2. **Intégrité référentielle à la suppression.** « Si une liste est enregistrée et a été déjà
+   utilisée, impossible de l'effacer (possibilité de mettre à jour mais le code d'identification
+   reste pour ne pas perdre les données). » → Un ITEM de liste **référencé** (utilisé quelque
+   part) ne se **supprime pas** (409 + proposition de désactivation, comme bureaux/activités
+   déjà faits) ; il se **met à jour**, mais **son code d'identification est préservé** — le code
+   est la clé de jointure, on ne la casse pas. C'est déjà le patron livré pour les bureaux
+   (`routes/offices.js`) et les activités (`routes/activities.js`) : à **généraliser** à toutes
+   les listes typées.
+
+3. **Renommage de code en cascade, réservé au super.** « Si le super user change un code
+   d'identification, tout ce qui lui est relié devrait aussi changer avec. » → Contrairement au
+   point 2 (le code est stable pour l'usage courant), le **super** peut **changer un code**, et
+   l'opération **cascade** vers toutes les lignes qui le référencent, **de façon atomique** (une
+   transaction : renommer le code + réécrire toutes les FK/tags liés). Ce n'est PAS un
+   supprimer-recréer. Concrètement : une route `super` de « renommage de code » par type de
+   liste, qui met à jour la table maîtresse ET toutes les tables filles (sites, coverage_params,
+   pdd, outputs, visits, odk_forms, indicators… selon le type).
+
+4. **Mise à jour d'un paramètre interconnecté = mappage puis validation.** « Si je fais une mise
+   à jour d'un paramètre interconnecté, toujours procéder à un mappage puis validation pour ne
+   pas perdre des données. » → Toute modification d'un paramètre relié (surtout un renommage de
+   code, point 3, ou une fusion) passe par un **écran de correspondance** (ancien → nouveau) PUIS
+   une **validation explicite** avant écriture — même philosophie que la couche
+   `connector_mapping` / l'import mappé. Rien ne s'écrase en silence.
+
+5. **Seed des données RÉELLES comme valeurs par défaut de MEMS.** « Dans les settings utilise mes
+   data réels et stocke-les comme valeurs par défaut de MEMS. » Fichiers présents dans `docs/` :
+   - **Pays Madagascar** — `mdg_bnd_adm3_com_pam_2025.shp/.dbf/.prj` (adm3, 23 Mo, 1701
+     polygones ; la table d'attributs porte déjà `ADM0..3_EN` + `ADM0..3_PCODE`, donc l'arbre
+     adm0→adm3 est complet). **⚠ adm1/adm2/adm4 NON fournis** (voir point 6).
+   - **Activités** — `WFP Indicator Master List_UpdMai_2025.xlsx`, onglet **`Annex 5 Activity
+     tags`** (59 lignes) : la liste des activités à charger dans le référentiel Activités.
+   - **Indicateur master, par catégories filtrables (onglets = catégories)** —
+     `WFP Indicator Master List_UpdMai_2025.xlsx` : `Annex 2 Outcome Indicators` (268) →
+     **CRF/outcome** ; `Annex 3 Output Indicators` (207) + `Detailed Output Indicators` (567) →
+     **CRF/output** (dont *other output*) ; `Annex 4 Crosscutting` (204) → CRF transversal.
+     `Resilience Indicator Collection.xlsx` porte les indicateurs de résilience (onglet
+     `1. CRF indicators` + thématiques). Charger la masterlist **par catégorie** (le champ
+     `level`/`kind` de la migration 022 est déjà là pour ça), **filtrable** à l'écran.
+   - Autres pièces utiles déjà présentes : `List Sites per Tag.xlsx` (onglet `Sites` 2874 lignes,
+     `Parameter` 32), `CM-L005_..._Logframe`, `logframe_FSRP.xlsx`, `indicators mapping DOC across
+     old and new CRF.xlsx`, PDD et « Plan de suivi 2026 ».
+   - **À décider** : import ponctuel (CLI/seed) qui remplit les tables réelles, vs. valeurs par
+     défaut codées. Le propriétaire dit « stocke-les comme valeurs par défaut » → viser un
+     **seed de production** (tables réelles préremplies), pas des constantes `D_*`.
+
+6. **Multi-shapefile par pays (adm1→adm4) pour le breakdown cartographique.** « Durant la
+   configuration pays, insérer plusieurs shapefiles : adm1 à adm4 pour pouvoir avoir un affichage
+   par type de breakdown sur la carte après. » → Aujourd'hui un import de découpage crée UN
+   millésime avec l'arbre + les contours du niveau fourni. Il faut pouvoir **déposer un shapefile
+   PAR NIVEAU** (adm1, adm2, adm3, adm4) rattaché au même pays, pour que la carte affiche les
+   contours **au niveau de breakdown choisi**. `geo_geom` porte déjà `level` ; le flux d'import
+   (`routes/geo.js`, `lib/shapefile.js`) accepte un niveau — reste à permettre PLUSIEURS dépôts
+   successifs par niveau dans la fiche pays, et à la carte de basculer de niveau de contour.
+   **⚠ Seul adm3 est fourni** : soit le propriétaire fournit adm1/2/4, soit on **dérive** les
+   niveaux supérieurs en dissolvant adm3 par p-code adm1/adm2 (opération à implémenter).
+
 ### S4 — La passe de cohérence transversale
 
 **Étoile polaire (réflexion du 01/08 « rendre MEMS le plus professionnel et facile possible »).**
