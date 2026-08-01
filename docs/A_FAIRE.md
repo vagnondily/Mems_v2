@@ -1282,6 +1282,28 @@ configuration.
 
 ### S4 — La passe de cohérence transversale
 
+**Étoile polaire (réflexion du 01/08 « rendre MEMS le plus professionnel et facile possible »).**
+Trois colonnes vertébrales auxquelles TOUT écran doit s'accrocher, pour que 40 fonctions
+forment un système et non un sac d'écrans :
+1. **La cascade géographique adm0→4** — un référentiel, un filtre région→district→commune→
+   fokontany, partout où un lieu est manipulé.
+2. **L'activité** — configurée une fois dans Paramètres, réutilisée partout (indicateurs,
+   dashboards, données, rations, plans).
+3. **L'indicateur** — une bibliothèque unique (CRF / XLSForm) qui alimente le dashboard vivant
+   ET le rapport exporté : écran et document lisent la même source.
+
+Toute intégration de source suit LES MÊMES 3 ÉTAPES — Relier (nature + auth) · Mapper
+(variables → champs MEMS) · Utiliser (alimenter site/soumission/bénéficiaire/réception) —
+un seul modèle mental pour ODK, Kobo v1/v2, Ona, Foundry, Excel, HTTP, JDBC. Le « facile »
+se gagne sur l'ÉCRAN DE CORRESPONDANCE : colonnes source ↔ champs MEMS, suggestion auto,
+validation, aperçu des lignes mappées avant de valider. Les intégrations internes (géo→filtres,
+activités→indicateurs, indicateurs→dashboards+rapports, QC→score, ciblage↔PDD) sont ce qui
+fait le système.
+
+Principes d'usage : parcours guidés pour la config lourde (« Configurer le pays » : pays →
+découpage → activités → sources), états vides qui disent l'action suivante, coût des actions
+destructives montré avant, une vue d'accueil par rôle.
+
 Le reste de la discussion « professionnelle vs bricolage » : hiérarchie visuelle, densité,
 états vides qui disent quoi faire, chargements, vocabulaire uniforme entre écrans, parcours
 par type d'utilisateur (chargé M&E, point focal bureau, prestataire TPM, direction), clair/
