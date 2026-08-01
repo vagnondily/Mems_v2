@@ -12,7 +12,8 @@
     "migrate": "node src/migrate.js",
     "seed": "node src/seed.js",
     "seed:reel": "node src/seed-reel.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "seed:sites": "node src/import-sites.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

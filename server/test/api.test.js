@@ -8038,6 +8038,7 @@ test("mappage : le plan est réservé au super, comme l'écriture qu'il prépare
 const DOCS = path.resolve("../docs");
 const CLASSEUR_REEL = path.join(DOCS, "WFP Indicator Master List_UpdMai_2025.xlsx");
 const SHP_REEL = path.join(DOCS, "mdg_bnd_adm3_com_pam_2025.shp");
+const SITES_REEL = path.join(DOCS, "List Sites per Tag.xlsx");
 
 test("données réelles : activités et masterlist d'indicateurs chargées depuis le classeur du PAM",
   { skip: fs.existsSync(CLASSEUR_REEL) ? false : "docs/ ne contient pas le classeur du PAM" },
@@ -8137,6 +8138,50 @@ test("données réelles : le shapefile Madagascar donne l'arbre adm0→adm3 comp
     assert.equal(counts.adm3, 1701,  "les communes");
     assert.equal(units.length, 1846);
     assert.equal(collisions.length, 0, "aucun p-code en double dans le fichier officiel");
+  });
+
+test("données réelles : les sites par tag sont importés, rattachés à l'arbre et géolocalisés",
+  { skip: (fs.existsSync(SITES_REEL) && fs.existsSync(SHP_REEL))
+      ? false : "docs/ ne contient pas le classeur des sites ou le shapefile Madagascar" },
+  async () => {
+    const base = path.resolve("./data/test-sites.db");
+    for(const s of ["", "-shm", "-wal"]) { try{ fs.rmSync(base + s, { force:true }); }catch(e){} }
+    /* Il faut l'arbre administratif (le shapefile) ET les activités (Annex 5)
+       chargés avant : le rattachement se fait par chemin de noms, le tag long du
+       fichier se rapproche d'une activité réelle. seed-reel charge les deux. */
+    execFileSync(process.execPath, ["src/seed-reel.js"],
+      { stdio:"pipe", env:{ ...process.env, DB_FILE:base } });
+    execFileSync(process.execPath, ["src/import-sites.js"],
+      { stdio:"pipe", env:{ ...process.env, DB_FILE:base } });
+
+    const { default: Database } = await import("better-sqlite3");
+    const d2 = new Database(base, { readonly:true });
+    let total1;
+    try{
+      total1 = d2.prepare("SELECT COUNT(*) c FROM sites").get().c;
+      assert.ok(total1 > 2000, `beaucoup de sites importés : ${total1}`);
+      /* Chaque site importé est rattaché à l'arbre par son chemin de noms. */
+      assert.equal(d2.prepare("SELECT COUNT(*) c FROM sites WHERE geo_pcode IS NULL").get().c, 0,
+        "chaque site est rattaché à une unité administrative");
+      assert.ok(d2.prepare("SELECT COUNT(*) c FROM sites WHERE lat IS NOT NULL AND lon IS NOT NULL").get().c > 2000,
+        "les sites portent leurs coordonnées GPS");
+      /* Le tag long (« School feeding (on-site) »…) est rapproché d'une activité
+         réelle du référentiel, qui pose le tag et la catégorie. */
+      assert.ok(d2.prepare("SELECT COUNT(*) c FROM sites WHERE category_id IS NOT NULL").get().c > 2000,
+        "le tag du fichier est rapproché d'une activité du référentiel");
+      /* Le POI_code d'origine est conservé comme code externe. */
+      assert.ok(d2.prepare("SELECT COUNT(*) c FROM sites WHERE external_code IS NOT NULL").get().c > 2000,
+        "le POI_code d'origine est conservé");
+    } finally { d2.close(); }
+
+    /* Idempotence : relancé, il met à jour au lieu de dupliquer. */
+    execFileSync(process.execPath, ["src/import-sites.js"],
+      { stdio:"pipe", env:{ ...process.env, DB_FILE:base } });
+    const d3 = new Database(base, { readonly:true });
+    try{
+      assert.equal(d3.prepare("SELECT COUNT(*) c FROM sites").get().c, total1,
+        "aucun doublon au second passage");
+    } finally { d3.close(); }
   });
 
 /* ═══════════════════════════════════════════════════════════════════════

@@ -1873,6 +1873,34 @@ function SetLocations({ db, notify, can, reload }){
           </TableWrap>
         </Card>)}
 
+      {/* Les sites (POI) importés par tag — la donnée de base « List Sites per
+          Tag » rattachée à l'arbre adm1→adm4. On montre combien sont géolocalisés
+          et leur répartition par activité, pour que l'import se voie ici. */}
+      {!!(db.sites||[]).length && (() => {
+        const sites = db.sites || [];
+        const geoloc = sites.filter(s => s.lat != null && s.lon != null).length;
+        const parTag = {};
+        for(const s of sites){ const t = s.activityTag || "—"; parTag[t] = (parTag[t]||0)+1; }
+        const rangs = Object.entries(parTag).sort((a,b)=>b[1]-a[1]);
+        return (
+          <Card flush title="Sites (POI) par activité"
+            subtitle={`${fmt(sites.length)} site(s) · ${fmt(geoloc)} géolocalisé(s) · rattachés au découpage adm1→adm4`}>
+            <div className="p-4 flex flex-wrap gap-2">
+              {rangs.map(([tag,n])=>(
+                <span key={tag} className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white pl-3 pr-1.5 py-1 f11">
+                  <span className="font-semibold text-slate-700" title={(db.activities||[]).find(a=>a.tag===tag)?.name || tag}>{tag}</span>
+                  <span className="f10 tabular-nums bg-slate-100 text-slate-600 px-1.5 rounded-full">{fmt(n)}</span>
+                </span>))}
+            </div>
+            <div className="px-4 pb-4"><Aide titre="D'où viennent ces sites ?">Les points d'intérêt de base se
+              chargent depuis <b>List Sites per Tag</b> par la ligne de commande
+              <code className="bg-white px-1 rounded mx-1">npm run seed:sites</code>: chaque POI est rattaché à
+              l'arbre administratif par son chemin de noms, garde ses <b>coordonnées GPS</b> et, quand son
+              POI_code manque, reçoit une identité <b>dérivée du point GPS</b>. Le tag du fichier est rapproché
+              d'une activité réelle du référentiel.</Aide></div>
+          </Card>);
+      })()}
+
       <Card flush title="Répertoire des localités"
         subtitle={dir.loading ? "Chargement…"
           : `${fmt(dir.total)} fokontany dans la sélection · page ${page+1} sur ${Math.max(1,pages)}`}
