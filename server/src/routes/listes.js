@@ -2,9 +2,10 @@ import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db.js";
 import { newId } from "../lib/crypto.js";
-import { can } from "../lib/auth.js";
+import { can, requireSuper } from "../lib/auth.js";
 import { TYPES, parCle, forme, ligne, ligneParCode, lignes, usage, totalUsage,
          validation, invalider } from "../lib/listes.js";
+import { planRenommage, appliquerRenommage } from "../lib/renommage.js";
 
 /* ═══════════════════════════════════════════════════════════════════════
    Gestionnaire de LISTES TYPÉES — maître-détail  (chantier S8, point 1)
@@ -259,6 +260,53 @@ r.delete("/:cle/:id", garde, (req, res, next) => {
   invalider(def);
   audit(req, def.cle, "delete", cur.id, `${def.label} — item supprimé : ${cur[def.cols.label]}`);
   res.json({ ok:true });
+});
+
+/* ── Renommage de code EN CASCADE, réservé au super ──────────────────
+   « Si le super user change un code d'identification, tout ce qui lui est
+   relié devrait aussi changer avec. »
+
+   C'est l'exception raisonnée à la règle du point 2 (le code ne bouge pas),
+   et la seule façon sûre de le faire bouger : une transaction qui réécrit
+   la table maîtresse ET toutes ses filles. Réservée au super-utilisateur,
+   parce qu'elle touche en un geste des milliers de lignes de tables qu'il
+   n'a pas sous les yeux — ce n'est pas de l'administration de contenu.
+
+   `mode` est CONFIRMÉ par l'appelant, jamais deviné : demander « renommer »
+   quand le code visé est déjà pris ne doit pas fusionner deux référentiels
+   en silence. */
+r.post("/:cle/:id/renommer-code", requireSuper, (req, res, next) => {
+  const p = z.object({
+    nouveau: z.string().trim().min(1).max(80),
+    mode: z.enum(["renommer", "fusionner"]).optional(),
+  }).safeParse(req.body);
+  if(!p.success) return res.status(422).json({ error:"renommage invalide",
+    details: p.error.issues.map(i => ({ champ:i.path.join("."), message:i.message })) });
+
+  const plan = planRenommage(req.params.cle, req.params.id, p.data.nouveau);
+  if(plan.erreur) return res.status(plan.statut || 422).json({ error:plan.erreur });
+  if(p.data.mode && p.data.mode !== plan.mode) return res.status(409).json({
+    error: plan.mode === "fusionner"
+      ? `le code « ${plan.nouveau} » est déjà porté par « ${plan.cible.label} » : ce serait une `
+        + "FUSION, pas un renommage. Confirmez le mode « fusionner » — l'item d'origine "
+        + "disparaîtra et tout ce qui le désignait sera reporté."
+      : `le code « ${plan.nouveau} » n'existe pas dans cette liste : il n'y a rien à fusionner.`,
+    plan });
+
+  try{
+    const bilan = appliquerRenommage(req.params.cle, req.params.id, plan.nouveau);
+    const def = parCle(req.params.cle);
+    invalider(def);
+    audit(req, def.cle, bilan.mode, req.params.id,
+      `${def.label} — code ${bilan.mode === "fusionner" ? "fusionné" : "renommé"} `
+      + `« ${bilan.ancien} » → « ${bilan.nouveau} » : ${bilan.total} ligne(s) réécrite(s) dans `
+      + `${bilan.tables.length} table(s)`);
+    res.json({ ok:true, ...bilan });
+  }catch(e){
+    if(/UNIQUE/.test(e.message)) return res.status(409).json({
+      error:"le nouveau code heurte une contrainte d'unicité ; rien n'a été écrit" });
+    return next(e);
+  }
 });
 
 /* ── Validation de la LISTE ──────────────────────────────────────────

@@ -7706,3 +7706,142 @@ test("intégrité : désactiver est un geste à part, qui ne touche à rien d'au
   assert.equal(on.status, 200);
   assert.equal(on.body.item.active, true);
 });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Chantier S8-3 — Renommage de code EN CASCADE, réservé au super.
+
+   « Si le super user change un code d'identification, tout ce qui lui est
+   relié devrait aussi changer avec. » Ce n'est pas un supprimer-recréer :
+   une transaction réécrit la table maîtresse ET toutes ses filles.
+   ═══════════════════════════════════════════════════════════════════════ */
+let superToken;
+test("renommage : préparation d'un compte super pour la cascade", async () => {
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"supercode@test.local", password:"SuperCodeMotDePasse1", first_name:"SuperCode",
+            role:"super", tabs:["home"], active:true });
+  motDePasseAdopte("supercode@test.local");
+  superToken = (await login("supercode@test.local", "SuperCodeMotDePasse1")).body.token;
+  assert.ok(superToken);
+});
+
+test("renommage : un administrateur ne renomme pas un code, seul le super le peut", async () => {
+  /* Le compte d'amorçage est `super` : c'est un compte de rôle ADMIN qu'il
+     faut ici, sans quoi le test constaterait un succès et croirait à un refus. */
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"admincode@test.local", password:"AdminCodeMotDePasse1", first_name:"AdminCode",
+            role:"admin", tabs:["home"], active:true });
+  motDePasseAdopte("admincode@test.local");
+  const t = (await login("admincode@test.local", "AdminCodeMotDePasse1")).body.token;
+
+  const it = (await request(app).get("/api/listes/denrees")
+    .set("Authorization", `Bearer ${t}`)).body.items.find(x => x.code === "Sorgho");
+  const refus = await request(app).post(`/api/listes/denrees/${it.id}/renommer-code`)
+    .set("Authorization", `Bearer ${t}`).send({ nouveau:"Sorgho blanc" });
+  assert.equal(refus.status, 403, JSON.stringify(refus.body));
+  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, "Sorgho");
+});
+
+test("renommage : la cascade réécrit la table maîtresse ET toutes ses filles, en une transaction", async () => {
+  const it = (await request(app).get("/api/listes/denrees")
+    .set("Authorization", `Bearer ${superToken}`)).body.items.find(x => x.code === "Sorgho");
+
+  /* On accroche des lignes filles réelles au code, dans le plan de distribution. */
+  const cibles = db.prepare("SELECT id FROM pdd LIMIT 3").all().map(x => x.id);
+  assert.ok(cibles.length >= 1, "le semis a rempli le plan de distribution");
+  for(const id of cibles) db.prepare("UPDATE pdd SET commodity='Sorgho' WHERE id=?").run(id);
+  /* Le semis en pose déjà : ce qui compte est le total réel, pas les trois
+     lignes que ce test vient d'accrocher. */
+  const attendues = db.prepare("SELECT COUNT(*) c FROM pdd WHERE commodity='Sorgho'").get().c;
+  assert.ok(attendues >= cibles.length);
+
+  const r = await request(app).post(`/api/listes/denrees/${it.id}/renommer-code`)
+    .set("Authorization", `Bearer ${superToken}`).send({ nouveau:"Sorgho blanc", mode:"renommer" });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.mode, "renommer");
+  assert.equal(r.body.total, attendues, "toutes les lignes filles ont suivi");
+  assert.ok(r.body.tables.some(t => t.table === "pdd" && t.colonne === "commodity"));
+  /* Le contrôle d'après-coup : plus rien ne porte l'ancien code. */
+  assert.equal(r.body.reliquat, 0, "aucune ligne ne désigne encore l'ancien code");
+
+  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, "Sorgho blanc",
+    "l'item a changé de code — il n'a pas été supprimé puis recréé");
+  assert.equal(it.id, db.prepare("SELECT id FROM list_item WHERE code='Sorgho blanc' AND type='denree'")
+    .get().id, "c'est le MÊME item, avec le même identifiant");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM pdd WHERE commodity='Sorgho'").get().c, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM pdd WHERE commodity='Sorgho blanc'").get().c,
+    attendues);
+});
+
+test("renommage : un tag d'activité entraîne les dix colonnes qui le portent", async () => {
+  const act = db.prepare(
+    "SELECT * FROM activity_categories WHERE tag IN (SELECT activity_tag FROM sites) LIMIT 1").get();
+  const compter = (t, c, v) => db.prepare(`SELECT COUNT(*) c FROM ${t} WHERE ${c}=?`).get(v).c;
+  const avant = {
+    sites:  compter("sites", "activity_tag", act.tag),
+    params: compter("coverage_params", "activity_tag", act.tag),
+    fk:     compter("sites", "category_id", act.id),
+  };
+  assert.ok(avant.sites > 0, "des sites portent ce tag");
+
+  const nouveau = act.tag + "_2026";
+  const r = await request(app).post(`/api/listes/activites/${act.id}/renommer-code`)
+    .set("Authorization", `Bearer ${superToken}`).send({ nouveau, mode:"renommer" });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(compter("sites", "activity_tag", act.tag), 0, "plus aucun site sur l'ancien tag");
+  assert.equal(compter("sites", "activity_tag", nouveau), avant.sites);
+  assert.equal(compter("coverage_params", "activity_tag", nouveau), avant.params);
+  /* La clé étrangère n'a PAS bougé : ce n'est pas une fusion, l'item est le même. */
+  assert.equal(compter("sites", "category_id", act.id), avant.fk);
+  assert.equal(r.body.reliquat, 0);
+
+  /* Et l'intégrité de la base n'a pas souffert du passage. */
+  const sante = await request(app).get("/api/health");
+  assert.equal(sante.body.database.foreignKeyViolations, 0);
+
+  /* Retour à l'état d'origine, pour ne pas troubler les tests suivants. */
+  await request(app).post(`/api/listes/activites/${act.id}/renommer-code`)
+    .set("Authorization", `Bearer ${superToken}`).send({ nouveau:act.tag, mode:"renommer" });
+  assert.equal(compter("sites", "activity_tag", act.tag), avant.sites);
+});
+
+test("renommage : viser un code déjà pris est une FUSION, qui ne se devine pas", async () => {
+  const items = (await request(app).get("/api/listes/denrees")
+    .set("Authorization", `Bearer ${superToken}`)).body.items;
+  const source = items.find(x => x.code === "Dattes");
+  const cible  = items.find(x => x.code === "Huile");
+
+  /* Demander « renommer » vers un code pris : refusé, et le plan est rendu
+     pour que l'écran puisse montrer ce que la fusion ferait. */
+  const refus = await request(app).post(`/api/listes/denrees/${source.id}/renommer-code`)
+    .set("Authorization", `Bearer ${superToken}`).send({ nouveau:"Huile", mode:"renommer" });
+  assert.equal(refus.status, 409, JSON.stringify(refus.body));
+  assert.ok(/FUSION/.test(refus.body.error), refus.body.error);
+  assert.equal(refus.body.plan.mode, "fusionner");
+  assert.equal(refus.body.plan.cible.code, "Huile");
+  assert.ok(db.prepare("SELECT 1 FROM list_item WHERE id=?").get(source.id), "rien n'a été écrit");
+
+  /* Confirmée, la fusion reporte les lignes et fait disparaître l'item source. */
+  const ligne = db.prepare("SELECT id FROM pdd LIMIT 1").get();
+  db.prepare("UPDATE pdd SET commodity='Dattes' WHERE id=?").run(ligne.id);
+  const ok = await request(app).post(`/api/listes/denrees/${source.id}/renommer-code`)
+    .set("Authorization", `Bearer ${superToken}`).send({ nouveau:"Huile", mode:"fusionner" });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.mode, "fusionner");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM list_item WHERE id=?").get(source.id).c, 0,
+    "l'item d'origine a disparu");
+  assert.equal(db.prepare("SELECT commodity FROM pdd WHERE id=?").get(ligne.id).commodity, "Huile",
+    "sa ligne fille a été reportée sur la cible");
+  assert.ok(db.prepare("SELECT 1 FROM list_item WHERE id=?").get(cible.id), "la cible est intacte");
+});
+
+test("renommage : un code identique, vide ou trop long est refusé sans rien écrire", async () => {
+  const it = (await request(app).get("/api/listes/types_site")
+    .set("Authorization", `Bearer ${superToken}`)).body.items[0];
+  for(const [corps, statut] of [[{ nouveau:it.code }, 422], [{ nouveau:"" }, 422],
+                                [{ nouveau:"x".repeat(90) }, 422]]){
+    const r = await request(app).post(`/api/listes/types_site/${it.id}/renommer-code`)
+      .set("Authorization", `Bearer ${superToken}`).send(corps);
+    assert.equal(r.status, statut, JSON.stringify(r.body));
+  }
+  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, it.code);
+});
