@@ -1280,6 +1280,32 @@ de la restriction 4 (droit admin). À faire dans un lot « persistance de la pla
 droit éditeur », distinct de la route settings admin qui, elle, reste réservée à la vraie
 configuration.
 
+### S7 — Gouvernance de la configuration (01/08/2026)
+
+Le propriétaire : « la config est à faire en une fois et stockée dans la base de données (à
+faire par le super user), avec possibilité de mise à jour. » Quatre exigences :
+
+1. **EN UNE FOIS** — un **parcours guidé** de configuration fondatrice (pays → découpage
+   adm0→4 → activités → indicateurs CRF/XLSForm → sources), pas des réglages éparpillés dans
+   seize onglets. C'est la forme « assistant » de l'étoile polaire (S4) : chaque étape prépare
+   la suivante, l'ensemble se remplit d'un trait, puis reste consultable/modifiable onglet par
+   onglet.
+2. **STOCKÉE EN BASE** — rien côté client volatil. C'est déjà la direction (persistance des
+   réglages via `settings`, `geo_version`, référentiels en tables) ; la généraliser à TOUTE la
+   config fondatrice.
+3. **PAR LE SUPER UTILISATEUR** — la config fondatrice est une tâche privilégiée du rôle
+   `super`. À TRANCHER, car cela touche le modèle de droits actuel : aujourd'hui la config
+   passe par des routes `requireCap("admin")` (settings, users, offices, referentials) et
+   `super` ne se distingue que par l'administration d'INSTANCE (`requireSuper` : sessions,
+   sauvegardes, scripts). Deux options : (a) gater le PARCOURS FONDATEUR complet en
+   `requireSuper` en laissant l'admin gérer les référentiels courants ; (b) requalifier « la
+   config » entière en `super`. La règle « l'opérationnel reste délégué » tient dans les deux
+   cas : l'éditeur planifie et saisit (S6), l'admin gère les comptes. À confirmer avec le
+   propriétaire avant de déplacer un droit.
+4. **MISE À JOUR POSSIBLE** — la config n'est pas figée après le premier passage : chaque
+   bloc (pays, découpage, activités, indicateurs, sources) se rouvre et se révise, avec la
+   traçabilité déjà en place (audit, révisions `rev`, millésimes pour le géo).
+
 ### S4 — La passe de cohérence transversale
 
 **Étoile polaire (réflexion du 01/08 « rendre MEMS le plus professionnel et facile possible »).**
