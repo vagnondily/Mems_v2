@@ -1110,6 +1110,39 @@ Position dans la séquence : **après** les chantiers fonctionnels en cours (aut
 shapefile, cadre de résultats, QC, chantier R) — c'est la passe finale voulue par le
 propriétaire (« une fois tout terminé on va s'attaquer au UI »).
 
+## Chantier T — Intégration MoDa/Kobo réelle et onglet de résultats par activité (demande du 01/08/2026)
+
+Le propriétaire a fourni l'API réelle : `https://moda.wfp.org/api/v1/data/340943`, format Kobo,
+avec un jeton d'API. **Le secret ne figure nulle part dans ce dépôt** — il vit dans le coffre
+chiffré (`connector.secret_enc`), saisi à l'exécution dans l'instance. Recommandation faite au
+propriétaire : régénérer ce jeton après mise en place, puisqu'il a transité par une conversation.
+
+**Détail d'intégration établi par l'URL** : `moda.wfp.org` est une instance **kobocat v1**
+(`/api/v1/data/{id numérique}`), et non KPI v2 (`/api/v2/assets/{uid}/data`). Le chemin de
+lecture d'un connecteur Kobo doit donc être **configurable** pour couvrir les deux saveurs —
+c'est précisément la limite notée au lot d'authentification (« mot-clé Token établi d'après le
+code source, pas d'une instance réelle »). Le schéma `Token` livré est le bon ; reste à ne pas
+figer le chemin.
+
+**Contrainte d'environnement** : le bac à sable de développement bloque tout HTTPS sortant
+(même `example.com` répond 403 au tunnel). Le tirage réel se fait donc dans l'environnement du
+propriétaire (Codespace), pas ici. Le code est bâti et testé hors-ligne — grounded sur les
+XLSForms (noms de variables), les scripts QC (analyse) et le tableau de bord HTML (écran cible),
+tous déjà dans `docs/`. Seul le premier tirage vivant revient au propriétaire.
+
+Le flux, tel que demandé :
+1. **Lier la source** (connecteur `kobo`, base `moda.wfp.org`, chemin `/api/v1/data/340943`,
+   jeton `Token`) et **tirer vers le cache** avec le schéma d'authentification livré.
+2. **Mapping** des champs de soumission mis en cache vers les **indicateurs de l'XLSForm**,
+   via la couche de correspondance des variables (`lib/champs.js`, `lib/mapping.js`,
+   `connector_mapping`) — pas un mécanisme parallèle.
+3. **Onglet de résultats par activité** qui exécute l'analyse des scripts QC (les ~80 règles
+   des quatre applications Shiny déjà consignées) et restitue comme `docs/dashboard_suivi_
+   processus_WFP.html` : couverture, indice de conformité par visite, scorecard, par activité.
+
+Séquence : après le chantier shapefile (ils touchent tous deux `Settings.jsx` et `api.js` — les
+lancer en parallèle créerait des conflits).
+
 **Le format PDD comme gabarit d'import** : la logique de « Details » (1 ligne = lieu × mois
 × activité × modalité) est le bon modèle, mais le fichier réel est inutilisable tel quel —
 aucun p-code (noms seuls, casse variable), grain site plus fin que la clé MEMS, mois en
