@@ -25,7 +25,8 @@ const tpmName = (id) => id
   : "";
 
 const publicUser = (u) => ({
-  id:u.id, email:u.email, first_name:u.first_name, last_name:u.last_name, title:u.title,
+  id:u.id, email:u.email, username:u.username || "",
+  first_name:u.first_name, last_name:u.last_name, title:u.title,
   office_id:u.office_id, office: officeName(u.office_id),
   /* Un compte de prestataire doit se savoir tel : l'interface lui masque les
      destinations internes, et le serveur le borne de son côté. */
@@ -36,7 +37,10 @@ const publicUser = (u) => ({
 
 r.post("/login", loginLimiter, validate(schemas.login), async (req, res) => {
   const { email, password } = req.body;
-  const u = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
+  /* `email` porte un courriel OU un identifiant (migration 023) : on cherche l'un
+     ou l'autre. Un même compte ne peut pas être visé par les deux à la fois — le
+     courriel a la forme d'un courriel, l'identifiant ne l'a pas. */
+  const u = db.prepare("SELECT * FROM users WHERE email = ? OR username = ?").get(email, email);
   /* Même message et même coût quel que soit l'échec : on ne révèle pas l'existence d'un compte. */
   const generic = { error:"identifiants incorrects" };
   if(!u){ await hashPassword(password); return res.status(401).json(generic); }
@@ -98,6 +102,32 @@ r.post("/password", authenticate, validate(schemas.changePassword), async (req, 
               VALUES (?,?,?,'securite','users','password_change',?)`)
     .run(newId("aud"), req.user.id, req.user.email, "Mot de passe modifié");
   res.json({ ok:true });
+});
+
+/* « Créer un username » en self-service (demande du 01/08). C'est un identifiant
+   de CONNEXION : il peut ensuite servir à se connecter à la place du courriel.
+   Vide, on retire l'identifiant ; sinon on impose un alphabet sûr et l'unicité. */
+const IDENTIFIANT = /^[a-z0-9._-]{3,40}$/;
+r.put("/username", authenticate, validate(schemas.changeUsername), (req, res) => {
+  const brut = String(req.body.username || "").trim().toLowerCase();
+  if(brut === ""){
+    db.prepare("UPDATE users SET username=NULL, updated_at=datetime('now') WHERE id=?").run(req.user.id);
+    return res.json({ user: publicUser(db.prepare("SELECT * FROM users WHERE id=?").get(req.user.id)) });
+  }
+  if(!IDENTIFIANT.test(brut)) return res.status(422).json({
+    error:"identifiant : 3 à 40 caractères, lettres minuscules, chiffres, point, tiret ou tiret bas" });
+  /* Un identifiant qui a la forme d'un courriel rendrait la connexion ambiguë. */
+  if(brut.includes("@")) return res.status(422).json({ error:"l'identifiant ne peut pas contenir « @ »" });
+  /* L'unicité couvre aussi les COURRIELS : sans quoi un identifiant pourrait
+     usurper l'adresse d'un autre compte et détourner sa connexion. */
+  const pris = db.prepare("SELECT 1 FROM users WHERE (username=? OR email=?) AND id<>?")
+    .get(brut, brut, req.user.id);
+  if(pris) return res.status(409).json({ error:"cet identifiant est déjà utilisé" });
+  db.prepare("UPDATE users SET username=?, updated_at=datetime('now') WHERE id=?").run(brut, req.user.id);
+  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
+              VALUES (?,?,?,'securite','users','username_set',?)`)
+    .run(newId("aud"), req.user.id, req.user.email, `Identifiant défini — ${brut}`);
+  res.json({ user: publicUser(db.prepare("SELECT * FROM users WHERE id=?").get(req.user.id)) });
 });
 
 /* ═══════════════════════════════════════════════════════════════════════

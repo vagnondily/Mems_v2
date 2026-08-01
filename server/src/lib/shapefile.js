@@ -234,6 +234,15 @@ const CIBLES_PUBLIQUES = CIBLES.map(({ cle, label }) => ({ cle, label }));
 const NIVEAUX_NOM = ["adm0", "adm1", "adm2", "adm3", "adm4"];
 const NIVEAUX_PCODE = ["pcode0", "pcode1", "pcode2", "pcode3", "pcode4"];
 
+/* Niveau d'accueil des contours importés SANS table attributaire. Privé de .dbf,
+   on n'a ni nom ni p-code : chaque polygone reçoit alors une identité provisoire
+   à un niveau UNIQUE, pour s'afficher tout de suite sur la carte. adm3 (la
+   commune) est le niveau opératoire de MEMS — celui auquel se rattachent les
+   sites — et c'est là que le .dbf, déposé ensuite, viendra nommer et rattacher
+   les mêmes contours. */
+export const NIVEAU_PROVISOIRE = "adm3";
+const PREFIXE_PROVISOIRE = "Polygone";
+
 /* La correspondance proposée : chaque colonne n'est prise qu'une fois, et les
    cibles spécifiques (adm3, pcode3) sont examinées avant les génériques, pour que
    « ADM3_PCODE » aille bien à pcode3 et non au nom adm3. */
@@ -311,6 +320,28 @@ export function lireTable({ dbf, mapping } = {}, { maxRecords = RECORDS_MAX } = 
   };
 }
 
+/* ── Table PROVISOIRE : un .shp sans .dbf ──────────────────────────────
+   Sans table attributaire, on importe les GÉOMÉTRIES SEULES. Chaque
+   enregistrement du .shp reçoit une identité provisoire — « Polygone 1 »,
+   « Polygone 2 »… — à un niveau unique, de sorte que les contours s'affichent
+   immédiatement (le geste « comme QGIS » : voir le fichier pour vérifier, avant
+   d'avoir les noms). Rend la MÊME forme que lireTable, pour que construire,
+   buildUnits et le commit n'aient pas à connaître ce cas — la seule différence,
+   l'absence de noms réels, n'en est pas une pour eux.
+
+   Les lignes sont indexées par l'ordre des enregistrements .shp, exactement comme
+   les lignes du .dbf : c'est ce qui garde l'appariement contour ↔ identité valide
+   dans le commit (attributsContour(lignes[i]) pour la géométrie i). */
+export function tableProvisoire(shp, { maxRecords = RECORDS_MAX } = {}){
+  if(!shp) throw refus("aucun .shp à lire : déposez au moins le fichier de géométries");
+  /* On ne retient aucune géométrie : on ne fait que les compter pour savoir
+     combien d'identités provisoires forger. */
+  const n = parcourirGeometriesShp(shp, () => {}, { maxRecords });
+  const lignes = [];
+  for(let i = 0; i < n; i++) lignes.push({ [NIVEAU_PROVISOIRE]: `${PREFIXE_PROVISOIRE} ${i + 1}` });
+  return { colonnes: [], mapping: {}, mappingParDefaut: {}, cibles: CIBLES_PUBLIQUES, lignes };
+}
+
 /* Ce qu'un contour porte pour être rattaché : le p-code du niveau le plus profond
    renseigné (celui que buildUnits attribue à l'unité), et le chemin de noms (le
    repli, comme pour les sites — writeGeometries résout par l'un ou l'autre). Rend
@@ -333,8 +364,15 @@ export function attributsContour(ligne){
    puis STREAME les géométries en base (voir la route). */
 export function construire({ shp, dbf, prj, mapping } = {},
                            { maxRecords = RECORDS_MAX, withFeatures = false } = {}){
-  const table = lireTable({ dbf, mapping }, { maxRecords });
   const entete = shp ? lireEnteteShp(shp) : null;
+  const sansDbf = !dbf;
+  /* Sans .dbf, on importe les GÉOMÉTRIES SEULES avec des identités provisoires
+     (« Polygone N ») : les polygones s'affichent tout de suite, et le .dbf déposé
+     ensuite viendra les nommer et les rattacher à l'arbre adm0→adm4. Avec .dbf,
+     le flux complet (correspondance de colonnes, rattachement) reste inchangé. */
+  const table = sansDbf
+    ? tableProvisoire(shp, { maxRecords })
+    : lireTable({ dbf, mapping }, { maxRecords });
 
   const features = [];
   let avecGeometrie = 0, sansGeometrie = 0, shpRecords = 0;
@@ -363,6 +401,9 @@ export function construire({ shp, dbf, prj, mapping } = {},
       shpRecords,
       apparies: shp ? Math.min(table.lignes.length, shpRecords) : 0,
       avecGeometrie, sansGeometrie, sansAttribut,
+      /* L'écran s'appuie dessus pour dire « polygones seuls » et masquer le volet
+         de correspondance : sans .dbf, il n'y a aucune colonne à mettre en face. */
+      sansDbf,
       typeShp: entete ? entete.typeShp : null,
       emprise: entete ? entete.emprise : null,
       projection: prj ? decoderTexte(prj).slice(0, 160) : null,

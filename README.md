@@ -25,8 +25,19 @@ echo "DATA_KEY=$(openssl rand -hex 32)"  >> .env
 
 npm run install:all
 npm run seed          # crée le schéma, les données d'exemple et le compte administrateur
+npm run seed:reel     # (optionnel) charge les données RÉELLES déposées dans docs/
 npm run dev            # API (http://localhost:4000) et interface (http://localhost:5173) ensemble
 ```
+`npm run seed:reel` remplit les **tables réelles** à partir des fichiers de `docs/` : les
+**58 tags d'activité** du PAM (« Annex 5 Activity tags »), les **842 indicateurs** de la
+masterlist rangés par nature et par catégorie filtrable (Annex 2 Outcome, Annex 3 Output,
+Detailed Output, Annex 4 Crosscutting), et le **découpage de Madagascar** (1 701 communes
+avec leurs contours, **plus les 120 districts, 24 régions et le pays dérivés** par dissolution
+des communes — un seul fichier suffit à donner les quatre niveaux de la carte). Il est idempotent : relancé, il corrige et complète sans dupliquer, et
+ne défait aucune saisie faite dans l'application. Options : `--sans-geo` (ignorer le
+shapefile), `--force-geo` (créer un nouveau millésime même si le découpage est déjà chargé),
+`--docs <dossier>`.
+
 À la fin de `npm run seed`, la console affiche **une seule fois** l'adresse et le mot de passe
 de l'administrateur initial. Notez-le : il n'est stocké nulle part en clair et n'apparaît
 jamais dans l'application. À la première connexion, l'application impose son remplacement.

@@ -1,20 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api.js";
 import { useGeoCascade, resetGeoCache } from "../lib/geo.js";
-import { Activity, Building2, CalendarRange, Check, ClipboardList, Download, FileText, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
+import { Activity, Building2, CalendarRange, Check, ClipboardList, Copy, Download, FileText, KeyRound, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
 import { Area, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, motifLisible, n, pct, r2, r5, siteRequirement, siteScore, uid, visiteOdk } from "../lib/calc.js";
 import { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, DURATIONS, D_FORMULAS, D_SECURITY, D_STATUS, D_URBAN, MONITORING_TYPES, PROG_AREAS, SITE_TYPES, TABS_ALL, siteDerived, sitePriority } from "../lib/constants.js";
-/* `readGeoFile` était APPELÉ sans être importé : l'import de découpage depuis
-   l'interface levait « readGeoFile is not defined » dès le choix du fichier. Le
-   référentiel de production avait été chargé par le script src/import-geo.js, si
-   bien que ce chemin-là n'avait jamais été emprunté. */
-import { GUESS, guessField, readGeoFile } from "../lib/shapefile.js";
 import { collecterLocalites, csvLocalites } from "../lib/exportGeo.js";
 import { niveau, niveaux } from "../lib/levels.js";
 import { Sources } from "./ActualData.jsx";
 import { MonthCellModal, MonthGrid, MonthLegend, PDD_ACTS, PDD_COMMODITIES } from "./Planning.jsx";
+import { SetListes } from "./Listes.jsx";
 import { SetCodeReferentiels } from "./Referentiels.jsx";
 import { BLOCKS } from "./Reports.jsx";
 import { PageHead } from "./Shell.jsx";
@@ -29,8 +25,14 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
      configuration. Le registre reste monté à l'identique sous Suivi-évaluation →
      Registre des sites (Merged.jsx) — le composant n'est donc pas retiré, seulement
      son entrée ici. */
-  const items = [["general","Général"],["country","Pays"],["offices","Bureaux"],
-    ["locations","Localités"],["scope","Périmètre des bureaux"],["indicators","Indicateurs"],
+  /* La configuration guidée (S7) est réservée au super-utilisateur : c'est le
+     parcours fondateur, décidé le 01/08 comme tâche `super`. Les référentiels
+     eux-mêmes restent administrables par un admin, onglet par onglet. */
+  const items = [
+    ...(me?.role === "super" ? [["guided","Configuration guidée"]] : []),
+    ["general","Général"],["country","Pays"],["offices","Bureaux"],
+    ["locations","Localités"],["scope","Périmètre des bureaux"],
+    ["activities","Activités"],["listes","Listes paramétrables"],["indicators","Indicateurs"],
     ["calc","Calculs"],["rations","Rations"],["odk","ODK Central"],["connectors","Connecteurs"],
     ["codes","Référentiels de codes"],["templates","Modèles de rapport"],
     ["api","API"],["users","Utilisateurs"],["about","À propos"]];
@@ -38,12 +40,15 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
     <div className="space-y-4">
       <PageHead title="Paramètres" text="Configuration de l'application, référentiels, registre des sites, calculs, sources et accès." />
       <Tabs items={items} value={sub} onChange={setSub} />
+      {sub==="guided" && me?.role === "super" && <SetGuided db={db} setSub={setSub} />}
       {sub==="general" && <SetGeneral db={db} set={set} />}
       {sub==="country" && <SetCountry db={db} notify={notify} can={can} reload={reload} />}
       {sub==="offices" && <SetOffices db={db} notify={notify} can={can} reload={reload} />}
       {sub==="about" && <SetAbout db={db} />}
       {sub==="locations" && <SetLocations db={db} notify={notify} can={can} reload={reload} />}
       {sub==="scope" && <SetScope db={db} notify={notify} can={can} />}
+      {sub==="activities" && <SetActivities db={db} notify={notify} can={can} reload={reload} />}
+      {sub==="listes" && <SetListes notify={notify} can={can} me={me} />}
       {sub==="indicators" && <SetIndicators db={db} set={set} notify={notify} can={can} />}
       {sub==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
       {sub==="rations" && <SetRations db={db} set={set} notify={notify} can={can} />}
@@ -53,6 +58,80 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
       {sub==="templates" && <SetTemplates db={db} set={set} notify={notify} can={can} />}
       {sub==="api" && <SetApi db={db} notify={notify} />}
       {sub==="users" && <SetUsers db={db} set={set} me={me} notify={notify} />}
+    </div>);
+}
+
+/* ══════════════════ Configuration guidée (parcours fondateur S7) ══════════════════
+   « La config est à faire en une fois et stockée dans la base de données (à faire
+   par le super user), avec possibilité de mise à jour. » Un parcours qui rassemble
+   en une page les cinq briques fondatrices — pays, découpage, activités,
+   indicateurs, sources —, dit ce qui est prêt et ce qui reste, et mène à chaque
+   étape. L'état est LU de la base (données réelles), donc toujours à jour ; chaque
+   brique se rouvre et se révise à tout moment (mise à jour possible). Réservé au
+   super-utilisateur. */
+function SetGuided({ db, setSub }){
+  const crf = (db.indicators || []).filter(i => (i.kind || "crf") === "crf").length;
+  const xls = (db.indicators || []).filter(i => i.kind === "xlsform").length;
+  const geoUnits = db.geoVersion?.units || 0;
+  const etapes = [
+    { cle:"country", icon:MapPin, titre:"Pays",
+      desc:"Le pays courant et le vocabulaire de son découpage (régions, districts, communes…).",
+      pret: !!db.country?.code, tab:"country",
+      etat: db.country?.code ? `${db.country.name} (${db.country.code})` : "Aucun pays courant" },
+    { cle:"decoupage", icon:Layers, titre:"Découpage administratif",
+      desc:"Le shapefile du pays : l'arbre adm0→adm4 et ses contours, importés depuis la fiche du pays.",
+      pret: geoUnits > 0, tab:"country",
+      etat: geoUnits > 0 ? `${fmt(geoUnits)} unités · ${db.geoVersion?.geom?.units ? fmt(db.geoVersion.geom.units)+" contours" : "sans contours"}` : "Aucun découpage chargé" },
+    { cle:"activities", icon:Activity, titre:"Activités",
+      desc:"Le référentiel des activités du programme — la source unique réutilisée partout.",
+      pret: (db.activities || []).length > 0, tab:"activities",
+      etat: (db.activities || []).length ? `${fmt(db.activities.length)} activité(s)` : "Aucune activité" },
+    { cle:"indicators", icon:Target, titre:"Indicateurs",
+      desc:"La bibliothèque CRF (résultats) et XLSForm (processus) qui alimente tableaux de bord et rapports.",
+      pret: (db.indicators || []).length > 0, tab:"indicators",
+      etat: (db.indicators || []).length ? `${fmt(crf)} CRF · ${fmt(xls)} processus` : "Aucun indicateur" },
+    { cle:"sources", icon:Link2, titre:"Sources de données",
+      desc:"Les formulaires ODK Central et les connecteurs qui alimentent la collecte.",
+      pret: (db.odkForms || []).length > 0, tab:"odk",
+      etat: (db.odkForms || []).length ? `${fmt(db.odkForms.length)} formulaire(s) ODK` : "Aucune source configurée" },
+  ];
+  const prets = etapes.filter(e => e.pret).length;
+  return (
+    <div className="space-y-4">
+      <Card title="Configuration guidée"
+        subtitle="Le parcours fondateur — pays, découpage, activités, indicateurs, sources. Réservé au super-utilisateur.">
+        <Note>Chaque brique se configure ici, puis reste consultable et modifiable à tout moment ;
+          l'état ci-dessous est <b>lu de la base</b>, il reflète la configuration réelle. Menez les
+          étapes dans l'ordre : chacune prépare la suivante.</Note>
+        <div className="flex items-center gap-3 mt-3">
+          <div className="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden">
+            <div className="h-full rounded-full transition-all" style={{ width:`${(prets/etapes.length)*100}%`, background:C.aqua }} /></div>
+          <span className="f13 font-semibold text-slate-700 tabular-nums">{prets} / {etapes.length} prêtes</span>
+        </div>
+      </Card>
+      <div className="space-y-3">
+        {etapes.map((e,i)=>(
+          <Card key={e.cle}>
+            <div className="flex items-start gap-4">
+              <div className={clsx("w-10 h-10 rounded-full grid place-items-center shrink-0 font-bold",
+                e.pret ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-400")}>
+                {e.pret ? <Check size={20}/> : (i+1)}</div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <e.icon size={15} className="text-slate-400" />
+                  <span className="f15 font-semibold text-slate-800">{e.titre}</span>
+                  {e.pret ? <Badge tone="g">Prêt</Badge> : <Badge tone="n">À configurer</Badge>}
+                </div>
+                <p className="f125 text-slate-500 mt-0.5 leading-relaxed">{e.desc}</p>
+                <p className="f12 text-slate-600 mt-1"><b className="text-slate-400 uppercase tracking-wide f10">État&nbsp;:</b> {e.etat}</p>
+              </div>
+              <Btn size="sm" kind={e.pret?"sec":"primary"} onClick={()=>setSub(e.tab)}>
+                {e.pret ? "Revoir" : "Configurer"}</Btn>
+            </div>
+          </Card>))}
+      </div>
+      {prets === etapes.length && <Note tone="ok">Toutes les briques fondatrices sont en place.
+        La configuration reste modifiable étape par étape à tout moment.</Note>}
     </div>);
 }
 
@@ -807,6 +886,29 @@ function SetCountry({ db, notify, can, reload }){
         </TableWrap>
       </Card>
 
+      {/* ── Le découpage fait partie de la fiche du pays ──────────────────
+          Le propriétaire l'a demandé : configurer le shapefile À PART du pays
+          « bugge en multi-pays ». On le monte donc ici, rattaché au pays COURANT,
+          et le millésime importé s'attache à lui — la bascule du courant reste
+          cloisonnée par pays (voir lib/geo.js). */}
+      {data.current?.code
+        ? <>
+            <SetShapefileServer db={db} notify={notify} can={can} country={data.current}
+              onCommitted={async ()=>{
+                /* Le découpage importé devient le référentiel courant du pays : on
+                   rafraîchit la fiche (compteur de millésimes), on vide le cache
+                   géographique et on remonte les libellés — sans quoi les écrans
+                   garderaient l'ancien découpage jusqu'au prochain rechargement. */
+                resetGeoCache(); await charger(); if(reload) await reload();
+              }} />
+            {/* Puis les contours maille par maille, sur ce même millésime : c'est
+                ce qui donne à la carte son choix de niveau de breakdown. */}
+            <SetContoursNiveaux db={db} notify={notify} can={can}
+              onCommitted={async ()=>{ resetGeoCache(); if(reload) await reload(); }} />
+          </>
+        : <Note tone="warn">Rendez d'abord un pays courant : le découpage administratif se rattache
+            au pays courant, et il n'y en a pas encore.</Note>}
+
       <Modal open={!!edit} wide onClose={()=>setEdit(null)}
         title={edit?._existe ? `Configuration de ${edit.name}` : "Nouveau pays"}
         subtitle="Identité, devise locale et libellés des cinq niveaux administratifs"
@@ -1167,7 +1269,7 @@ function SetScope({ db, notify, can }){
    l'aperçu, puis valide, ce qui bascule le millésime en une transaction. Le coût
    du basculement (les sites que le nouveau découpage rend orphelins) est chiffré
    AVANT toute écriture, jamais masqué. */
-function SetShapefileServer({ db, notify, can, onCommitted }){
+function SetShapefileServer({ db, notify, can, onCommitted, country }){
   const [files,setFiles] = useState([]);
   const [apercu,setApercu] = useState(null);
   const [mapping,setMapping] = useState({});
@@ -1180,10 +1282,11 @@ function SetShapefileServer({ db, notify, can, onCommitted }){
     if(!fs.length) return;
     setBusy(true); setStat({ kind:"info", text:"Lecture du shapefile par le serveur…" });
     try{
-      const r = await api.shapefilePreview(fs, map, dup);
+      const r = await api.shapefilePreview(fs, map, dup, country?.code);
       setApercu(r); setMapping(r.mapping || {});
       setStat({ kind: r.resume.typeShp === 5 ? "ok" : "warn",
-        text:`${fmt(r.resume.records)} enregistrement(s) · ${fmt(r.resume.avecGeometrie)} avec contour` });
+        text:`${fmt(r.resume.records)} enregistrement(s) · ${fmt(r.resume.avecGeometrie)} avec contour`
+          + (r.resume.sansDbf ? " · polygones seuls (aucun .dbf)" : "") });
     }catch(e){ setApercu(null); setStat({ kind:"err", text:e.message }); }
     setBusy(false);
   };
@@ -1210,7 +1313,7 @@ function SetShapefileServer({ db, notify, can, onCommitted }){
       return;
     setBusy(true);
     try{
-      const r = await api.shapefileCommit(files, mapping, label, "shapefile", allowDup);
+      const r = await api.shapefileCommit(files, mapping, label, "shapefile", allowDup, country?.code);
       setStat({ kind: r.orphelins.orphelins ? "warn" : "ok", text: r.message });
       notify(`Découpage importé : ${fmt(r.imported)} unités, ${fmt(r.geom.écrites)} contours`,
         r.orphelins.orphelins ? "warn" : "ok");
@@ -1226,10 +1329,22 @@ function SetShapefileServer({ db, notify, can, onCommitted }){
 
   const R = apercu?.resume;
   const nbCol = apercu?.collisionsTotal || 0;
+  const sansDbf = !!R?.sansDbf;
   return (
-    <Card title="Téléverser un shapefile — les vraies communes"
-      subtitle="Lu par le serveur. Déposez le .zip, ou le .shp avec son .dbf (et son .prj).">
+    <Card title="Découpage administratif — téléverser le shapefile"
+      subtitle={`Lu par le serveur, rattaché à ${country?.name || "ce pays"}. Déposez le .zip, ou le .shp avec son .dbf (et son .prj).`}>
       {!can("admin") && <Note tone="warn">Le téléversement du découpage est réservé aux administrateurs.</Note>}
+
+      <Note>Ce découpage devient la <b>référence adm0→adm4 de MEMS</b> pour {country?.name || "le pays courant"} :
+        sites, population et distributions s'y rattachent. L'archive <b>.zip</b> doit contenir le
+        <b> .shp</b> (les contours), le <b>.dbf</b> (les noms et p-codes) et le <b>.prj</b> (la projection,
+        qui doit être WGS 84 / EPSG:4326).
+        <br /><br />
+        <b>Déposez juste le .shp pour voir les polygones</b> tout de suite sur la carte, sous des noms
+        provisoires « Polygone 1, 2, … » ; <b>ajoutez le .dbf pour les nommer et les rattacher</b> à
+        l'arbre région → district → commune → fokontany. Le fichier peut aller jusqu'à 150 Mo ; au-delà,
+        ou si un proxy plafonne l'envoi, préférez l'archive .zip (elle compresse fortement le .shp).</Note>
+
       <div className="grid grid-cols-2 gap-x-4">
         <Field label="Shapefile (.zip, ou .shp + .dbf + .prj)">
           <input type="file" multiple accept=".zip,.shp,.dbf,.prj" disabled={!can("admin") || busy}
@@ -1242,7 +1357,7 @@ function SetShapefileServer({ db, notify, can, onCommitted }){
         <StatRow>
           <Stat label="Enregistrements" value={fmt(R.records)}
             sub={`type ${R.typeShp} · ${fmt(R.avecGeometrie)} avec contour`} />
-          <Stat label="Communes" value={fmt(apercu.arbre.counts.adm3 || 0)}
+          <Stat label={sansDbf ? "Polygones" : "Communes"} value={fmt(apercu.arbre.counts.adm3 || 0)}
             sub={`${fmt(apercu.arbre.total)} unités au total`} />
           <Stat label="P-codes en double" value={fmt(nbCol)} tone={nbCol ? "warn" : undefined}
             sub="mêmes codes, chemins différents" />
@@ -1251,23 +1366,32 @@ function SetShapefileServer({ db, notify, can, onCommitted }){
             sub={`sur ${fmt(apercu.orphelins.sitesRattaches)} rattachés aujourd'hui`} />
         </StatRow>
 
-        <Note>Chaque colonne du fichier se met en face d'une variable MEMS. La proposition ci-dessous
-          vient des intitulés reconnus ; ajustez-la, puis relisez l'aperçu.</Note>
-        <div className="grid grid-cols-3 gap-x-3">
-          {apercu.cibles.map(c=>(
-            <Field key={c.cle} label={c.label}>
-              <Select value={mapping[c.cle]||""} onChange={e=>setMapping(m=>({...m,[c.cle]:e.target.value}))}
-                empty="— aucune —" options={apercu.colonnes.map(x=>x.nom)} className="mi-py1" /></Field>))}
-        </div>
-        <div className="flex items-center gap-3 mb-4">
-          <Btn kind="sec" icon={RefreshCw} disabled={busy} onClick={()=>analyser(files, mapping, allowDup)}>
-            Relire l'aperçu</Btn>
-          <span className="f115 text-slate-500">La correspondance choisie alimente l'arbre et le rattachement des contours.</span>
-        </div>
+        {/* Sans .dbf : aucune colonne à mettre en face. On importe les polygones
+            seuls, nommés « Polygone N », pour les voir tout de suite. */}
+        {sansDbf ? (
+          <Note tone="warn">Aucune table attributaire (<b>.dbf</b>) : import des <b>polygones seuls</b>,
+            nommés « Polygone 1, 2, … » au niveau commune. Ils s'afficheront sur la carte, mais sans nom
+            ni rattachement. <b>Ajoutez le .dbf</b> (dans la même archive, ou à côté du .shp) pour les
+            nommer et les rattacher à l'arbre adm0→adm4.</Note>
+        ) : (<>
+          <Note>Chaque colonne du fichier se met en face d'une variable MEMS. La proposition ci-dessous
+            vient des intitulés reconnus ; ajustez-la, puis relisez l'aperçu.</Note>
+          <div className="grid grid-cols-3 gap-x-3">
+            {apercu.cibles.map(c=>(
+              <Field key={c.cle} label={c.label}>
+                <Select value={mapping[c.cle]||""} onChange={e=>setMapping(m=>({...m,[c.cle]:e.target.value}))}
+                  empty="— aucune —" options={apercu.colonnes.map(x=>x.nom)} className="mi-py1" /></Field>))}
+          </div>
+          <div className="flex items-center gap-3 mb-4">
+            <Btn kind="sec" icon={RefreshCw} disabled={busy} onClick={()=>analyser(files, mapping, allowDup)}>
+              Relire l'aperçu</Btn>
+            <span className="f115 text-slate-500">La correspondance choisie alimente l'arbre et le rattachement des contours.</span>
+          </div>
+        </>)}
 
         {!!apercu.echantillon?.length && (
           <TableWrap max="mh200">
-            <thead><tr><Th>Commune (échantillon)</Th><Th>P-code</Th></tr></thead>
+            <thead><tr><Th>{sansDbf ? "Polygone (échantillon)" : "Commune (échantillon)"}</Th><Th>P-code</Th></tr></thead>
             <tbody>{apercu.echantillon.map(u=>(
               <tr key={u.pcode}><Td>{u.name}</Td><Td className="f115 text-slate-500">{u.pcode}</Td></tr>))}</tbody>
           </TableWrap>)}
@@ -1314,21 +1438,170 @@ function SetShapefileServer({ db, notify, can, onCommitted }){
   );
 }
 
+/* ── Contours par niveau de découpage (chantier S8, point 6) ──────────
+   « Durant la configuration pays, insérer plusieurs shapefiles : adm1 à adm4
+   pour pouvoir avoir un affichage par type de breakdown sur la carte après. »
+
+   Le téléversement du dessus construit le millésime — l'arbre et les contours du
+   fichier déposé, à la maille qu'il porte. Ici on AJOUTE une maille : un fichier
+   par niveau, rattaché au même millésime, sans reconstruire l'arbre. Chaque
+   niveau dit ce qu'il porte, se remplace, et se retire seul. */
+function SetContoursNiveaux({ db, notify, can, onCommitted }){
+  const [busy,setBusy]   = useState("");
+  const [bilan,setBilan] = useState(null);
+  const gv = db.geoVersion;
+  const parNiveau = Object.fromEntries((gv?.geom?.parNiveau || []).map(x => [x.level, x.units]));
+  const NIVEAUX = niveaux(db, { from:"adm1", to:"adm4" });
+
+  const deposer = async (niveau, list) => {
+    const fichiers = Array.from(list || []);
+    if(!fichiers.length) return;
+    setBusy(niveau); setBilan(null);
+    try{
+      const r = await api.shapefileContours(fichiers, niveau, {}, fichiers[0].name, true);
+      setBilan({ ...r, niveau });
+      notify(r.message, r.écrites ? (r.rejetes ? "warn" : "ok") : "err");
+      if(onCommitted) await onCommitted();
+    }catch(e){ notify(e.message, "err"); setBilan({ niveau, erreur:e.message }); }
+    setBusy("");
+  };
+
+  /* Dériver : les niveaux supérieurs sont les mêmes polygones réunis par
+     parent. Un seul fichier — les communes — suffit donc à donner districts,
+     régions et pays, et c'est la réponse au fait que seul adm3 est fourni. */
+  const deriver = async (remplacer) => {
+    setBusy("deriver"); setBilan(null);
+    try{
+      const r = await api.deriverContours(null, remplacer);
+      setBilan({ derivation:r });
+      notify(r.message, r.total ? "ok" : "warn");
+      if(onCommitted) await onCommitted();
+    }catch(e){ notify(e.message, "err"); setBilan({ erreur:e.message }); }
+    setBusy("");
+  };
+
+  const retirer = async (niveau, libelle) => {
+    if(!confirm(`Retirer les contours « ${libelle} » du millésime courant ?`)) return;
+    setBusy(niveau);
+    try{
+      const r = await api.clearGeometry(niveau);
+      notify(`${fmt(r.supprimes)} contour(s) retirés`, "ok");
+      setBilan(null);
+      if(onCommitted) await onCommitted();
+    }catch(e){ notify(e.message, "err"); }
+    setBusy("");
+  };
+
+  if(!gv) return null;
+  return (
+    <Card title="Contours par niveau — le breakdown de la carte"
+      subtitle={`Millésime courant : ${gv.label} · ${fmt(gv.geom?.units || 0)} contour(s) au total`}>
+      <Note>La carte dessine les limites <b>au niveau de breakdown choisi</b> : elle ne peut le faire
+        que pour les niveaux dont elle a les contours. Déposez <b>un shapefile par maille</b> —
+        {" "}{NIVEAUX.map(([,l])=>l).join(", ")} — rattaché à ce même millésime ; l'arbre
+        administratif n'est pas reconstruit. Le <b>.dbf est indispensable ici</b> : sans lui, aucun
+        polygone ne peut être reconnu dans le découpage déjà chargé. Un dépôt <b>remplace</b> le
+        niveau qu'il annonce, et ne touche pas aux autres.</Note>
+
+      <TableWrap max="mh300">
+        <thead><tr><Th>Niveau</Th><Th num>Unités du découpage</Th><Th num>Contours</Th>
+          <Th>État</Th><Th /></tr></thead>
+        <tbody>{NIVEAUX.map(([code,libelle])=>{
+          const unites = gv.counts?.[code] || 0;
+          const contours = parNiveau[code] || 0;
+          return (
+            <tr key={code} className="hover:bg-sky-50">
+              <Td className="font-medium text-slate-800">{libelle} <span className="text-slate-400 f11">{code}</span></Td>
+              <Td num className="text-slate-500">{unites ? fmt(unites) : "—"}</Td>
+              <Td num className={contours ? "font-semibold text-slate-700" : "text-slate-400"}>
+                {contours ? fmt(contours) : "—"}</Td>
+              <Td>{contours
+                ? (unites && contours < unites
+                    ? <Badge tone="y">partiel — {Math.round((contours/unites)*100)} %</Badge>
+                    : <Badge tone="g">complet</Badge>)
+                : <Badge>aucun contour</Badge>}</Td>
+              <Td className="text-right">
+                {can("admin") && <label className="inline-block">
+                  <input type="file" multiple accept=".zip,.shp,.dbf,.prj" className="hidden"
+                    disabled={!!busy} onChange={e=>{ deposer(code, e.target.files); e.target.value=""; }} />
+                  <span className="inline-flex items-center gap-1.5 border rounded font-semibold px-2.5 py-1 f11 m-btn-sec cursor-pointer">
+                    <Upload size={13}/> {busy===code ? "Lecture…" : contours ? "Remplacer" : "Déposer"}</span>
+                </label>}
+                {can("admin") && !!contours && <button onClick={()=>retirer(code, libelle)}
+                  disabled={!!busy} className="text-slate-400 hover:text-rose-600 p-1 ml-1"
+                  title="Retirer les contours de ce niveau"><Trash2 size={14}/></button>}
+              </Td>
+            </tr>);
+        })}</tbody>
+      </TableWrap>
+
+      {/* La dérivation, sous le tableau : elle ne remplace pas un dépôt, elle
+          évite d'en attendre un. */}
+      {can("admin") && (
+        <div className="mt-3 pt-3 border-t border-slate-100">
+          <Note>Un seul fichier suffit : les contours d'un district sont ceux de ses communes
+            <b> réunies</b>, ceux d'une région ceux de ses districts. MEMS peut donc
+            <b> dériver les niveaux supérieurs</b> à partir du niveau le plus fin déjà chargé —
+            les frontières intérieures sont dissoutes, pas empilées. Un niveau qui porte déjà ses
+            propres contours n'est pas touché : un fichier officiel vaut mieux qu'un calcul.</Note>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Btn kind="sec" icon={Layers} disabled={!!busy || !gv.geom?.units}
+              onClick={()=>deriver(false)}>
+              {busy==="deriver" ? "Dissolution…" : "Dériver les niveaux supérieurs"}</Btn>
+            <Btn kind="ghost" disabled={!!busy || !gv.geom?.units}
+              onClick={()=>{ if(confirm("Recalculer AUSSI les niveaux qui portent déjà des contours ?"
+                + "\n\nLes contours déposés à ces niveaux seront remplacés par des contours dérivés."))
+                deriver(true); }}>Recalculer tout</Btn>
+          </div>
+        </div>)}
+
+      {bilan?.derivation && (
+        <div className="mt-3">
+          <Note tone={bilan.derivation.total ? "ok" : "warn"}>{bilan.derivation.message}</Note>
+          <TableWrap max="mh240">
+            <thead><tr><Th>Niveau</Th><Th>Dérivé de</Th><Th num>Unités</Th><Th num>Contours</Th>
+              <Th>Remarque</Th></tr></thead>
+            <tbody>{bilan.derivation.etapes.map(e=>(
+              <tr key={e.niveau}>
+                <Td className="font-medium text-slate-800">{niveau(db, e.niveau, true)}
+                  <span className="text-slate-400 f11"> {e.niveau}</span></Td>
+                <Td className="text-slate-500">{e.depuis || "—"}</Td>
+                <Td num className="text-slate-500">{e.unites ? fmt(e.unites) : "—"}</Td>
+                <Td num className={e.ecrites ? "font-semibold" : "text-slate-400"}>
+                  {e.ecrites ? fmt(e.ecrites) : "—"}</Td>
+                <Td className="text-slate-600 f11" style={{whiteSpace:"normal"}}>
+                  {e.saute || (e.approximatifs
+                    ? `${e.approximatifs} unité(s) non dissoutes — rendues comme assemblage`
+                    : e.ecrites ? "frontières intérieures dissoutes" : "")}</Td>
+              </tr>))}</tbody>
+          </TableWrap>
+        </div>)}
+
+      {bilan && !bilan.erreur && !bilan.derivation && (
+        <div className="mt-3">
+          <Note tone={bilan.écrites ? (bilan.rejetes ? "warn" : "ok") : "err"}>{bilan.message}</Note>
+          {!!bilan.rejets?.length && (
+            <TableWrap max="mh200">
+              <thead><tr><Th>Unité</Th><Th>Motif du rejet</Th></tr></thead>
+              <tbody>{bilan.rejets.map((r,i)=>(
+                <tr key={i}><Td className="f115">{r.pcode || "—"}</Td>
+                  <Td className="text-slate-600 f11" style={{whiteSpace:"normal"}}>{r.message}</Td></tr>))}</tbody>
+            </TableWrap>)}
+        </div>)}
+      {bilan?.erreur && <Note tone="err">{bilan.erreur}</Note>}
+    </Card>
+  );
+}
+
 /* ── Localités : référentiel administratif versionné ──
    Le découpage n'est plus une liste plate éditable ligne à ligne : c'est un arbre
    (région → district → commune → fokontany) chargé par millésime. Sites, population
    et distributions s'y raccrochent, donc il ne se modifie pas à la main — on importe
    un nouveau millésime, et l'ancien reste disponible. */
 function SetLocations({ db, notify, can, reload }){
-  const [draft,setDraft] = useState(null); const [status,setStatus] = useState(null);
-  const [map,setMap] = useState({}); const [label,setLabel] = useState("");
-  const [depth,setDepth] = useState("adm4"); const [busy,setBusy] = useState(false);
   const [versions,setVersions] = useState([]);
-  /* Import des contours — indépendant de l'import du découpage : on charge d'abord
-     l'arbre (qui donne les p-codes), les géométries s'y rattachent ensuite. */
-  const [geomDraft,setGeomDraft] = useState(null);
-  const [geomMap,setGeomMap] = useState({});
-  const [geomStat,setGeomStat] = useState(null);
+  /* La suppression des contours reste une action de maintenance (le millésime
+     garde son arbre, on n'en retire que le fond de carte) : un seul verrou suffit. */
   const [geomBusy,setGeomBusy] = useState(false);
 
   /* Répertoire : filtres en cascade et pagination, tout vient du serveur. */
@@ -1364,79 +1637,6 @@ function SetLocations({ db, notify, can, reload }){
   }, [parent, q, page, refresh]);
   useEffect(()=>{ setPage(0); }, [parent, q]);
 
-  const onFile = async (file) => {
-    setStatus({ kind:"info", text:"Lecture du fichier…" });
-    try{
-      const d = await readGeoFile(file);
-      if(!d.rows.length) throw new Error("Aucun objet trouvé");
-      const bad = d.cent.filter(Boolean).some(c => Math.abs(c[0])>180 || Math.abs(c[1])>90);
-      if(bad) throw new Error("Les coordonnées sortent de la plage géographique : reprojetez le fichier en WGS 84 (EPSG:4326)");
-      setDraft(d);
-      setMap({ adm0:guessField(d.fields,GUESS.adm0), adm1:guessField(d.fields,GUESS.adm1),
-        adm2:guessField(d.fields,GUESS.adm2), adm3:guessField(d.fields,GUESS.adm3),
-        adm4:guessField(d.fields,GUESS.adm4), code:guessField(d.fields,GUESS.code) });
-      setDepth(guessField(d.fields,GUESS.adm4) ? "adm4" : "adm3");
-      setLabel(file.name.replace(/\.[^.]+$/,"") + " — " + new Date().toISOString().slice(0,10));
-      setStatus({ kind:"ok", text:`${d.rows.length.toLocaleString("fr-FR")} objets lus depuis ${d.src} · ${d.fields.length} champs attributaires`
-        + (d.geomSkipped ? " · centroïdes repris des attributs, la géométrie n'a pas eu besoin d'être ouverte" : "") });
-    }catch(e){ setDraft(null); setStatus({ kind:"err", text:e.message }); }
-  };
-
-  /* Ce que l'on retiendra du fichier : au-delà du niveau choisi, les doublons sont regroupés. */
-  const preview = useMemo(() => {
-    if(!draft) return [];
-    const order = ["adm0","adm1","adm2","adm3","adm4"];
-    const keep = order.slice(0, order.indexOf(depth) + 1);
-    const seen = new Set(); const out = [];
-    draft.rows.forEach((r, i) => {
-      const c = draft.cent[i];
-      const g = {};
-      order.forEach(k => { g[k] = (keep.includes(k) && map[k]) ? String(r[map[k]] ?? "") : ""; });
-      g.code = map.code ? String(r[map.code] ?? "") : "";
-      g.lat = c ? r5(c[1]) : ""; g.lon = c ? r5(c[0]) : "";
-      if(!(g.adm1 || g.adm2 || g.adm3 || g.adm4)) return;
-      if(depth !== "adm4"){
-        const k = keep.map(x => g[x]).join("|");
-        if(seen.has(k)) return;
-        seen.add(k); g.code = "";
-      }
-      out.push(g);
-    });
-    return out;
-  }, [draft, map, depth]);
-
-  /* L'écriture passe par le serveur : il reconstruit l'arbre, en une transaction. */
-  const commit = async () => {
-    if(!draft || !preview.length){
-      notify("Aucune localité exploitable : vérifiez la correspondance des champs", "err"); return;
-    }
-    setBusy(true);
-    try{
-      const rows = preview.map(g => ({ adm0:g.adm0 || null, adm1:g.adm1 || null, adm2:g.adm2 || null,
-        adm3:g.adm3 || null, adm4:g.adm4 || null, pcode:g.code || null,
-        lat: g.lat === "" ? null : Number(g.lat), lon: g.lon === "" ? null : Number(g.lon) }));
-      const r = await api.importGeo(rows, label.trim() || `Import du ${new Date().toISOString().slice(0,10)}`,
-        draft.src || null);
-      resetGeoCache(); setDraft(null); setSel({ adm1:"", adm2:"", adm3:"" }); setPage(0);
-      setRefresh(x=>x+1);
-      await loadVersions();
-      /* db.geoVersion (carte « Référentiel courant ») vient de l'état global, chargé
-         une fois au démarrage : sans ce rechargement, elle continue d'afficher
-         l'ancien millésime bien après que le nouveau soit devenu courant. */
-      if(reload) await reload();
-      const c = r.counts || {};
-      setStatus({ kind:"ok", text:`${r.imported.toLocaleString("fr-FR")} unités enregistrées — `
-        + [["adm1","régions"],["adm2","districts"],["adm3","communes"],["adm4","fokontany"]]
-            .filter(([k])=>c[k]).map(([k,l])=>`${c[k].toLocaleString("fr-FR")} ${l}`).join(", ")
-        + (r.rejected ? ` · ${r.rejected} ligne(s) écartée(s)` : "") });
-      notify(`Référentiel importé : ${r.imported.toLocaleString("fr-FR")} unités`, "ok");
-    }catch(e){
-      setStatus({ kind:"err", text:e.message + (e.details ? " — " + JSON.stringify(e.details).slice(0,180) : "") });
-      notify("Import refusé : " + e.message, "err");
-    }
-    setBusy(false);
-  };
-
   const activate = async (id, lb) => {
     try{ await api.setGeoVersion(id); resetGeoCache();
       setSel({ adm1:"", adm2:"", adm3:"" }); setPage(0); setRefresh(x=>x+1); await loadVersions();
@@ -1470,75 +1670,16 @@ function SetLocations({ db, notify, can, reload }){
     setExportEnCours(false);
   };
 
-  /* ── Contours ───────────────────────────────────────────────────────
-     La lecture se fait dans le navigateur, comme pour le découpage ; ce qui part
-     au serveur est la géométrie déjà extraite, par lots. Le serveur la simplifie
-     et en garde deux résolutions : la version fine ne s'affiche qu'au zoom, et
-     servir 18 000 contours en pleine résolution arrêterait le navigateur. */
-  const onGeomFile = async (file) => {
-    setGeomStat({ kind:"info", text:"Lecture des contours… cela peut prendre un moment sur un fichier de fokontany." });
-    try{
-      const d = await readGeoFile(file, { withGeometry:true });
-      const avec = (d.geom || []).filter(Boolean).length;
-      if(!avec) throw new Error("Aucun contour trouvé : ce fichier ne contient que des points ou une table attributaire. Il faut le .shp, ou un .geojson de polygones.");
-      setGeomDraft(d);
-      setGeomMap({ adm1:guessField(d.fields,GUESS.adm1), adm2:guessField(d.fields,GUESS.adm2),
-        adm3:guessField(d.fields,GUESS.adm3), adm4:guessField(d.fields,GUESS.adm4),
-        code:guessField(d.fields,GUESS.code) });
-      setGeomStat({ kind:"ok", text:`${fmt(avec)} contour(s) lus sur ${fmt(d.rows.length)} objets · ${d.fields.length} champs attributaires` });
-    }catch(e){ setGeomDraft(null); setGeomStat({ kind:"err", text:e.message }); }
-  };
-
-  const commitGeom = async () => {
-    if(!geomDraft) return;
-    setGeomBusy(true);
-    const LOT = 120;   /* un lot de contours de commune pèse déjà quelques mégaoctets */
-    let envoyes = 0, ecrites = 0, rejetes = 0; const motifs = [];
-    try{
-      const items = geomDraft.rows.map((r, i) => {
-        const g = geomDraft.geom[i];
-        if(!g) return null;
-        const names = {};
-        for(const k of ["adm1","adm2","adm3","adm4"])
-          if(geomMap[k] && r[geomMap[k]]) names[k] = String(r[geomMap[k]]);
-        if(!Object.keys(names).length && !geomMap.code) return null;
-        return { pcode: geomMap.code ? String(r[geomMap.code] ?? "") || undefined : undefined,
-                 names, geometry:g };
-      }).filter(Boolean);
-      if(!items.length) throw new Error("Aucun contour rattachable : indiquez au moins un champ de nom administratif");
-
-      for(let i = 0; i < items.length; i += LOT){
-        const lot = items.slice(i, i + LOT);
-        const r = await api.importGeometry(lot, { reset: i === 0, source: geomDraft.src });
-        envoyes += lot.length; ecrites += r.écrites; rejetes += r.rejetes;
-        if(r.rejets?.length && motifs.length < 8) motifs.push(...r.rejets.slice(0, 3));
-        setGeomStat({ kind:"info",
-          text:`Envoi… ${fmt(envoyes)} / ${fmt(items.length)} — ${fmt(ecrites)} rattaché(s)` });
-        /* On libère au fur et à mesure : garder tous les contours en mémoire pendant
-           l'envoi ferait doubler l'empreinte pour rien. */
-        for(let k = i; k < i + LOT && k < geomDraft.geom.length; k++) geomDraft.geom[k] = null;
-      }
-      await loadVersions();
-      setGeomDraft(null);
-      setGeomStat({ kind: rejetes ? "warn" : "ok",
-        text: `${fmt(ecrites)} contour(s) enregistré(s)` +
-          (rejetes ? ` · ${fmt(rejetes)} non rattaché(s) : ${motifs.map(m=>m.pcode).filter(Boolean).slice(0,3).join(", ")}…` : "") });
-      notify(`Contours administratifs enregistrés — ${fmt(ecrites)} unité(s)`, rejetes ? "warn" : "ok");
-    }catch(e){ setGeomStat({ kind:"err", text:e.message }); notify(e.message, "err"); }
-    setGeomBusy(false);
-  };
-
   const cur = db.geoVersion;
   const pages = Math.ceil(dir.total / PER);
   return (
     <>
-      <Note>Le moyen recommandé est le <b>téléversement du shapefile</b> ci-dessous : le fichier
-        (un <b>.zip</b>, ou le <b>.shp</b> avec son <b>.dbf</b> et son <b>.prj</b>) est lu <b>par le serveur</b>,
-        qui reconstruit le découpage ET ses contours en un seul geste, après que vous ayez mis chaque colonne
-        en face d'une variable MEMS. Les coordonnées doivent être en WGS 84.
+      <Note>Le découpage administratif se configure désormais dans l'onglet <b>Pays</b> : on y dépose
+        le shapefile (un <b>.zip</b>, ou le <b>.shp</b> avec son <b>.dbf</b> et son <b>.prj</b>), lu
+        <b> par le serveur</b>, qui reconstruit le découpage ET ses contours et rattache le millésime au
+        pays courant. Cet écran-ci sert à <b>consulter</b> le référentiel courant, ses millésimes et le
+        répertoire des localités.
         <br /><br />
-        Les deux cartes suivantes — import du découpage seul, puis des contours — sont l'ancienne voie, lue
-        dans le navigateur ; elles restent disponibles, notamment pour un <b>.geojson</b> déjà projeté.
         Pour le référentiel complet de Madagascar — environ 18 000 fokontany — la ligne de commande lit le
         fichier sans le charger en mémoire :
         <code className="bg-white px-1 rounded mx-1">node src/import-geo.js fichier.csv --label "COD-AB v2023.1"</code>
@@ -1555,122 +1696,44 @@ function SetLocations({ db, notify, can, reload }){
         </Card>
       ) : (
         <Note tone="warn"><b>Aucun référentiel chargé.</b> Les listes administratives resteront vides
-          tant qu'un découpage n'aura pas été importé.</Note>
+          tant qu'un découpage n'aura pas été importé depuis l'onglet <b>Pays</b>.</Note>
       )}
 
-      {/* Le téléversement lu par le serveur : le shapefile en entier (découpage ET
-          contours), en un seul geste, avec sa correspondance de colonnes. */}
-      <SetShapefileServer db={db} notify={notify} can={can} onCommitted={async ()=>{
-        resetGeoCache(); setSel({ adm1:"", adm2:"", adm3:"" }); setPage(0); setRefresh(x=>x+1);
-        await loadVersions(); if(reload) await reload(); }} />
-
       {/* ── Contours administratifs ──────────────────────────────────────
-          Le référentiel ne portait que des points, et la carte projetait des cercles
-          sur un fond vide : une commune non couverte n'apparaissait nulle part. Les
-          contours sont ce qui permet de la dessiner — et donc de la voir. */}
+          Les contours arrivent désormais AVEC le shapefile importé depuis l'onglet
+          Pays (le .shp les porte, le serveur les simplifie et les rattache). Cette
+          carte n'en montre plus que l'état par niveau et permet de les retirer —
+          une maintenance qui laisse l'arbre administratif intact. */}
       <Card title="Contours administratifs — fond de carte"
         subtitle={cur?.geom?.units
           ? `${fmt(cur.geom.units)} unité(s) avec contour${cur.geom.source ? ` · ${cur.geom.source}` : ""}`
           : "aucun contour : la cartographie n'a pas de fond"}
         right={can("admin") && cur?.geom?.units > 0 &&
           <Btn size="sm" kind="sec" icon={Trash2} disabled={geomBusy}
-            onClick={async ()=>{ if(!confirm("Retirer tous les contours de ce millésime ?")) return;
+            onClick={async ()=>{ if(!confirm("Retirer tous les contours de ce millésime ? L'arbre administratif est conservé.")) return;
+              setGeomBusy(true);
               try{ const r = await api.clearGeometry(); await loadVersions();
+                if(reload) await reload();
                 notify(`${fmt(r.supprimes)} contour(s) retiré(s)`, "ok");
-              }catch(e){ notify(e.message, "err"); } }}>Retirer les contours</Btn>}>
+              }catch(e){ notify(e.message, "err"); }
+              setGeomBusy(false); }}>Retirer les contours</Btn>}>
 
         {!cur ? (
-          <Note tone="warn">Chargez d'abord un découpage : les contours se rattachent à
-            l'arbre administratif, ils ne le créent pas.</Note>
-        ) : (<>
-          {!!cur.geom?.parNiveau?.length && (
+          <Note tone="warn">Aucun référentiel chargé : importez un découpage depuis l'onglet <b>Pays</b>.
+            Les contours s'y rattachent, ils ne le créent pas.</Note>
+        ) : cur.geom?.units ? (
+          !!cur.geom?.parNiveau?.length && (
             <StatRow>
               {cur.geom.parNiveau.map(x=>(
                 <Stat key={x.level} label={niveau(db, x.level, true)}
                   value={fmt(x.units)}
                   sub={`${fmt(x.points_simple)} sommets affichés sur ${fmt(x.points)}`} />))}
-            </StatRow>)}
-
-          <Note>Chargez le <b>.shp</b> (ou son archive <b>.zip</b>, ou un <b>.geojson</b> de polygones)
-            du niveau voulu. Le fichier est lu <b>dans le navigateur</b> ; seules les géométries
-            extraites partent au serveur, par lots. Le serveur les <b>simplifie</b> et en conserve
-            deux résolutions : la version allégée pour la vue d'ensemble, la version fine pour le zoom —
-            sans quoi un pays de 18 000 fokontany ne s'afficherait pas.
-            <br /><br />
-            Le rattachement se fait par <b>chemin de noms</b> (région, district, commune, fokontany),
-            comme pour les sites : les p-codes du référentiel sont dérivés du chemin, et un fichier de
-            contours porte rarement les mêmes que celui du découpage. Importez un niveau à la fois.</Note>
-
-          <div className="grid grid-cols-2 gap-x-4">
-            <Field label="Fichier de contours">
-              <input type="file" accept=".zip,.shp,.geojson,.json" disabled={!can("admin") || geomBusy}
-                onChange={e=>e.target.files[0]&&onGeomFile(e.target.files[0])}
-                className="w-full f125 border border-dashed border-slate-300 rounded p-2 bg-slate-50 cursor-pointer" /></Field>
-            <div className="self-center">{geomStat && <Note tone={geomStat.kind}>{geomStat.text}</Note>}</div>
-          </div>
-
-          {geomDraft && (<>
-            <div className="grid grid-cols-5 gap-x-3">
-              {[...niveaux(db, { from:"adm1", to:"adm4", plural:false }),
-                ["code","P-code (optionnel)"]].map(([k,l])=>(
-                <Field key={k} label={l}>
-                  <Select value={geomMap[k]||""} onChange={e=>setGeomMap(m=>({...m,[k]:e.target.value}))}
-                    empty="—" options={geomDraft.fields} className="mi-py1" /></Field>))}
-            </div>
-            <div className="flex items-center gap-3">
-              <Btn icon={Upload} disabled={geomBusy || !can("admin")} onClick={commitGeom}>
-                {geomBusy ? "Envoi en cours…" : "Enregistrer les contours"}</Btn>
-              <Btn kind="sec" disabled={geomBusy} onClick={()=>{ setGeomDraft(null); setGeomStat(null); }}>
-                Annuler</Btn>
-              <span className="f115 text-slate-500">
-                Le niveau est déduit du champ de nom le plus profond que vous désignez.</span>
-            </div>
-          </>)}
-        </>)}
-      </Card>
-
-      <Card title="Importer un découpage administratif"
-        right={<Btn size="sm" kind="sec" icon={Download} onClick={exp} disabled={exportEnCours || !dir.total}>
-          {exportEnCours ? "Export en cours…" : "Exporter tout"}</Btn>}>
-        <div className="grid grid-cols-2 gap-x-4">
-          <Field label="Fichier du découpage">
-            <input type="file" accept=".zip,.shp,.dbf,.geojson,.json" disabled={!can("admin")}
-              onChange={e=>e.target.files[0]&&onFile(e.target.files[0])}
-              className="w-full f125 border border-dashed border-slate-300 rounded p-2 bg-slate-50 cursor-pointer" /></Field>
-          <div className="self-center">{status && <Note tone={status.kind}>{status.text}</Note>}</div>
-        </div>
-        {!can("admin") && <Note tone="warn">L'import du découpage est réservé aux administrateurs.</Note>}
-        {draft && (
-          <>
-            <div className="grid grid-cols-4 gap-x-3">
-              {[["adm0","Niveau 0 — pays"],["adm1","Niveau 1 — région"],["adm2","Niveau 2 — district"],
-                ["adm3","Niveau 3 — commune"],["adm4","Niveau 4 — fokontany"],["code","Code administratif"]].map(([k,l])=>(
-                <Field key={k} label={l}><Select value={map[k]||""} onChange={e=>setMap(m=>({...m,[k]:e.target.value}))}
-                  empty="— aucun —" options={draft.fields} /></Field>))}
-              <Field label="Niveau de détail à conserver"
-                hint="Le niveau le plus fin peut représenter des dizaines de milliers d'entrées">
-                <Select value={depth} onChange={e=>setDepth(e.target.value)}
-                  options={[["adm1","Jusqu'au niveau 1"],["adm2","Jusqu'au niveau 2"],
-                            ["adm3","Jusqu'au niveau 3"],["adm4","Niveau 4 complet"]]} /></Field>
-              <Field label="Nom du millésime" hint="Il identifie ce chargement dans l'historique">
-                <Input value={label} onChange={e=>setLabel(e.target.value)} placeholder="COD-AB v2023.1" /></Field>
-            </div>
-            <Note tone="info">
-              <b>{preview.length.toLocaleString("fr-FR")} lignes</b> seront envoyées
-              {depth !== "adm4" && " après regroupement des doublons"}, dont{" "}
-              {preview.filter(g => g.lat !== "").length.toLocaleString("fr-FR")} avec coordonnées.
-              Le serveur en déduit l'arbre complet : les niveaux supérieurs sont créés une seule fois,
-              quel que soit le nombre de lignes qui les répètent.
-            </Note>
-            <TableWrap max="mh240">
-              <thead><tr>{["Niveau 0","Niveau 1","Niveau 2","Niveau 3","Niveau 4","Code","Latitude","Longitude"].map(h=><Th key={h}>{h}</Th>)}</tr></thead>
-              <tbody>{preview.slice(0,8).map((g,i)=>(
-                <tr key={i}>{["adm0","adm1","adm2","adm3","adm4","code"].map(k=><Td key={k}>{g[k]}</Td>)}
-                  <Td num className="f11">{g.lat}</Td><Td num className="f11">{g.lon}</Td></tr>))}</tbody>
-            </TableWrap>
-            <Btn className="mt-3" icon={Upload} disabled={busy || !preview.length || !can("admin")} onClick={commit}>
-              {busy ? "Import en cours…" : `Importer ${preview.length.toLocaleString("fr-FR")} lignes`}</Btn>
-          </>)}
+            </StatRow>)
+        ) : (
+          <Note>Ce millésime n'a pas de contours. Ils arrivent avec le shapefile importé depuis l'onglet
+            <b> Pays</b> : le fichier de géométries (.shp) y est lu en même temps que la table (.dbf), et le
+            serveur les simplifie pour la carte.</Note>
+        )}
       </Card>
 
       {versions.length > 1 && (
@@ -1694,6 +1757,8 @@ function SetLocations({ db, notify, can, reload }){
         subtitle={dir.loading ? "Chargement…"
           : `${fmt(dir.total)} fokontany dans la sélection · page ${page+1} sur ${Math.max(1,pages)}`}
         right={<>
+          <Btn size="sm" kind="sec" icon={Download} onClick={exp} disabled={exportEnCours || !dir.total}>
+            {exportEnCours ? "Export…" : "Exporter tout"}</Btn>
           <Select value={sel.adm1} onChange={e=>setSel({ adm1:e.target.value, adm2:"", adm3:"" })}
             empty="Toutes les régions" options={geo.adm1.map(x=>x.name)} className="mi-py1 mi-xs mi-wauto" />
           <Select value={sel.adm2} onChange={e=>setSel(s=>({ ...s, adm2:e.target.value, adm3:"" }))}
@@ -1731,69 +1796,284 @@ function SetLocations({ db, notify, can, reload }){
     </>);
 }
 
-function SetIndicators({ db, set, notify, can }){
+/* ── Référentiel des activités (activity_categories) ──────────────────
+   La liste canonique des activités du programme, désormais éditable (S4/S7) :
+   nom, tag (code), domaine programme, actif. C'est la source unique que
+   réutilisent le rattachement d'un site, les indicateurs de processus, les
+   plans. Les mutations passent par la route dédiée puis rechargent l'état. */
+function SetActivities({ db, notify, can, reload }){
   const [edit,setEdit] = useState(null);
+  const [busy,setBusy] = useState(false);
+  const liste = db.activities || [];
+  const save = async (a) => {
+    setBusy(true);
+    const payload = { name:(a.name||"").trim(), tag:(a.tag||"").trim().toUpperCase(),
+      program_area:a.programArea || null, active:a.active !== false, rev:a.rev };
+    try{
+      if(a.id) await api.updateActivity(a.id, payload); else await api.createActivity(payload);
+      await reload(); setEdit(null); notify("Activité enregistrée", "ok");
+    }catch(e){ notify(e.message, "err"); }
+    setBusy(false);
+  };
+  const remove = async (a) => {
+    if(!confirm(`Supprimer l'activité « ${a.name} » ?`)) return;
+    try{ await api.deleteActivity(a.id); await reload(); notify("Activité supprimée", "ok"); }
+    catch(e){ notify(e.message, "err"); }
+  };
+  return (
+    <>
+      <Note>Le référentiel des <b>activités</b> du programme — une activité, une ligne : son code (tag),
+        son intitulé et son domaine. C'est la source unique réutilisée pour rattacher un site, suivre un
+        indicateur de processus et planifier. Désactiver une activité la retire des choix sans effacer
+        l'historique.</Note>
+      <Note>La liste des activités <b>est</b> la liste des <b>tags</b> : un tag désigne une activité et
+        une seule. Le référentiel chargé depuis le classeur du PAM en compte 58 (onglet
+        « Annex 5 Activity tags ») ; les espaces intérieurs sont retirés à la saisie, et un tag déjà
+        pris est refusé en nommant l'activité qui le porte.</Note>
+      <Note tone="warn">Le <b>tag</b> est le code d'identification : dix tables le portent en texte
+        (sites, couverture, plan de distribution, produits, visites, formulaires ODK, caseload,
+        zones TPM, soumissions, indicateurs). Il ne se modifie donc pas à l'édition — un
+        super-utilisateur le renomme <b>en cascade</b> depuis Paramètres → Listes paramétrables,
+        ce qui réécrit du même coup toutes les lignes qui le portent.</Note>
+      <Card flush title="Activités du programme" subtitle={`${liste.length} activité${liste.length>1?"s":""}`}
+        right={can("admin") && <Btn size="sm" icon={Plus}
+          onClick={()=>setEdit({ id:"", name:"", tag:"", programArea:"", active:true })}>Ajouter</Btn>}>
+        {!liste.length
+          ? <Empty>Aucune activité. Ajoutez-en une, ou importez le découpage du pays qui les amorce.</Empty>
+          : <TableWrap>
+          <thead><tr><Th>Code</Th><Th>Intitulé</Th><Th>Domaine programme</Th><Th>Statut</Th>
+            <Th num>Sites</Th><Th num>Paramètres</Th><Th num>Total référencé</Th><Th /></tr></thead>
+          <tbody>{liste.map(a=>(
+            <tr key={a.id} className="hover:bg-sky-50">
+              <Td><Badge tone="b">{a.tag}</Badge></Td>
+              <Td className="font-medium text-slate-800">{a.name}</Td>
+              <Td className="text-slate-600">{a.programArea || "—"}</Td>
+              <Td>{a.active ? <Badge tone="g">Active</Badge> : <Badge>Inactive</Badge>}</Td>
+              <Td num className="text-slate-500">{a.usage?.sites ?? "—"}</Td>
+              <Td num className="text-slate-500">{a.usage?.params ?? "—"}</Td>
+              {/* Le total sur les DOUZE colonnes qui désignent l'activité, pas
+                  seulement les deux clés étrangères : c'est lui qui décide de la
+                  suppression, il doit donc être celui qu'on lit. */}
+              <Td num className={a.usageTotal ? "font-semibold text-slate-700" : "text-slate-400"}
+                title={(a.usageDetail||[]).map(u=>`${u.label} (${u.table}.${u.colonne}) : ${u.lignes}`).join("\n")}>
+                {a.usageTotal ? fmt(a.usageTotal) : "—"}</Td>
+              <Td className="text-right">
+                {can("admin") && <button onClick={()=>setEdit(a)} className="text-slate-400 m-ico p-1"><Pencil size={14}/></button>}
+                {can("admin") && <button onClick={()=>remove(a)}
+                  className={clsx("p-1", a.usageTotal ? "text-slate-300 cursor-help" : "text-slate-400 hover:text-rose-600")}
+                  title={a.usageTotal ? `${a.usageTotal} ligne(s) référencent cette activité` : "Supprimer"}>
+                  <Trash2 size={14}/></button>}</Td>
+            </tr>))}</tbody>
+        </TableWrap>}
+      </Card>
+      <ActivityModal open={!!edit} act={edit} busy={busy} onClose={()=>setEdit(null)} onSave={save} />
+    </>);
+}
+function ActivityModal({ open, act, busy, onClose, onSave }){
+  const [f,setF] = useState({});
+  useEffect(()=>{ setF(act||{}); },[act]);
+  if(!open) return null;
+  const u=(k,v)=>setF(p=>({...p,[k]:v}));
+  return (
+    <Modal open onClose={onClose} title={act?.id?"Modifier l'activité":"Nouvelle activité"}
+      footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
+        <Btn icon={Save} disabled={busy || !f.name || !f.tag} onClick={()=>onSave(f)}>Enregistrer</Btn></>}>
+      <div className="grid grid-cols-2 gap-x-4">
+        {/* Le tag est en lecture seule dès que l'activité existe : le serveur
+            refuserait de le changer, et proposer un champ qu'on ne peut pas
+            enregistrer apprend à l'utilisateur que l'écran ment. */}
+        <Field label="Code (tag)" hint={act?.id
+          ? "Non modifiable — clé de jointure ; un super le renomme en cascade (Listes paramétrables)"
+          : "Court, en majuscules — porté par les sources"}><Input value={f.tag||""}
+          readOnly={!!act?.id} disabled={!!act?.id}
+          onChange={e=>u("tag",e.target.value.replace(/\s+/g,"").toUpperCase())} placeholder="URT" /></Field>
+        <Field label="Domaine programme"><Select value={f.programArea||""} onChange={e=>u("programArea",e.target.value)}
+          empty="— aucun —" options={PROG_AREAS.map(p=>p[0])} /></Field>
+        <Field label="Intitulé" className="col-span-2"><Input value={f.name||""}
+          onChange={e=>u("name",e.target.value)} placeholder="Unconditional Resource Transfer" /></Field>
+      </div>
+      <Sw label="Activité active" hint="Une activité inactive n'est plus proposée dans les choix" on={f.active!==false} onChange={v=>u("active",v)} />
+    </Modal>);
+}
+
+/* Les deux natures d'indicateur (migration 022). Le CRF est le cadre de résultats
+   institutionnel — outcome, output, other output ; l'XLSForm porte les indicateurs
+   de PROCESSUS d'une activité. Une seule bibliothèque, deux sous-onglets. */
+const IND_NATURES = [["crf","CRF — résultats"],["xlsform","XLSForm — processus"]];
+/* Les quatre niveaux du cadre de résultats, tels que la masterlist du PAM les
+   range par onglet (migration 027) : Annex 2 Outcome, Annex 3 Output, Detailed
+   Output, Annex 4 Crosscutting. */
+const IND_LEVELS = [["outcome","Outcome"],["output","Output"],
+  ["other_output","Other output (détaillé)"],["crosscutting","Transversal (CC)"]];
+const indLevelLabel = (v) => IND_LEVELS.find(([k])=>k===v)?.[1] || "";
+const IND_PAGE = 100;
+
+function SetIndicators({ db, set, notify, can }){
+  const [nat,setNat] = useState("crf");
+  const [edit,setEdit] = useState(null);
+  /* La masterlist réelle porte 842 indicateurs rangés par onglet puis par thème
+     (chantier S8-5). Trois filtres et une pagination : sans eux, l'écran servait
+     une liste de huit cents lignes dans laquelle personne ne trouve rien. */
+  const [niv,setNiv] = useState("");
+  const [cat,setCat] = useState("");
+  const [q,setQ]     = useState("");
+  const [page,setPage] = useState(1);
+  /* Une ligne sans `kind` est un indicateur d'avant la migration : c'est un CRF. */
+  const kindOf = (ind) => ind.kind || "crf";
+  const listeNature = db.indicators.filter(ind => kindOf(ind) === nat);
+  /* Les catégories proposées sont celles qui EXISTENT dans la nature affichée,
+     et sous le niveau choisi : proposer un filtre qui ne rend rien est une
+     promesse non tenue. */
+  const categories = [...new Set(listeNature
+    .filter(i => !niv || i.level === niv).map(i => i.category).filter(Boolean))].sort();
+  const liste = listeNature.filter(i =>
+    (!niv || i.level === niv)
+    && (!cat || i.category === cat)
+    && (!q.trim() || `${i.id} ${i.name} ${i.category || ""}`.toLowerCase().includes(q.trim().toLowerCase())));
+  const pages = Math.max(1, Math.ceil(liste.length / IND_PAGE));
+  const pageSure = Math.min(page, pages);
+  const visibles = liste.slice((pageSure-1)*IND_PAGE, pageSure*IND_PAGE);
+  /* Le référentiel des activités (Paramètres → Activités) sert d'options pour
+     rattacher un indicateur de processus à SON activité — la source canonique,
+     plus les reflets épars. On propose les activités actives. */
+  const activites = (db.activities || []).filter(a=>a.active).map(a => [a.tag, `${a.tag} — ${a.name}`]);
+  const activiteLabel = (tag) => (db.activities || []).find(a=>a.tag===tag)?.name || tag || "";
+
   const save = (ind) => { set(d => { const i=d.indicators.findIndex(x=>x.id===ind.id);
       if(i>=0) d.indicators[i]=ind; else d.indicators.push(ind); return d; });
     setEdit(null); notify("Indicateur enregistré","ok"); };
-  const exp = () => download("masterlist_indicateurs.csv",
-    toCSV(db.indicators, ["id","name","basket","unit","target","dir","method","freq"]), "text/csv");
+  /* L'export ne sort que la nature affichée, mais porte `kind`/`level`/`activity`
+     pour qu'un réimport les rétablisse sans ambiguïté. */
+  const exp = () => download(`indicateurs_${nat}.csv`,
+    toCSV(liste, ["id","name","kind","level","category","activity","basket","unit","target","dir","method","freq"]), "text/csv");
   const imp = (file) => { const rd=new FileReader();
     rd.onload=()=>{ const rows=parseCSV(rd.result);
       if(!rows.length){ notify("Fichier vide","err"); return; }
       set(d=>{ rows.forEach(r=>{ if(!r.id) return;
-        const rec = { id:r.id, name:r.name||r.id, basket:r.basket||"", unit:r.unit||"%",
+        const kind = r.kind==="xlsform" ? "xlsform" : "crf";
+        const rec = { id:r.id, name:r.name||r.id, kind,
+          level: kind==="crf" ? (IND_LEVELS.some(([k])=>k===r.level) ? r.level : "") : "",
+          activity: kind==="xlsform" ? (r.activity||"") : "",
+          category: kind==="crf" ? (r.category||"") : "",
+          basket:r.basket||"", unit:r.unit||"%",
           target:n(r.target), dir:(r.dir==="down"?"down":"up"), method:r.method||"", freq:r.freq||"" };
         const i=d.indicators.findIndex(x=>x.id===rec.id);
         if(i>=0) d.indicators[i]=rec; else d.indicators.push(rec); }); return d; });
       notify(`${rows.length} indicateur(s) importé(s)`,"ok"); };
     rd.readAsText(file,"utf-8"); };
+
+  const crf = nat==="crf";
   return (
     <>
-      <Note>Cette masterlist alimente le plan de collecte et la saisie des valeurs dans
-        Programme → Résultats.
-        Elle s'exporte en CSV pour être partagée, et se réimporte pour une mise à jour groupée.</Note>
-      <Card flush title="Masterlist des indicateurs" subtitle={`${db.indicators.length} indicateurs`}
+      <Tabs items={IND_NATURES} value={nat} onChange={setNat} />
+      <Note>{crf
+        ? <>Le <b>CRF</b> est le cadre de résultats : indicateurs <b>outcome</b> et <b>output</b> (y compris
+          <i> other output</i>), mesurés par région. Il alimente le plan de collecte et la saisie dans
+          Programme → Résultats.</>
+        : <>Les indicateurs de <b>processus</b> issus des <b>XLSForms</b> suivent l'exécution d'une activité
+          (couverture des visites, complétude des distributions…). Ils sont <b>stockés</b> comme référentiel et
+          alimentent le tableau de bord de suivi.</>}
+        {" "}La liste s'exporte en CSV et se réimporte pour une mise à jour groupée.</Note>
+      <Card flush title={crf ? "Indicateurs CRF" : "Indicateurs de processus (XLSForm)"}
+        subtitle={`${fmt(liste.length)} indicateur${liste.length>1?"s":""}`
+          + (liste.length !== listeNature.length ? ` sur ${fmt(listeNature.length)}` : "")}
         right={<>
           <label><input type="file" accept=".csv" className="hidden" onChange={e=>e.target.files[0]&&imp(e.target.files[0])} />
             <span className="inline-flex items-center gap-1.5 border rounded font-semibold px-2.5 py-1 f11 m-btn-sec cursor-pointer"><Upload size={13}/> Importer</span></label>
-          <Btn size="sm" kind="sec" icon={Download} onClick={exp}>Exporter</Btn>
-          {can("edit") && <Btn size="sm" icon={Plus} onClick={()=>setEdit({ id:"", name:"", basket:"", unit:"%",
+          <Btn size="sm" kind="sec" icon={Download} onClick={exp} disabled={!liste.length}>Exporter</Btn>
+          {can("edit") && <Btn size="sm" icon={Plus} onClick={()=>setEdit({ id:"", name:"",
+            kind:nat, level:crf?"outcome":"", activity:"", category:"", basket:"", unit:"%",
             target:0, dir:"up", method:"", freq:"Annuel" })}>Ajouter</Btn>}</>}>
-        <TableWrap>
-          <thead><tr><Th>Code</Th><Th>Intitulé</Th><Th>Panier</Th><Th>Unité</Th><Th num>Cible</Th>
-            <Th>Sens</Th><Th>Méthode</Th><Th>Fréquence</Th><Th num>Valeurs</Th><Th /></tr></thead>
-          <tbody>{db.indicators.map(ind=>(
+        {/* Les filtres de la masterlist : la nature (onglet du classeur), la
+            catégorie thématique, et la recherche libre. Ils sont au-dessus du
+            tableau, pas dans un repli : à 842 lignes, ils SONT l'écran. */}
+        <div className="px-4 pt-3 flex items-center gap-2 flex-wrap">
+          {crf && <Select value={niv} onChange={e=>{ setNiv(e.target.value); setCat(""); setPage(1); }}
+            empty="Tous les niveaux" options={IND_LEVELS} className="mi-py1 mi-xs mi-wauto" />}
+          {crf && <Select value={cat} onChange={e=>{ setCat(e.target.value); setPage(1); }}
+            empty={`Toutes les catégories (${categories.length})`} options={categories}
+            className="mi-py1 mi-xs mi-wauto" />}
+          <div className="relative">
+            <Search size={13} className="absolute left-2 top-2 text-slate-400" />
+            <Input value={q} onChange={e=>{ setQ(e.target.value); setPage(1); }}
+              placeholder="Code, intitulé ou catégorie" className="mi-py1 mi-xs pl-7" style={{width:240}} />
+          </div>
+          {(niv || cat || q) && <Btn size="sm" kind="ghost"
+            onClick={()=>{ setNiv(""); setCat(""); setQ(""); setPage(1); }}>Effacer les filtres</Btn>}
+        </div>
+        {!liste.length
+          ? <Empty title={listeNature.length ? "Aucun indicateur ne correspond" : "Aucun indicateur"}
+              text={listeNature.length
+                ? "Aucun indicateur de cette nature ne correspond aux filtres posés."
+                : crf ? "Ajoutez un outcome ou un output, ou chargez la masterlist réelle "
+                        + "(npm run seed:reel) : 842 indicateurs rangés par catégorie."
+                      : "Ajoutez-en un rattaché à une activité, ou importez-le."} />
+          : <><TableWrap>
+          <thead><tr><Th>Code</Th><Th>Intitulé</Th><Th>{crf?"Niveau":"Activité"}</Th>
+            {crf && <Th>Catégorie</Th>}
+            {crf && <Th>Panier</Th>}<Th>Unité</Th><Th num>Cible</Th>
+            <Th>Sens</Th><Th>Méthode</Th><Th>Fréquence</Th>{crf && <Th num>Valeurs</Th>}<Th /></tr></thead>
+          <tbody>{visibles.map(ind=>(
             <tr key={ind.id} className="hover:bg-sky-50">
               <Td><Badge tone="b">{ind.id}</Badge></Td>
               <Td className="mw420 truncate font-medium text-slate-800" title={ind.name}>{ind.name}</Td>
-              <Td className="text-slate-600">{ind.basket}</Td><Td>{ind.unit}</Td><Td num>{ind.target}</Td>
+              <Td className="text-slate-600">{crf
+                ? (ind.level ? <Badge tone="n">{indLevelLabel(ind.level)}</Badge> : "—")
+                : (ind.activity ? <span title={activiteLabel(ind.activity)}>{ind.activity}</span> : "—")}</Td>
+              {crf && <Td className="text-slate-600 mw240 truncate" title={ind.category}>
+                {ind.category || "—"}</Td>}
+              {crf && <Td className="text-slate-600">{ind.basket}</Td>}
+              <Td>{ind.unit}</Td><Td num>{ind.target}</Td>
               <Td><Badge tone="n">{ind.dir==="up"?"↑ maximiser":"↓ minimiser"}</Badge></Td>
               <Td className="text-slate-600">{ind.method}</Td><Td>{ind.freq}</Td>
-              <Td num className="text-slate-500">{db.outcomes.filter(o=>o.indicator===ind.id).length}</Td>
+              {crf && <Td num className="text-slate-500">{db.outcomes.filter(o=>o.indicator===ind.id).length}</Td>}
               <Td className="text-right">
                 {can("edit") && <button onClick={()=>setEdit(ind)} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
                 {can("del") && <button onClick={()=>set(d=>{ d.indicators=d.indicators.filter(x=>x.id!==ind.id); return d; })}
                   className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</Td>
             </tr>))}</tbody>
         </TableWrap>
+        {pages > 1 && (
+          <div className="px-4 py-3 flex items-center gap-3 f125 text-slate-600">
+            <Btn size="sm" kind="sec" disabled={pageSure<=1} onClick={()=>setPage(pageSure-1)}>Précédents</Btn>
+            <span>{(pageSure-1)*IND_PAGE+1} – {Math.min(pageSure*IND_PAGE, liste.length)} sur {fmt(liste.length)}</span>
+            <Btn size="sm" kind="sec" disabled={pageSure>=pages} onClick={()=>setPage(pageSure+1)}>Suivants</Btn>
+          </div>)}
+        </>}
       </Card>
-      <IndicatorModal open={!!edit} ind={edit} onClose={()=>setEdit(null)} onSave={save} />
+      <IndicatorModal open={!!edit} ind={edit} activites={activites}
+        categories={categories} onClose={()=>setEdit(null)} onSave={save} />
     </>);
 }
-function IndicatorModal({ open, ind, onClose, onSave }){
+function IndicatorModal({ open, ind, activites, categories = [], onClose, onSave }){
   const [f,setF] = useState({});
   useEffect(()=>{ setF(ind||{}); },[ind]);
   if(!open) return null;
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
+  const crf = (f.kind||"crf") === "crf";
   return (
-    <Modal open onClose={onClose} title={ind?.id?"Modifier l'indicateur":"Nouvel indicateur"}
+    <Modal open onClose={onClose}
+      title={`${ind?.id?"Modifier":"Nouvel"} indicateur ${crf?"CRF":"de processus"}`}
       footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
         <Btn icon={Save} disabled={!f.id||!f.name} onClick={()=>onSave(f)}>Enregistrer</Btn></>}>
       <div className="grid grid-cols-2 gap-x-4">
-        <Field label="Code"><Input value={f.id||""} onChange={e=>u("id",e.target.value.toUpperCase())} placeholder="FCS" /></Field>
-        <Field label="Panier thématique"><Input value={f.basket||""} onChange={e=>u("basket",e.target.value)} /></Field>
+        <Field label="Code"><Input value={f.id||""} onChange={e=>u("id",e.target.value.toUpperCase())} placeholder={crf?"FCS":"PROC-01"} /></Field>
+        {crf
+          ? <Field label="Niveau du cadre de résultats"><Select value={f.level||"outcome"} onChange={e=>u("level",e.target.value)}
+              options={IND_LEVELS} /></Field>
+          : <Field label="Activité suivie"><Select value={f.activity||""} onChange={e=>u("activity",e.target.value)}
+              empty="— aucune —" options={activites} /></Field>}
         <Field label="Intitulé" className="col-span-2"><Input value={f.name||""} onChange={e=>u("name",e.target.value)} /></Field>
+        {/* La catégorie vient du classeur institutionnel ; le panier est le
+            regroupement d'analyse propre au bureau. Deux axes, deux champs :
+            les confondre perdrait le second au premier chargement de la
+            masterlist. La liste propose l'existant sans l'imposer. */}
+        {crf && <Field label="Catégorie (masterlist)" className="col-span-2"
+          hint="Le thème tel que le classeur du PAM le nomme — c'est par lui que l'écran filtre">
+          <Input list="mems-cat-indic" value={f.category||""} onChange={e=>u("category",e.target.value)} />
+          <datalist id="mems-cat-indic">{categories.map(c => <option key={c} value={c} />)}</datalist>
+        </Field>}
+        {crf && <Field label="Panier thématique (analyse du bureau)" className="col-span-2"><Input value={f.basket||""} onChange={e=>u("basket",e.target.value)} /></Field>}
         <Field label="Unité"><Select value={f.unit||"%"} onChange={e=>u("unit",e.target.value)} options={["%","idx","nombre","ratio"]} /></Field>
         <Field label="Valeur cible"><Input type="number" step="0.1" value={f.target??0} onChange={e=>u("target",n(e.target.value))} /></Field>
         <Field label="Sens de progression"><Select value={f.dir||"up"} onChange={e=>u("dir",e.target.value)}
@@ -1801,7 +2081,7 @@ function IndicatorModal({ open, ind, onClose, onSave }){
         <Field label="Fréquence de collecte"><Select value={f.freq||"Annuel"} onChange={e=>u("freq",e.target.value)}
           options={["Mensuel","Trimestriel","Semestriel","Annuel"]} /></Field>
         <Field label="Méthode de collecte" className="col-span-2"><Input value={f.method||""} onChange={e=>u("method",e.target.value)}
-          placeholder="Enquête ménage, registres, suivi post-distribution" /></Field>
+          placeholder={crf?"Enquête ménage, registres, suivi post-distribution":"Extraction XLSForm, agrégation des soumissions"} /></Field>
       </div>
     </Modal>);
 }
@@ -2770,6 +3050,9 @@ Accept: application/json`}</pre></div>
 function SetUsers({ db, set, me, notify }){
   const [edit,setEdit] = useState(null);
   const [tpms,setTpms] = useState([]);
+  /* Le mot de passe provisoire, affiché UNE seule fois après création ou
+     réinitialisation, pour que l'administrateur le communique. Jamais restocké. */
+  const [provisoire,setProvisoire] = useState(null);
   /* Les prestataires ne vivent pas dans l'état global (db) : ils sont propres à
      l'écran Suivi tiers, et cet écran n'a besoin que de leur nom pour le
      rattachement d'un compte. Un aller-retour dédié plutôt qu'alourdir /api/state
@@ -2778,16 +3061,27 @@ function SetUsers({ db, set, me, notify }){
   /* Les comptes vivent côté serveur : le navigateur ne calcule aucun condensat
      et ne conserve aucun mot de passe au-delà de la saisie. */
   const save = async (u2) => {
-    const payload = { email:(u2.email||"").trim(), first_name:u2.firstName || u2.first_name || "",
+    /* L'administrateur ne choisit plus de mot de passe : à la création, le serveur
+       en GÉNÈRE un provisoire et le renvoie ici une seule fois. L'identifiant, lui,
+       se pose à la création comme plus tard. */
+    const payload = { email:(u2.email||"").trim(), username:(u2.username||"").trim() || null,
+      first_name:u2.firstName || u2.first_name || "",
       last_name:u2.lastName || u2.last_name || null, title:u2.title || null,
       office_id:u2.office_id || null, tpm_id:u2.tpm_id || null, role:u2.role || "viewer",
       tabs:u2.tabs || [], active:u2.active !== false };
-    if(u2._pw) payload.password = u2._pw;
     try{
       const r = u2.id ? await api.updateUser(u2.id, payload) : await api.createUser(payload);
       set(d => { const i = d.users.findIndex(x => x.id === r.user.id);
         if(i >= 0) d.users[i] = r.user; else d.users.push(r.user); return d; });
-      setEdit(null); notify("Compte enregistré", "ok");
+      setEdit(null);
+      if(r.provisionalPassword) setProvisoire({ email:r.user.email, pw:r.provisionalPassword, cree:true });
+      else notify("Compte enregistré", "ok");
+    }catch(e){ notify(e.message, "err"); }
+  };
+  const reinitialiser = async (u2) => {
+    if(!confirm(`Réinitialiser le mot de passe de ${u2.email} ? Ses sessions ouvertes seront fermées.`)) return;
+    try{ const r = await api.resetUserPassword(u2.id);
+      setProvisoire({ email:u2.email, pw:r.provisionalPassword, cree:false });
     }catch(e){ notify(e.message, "err"); }
   };
   const removeUser = async (id) => {
@@ -2806,7 +3100,7 @@ function SetUsers({ db, set, me, notify }){
         right={<Btn size="sm" icon={Plus} onClick={()=>setEdit({ role:"viewer", active:true, tabs:db.roles.viewer.tabs })}>Ajouter un utilisateur</Btn>}>
         <TableWrap max="mh440">
           <thead><tr><Th>Utilisateur</Th><Th>Fonction</Th><Th>Rattachement</Th><Th>Adresse électronique</Th>
-            <Th>Rôle</Th><Th>Onglets</Th><Th>Statut</Th><Th /></tr></thead>
+            <Th>Identifiant</Th><Th>Rôle</Th><Th>Onglets</Th><Th>Statut</Th><Th /></tr></thead>
           <tbody>{db.users.map((u2,i)=>(
             <tr key={u2.id} className="hover:bg-sky-50">
               <Td><div className="flex items-center gap-2.5">
@@ -2819,13 +3113,16 @@ function SetUsers({ db, set, me, notify }){
                     {(tpms.find(t=>t.id===u2.tpm_id)||{}).name || "—"}</span>
                 : (db.offices.find(o=>o.id===u2.office_id)||{}).name || "Tous"}</Td>
               <Td className="f115">{u2.email}</Td>
+              <Td className="f115 text-slate-500">{u2.username || "—"}</Td>
               <Td><Badge tone={u2.role==="super"||u2.role==="admin"?"r":u2.role==="validator"?"b":u2.role==="editor"?"g":"n"}>
                 {db.roles[u2.role]?.label}</Badge></Td>
               <Td className="text-slate-500">{(u2.tabs||db.roles[u2.role]?.tabs||[]).length} / {TABS_ALL.length}</Td>
               <Td>{u2.active!==false ? <Badge tone="g">Actif</Badge> : <Badge>Inactif</Badge>}</Td>
-              <Td className="text-right">
-                <button onClick={()=>setEdit(u2)} className="text-slate-400 m-ico p-1"><Pencil size={14}/></button>
-                {u2.id!==me.id && <button onClick={()=>{ if(confirm("Supprimer ce compte ?")) removeUser(u2.id); }}
+              <Td className="text-right whitespace-nowrap">
+                <button title="Réinitialiser le mot de passe" onClick={()=>reinitialiser(u2)}
+                  className="text-slate-400 m-ico p-1"><KeyRound size={14}/></button>
+                <button title="Modifier" onClick={()=>setEdit(u2)} className="text-slate-400 m-ico p-1"><Pencil size={14}/></button>
+                {u2.id!==me.id && <button title="Supprimer" onClick={()=>{ if(confirm("Supprimer ce compte ?")) removeUser(u2.id); }}
                   className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={14}/></button>}</Td>
             </tr>))}</tbody>
         </TableWrap>
@@ -2849,7 +3146,29 @@ function SetUsers({ db, set, me, notify }){
         </TableWrap>
       </Card>
       <UserModal open={!!edit} user={edit} db={db} tpms={tpms} onClose={()=>setEdit(null)} onSave={save} />
+      <ProvisionalModal data={provisoire} notify={notify} onClose={()=>setProvisoire(null)} />
     </>);
+}
+
+/* Le mot de passe provisoire, montré UNE fois. L'administrateur le lit, le copie et
+   le communique ; il n'est ni restocké ni renvoyé une seconde fois par le serveur. */
+function ProvisionalModal({ data, notify, onClose }){
+  if(!data) return null;
+  const copier = async () => {
+    try{ await navigator.clipboard.writeText(data.pw); notify("Mot de passe copié", "ok"); }
+    catch{ notify("Copie impossible — sélectionnez le texte manuellement", "err"); }
+  };
+  return (
+    <Modal open onClose={onClose} title={data.cree ? "Compte créé" : "Mot de passe réinitialisé"}
+      subtitle={data.email}
+      footer={<Btn onClick={onClose}>J'ai communiqué le mot de passe</Btn>}>
+      <Note tone="warn">Communiquez ce mot de passe provisoire à l'utilisateur. Il ne sera
+        <b> plus jamais affiché</b>. À sa première connexion, il devra le remplacer.</Note>
+      <div className="flex items-center gap-2 mt-3">
+        <code className="flex-1 f16 font-mono tracking-wide bg-slate-100 border border-slate-200 rounded px-3 py-2.5 text-slate-900 select-all">{data.pw}</code>
+        <Btn kind="sec" icon={Copy} onClick={copier}>Copier</Btn>
+      </div>
+    </Modal>);
 }
 function UserModal({ open, user, db, tpms, onClose, onSave }){
   const [f,setF] = useState({});
@@ -2866,15 +3185,19 @@ function UserModal({ open, user, db, tpms, onClose, onSave }){
     <Modal open onClose={onClose} title={user?.id?"Modifier l'utilisateur":"Nouvel utilisateur"}
       subtitle="Identité, rattachement, rôle et onglets accessibles"
       footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
-        <Btn icon={Save} disabled={!f.firstName||!f.email||(!user?.id&&!f._pw)} onClick={()=>onSave(f)}>Enregistrer</Btn></>}>
+        <Btn icon={Save} disabled={!f.firstName||!f.email} onClick={()=>onSave(f)}>Enregistrer</Btn></>}>
       <div className="grid grid-cols-2 gap-x-4">
         <Field label="Prénom"><Input value={f.firstName||""} onChange={e=>u("firstName",e.target.value)} /></Field>
         <Field label="Nom"><Input value={f.lastName||""} onChange={e=>u("lastName",e.target.value)} /></Field>
         <Field label="Fonction"><Input value={f.title||""} onChange={e=>u("title",e.target.value)} /></Field>
         <Field label="Adresse électronique"><Input type="email" value={f.email||""} onChange={e=>u("email",e.target.value)} /></Field>
-        <Field label={user?.id?"Nouveau mot de passe":"Mot de passe"} hint={user?.id?"Laisser vide pour conserver l'actuel":"Huit caractères au minimum"}>
-          <Input type="password" value={f._pw||""} onChange={e=>u("_pw",e.target.value)} /></Field>
+        <Field label="Identifiant de connexion" className="col-span-2"
+          hint="Facultatif — permet de se connecter à la place du courriel. L'utilisateur peut le changer depuis « Mon compte »">
+          <Input value={f.username||""} onChange={e=>u("username",e.target.value)} placeholder="prenom.nom" /></Field>
       </div>
+      {!user?.id && <Note>À l'enregistrement, un <b>mot de passe provisoire</b> est généré et affiché
+        une seule fois : communiquez-le à l'utilisateur, qui devra le remplacer à sa première connexion.
+        L'administrateur ne choisit pas le mot de passe.</Note>}
       <Field label="Rattachement" hint={tpmInterdit ? "Un administrateur n'est rattaché ni à un bureau ni à un prestataire" : undefined}>
         <div className="grid grid-cols-2 gap-x-4">
           <Select value={f.office_id||""}

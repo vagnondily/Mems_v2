@@ -21,6 +21,8 @@ import countryRoutes from "./routes/country.js";
 import tpmRoutes from "./routes/tpm.js";
 import mreRoutes from "./routes/mre.js";
 import officeRoutes from "./routes/offices.js";
+import activityRoutes from "./routes/activities.js";
+import listeRoutes from "./routes/listes.js";
 import userRoutes from "./routes/users.js";
 import analyticsRoutes from "./routes/analytics.js";
 import caseloadRoutes from "./routes/caseload.js";
@@ -124,6 +126,11 @@ app.use("/api/sites", authenticate, siteRoutes);
 app.use("/api/geo", authenticate, geoRoutes);
 app.use("/api/users", authenticate, userRoutes);
 app.use("/api/offices", authenticate, officeRoutes);
+app.use("/api/activities", authenticate, activityRoutes);
+/* Les listes paramétrables typées — une route pour onze référentiels, dont
+   les activités ci-dessus, présentées sous une forme commune (lib/listes.js).
+   Lecture ouverte : l'application a besoin des libellés partout. */
+app.use("/api/listes", authenticate, listeRoutes);
 app.use("/api/country", authenticate, countryRoutes);
 app.use("/api/analytics", authenticate, analyticsRoutes);
 app.use("/api/caseload", authenticate, caseloadRoutes);

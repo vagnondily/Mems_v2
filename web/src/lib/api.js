@@ -10,7 +10,13 @@ export const setToken = (t) => { token = t; };
 export const setUnauthorizedHandler = (fn) => { onUnauthorized = fn; };
 
 export class ApiError extends Error {
-  constructor(status, message, details){ super(message); this.status = status; this.details = details; }
+  /* Le corps complet de la réponse voyage avec l'erreur. Un refus d'intégrité
+     référentielle (409) porte le détail de ce qui retient l'objet — table,
+     colonne, nombre de lignes ; ne garder que `message` et `details` obligeait
+     l'écran à afficher « impossible » sans jamais pouvoir dire pourquoi. */
+  constructor(status, message, details, payload){
+    super(message); this.status = status; this.details = details; this.payload = payload || {};
+  }
 }
 
 async function call(method, path, body, opts = {}){
@@ -33,7 +39,7 @@ async function call(method, path, body, opts = {}){
   if(type.includes("application/json")) { try{ payload = await res.json(); }catch(e){ payload = null; } }
   if(!res.ok){
     if(res.status === 401 && path !== "/auth/login"){ token = null; onUnauthorized(); }
-    throw new ApiError(res.status, payload?.error || `erreur ${res.status}`, payload?.details);
+    throw new ApiError(res.status, payload?.error || `erreur ${res.status}`, payload?.details, payload);
   }
   return payload;
 }
@@ -58,7 +64,7 @@ async function postFile(path, file, field = "file"){
   const res = await fetch(BASE + path, { method:"POST", headers, credentials:"include", body });
   let payload = null;
   try{ payload = await res.json(); }catch(e){}
-  if(!res.ok) throw new ApiError(res.status, payload?.error || `erreur ${res.status}`, payload?.details);
+  if(!res.ok) throw new ApiError(res.status, payload?.error || `erreur ${res.status}`, payload?.details, payload);
   return payload;
 }
 /* Plusieurs fichiers d'un coup (le shapefile : .shp + .dbf + .prj, ou un .zip),
@@ -73,7 +79,7 @@ async function postFiles(path, files, fields = {}){
   const res = await fetch(BASE + path, { method:"POST", headers, credentials:"include", body });
   let payload = null;
   try{ payload = await res.json(); }catch(e){}
-  if(!res.ok) throw new ApiError(res.status, payload?.error || `erreur ${res.status}`, payload?.details);
+  if(!res.ok) throw new ApiError(res.status, payload?.error || `erreur ${res.status}`, payload?.details, payload);
   return payload;
 }
 
@@ -92,6 +98,7 @@ export const api = {
   logout:      ()            => call("POST", "/auth/logout", {}),
   me:          ()            => call("GET", "/auth/me"),
   changePassword: (current, next) => call("POST", "/auth/password", { current, next }),
+  setUsername: (username)    => call("PUT", "/auth/username", { username }),
   state:       ()            => call("GET", "/state"),
 
   createSite:  (s)           => call("POST", "/sites", s),
@@ -104,6 +111,9 @@ export const api = {
   syncCollection: (name, rows, deletes = []) =>
     call("PUT", `/collections/${encodeURIComponent(name)}`, { rows, deletes }),
   saveSettings:   (obj)        => call("PUT", "/settings", obj),
+  /* MRE + calendrier de collecte, en droit éditeur (S6). Le serveur écrit le
+     calendrier dans sa table `outcome_plan`, non dans le blob settings. */
+  savePlanningConfig: (obj)    => call("PUT", "/planning-config", obj),
   setVisitStatus: (id, status) => call("PUT", `/visits/${encodeURIComponent(id)}/status`, { status }),
 
   geo:          (q="")            => call("GET", `/geo${q}`),
@@ -138,28 +148,39 @@ export const api = {
   importCommit:   (id)            => call("POST", `/import/batches/${encodeURIComponent(id)}/commit`, {}),
   importCancel:   (id)            => call("POST", `/import/batches/${encodeURIComponent(id)}/cancel`, {}),
   setGeoVersion:(id)              => call("PUT", `/geo/versions/${encodeURIComponent(id)}/current`),
-  /* Un import crée un millésime complet : le serveur reconstruit l'arbre. */
-  importGeo:    (rows, label, source) => call("POST", "/geo/bulk", { rows, label, source }),
-
   /* Téléversement d'un shapefile, lu par le SERVEUR (le navigateur n'embarque plus
      de parseur). `files` est un tableau de .shp/.dbf/.prj, ou un unique .zip.
      `mapping` associe chaque colonne du .dbf à une variable MEMS (adm0…adm4,
-     pcode0…pcode4). L'aperçu ne rien écrit ; le commit bascule le millésime. */
-  shapefilePreview: (files, mapping, allowDuplicates = false) =>
+     pcode0…pcode4). Sans .dbf, le serveur importe les polygones seuls sous des
+     identités provisoires. `country` rattache le millésime au pays configuré : la
+     bascule du courant est cloisonnée par pays. L'aperçu ne rien écrit ; le commit
+     reconstruit l'arbre ET ses contours en un seul geste, et bascule le millésime. */
+  shapefilePreview: (files, mapping, allowDuplicates = false, country = null) =>
     postFiles("/geo/shapefile/apercu", files,
-      { mapping: JSON.stringify(mapping || {}), allowDuplicates: allowDuplicates ? "true" : "" }),
-  shapefileCommit:  (files, mapping, label, source, allowDuplicates = false) =>
+      { mapping: JSON.stringify(mapping || {}), allowDuplicates: allowDuplicates ? "true" : "",
+        country: country || "" }),
+  shapefileCommit:  (files, mapping, label, source, allowDuplicates = false, country = null) =>
     postFiles("/geo/shapefile/commit", files,
       { mapping: JSON.stringify(mapping || {}), label, source,
-        allowDuplicates: allowDuplicates ? "true" : "" }),
+        allowDuplicates: allowDuplicates ? "true" : "", country: country || "" }),
 
-  /* Contours administratifs. L'import est envoyé par lots — les contours d'un pays
-     entier ne passent pas dans un corps de requête — et le premier lot porte
-     `reset` : sans lui, deux imports successifs mêleraient leurs géométries. */
+  /* Contours administratifs. Le commit du shapefile écrit ceux du niveau qu'il
+     porte ; `shapefileContours` en dépose UN NIVEAU DE PLUS sur le millésime
+     courant, sans toucher à l'arbre — c'est ce qui permet le breakdown
+     cartographique adm1→adm4 (un fichier par maille). */
+  shapefileContours: (files, niveau, mapping, source, remplacer = true) =>
+    postFiles("/geo/shapefile/contours", files,
+      { niveau, mapping: JSON.stringify(mapping || {}), source: source || "",
+        remplacer: remplacer ? "true" : "false" }),
+  /* Dériver les niveaux supérieurs en réunissant les contours du dessous : un
+     seul fichier (les communes) suffit à donner districts, régions et pays. */
+  deriverContours:  (source = null, remplacerExistants = false) =>
+    call("POST", "/geo/geometry/deriver", { source, remplacerExistants }),
   geoGeometry:      (q="")                => call("GET", `/geo/geometry${q}`),
-  importGeometry:   (features, opts = {}) => call("POST", "/geo/geometry",
-                        { features, reset:!!opts.reset, source:opts.source, versionId:opts.versionId }),
-  clearGeometry:    ()                    => call("DELETE", "/geo/geometry"),
+  /* Sans niveau : tous les contours. Avec : cette maille seulement — corriger
+     les régions ne doit pas obliger à redéposer les quatre fichiers. */
+  clearGeometry:    (niveau = null)       =>
+    call("DELETE", `/geo/geometry${niveau ? `?level=${encodeURIComponent(niveau)}` : ""}`),
 
   mre:          (q="")       => call("GET", `/mre${q}`),
   createMre:    (a)          => call("POST", "/mre", a),
@@ -265,11 +286,41 @@ export const api = {
   createOffice: (o)          => call("POST", "/offices", o),
   updateOffice: (id, o)      => call("PUT", `/offices/${encodeURIComponent(id)}`, o),
   deleteOffice: (id)         => call("DELETE", `/offices/${encodeURIComponent(id)}`),
+  /* Référentiel des activités (activity_categories), admin. La lecture passe
+     par /state (db.activities) ; ces trois-là mutent, puis on recharge l'état. */
+  createActivity: (a)        => call("POST", "/activities", a),
+  updateActivity: (id, a)    => call("PUT", `/activities/${encodeURIComponent(id)}`, a),
+  deleteActivity: (id)       => call("DELETE", `/activities/${encodeURIComponent(id)}`),
+
+  /* Listes paramétrables typées (chantier S8). Une seule famille d'appels pour
+     onze référentiels : le type est un segment d'URL, jamais un cas particulier
+     du client. `listes()` sert le rail de gauche, `liste(cle)` le volet droit. */
+  listes:       ()           => call("GET", "/listes"),
+  liste:        (cle)        => call("GET", `/listes/${encodeURIComponent(cle)}`),
+  createItem:   (cle, it)    => call("POST", `/listes/${encodeURIComponent(cle)}`, it),
+  updateItem:   (cle, id, it)=> call("PUT", `/listes/${encodeURIComponent(cle)}/${encodeURIComponent(id)}`, it),
+  deleteItem:   (cle, id)    => call("DELETE", `/listes/${encodeURIComponent(cle)}/${encodeURIComponent(id)}`),
+  /* Désactiver : un geste à part, et non un enregistrement complet — l'écran qui
+     vient d'essuyer un refus de suppression n'a rien d'autre à écrire. */
+  activerItem:  (cle, id, active, rev) =>
+    call("PUT", `/listes/${encodeURIComponent(cle)}/${encodeURIComponent(id)}/actif`, { active, rev }),
+  validerListe: (cle, note)  => call("POST", `/listes/${encodeURIComponent(cle)}/valider`, { note }),
+  /* Renommage de code : deux appels, jamais un seul. Le premier calcule la
+     correspondance sans rien écrire ; le second l'applique en présentant le
+     jeton du plan qui a été affiché. Un paramètre interconnecté ne se met pas
+     à jour sans mappage puis validation. */
+  planRenommage: (cle, id, nouveau) =>
+    call("POST", `/listes/${encodeURIComponent(cle)}/${encodeURIComponent(id)}/renommer-code/plan`,
+      { nouveau }),
+  renommerCode: (cle, id, nouveau, mode, jeton) =>
+    call("POST", `/listes/${encodeURIComponent(cle)}/${encodeURIComponent(id)}/renommer-code`,
+      { nouveau, mode, jeton }),
 
   users:      ()             => call("GET", "/users"),
   createUser: (u)            => call("POST", "/users", u),
   updateUser: (id, u)        => call("PUT", `/users/${encodeURIComponent(id)}`, u),
   deleteUser: (id)           => call("DELETE", `/users/${encodeURIComponent(id)}`),
+  resetUserPassword: (id)    => call("POST", `/users/${encodeURIComponent(id)}/reset-password`, {}),
 
   mapPoints:  (q="")         => call("GET", `/analytics/map${q}`),
   coverage:   (q="")         => call("GET", `/analytics/coverage${q}`),
@@ -346,6 +397,9 @@ export function createSyncQueue({ onStatus = () => {}, onConflict = null, delay 
     inflight++; onStatus({ state:"saving", inflight, failures });
     try{
       if(name === "settings") await api.saveSettings(job.rows);
+      /* La configuration de planification (MRE + calendrier de collecte) a sa
+         propre route en droit éditeur — voir S6. Elle ne passe pas par settings. */
+      else if(name === "planningConfig") await api.savePlanningConfig(job.rows);
       else await api.syncCollection(name, job.rows, job.deletes);
       failures = 0;
     }catch(e){

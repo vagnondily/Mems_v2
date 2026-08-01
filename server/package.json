@@ -11,6 +11,7 @@
     "dev": "node --watch src/index.js",
     "migrate": "node src/migrate.js",
     "seed": "node src/seed.js",
+    "seed:reel": "node src/seed-reel.js",
     "test": "node --test test/*.test.js"
   },
   "dependencies": {

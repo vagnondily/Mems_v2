@@ -718,6 +718,104 @@ test("mot de passe provisoire : n'ouvre que son propre remplacement", async () =
     .set("Authorization", `Bearer ${apres.body.token}`)).status, 200);
 });
 
+/* Lot S — le mot de passe provisoire est GÉNÉRÉ, pas choisi (demande du 01/08).
+   Sans mot de passe fourni, la création en forge un, le renvoie une seule fois, et
+   il ouvre — borné — jusqu'à son remplacement. */
+test("création sans mot de passe : le provisoire est généré et rendu une fois", async () => {
+  const cree = await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"genere@test.local", first_name:"Généré", role:"viewer", tabs:["home"], active:true });
+  assert.equal(cree.status, 201, JSON.stringify(cree.body));
+  const prov = cree.body.provisionalPassword;
+  assert.ok(prov && prov.length >= 12, "un provisoire est renvoyé");
+  assert.equal(cree.body.user.must_change_pw ?? true, true);
+
+  /* Il ouvre la connexion, avec le drapeau de changement obligatoire. */
+  const lr = await login("genere@test.local", prov);
+  assert.equal(lr.status, 200, "le provisoire généré ouvre la connexion");
+  assert.equal(lr.body.user.must_change_pw, true);
+
+  /* Il n'est jamais renvoyé une seconde fois : /state ne porte aucun secret. */
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const etat = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`)).body;
+  const vu = etat.users.find(x => x.email === "genere@test.local");
+  assert.ok(vu && !("provisionalPassword" in vu) && !("pw_hash" in vu),
+    "aucun secret n'accompagne le compte dans l'état");
+});
+
+/* Lot S — l'administrateur ne connaît pas le mot de passe : il DÉCLENCHE une
+   réinitialisation, le provisoire s'affiche une fois, les sessions tombent. */
+test("réinitialisation admin : provisoire généré, sessions fermées, changement imposé", async () => {
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"reset@test.local", password:"ResetMotDePasse1", first_name:"Reset",
+            role:"editor", tabs:["home"], active:true });
+  motDePasseAdopte("reset@test.local");
+  const ouverte = (await login("reset@test.local", "ResetMotDePasse1")).body.token;
+  assert.equal((await request(app).get("/api/state").set("Authorization", `Bearer ${ouverte}`)).status, 200);
+
+  const cible = db.prepare("SELECT id FROM users WHERE email='reset@test.local'").get();
+  const reset = await request(app).post(`/api/users/${cible.id}/reset-password`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(reset.status, 200, JSON.stringify(reset.body));
+  const prov = reset.body.provisionalPassword;
+  assert.ok(prov && prov.length >= 12);
+
+  /* La session ouverte avant le reset est révoquée. */
+  assert.equal((await request(app).get("/api/state").set("Authorization", `Bearer ${ouverte}`)).status, 401,
+    "la session d'avant le reset ne vaut plus");
+  /* L'ancien mot de passe ne vaut plus ; le provisoire ouvre, avec changement imposé. */
+  assert.equal((await login("reset@test.local", "ResetMotDePasse1")).status, 401);
+  const lr = await login("reset@test.local", prov);
+  assert.equal(lr.status, 200);
+  assert.equal(lr.body.user.must_change_pw, true);
+  /* La route de réinitialisation est sous le garde `requireCap("admin")` du routeur
+     entier (déjà éprouvé : un lecteur reçoit 403 sur /api/users). */
+});
+
+/* Lot S — « créer un username » : identifiant de connexion, unique, utilisable à la
+   place du courriel. */
+test("identifiant : self-service, unicité, et connexion par identifiant", async () => {
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"ident@test.local", password:"IdentMotDePasse1", first_name:"Ident",
+            role:"editor", tabs:["home"], active:true });
+  motDePasseAdopte("ident@test.local");
+  const t = (await login("ident@test.local", "IdentMotDePasse1")).body.token;
+
+  const set = await request(app).put("/api/auth/username").set("Authorization", `Bearer ${t}`)
+    .send({ username:"Ident.Field" });
+  assert.equal(set.status, 200, JSON.stringify(set.body));
+  assert.equal(set.body.user.username, "ident.field", "l'identifiant est normalisé en minuscules");
+
+  /* La connexion aboutit par l'identifiant comme par le courriel. */
+  assert.equal((await login("ident.field", "IdentMotDePasse1")).status, 200,
+    "on se connecte par l'identifiant");
+  assert.equal((await login("ident@test.local", "IdentMotDePasse1")).status, 200,
+    "le courriel reste un moyen de connexion");
+
+  /* Un deuxième compte ne peut pas prendre le même identifiant, ni un identifiant
+     qui usurpe le courriel d'un autre. */
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"ident2@test.local", password:"Ident2MotDePasse1", first_name:"Ident2",
+            role:"editor", tabs:["home"], active:true });
+  motDePasseAdopte("ident2@test.local");
+  const t2 = (await login("ident2@test.local", "Ident2MotDePasse1")).body.token;
+  const collision = await request(app).put("/api/auth/username").set("Authorization", `Bearer ${t2}`)
+    .send({ username:"ident.field" });
+  assert.equal(collision.status, 409, "un identifiant déjà pris est refusé");
+  const usurpe = await request(app).put("/api/auth/username").set("Authorization", `Bearer ${t2}`)
+    .send({ username:"ident@test.local" });
+  assert.equal(usurpe.status, 422, "un « @ » dans l'identifiant est refusé");
+
+  /* Un format hors charte est refusé ; vide, l'identifiant se retire. */
+  assert.equal((await request(app).put("/api/auth/username").set("Authorization", `Bearer ${t}`)
+    .send({ username:"a b" })).status, 422);
+  const vide = await request(app).put("/api/auth/username").set("Authorization", `Bearer ${t}`)
+    .send({ username:"" });
+  assert.equal(vide.status, 200);
+  assert.equal(vide.body.user.username, "");
+  assert.equal((await login("ident.field", "IdentMotDePasse1")).status, 401,
+    "l'identifiant retiré ne connecte plus");
+});
+
 test("déconnexion : le jeton devient inutilisable", async () => {
   const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
   assert.equal((await request(app).post("/api/auth/logout").set("Authorization", `Bearer ${t}`)).status, 200);
@@ -1395,6 +1493,107 @@ test("concurrence : modifier la même ligne à deux est refusé, pas écrasé", 
     "Intitulé final de A");
 });
 
+/* Chantier P — deux natures d'indicateur (migration 022). Un CRF porte un niveau
+   de cadre logique, un XLSForm porte l'activité qu'il suit ; les deux transitent
+   par la même collection et se relisent avec leur nature intacte. */
+test("indicateurs : les natures CRF et XLSForm font l'aller-retour", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+
+  const ecrit = await request(app).put("/api/collections/indicators")
+    .set("Authorization", `Bearer ${t}`)
+    .send({ rows: [
+      { code:"OUT-PROC", name:"Couverture des visites", kind:"xlsform",
+        activity:"ACT1", unit:"%", target:80, direction:"up", frequency:"Mensuel" },
+      { code:"OTH-OUT", name:"Other output test", kind:"crf",
+        level:"other_output", basket:"Nutrition", unit:"nombre", target:12, direction:"up" },
+    ] });
+  assert.equal(ecrit.status, 200, JSON.stringify(ecrit.body));
+  assert.equal(ecrit.body.created, 2);
+
+  /* Le stockage porte bien les colonnes de la migration. */
+  const proc = db.prepare("SELECT * FROM indicators WHERE code=?").get("OUT-PROC");
+  assert.equal(proc.kind, "xlsform");
+  assert.equal(proc.activity, "ACT1");
+  assert.equal(proc.level, null, "un XLSForm n'a pas de niveau de cadre logique");
+  const oth = db.prepare("SELECT * FROM indicators WHERE code=?").get("OTH-OUT");
+  assert.equal(oth.kind, "crf");
+  assert.equal(oth.level, "other_output");
+
+  /* La projection d'état rend les deux natures, l'ancienne masterlist restant CRF. */
+  const etat = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`)).body;
+  const vuProc = etat.indicators.find(i => i.id === "OUT-PROC");
+  assert.equal(vuProc.kind, "xlsform");
+  assert.equal(vuProc.activity, "ACT1");
+  assert.ok(etat.indicators.every(i => i.kind === "crf" || i.kind === "xlsform"),
+    "toute ligne a une nature");
+  assert.ok(etat.indicators.some(i => i.kind === "crf"),
+    "les indicateurs d'avant la migration sont des CRF");
+
+  /* Un niveau hors liste est refusé : le champ est contraint, pas libre. */
+  const refus = await request(app).put("/api/collections/indicators")
+    .set("Authorization", `Bearer ${t}`)
+    .send({ rows: [{ code:"BAD", name:"x", kind:"crf", level:"impact", direction:"up" }] });
+  assert.equal(refus.status, 422, "un niveau de cadre logique inconnu est rejeté");
+});
+
+/* Chantier S6 — « un éditeur peut être attribué à planifier les suivis ». La
+   configuration de planification (MRE + calendrier de collecte) se persiste par une
+   route en droit ÉDITEUR, distincte des réglages admin ; le calendrier va dans sa
+   table `outcome_plan`, plus dans le blob settings. */
+test("planification : un éditeur enregistre MRE et calendrier, hors des réglages admin", async () => {
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"planif@test.local", password:"PlanifMotDePasse1", first_name:"Planif",
+            role:"editor", tabs:["home","suivi"], active:true });
+  motDePasseAdopte("planif@test.local");
+  const t = (await login("planif@test.local", "PlanifMotDePasse1")).body.token;
+
+  /* L'éditeur n'a PAS le droit sur les réglages admin : la séparation est réelle. */
+  const settings = await request(app).put("/api/settings").set("Authorization", `Bearer ${t}`)
+    .send({ mmr:[{ id:"x" }] });
+  assert.equal(settings.status, 403, "les réglages restent réservés à l'admin");
+
+  /* Un code d'indicateur réel, pour le calendrier. */
+  const etat0 = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`)).body;
+  const code = etat0.indicators[0].id;
+
+  const enreg = await request(app).put("/api/planning-config").set("Authorization", `Bearer ${t}`)
+    .send({ mmr:[{ id:"mmr0", area:"School Feeding", coef:1.5, duration:"6-12 months",
+                   siteType:"School", monitoring:"Distribution monitoring" }],
+            outcomePlan:{ [code]: [true,false,false,true,false,false,false,false,false,false,false,false] } });
+  assert.equal(enreg.status, 200, JSON.stringify(enreg.body));
+
+  const etat = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`)).body;
+  assert.equal(etat.settings.mmr[0].coef, 1.5, "le MRE est relu du dictionnaire de réglages");
+  assert.deepEqual(etat.outcomePlan[code].map(Boolean),
+    [true,false,false,true,false,false,false,false,false,false,false,false],
+    "le calendrier est relu de sa table, mois par mois");
+
+  /* La table `outcome_plan` porte les deux mois cochés, et rien de plus pour ce code. */
+  const année = new Date().getFullYear();
+  const ind = db.prepare("SELECT id FROM indicators WHERE code=?").get(code);
+  const mois = db.prepare("SELECT month FROM outcome_plan WHERE indicator_id=? AND year=? ORDER BY month")
+    .all(ind.id, année).map(r => r.month);
+  assert.deepEqual(mois, [0,3], "seuls les mois cochés existent dans la table");
+  /* Le reflet dans settings est purgé : il n'ombre plus la table. */
+  assert.equal(db.prepare("SELECT 1 FROM settings WHERE key='outcomePlan'").get(), undefined);
+
+  /* Décocher un mois le fait DISPARAÎTRE (remplacement de l'année, pas ajout). */
+  await request(app).put("/api/planning-config").set("Authorization", `Bearer ${t}`)
+    .send({ outcomePlan:{ [code]: [true,false,false,false,false,false,false,false,false,false,false,false] } });
+  const apres = db.prepare("SELECT month FROM outcome_plan WHERE indicator_id=? AND year=?").all(ind.id, année);
+  assert.deepEqual(apres.map(r=>r.month), [0], "le mois décoché a bien disparu");
+
+  /* Un lecteur ne planifie pas : la route exige le droit d'édition. */
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"lecplan@test.local", password:"LecPlanMotDePasse1", first_name:"LecPlan",
+            role:"viewer", tabs:["home"], active:true });
+  motDePasseAdopte("lecplan@test.local");
+  const tv = (await login("lecplan@test.local", "LecPlanMotDePasse1")).body.token;
+  const refus = await request(app).put("/api/planning-config").set("Authorization", `Bearer ${tv}`)
+    .send({ mmr:[{ id:"y" }] });
+  assert.equal(refus.status, 403, "un lecteur ne peut pas planifier");
+});
+
 test("concurrence : un client qui n'envoie pas de révision reste accepté", async () => {
   /* Compatibilité : la révision est facultative. Sans elle, on retombe sur le
      comportement « dernier écrivain gagne », mais sans suppression implicite. */
@@ -1633,6 +1832,62 @@ test("bureaux : un bureau référencé ne peut pas être supprimé, seulement d�
   const del = await request(app).delete(`/api/offices/${neuf.body.office.id}`)
     .set("Authorization", `Bearer ${adminToken}`);
   assert.equal(del.status, 200);
+});
+
+/* Chantier S4/S7 — le référentiel des activités devient éditable, sur le modèle
+   des bureaux : lecture ouverte, écriture admin, suppression refusée si référencée. */
+test("activités : lecture, création, révision optimiste et refus de suppression si référencée", async () => {
+  const liste = await request(app).get("/api/activities").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(liste.status, 200);
+  assert.ok(Array.isArray(liste.body.activities) && liste.body.activities.length > 0);
+  assert.ok("usage" in liste.body.activities[0], "chaque activité porte son décompte de références");
+
+  /* Création + refus du doublon de nom. */
+  const cree = await request(app).post("/api/activities").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Activité d'essai", tag:"tst", program_area:"Résilience" });
+  assert.equal(cree.status, 201, JSON.stringify(cree.body));
+  assert.equal(cree.body.activity.tag, "TST", "le tag est mis en majuscules");
+  const id = cree.body.activity.id;
+  const doublon = await request(app).post("/api/activities").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"activité d'essai", tag:"AUT" });
+  assert.equal(doublon.status, 409, "un nom déjà pris est refusé");
+
+  /* Révision périmée refusée. */
+  const stale = await request(app).put(`/api/activities/${id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Renommée", tag:"TST", rev:999 });
+  assert.equal(stale.status, 409, "une révision périmée est refusée");
+  const maj = await request(app).put(`/api/activities/${id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Renommée", tag:"TST", rev:cree.body.activity.rev });
+  assert.equal(maj.status, 200);
+  assert.equal(db.prepare("SELECT name FROM activity_categories WHERE id=?").get(id).name, "Renommée");
+
+  /* Une activité référencée par un site ne se supprime pas : on la désactive. */
+  const référencée = db.prepare(
+    "SELECT id FROM activity_categories WHERE id IN (SELECT category_id FROM sites) LIMIT 1").get();
+  if(référencée){
+    const orphelins = () => db.prepare("SELECT COUNT(*) c FROM sites WHERE category_id IS NULL").get().c;
+    const avant = orphelins();
+    const refus = await request(app).delete(`/api/activities/${référencée.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    assert.equal(refus.status, 409);
+    assert.ok(refus.body.usage.sites > 0);
+    assert.equal(orphelins(), avant, "aucun site détaché");
+  }
+
+  /* L'activité neuve, sans référence, se supprime. */
+  const del = await request(app).delete(`/api/activities/${id}`).set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(del.status, 200);
+
+  /* Un éditeur lit mais n'écrit pas : le référentiel est de l'administration. */
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"actedit@test.local", password:"ActEditMotDePasse1", first_name:"ActEdit",
+            role:"editor", tabs:["home"], active:true });
+  motDePasseAdopte("actedit@test.local");
+  const te = (await login("actedit@test.local", "ActEditMotDePasse1")).body.token;
+  assert.equal((await request(app).get("/api/activities").set("Authorization", `Bearer ${te}`)).status, 200);
+  const refusEdit = await request(app).post("/api/activities").set("Authorization", `Bearer ${te}`)
+    .send({ name:"Interdite", tag:"NON" });
+  assert.equal(refusEdit.status, 403, "un éditeur ne crée pas d'activité");
 });
 
 test("bureaux : désactiver un bureau portant des comptes actifs est refusé", async () => {
@@ -6999,6 +7254,97 @@ test("shapefile : téléversement réservé aux administrateurs", async () => {
   assert.equal((await commitShp(te)).status, 403);
 });
 
+/* ── Un .shp SANS .dbf : les polygones seuls ────────────────────────────
+   « Comme QGIS » : le seul .shp doit afficher les contours tout de suite, sous
+   des identités provisoires « Polygone N », sans exiger la table attributaire.
+   Le .dbf déposé ensuite les nomme et les rattache — le flux avec-.dbf, lui,
+   reste intact (tous les tests ci-dessus le prouvent). */
+const apercuShpSeul = (token, shp) =>
+  request(app).post("/api/geo/shapefile/apercu").set("Authorization", `Bearer ${token}`)
+    .attach("fichier", shp ?? shpMdg(), "d.shp");
+
+test("shapefile : sans .dbf, l'aperçu propose des identités « Polygone N » et ne rien écrit", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const avant = db.prepare("SELECT COUNT(*) c FROM geo_version").get().c;
+
+  const r = await apercuShpSeul(t);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.resume.sansDbf, true, "l'aperçu signale l'absence de table attributaire");
+  assert.equal(r.body.resume.records, 3);
+  assert.equal(r.body.resume.avecGeometrie, 3);
+  assert.equal(r.body.colonnes.length, 0, "aucune colonne attributaire sans .dbf");
+  /* Trois polygones provisoires, à un niveau unique, prêts à s'afficher. */
+  assert.equal(r.body.arbre.counts.adm3, 3);
+  assert.equal(r.body.arbre.total, 3);
+  assert.ok(r.body.echantillon.some(u => /Polygone 1/.test(u.name)), JSON.stringify(r.body.echantillon));
+
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM geo_version").get().c, avant,
+    "l'aperçu n'a créé aucun millésime");
+});
+
+test("shapefile : sans .dbf, le commit importe les polygones seuls, devient courant et les affiche", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const r = await request(app).post("/api/geo/shapefile/commit").set("Authorization", `Bearer ${t}`)
+    .attach("fichier", shpMdg(), "d.shp").field("label", "Polygones seuls");
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.imported, 3, "trois polygones provisoires");
+  assert.equal(r.body.geom.écrites, 3, "trois contours affichables");
+
+  const v = await request(app).get("/api/geo/versions").set("Authorization", `Bearer ${t}`);
+  const courant = v.body.rows.find(x => x.current);
+  assert.equal(courant.label, "Polygones seuls");
+  assert.equal(courant.geom.units, 3);
+
+  /* Les contours s'affichent : le service de géométries les rend au niveau adm3,
+     nommés « Polygone N » — appariés PAR ORDRE aux enregistrements du .shp. */
+  const lu = await request(app).get("/api/geo/geometry?level=adm3")
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(lu.body.features.length, 3, "les polygones seuls s'affichent sur la carte");
+  assert.ok(lu.body.features.every(f => /Polygone/.test(f.properties.name)), JSON.stringify(
+    lu.body.features.map(f => f.properties.name)));
+});
+
+/* ── Rattachement du millésime au PAYS ──────────────────────────────────
+   Le découpage se configure depuis la fiche du pays courant, qui envoie son code.
+   Le millésime doit s'y rattacher, et la bascule du courant ne toucher que CE
+   pays : c'est ce qui évite le bug multi-pays (importer sous un pays écraserait
+   le référentiel d'un autre). */
+test("shapefile : le millésime est rattaché au pays passé, et la bascule ne touche que ce pays", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  /* Un second pays configuré, laissé non courant : Madagascar reste courant. */
+  const niv = { adm0:{one:"Pays",many:"Pays"}, adm1:{one:"Province",many:"Provinces"},
+    adm2:{one:"Territoire",many:"Territoires"}, adm3:{one:"Secteur",many:"Secteurs"},
+    adm4:{one:"Groupement",many:"Groupements"} };
+  await request(app).post("/api/country").set("Authorization", `Bearer ${t}`)
+    .send({ code:"ETH", name:"Éthiopie", currency:"ETB", levels:niv });
+
+  const mdgAvant = db.prepare("SELECT id FROM geo_version WHERE country='MDG' AND is_current=1").get();
+
+  const r = await request(app).post("/api/geo/shapefile/commit").set("Authorization", `Bearer ${t}`)
+    .attach("fichier", shpMdg(), "d.shp").attach("fichier", dbfMdg(), "d.dbf")
+    .field("country", "eth").field("label", "Découpage ETH");
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+
+  const row = db.prepare("SELECT country, is_current FROM geo_version WHERE id=?").get(r.body.versionId);
+  assert.equal(row.country, "ETH", "le millésime est rattaché au pays passé (code normalisé)");
+  assert.equal(row.is_current, 1, "et courant DANS son pays");
+
+  /* Le millésime malgache n'est pas touché : la bascule est cloisonnée par pays. */
+  assert.equal(db.prepare("SELECT is_current FROM geo_version WHERE id=?").get(mdgAvant.id).is_current, 1,
+    "le millésime courant de Madagascar reste courant");
+  /* Et l'application, dont le pays courant reste Madagascar, sert toujours SON
+     découpage, pas celui d'Éthiopie qu'on vient d'importer. */
+  const g = await request(app).get("/api/geo/levels").set("Authorization", `Bearer ${t}`);
+  assert.ok(g.body.rows.length > 0, "le référentiel servi reste celui du pays courant");
+
+  /* Un code pays inconnu est refusé avec son motif — l'écriture est validée. */
+  const mauvais = await request(app).post("/api/geo/shapefile/commit").set("Authorization", `Bearer ${t}`)
+    .attach("fichier", shpMdg(), "d.shp").attach("fichier", dbfMdg(), "d.dbf")
+    .field("country", "ZZZ");
+  assert.equal(mauvais.status, 422);
+  assert.ok(/inconnu/.test(mauvais.body.error), mauvais.body.error);
+});
+
 /* ═══════════════════════════════════════════════════════════════════════
    P-codes en double : présentés, jamais fatals.
 
@@ -7078,4 +7424,927 @@ test("shapefile : les p-codes en double sont présentés à l'aperçu, et le com
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   assert.equal(ok.body.counts.adm4, 2, "les deux fokontany sont importés");
   assert.equal(ok.body.collisions, 1, "le doublon reste signalé");
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Chantier S8 — Listes paramétrables typées, en maître-détail.
+
+   Une route pour onze référentiels : ce qui doit être vérifié, c'est que
+   le comportement soit LE MÊME pour une liste générique (`list_item`) et
+   pour une liste native (`activity_categories`, `partners`…), et que
+   l'usage soit compté sur les VRAIES tables filles.
+   ═══════════════════════════════════════════════════════════════════════ */
+test("listes typées : le rail des types est servi avec ses compteurs", async () => {
+  const r = await request(app).get("/api/listes").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200);
+  const cles = r.body.types.map(t => t.cle);
+  for(const attendu of ["activites","denrees","modalites","partenaires","types_partenariat",
+                        "tiers","sous_types_pi","types_site","types_suivi","durees","domaines"])
+    assert.ok(cles.includes(attendu), `le type « ${attendu} » figure au rail : ${cles.join(", ")}`);
+
+  const denrees = r.body.types.find(t => t.cle === "denrees");
+  assert.equal(denrees.native, false, "les denrées vivent dans la table générique");
+  assert.ok(denrees.items >= 12, "les denrées sont semées par la migration");
+  const activites = r.body.types.find(t => t.cle === "activites");
+  assert.equal(activites.native, true, "les activités gardent leur table dédiée");
+});
+
+test("listes typées : une liste générique se lit, se crée, se modifie et se supprime", async () => {
+  const lu = await request(app).get("/api/listes/denrees").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(lu.status, 200);
+  assert.equal(lu.body.type.label, "Denrées et commodités");
+  assert.ok(lu.body.items.some(x => x.code === "Riz"), "le code est la valeur portée par pdd.commodity");
+  assert.ok(lu.body.type.liens.some(l => l.table === "pdd" && l.colonne === "commodity"),
+    "l'écran reçoit la déclaration des tables filles, il ne la recopie pas");
+
+  const cree = await request(app).post("/api/listes/denrees").set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"Manioc", label:"Manioc séché", ordre:20 });
+  assert.equal(cree.status, 201, JSON.stringify(cree.body));
+  const item = cree.body.item;
+  assert.equal(item.usageTotal, 0, "un item neuf n'est référencé nulle part");
+
+  /* Doublon de code, puis de libellé — les deux sont refusés, par type. */
+  assert.equal((await request(app).post("/api/listes/denrees").set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"Manioc", label:"Autre chose" })).status, 409);
+  assert.equal((await request(app).post("/api/listes/denrees").set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"Manioc2", label:"manioc séché" })).status, 409);
+  /* Mais le même code dans une AUTRE liste passe : les listes ne se mélangent pas. */
+  const ailleurs = await request(app).post("/api/listes/types_site")
+    .set("Authorization", `Bearer ${adminToken}`).send({ code:"Manioc", label:"Champ de manioc" });
+  assert.equal(ailleurs.status, 201, JSON.stringify(ailleurs.body));
+  await request(app).delete(`/api/listes/types_site/${ailleurs.body.item.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+
+  /* Verrou optimiste. */
+  const stale = await request(app).put(`/api/listes/denrees/${item.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:item.code, label:"Manioc frais", rev:999 });
+  assert.equal(stale.status, 409, "une révision périmée est refusée");
+  const maj = await request(app).put(`/api/listes/denrees/${item.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:item.code, label:"Manioc frais", rev:item.rev });
+  assert.equal(maj.status, 200, JSON.stringify(maj.body));
+  assert.equal(maj.body.item.label, "Manioc frais");
+
+  const del = await request(app).delete(`/api/listes/denrees/${item.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(del.status, 200);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM list_item WHERE id=?").get(item.id).c, 0);
+});
+
+test("listes typées : un champ propre est contrôlé contre la liste qu'il désigne", async () => {
+  /* Le type de partenariat d'un partenaire est le CODE d'une autre liste :
+     un code inconnu fabriquerait exactement l'orphelin que le gestionnaire
+     est censé empêcher. */
+  const faux = await request(app).post("/api/listes/partenaires")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"PART_X", label:"Partenaire d'essai", champs:{ partnership_type:"INEXISTANT" } });
+  assert.equal(faux.status, 422, JSON.stringify(faux.body));
+  assert.ok(/n'existe pas dans la liste/.test(faux.body.details[0].message), faux.body.details[0].message);
+
+  const bon = await request(app).post("/api/listes/partenaires")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"PART_X", label:"Partenaire d'essai", champs:{ partnership_type:"ONG_NAT" } });
+  assert.equal(bon.status, 201, JSON.stringify(bon.body));
+  assert.equal(bon.body.item.champs.partnership_type, "ONG_NAT");
+  /* Et le type de partenariat compte désormais un usage : il ne se supprime plus. */
+  const typePart = (await request(app).get("/api/listes/types_partenariat")
+    .set("Authorization", `Bearer ${adminToken}`)).body.items.find(x => x.code === "ONG_NAT");
+  assert.equal(typePart.usageTotal, 1, "l'usage remonte depuis partners.partnership_type");
+  const refus = await request(app).delete(`/api/listes/types_partenariat/${typePart.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(refus.status, 409);
+
+  await request(app).delete(`/api/listes/partenaires/${bon.body.item.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+});
+
+test("listes typées : l'usage se compte sur les vraies tables filles, et retient la suppression", async () => {
+  /* Une activité du semis est portée par des sites : la liste doit le voir
+     par sa clé étrangère ET par le tag. */
+  const r = await request(app).get("/api/listes/activites").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200);
+  const utilisee = r.body.items.find(x => x.usageTotal > 0);
+  assert.ok(utilisee, "au moins une activité du semis est référencée");
+  assert.ok(utilisee.usage.some(u => u.table === "sites"), JSON.stringify(utilisee.usage));
+
+  const avant = db.prepare("SELECT COUNT(*) c FROM sites WHERE category_id IS NULL").get().c;
+  const refus = await request(app).delete(`/api/listes/activites/${utilisee.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(refus.status, 409);
+  assert.ok(refus.body.usage.length, "le refus énumère ce qui retient l'item");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM sites WHERE category_id IS NULL").get().c, avant,
+    "aucun site n'a été détaché par la tentative");
+
+  /* La désactivation, elle, passe — c'est l'issue que le refus propose. */
+  const off = await request(app).put(`/api/listes/activites/${utilisee.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:utilisee.code, label:utilisee.label, active:false, rev:utilisee.rev,
+            champs:utilisee.champs });
+  assert.equal(off.status, 200);
+  assert.equal(off.body.item.active, false);
+  await request(app).put(`/api/listes/activites/${utilisee.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:utilisee.code, label:utilisee.label, active:true, rev:off.body.item.rev,
+            champs:utilisee.champs });
+});
+
+test("listes typées : la validation d'une liste tombe dès qu'un item change", async () => {
+  const val = await request(app).post("/api/listes/durees/valider")
+    .set("Authorization", `Bearer ${adminToken}`).send({});
+  assert.equal(val.status, 200);
+  assert.ok(val.body.validation.at, "la validation est datée");
+  assert.ok(val.body.validation.par, "et signée");
+
+  const lu = await request(app).get("/api/listes/durees").set("Authorization", `Bearer ${adminToken}`);
+  assert.ok(lu.body.validation, "l'écran voit la liste comme validée");
+
+  const it = lu.body.items[0];
+  await request(app).put(`/api/listes/durees/${it.id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:it.code, label:it.label + " ", rev:it.rev });
+  const apres = await request(app).get("/api/listes/durees").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(apres.body.validation, null,
+    "une liste modifiée après sa relecture n'est plus une liste relue");
+});
+
+test("listes typées : lecture ouverte, écriture réservée à l'administration", async () => {
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"listedit@test.local", password:"ListEditMotDePasse1", first_name:"ListEdit",
+            role:"editor", tabs:["home"], active:true });
+  motDePasseAdopte("listedit@test.local");
+  const t = (await login("listedit@test.local", "ListEditMotDePasse1")).body.token;
+  assert.equal((await request(app).get("/api/listes").set("Authorization", `Bearer ${t}`)).status, 200);
+  assert.equal((await request(app).get("/api/listes/denrees").set("Authorization", `Bearer ${t}`)).status, 200);
+  const refus = await request(app).post("/api/listes/denrees").set("Authorization", `Bearer ${t}`)
+    .send({ code:"Interdit", label:"Interdit" });
+  assert.equal(refus.status, 403, "un éditeur ne configure pas les référentiels");
+  assert.equal((await request(app).get("/api/listes/inconnue").set("Authorization", `Bearer ${t}`)).status, 404);
+});
+
+test("listes typées : le plan de distribution accepte une modalité hors des trois d'origine", async () => {
+  /* La migration 026 lève l'énumération de `pdd.modality` : la liste des
+     modalités se paramètre, donc le schéma ne peut plus la figer. Les
+     fichiers réels du bureau portent déjà une modalité hybride. */
+  const ligne = db.prepare("SELECT * FROM pdd LIMIT 1").get();
+  assert.ok(ligne, "le semis a rempli le plan de distribution");
+  db.prepare("UPDATE pdd SET modality='Mix' WHERE id=?").run(ligne.id);
+  assert.equal(db.prepare("SELECT modality FROM pdd WHERE id=?").get(ligne.id).modality, "Mix");
+  db.prepare("UPDATE pdd SET modality=? WHERE id=?").run(ligne.modality, ligne.id);
+  /* Et la reconstruction de la table n'a rien perdu : la contrainte de statut
+     et les index sont toujours là. */
+  assert.throws(() => db.prepare("UPDATE pdd SET status='n''importe quoi' WHERE id=?").run(ligne.id));
+  const idx = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='pdd'")
+    .all().map(x => x.name);
+  for(const n of ["idx_pdd_period","idx_pdd_bureau","idx_pdd_geo_pcode"])
+    assert.ok(idx.includes(n), `l'index ${n} a été recréé (${idx.join(", ")})`);
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Chantier S8-2 — Intégrité référentielle.
+
+   « Si une liste est enregistrée et a été déjà utilisée, impossible de
+   l'effacer (possibilité de mettre à jour mais le code d'identification
+   reste pour ne pas perdre les données). »
+   ═══════════════════════════════════════════════════════════════════════ */
+test("intégrité : le code d'identification est préservé par la mise à jour", async () => {
+  const lu = await request(app).get("/api/listes/denrees").set("Authorization", `Bearer ${adminToken}`);
+  const riz = lu.body.items.find(x => x.code === "Riz");
+
+  const refus = await request(app).put(`/api/listes/denrees/${riz.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"RIZ_LOCAL", label:riz.label, rev:riz.rev });
+  assert.equal(refus.status, 409, JSON.stringify(refus.body));
+  assert.ok(/clé de jointure/.test(refus.body.error), refus.body.error);
+  assert.ok(/renommer-code/.test(refus.body.voie), "la réponse nomme la voie sûre");
+  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(riz.id).code, "Riz",
+    "rien n'a été écrit");
+
+  /* Le reste de l'item, lui, se met à jour sans réserve. */
+  const maj = await request(app).put(`/api/listes/denrees/${riz.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"Riz", label:"Riz blanc", note:"Denrée principale", rev:riz.rev });
+  assert.equal(maj.status, 200, JSON.stringify(maj.body));
+  assert.equal(maj.body.item.label, "Riz blanc");
+  assert.equal(maj.body.item.code, "Riz", "le code n'a pas bougé");
+  await request(app).put(`/api/listes/denrees/${riz.id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"Riz", label:"Riz", rev:maj.body.item.rev });
+});
+
+test("intégrité : le tag d'une activité ne se renomme pas depuis l'écran des activités", async () => {
+  /* Dix colonnes portent ce tag en texte, sans clé étrangère pour les
+     retenir : le réécrire ici laissait des lignes désigner un code disparu,
+     silencieusement. */
+  const act = db.prepare(
+    "SELECT * FROM activity_categories WHERE tag IN (SELECT activity_tag FROM sites) LIMIT 1").get();
+  assert.ok(act, "une activité du semis est portée par des sites");
+  const avant = db.prepare("SELECT COUNT(*) c FROM sites WHERE activity_tag=?").get(act.tag).c;
+
+  const refus = await request(app).put(`/api/activities/${act.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:act.name, tag:act.tag + "X", rev:act.rev });
+  assert.equal(refus.status, 409, JSON.stringify(refus.body));
+  assert.ok(/clé de jointure/.test(refus.body.error), refus.body.error);
+  assert.equal(db.prepare("SELECT tag FROM activity_categories WHERE id=?").get(act.id).tag, act.tag);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM sites WHERE activity_tag=?").get(act.tag).c, avant,
+    "aucun site n'a perdu son tag");
+
+  /* Le nom, le domaine et le statut se modifient normalement. */
+  const maj = await request(app).put(`/api/activities/${act.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:act.name + " (révisée)", tag:act.tag, program_area:act.program_area, rev:act.rev });
+  assert.equal(maj.status, 200, JSON.stringify(maj.body));
+  await request(app).put(`/api/activities/${act.id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:act.name, tag:act.tag, program_area:act.program_area, rev:maj.body.activity.rev });
+});
+
+test("intégrité : le refus de suppression d'une activité compte les douze colonnes, pas deux", async () => {
+  /* Une activité dont AUCUN site ne porte la clé étrangère mais dont des
+     lignes portent le tag était supprimable : les deux clés étrangères
+     répondaient zéro, et dix colonnes de texte restaient à désigner un code
+     disparu. */
+  const cree = await request(app).post("/api/activities").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Activité orpheline d'essai", tag:"ORPH" });
+  assert.equal(cree.status, 201);
+  const id = cree.body.activity.id;
+  db.prepare(`INSERT INTO outputs (id,activity_tag,year,month,planned,actual)
+              VALUES ('out_orph','ORPH',2026,0,10,0)`).run();
+
+  const apres = await request(app).get("/api/activities").set("Authorization", `Bearer ${adminToken}`);
+  const vue = apres.body.activities.find(a => a.id === id);
+  assert.equal(vue.usage.sites, 0, "aucune clé étrangère ne la retient");
+  assert.equal(vue.usageTotal, 1, "mais une ligne de produits porte son tag");
+  assert.ok(vue.usageDetail.some(u => u.table === "outputs"), JSON.stringify(vue.usageDetail));
+
+  const refus = await request(app).delete(`/api/activities/${id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(refus.status, 409, JSON.stringify(refus.body));
+  assert.equal(refus.body.usageTotal, 1);
+
+  db.prepare("DELETE FROM outputs WHERE id='out_orph'").run();
+  assert.equal((await request(app).delete(`/api/activities/${id}`)
+    .set("Authorization", `Bearer ${adminToken}`)).status, 200);
+});
+
+test("intégrité : désactiver est un geste à part, qui ne touche à rien d'autre", async () => {
+  const lu = await request(app).get("/api/listes/types_suivi").set("Authorization", `Bearer ${adminToken}`);
+  const it = lu.body.items[0];
+
+  const off = await request(app).put(`/api/listes/types_suivi/${it.id}/actif`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ active:false, rev:it.rev });
+  assert.equal(off.status, 200, JSON.stringify(off.body));
+  assert.equal(off.body.item.active, false);
+  assert.equal(off.body.item.label, it.label, "le libellé n'a pas été touché");
+  assert.equal(off.body.item.code, it.code, "le code non plus");
+
+  /* Le verrou optimiste vaut aussi pour ce geste. */
+  const stale = await request(app).put(`/api/listes/types_suivi/${it.id}/actif`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ active:true, rev:it.rev });
+  assert.equal(stale.status, 409, "la révision d'avant la désactivation est refusée");
+
+  const on = await request(app).put(`/api/listes/types_suivi/${it.id}/actif`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ active:true, rev:off.body.item.rev });
+  assert.equal(on.status, 200);
+  assert.equal(on.body.item.active, true);
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Chantier S8-3 — Renommage de code EN CASCADE, réservé au super.
+
+   « Si le super user change un code d'identification, tout ce qui lui est
+   relié devrait aussi changer avec. » Ce n'est pas un supprimer-recréer :
+   une transaction réécrit la table maîtresse ET toutes ses filles.
+   ═══════════════════════════════════════════════════════════════════════ */
+let superToken;
+/* Depuis le point 4 du chantier, un renommage se valide sur SON PLAN : on
+   demande la correspondance, on la lit, puis on renvoie son jeton. Ce
+   raccourci fait les deux appels — c'est exactement ce que fait l'écran. */
+const renommer = async (cle, id, nouveau, mode, token) => {
+  const plan = await request(app).post(`/api/listes/${cle}/${id}/renommer-code/plan`)
+    .set("Authorization", `Bearer ${token}`).send({ nouveau });
+  if(plan.status !== 200) return plan;
+  return request(app).post(`/api/listes/${cle}/${id}/renommer-code`)
+    .set("Authorization", `Bearer ${token}`)
+    .send({ nouveau, mode, jeton: plan.body.plan.jeton });
+};
+test("renommage : préparation d'un compte super pour la cascade", async () => {
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"supercode@test.local", password:"SuperCodeMotDePasse1", first_name:"SuperCode",
+            role:"super", tabs:["home"], active:true });
+  motDePasseAdopte("supercode@test.local");
+  superToken = (await login("supercode@test.local", "SuperCodeMotDePasse1")).body.token;
+  assert.ok(superToken);
+});
+
+test("renommage : un administrateur ne renomme pas un code, seul le super le peut", async () => {
+  /* Le compte d'amorçage est `super` : c'est un compte de rôle ADMIN qu'il
+     faut ici, sans quoi le test constaterait un succès et croirait à un refus. */
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"admincode@test.local", password:"AdminCodeMotDePasse1", first_name:"AdminCode",
+            role:"admin", tabs:["home"], active:true });
+  motDePasseAdopte("admincode@test.local");
+  const t = (await login("admincode@test.local", "AdminCodeMotDePasse1")).body.token;
+
+  const it = (await request(app).get("/api/listes/denrees")
+    .set("Authorization", `Bearer ${t}`)).body.items.find(x => x.code === "Sorgho");
+  const refus = await request(app).post(`/api/listes/denrees/${it.id}/renommer-code`)
+    .set("Authorization", `Bearer ${t}`).send({ nouveau:"Sorgho blanc" });
+  assert.equal(refus.status, 403, JSON.stringify(refus.body));
+  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, "Sorgho");
+});
+
+test("renommage : la cascade réécrit la table maîtresse ET toutes ses filles, en une transaction", async () => {
+  const it = (await request(app).get("/api/listes/denrees")
+    .set("Authorization", `Bearer ${superToken}`)).body.items.find(x => x.code === "Sorgho");
+
+  /* On accroche des lignes filles réelles au code, dans le plan de distribution. */
+  const cibles = db.prepare("SELECT id FROM pdd LIMIT 3").all().map(x => x.id);
+  assert.ok(cibles.length >= 1, "le semis a rempli le plan de distribution");
+  for(const id of cibles) db.prepare("UPDATE pdd SET commodity='Sorgho' WHERE id=?").run(id);
+  /* Le semis en pose déjà : ce qui compte est le total réel, pas les trois
+     lignes que ce test vient d'accrocher. */
+  const attendues = db.prepare("SELECT COUNT(*) c FROM pdd WHERE commodity='Sorgho'").get().c;
+  assert.ok(attendues >= cibles.length);
+
+  const r = await renommer("denrees", it.id, "Sorgho blanc", "renommer", superToken);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.mode, "renommer");
+  assert.equal(r.body.total, attendues, "toutes les lignes filles ont suivi");
+  assert.ok(r.body.tables.some(t => t.table === "pdd" && t.colonne === "commodity"));
+  /* Le contrôle d'après-coup : plus rien ne porte l'ancien code. */
+  assert.equal(r.body.reliquat, 0, "aucune ligne ne désigne encore l'ancien code");
+
+  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, "Sorgho blanc",
+    "l'item a changé de code — il n'a pas été supprimé puis recréé");
+  assert.equal(it.id, db.prepare("SELECT id FROM list_item WHERE code='Sorgho blanc' AND type='denree'")
+    .get().id, "c'est le MÊME item, avec le même identifiant");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM pdd WHERE commodity='Sorgho'").get().c, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM pdd WHERE commodity='Sorgho blanc'").get().c,
+    attendues);
+});
+
+test("renommage : un tag d'activité entraîne les dix colonnes qui le portent", async () => {
+  const act = db.prepare(
+    "SELECT * FROM activity_categories WHERE tag IN (SELECT activity_tag FROM sites) LIMIT 1").get();
+  const compter = (t, c, v) => db.prepare(`SELECT COUNT(*) c FROM ${t} WHERE ${c}=?`).get(v).c;
+  const avant = {
+    sites:  compter("sites", "activity_tag", act.tag),
+    params: compter("coverage_params", "activity_tag", act.tag),
+    fk:     compter("sites", "category_id", act.id),
+  };
+  assert.ok(avant.sites > 0, "des sites portent ce tag");
+
+  const nouveau = act.tag + "_2026";
+  const r = await renommer("activites", act.id, nouveau, "renommer", superToken);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(compter("sites", "activity_tag", act.tag), 0, "plus aucun site sur l'ancien tag");
+  assert.equal(compter("sites", "activity_tag", nouveau), avant.sites);
+  assert.equal(compter("coverage_params", "activity_tag", nouveau), avant.params);
+  /* La clé étrangère n'a PAS bougé : ce n'est pas une fusion, l'item est le même. */
+  assert.equal(compter("sites", "category_id", act.id), avant.fk);
+  assert.equal(r.body.reliquat, 0);
+
+  /* Et l'intégrité de la base n'a pas souffert du passage. */
+  const sante = await request(app).get("/api/health");
+  assert.equal(sante.body.database.foreignKeyViolations, 0);
+
+  /* Retour à l'état d'origine, pour ne pas troubler les tests suivants. */
+  await renommer("activites", act.id, act.tag, "renommer", superToken);
+  assert.equal(compter("sites", "activity_tag", act.tag), avant.sites);
+});
+
+test("renommage : viser un code déjà pris est une FUSION, qui ne se devine pas", async () => {
+  const items = (await request(app).get("/api/listes/denrees")
+    .set("Authorization", `Bearer ${superToken}`)).body.items;
+  const source = items.find(x => x.code === "Dattes");
+  const cible  = items.find(x => x.code === "Huile");
+
+  /* Demander « renommer » vers un code pris : refusé, et le plan est rendu
+     pour que l'écran puisse montrer ce que la fusion ferait. */
+  const refus = await renommer("denrees", source.id, "Huile", "renommer", superToken);
+  assert.equal(refus.status, 409, JSON.stringify(refus.body));
+  assert.ok(/FUSION/.test(refus.body.error), refus.body.error);
+  assert.equal(refus.body.plan.mode, "fusionner");
+  assert.equal(refus.body.plan.cible.code, "Huile");
+  assert.ok(db.prepare("SELECT 1 FROM list_item WHERE id=?").get(source.id), "rien n'a été écrit");
+
+  /* Confirmée, la fusion reporte les lignes et fait disparaître l'item source. */
+  const ligne = db.prepare("SELECT id FROM pdd LIMIT 1").get();
+  db.prepare("UPDATE pdd SET commodity='Dattes' WHERE id=?").run(ligne.id);
+  const ok = await renommer("denrees", source.id, "Huile", "fusionner", superToken);
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.mode, "fusionner");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM list_item WHERE id=?").get(source.id).c, 0,
+    "l'item d'origine a disparu");
+  assert.equal(db.prepare("SELECT commodity FROM pdd WHERE id=?").get(ligne.id).commodity, "Huile",
+    "sa ligne fille a été reportée sur la cible");
+  assert.ok(db.prepare("SELECT 1 FROM list_item WHERE id=?").get(cible.id), "la cible est intacte");
+});
+
+test("renommage : un code identique, vide ou trop long est refusé sans rien écrire", async () => {
+  const it = (await request(app).get("/api/listes/types_site")
+    .set("Authorization", `Bearer ${superToken}`)).body.items[0];
+  for(const [corps, statut] of [[{ nouveau:it.code }, 422], [{ nouveau:"" }, 422],
+                                [{ nouveau:"x".repeat(90) }, 422]]){
+    for(const chemin of ["renommer-code", "renommer-code/plan"]){
+      const r = await request(app).post(`/api/listes/types_site/${it.id}/${chemin}`)
+        .set("Authorization", `Bearer ${superToken}`).send(corps);
+      assert.equal(r.status, statut, JSON.stringify(r.body));
+    }
+  }
+  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, it.code);
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Chantier S8-4 — Mappage puis validation explicite.
+
+   « Si je fais une mise à jour d'un paramètre interconnecté, toujours
+   procéder à un mappage puis validation pour ne pas perdre des données. »
+   ═══════════════════════════════════════════════════════════════════════ */
+test("mappage : le plan chiffre l'impact table par table sans rien écrire", async () => {
+  const it = (await request(app).get("/api/listes/modalites")
+    .set("Authorization", `Bearer ${superToken}`)).body.items.find(x => x.code === "Voucher");
+  const lignes = db.prepare("SELECT id FROM pdd LIMIT 2").all().map(x => x.id);
+  for(const id of lignes) db.prepare("UPDATE pdd SET modality='Voucher' WHERE id=?").run(id);
+  const attendu = db.prepare("SELECT COUNT(*) c FROM pdd WHERE modality='Voucher'").get().c;
+
+  const r = await request(app).post(`/api/listes/modalites/${it.id}/renommer-code/plan`)
+    .set("Authorization", `Bearer ${superToken}`).send({ nouveau:"Coupon" });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const plan = r.body.plan;
+  assert.equal(plan.mode, "renommer");
+  assert.equal(plan.ancien, "Voucher");
+  assert.equal(plan.nouveau, "Coupon");
+  const corr = plan.correspondances.find(c => c.table === "pdd" && c.colonne === "modality");
+  assert.ok(corr, JSON.stringify(plan.correspondances));
+  assert.equal(corr.lignes, attendu);
+  assert.equal(corr.de, "Voucher");
+  assert.equal(corr.vers, "Coupon");
+  assert.ok(plan.jeton && plan.jeton.length >= 16, "le plan porte son empreinte");
+
+  /* Le mappage n'écrit RIEN : c'est toute sa raison d'être. */
+  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, "Voucher");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM pdd WHERE modality='Voucher'").get().c, attendu);
+});
+
+test("validation : sans jeton, l'écriture est refusée et le plan est rendu", async () => {
+  const it = (await request(app).get("/api/listes/modalites")
+    .set("Authorization", `Bearer ${superToken}`)).body.items.find(x => x.code === "Voucher");
+  const r = await request(app).post(`/api/listes/modalites/${it.id}/renommer-code`)
+    .set("Authorization", `Bearer ${superToken}`).send({ nouveau:"Coupon", mode:"renommer" });
+  assert.equal(r.status, 409, JSON.stringify(r.body));
+  assert.ok(/mappage|correspondance/.test(r.body.error), r.body.error);
+  assert.ok(r.body.plan.jeton, "le refus rend le plan, pour que l'écran le montre");
+  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, "Voucher");
+});
+
+test("validation : un plan périmé est refusé — on ne valide que ce qu'on a vu", async () => {
+  const it = (await request(app).get("/api/listes/modalites")
+    .set("Authorization", `Bearer ${superToken}`)).body.items.find(x => x.code === "Voucher");
+  const p1 = await request(app).post(`/api/listes/modalites/${it.id}/renommer-code/plan`)
+    .set("Authorization", `Bearer ${superToken}`).send({ nouveau:"Coupon" });
+  const jetonVu = p1.body.plan.jeton;
+  const impactVu = p1.body.plan.total;
+
+  /* La base bouge entre l'affichage et le clic : une ligne de plus porte le code. */
+  const autre = db.prepare("SELECT id FROM pdd WHERE modality<>'Voucher' LIMIT 1").get();
+  db.prepare("UPDATE pdd SET modality='Voucher' WHERE id=?").run(autre.id);
+
+  const refus = await request(app).post(`/api/listes/modalites/${it.id}/renommer-code`)
+    .set("Authorization", `Bearer ${superToken}`)
+    .send({ nouveau:"Coupon", mode:"renommer", jeton:jetonVu });
+  assert.equal(refus.status, 409, JSON.stringify(refus.body));
+  assert.ok(/a changé depuis/.test(refus.body.error), refus.body.error);
+  assert.ok(refus.body.plan.total > impactVu, "le plan à jour compte la ligne apparue");
+  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, "Voucher",
+    "rien n'a été écrit");
+
+  /* Revalidé sur le plan À JOUR, le renommage passe. */
+  const ok = await request(app).post(`/api/listes/modalites/${it.id}/renommer-code`)
+    .set("Authorization", `Bearer ${superToken}`)
+    .send({ nouveau:"Coupon", mode:"renommer", jeton:refus.body.plan.jeton });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.total, refus.body.plan.total);
+  assert.equal(ok.body.reliquat, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM pdd WHERE modality='Voucher'").get().c, 0);
+});
+
+test("mappage : le plan d'une fusion annonce la disparition de l'item d'origine", async () => {
+  const items = (await request(app).get("/api/listes/types_suivi")
+    .set("Authorization", `Bearer ${superToken}`)).body.items;
+  const source = items.find(x => x.code === "Post-distribution monitoring");
+  const r = await request(app).post(`/api/listes/types_suivi/${source.id}/renommer-code/plan`)
+    .set("Authorization", `Bearer ${superToken}`).send({ nouveau:"Distribution monitoring" });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.plan.mode, "fusionner");
+  assert.ok(r.body.plan.avertissements.some(a => /SUPPRIMÉ/.test(a)),
+    JSON.stringify(r.body.plan.avertissements));
+  assert.ok(r.body.plan.cible.code === "Distribution monitoring");
+  /* Toujours rien d'écrit. */
+  assert.ok(db.prepare("SELECT 1 FROM list_item WHERE id=?").get(source.id));
+});
+
+test("mappage : le plan est réservé au super, comme l'écriture qu'il prépare", async () => {
+  const t = (await login("admincode@test.local", "AdminCodeMotDePasse1")).body.token;
+  const it = (await request(app).get("/api/listes/durees")
+    .set("Authorization", `Bearer ${t}`)).body.items[0];
+  const r = await request(app).post(`/api/listes/durees/${it.id}/renommer-code/plan`)
+    .set("Authorization", `Bearer ${t}`).send({ nouveau:"Autre durée" });
+  assert.equal(r.status, 403, "un plan qui ne mène à aucune écriture possible n'a pas à être servi");
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Chantier S8-5 — Semis des DONNÉES RÉELLES.
+
+   « Dans les settings utilise mes data réels et stocke-les comme valeurs
+   par défaut de MEMS. » Ce test lance le vrai script sur les vrais
+   fichiers de `docs/`, dans une base à part pour ne pas troubler la
+   suite. Il ne vaut que si les fichiers sont là : sur une copie du dépôt
+   sans les documents, il se déclare non applicable plutôt que d'échouer.
+   ═══════════════════════════════════════════════════════════════════════ */
+const DOCS = path.resolve("../docs");
+const CLASSEUR_REEL = path.join(DOCS, "WFP Indicator Master List_UpdMai_2025.xlsx");
+const SHP_REEL = path.join(DOCS, "mdg_bnd_adm3_com_pam_2025.shp");
+
+test("données réelles : activités et masterlist d'indicateurs chargées depuis le classeur du PAM",
+  { skip: fs.existsSync(CLASSEUR_REEL) ? false : "docs/ ne contient pas le classeur du PAM" },
+  async () => {
+    const base = path.resolve("./data/test-reel.db");
+    for(const f of [base, base+"-wal", base+"-shm"]) if(fs.existsSync(f)) fs.unlinkSync(f);
+    execFileSync(process.execPath, ["src/seed-reel.js", "--sans-geo"],
+      { stdio:"pipe", env:{ ...process.env, DB_FILE:base } });
+
+    const { default: Database } = await import("better-sqlite3");
+    const d2 = new Database(base, { readonly:true });
+    try{
+      /* Les activités : l'onglet « Annex 5 Activity tags » en porte 58. */
+      const actifs = d2.prepare("SELECT COUNT(*) c FROM activity_categories").get().c;
+      assert.equal(actifs, 58, "les 58 tags d'activité du classeur sont chargés");
+      const gd = d2.prepare("SELECT * FROM activity_categories WHERE tag='GD'").get();
+      assert.equal(gd.name, "General Distribution", "le tag GD porte son intitulé réel");
+      assert.ok(gd.program_area, "et son groupe d'intervention");
+      /* Le domaine posé existe dans SA liste : le semis ne fabrique pas d'orphelin. */
+      assert.ok(d2.prepare("SELECT 1 FROM list_item WHERE type='domaine' AND code=?")
+        .get(gd.program_area), "le domaine est présent dans la liste des domaines");
+
+      /* Les indicateurs : quatre onglets, quatre niveaux, chacun avec ses
+         catégories thématiques — c'est ce qui rend l'écran filtrable. */
+      const parNiveau = Object.fromEntries(d2.prepare(
+        "SELECT level, COUNT(*) c FROM indicators GROUP BY level").all().map(x => [x.level, x.c]));
+      assert.equal(parNiveau.outcome, 94,      "Annex 2 Outcome");
+      assert.equal(parNiveau.output, 157,      "Annex 3 Output");
+      assert.equal(parNiveau.other_output, 566,"Detailed Output");
+      assert.equal(parNiveau.crosscutting, 25, "Annex 4 Crosscutting");
+      assert.equal(d2.prepare("SELECT COUNT(*) c FROM indicators").get().c, 842);
+      assert.equal(d2.prepare("SELECT COUNT(*) c FROM indicators WHERE kind<>'crf'").get().c, 0,
+        "la masterlist est le cadre de résultats, pas du processus");
+      assert.equal(d2.prepare("SELECT COUNT(*) c FROM indicators WHERE category IS NULL").get().c, 0,
+        "chaque indicateur porte sa catégorie");
+
+      const fcs = d2.prepare("SELECT * FROM indicators WHERE name LIKE 'Food consumption score'").get();
+      assert.ok(fcs, "le score de consommation alimentaire est là");
+      assert.equal(fcs.level, "outcome");
+      assert.equal(fcs.category, "1. Food security and essential needs");
+      const cc = d2.prepare("SELECT * FROM indicators WHERE code='CC.1.1'").get();
+      assert.equal(cc.category, "CC.1 Protection");
+      assert.ok(d2.prepare("SELECT * FROM indicators WHERE code='A.1.1'").get().name
+        .startsWith("Number of people receiving assistance"));
+
+      /* Les catégories sont bien un axe de filtre : plusieurs par niveau. */
+      const cats = d2.prepare(
+        "SELECT COUNT(DISTINCT category) c FROM indicators WHERE level='outcome'").get().c;
+      assert.equal(cats, 8, "les huit domaines programme de l'Annex 2");
+    } finally { d2.close(); }
+  });
+
+test("données réelles : le semis est idempotent — relancé, il corrige sans dupliquer",
+  { skip: fs.existsSync(CLASSEUR_REEL) ? false : "docs/ ne contient pas le classeur du PAM" },
+  async () => {
+    const base = path.resolve("./data/test-reel.db");
+    execFileSync(process.execPath, ["src/seed-reel.js", "--sans-geo"],
+      { stdio:"pipe", env:{ ...process.env, DB_FILE:base } });
+    const { default: Database } = await import("better-sqlite3");
+    const d2 = new Database(base, { readonly:true });
+    try{
+      assert.equal(d2.prepare("SELECT COUNT(*) c FROM indicators").get().c, 842,
+        "aucun doublon au second passage");
+      assert.equal(d2.prepare("SELECT COUNT(*) c FROM activity_categories").get().c, 58);
+      /* La révision a bougé : les lignes ont bien été RELUES, pas ignorées. */
+      assert.ok(d2.prepare("SELECT rev FROM indicators LIMIT 1").get().rev >= 2);
+    } finally { d2.close(); }
+  });
+
+test("données réelles : le shapefile Madagascar donne l'arbre adm0→adm3 complet",
+  { skip: fs.existsSync(SHP_REEL) ? false : "docs/ ne contient pas le shapefile Madagascar" },
+  async () => {
+    /* Le vrai fichier, lu par le vrai lecteur — mais sans écrire en base :
+       ce test dit ce que le fichier CONTIENT, il ne bascule pas le millésime
+       de la suite. */
+    const { lireTable } = await import("../src/lib/shapefile.js");
+    const { buildUnits } = await import("../src/lib/geo.js");
+    const dbf = fs.readFileSync(SHP_REEL.replace(/\.shp$/, ".dbf"));
+    const table = lireTable({ dbf });
+    /* La correspondance des colonnes est trouvée seule sur un jeu COD-AB. */
+    assert.equal(table.mapping.adm3, "ADM3_EN");
+    assert.equal(table.mapping.pcode3, "ADM3_PCODE");
+    const { units, counts, collisions } = buildUnits(table.lignes);
+    assert.equal(counts.adm0, 1,     "un pays");
+    assert.equal(counts.adm1, 24,    "les régions");
+    assert.equal(counts.adm2, 120,   "les districts");
+    assert.equal(counts.adm3, 1701,  "les communes");
+    assert.equal(units.length, 1846);
+    assert.equal(collisions.length, 0, "aucun p-code en double dans le fichier officiel");
+  });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Chantier S8-6 — Un shapefile PAR NIVEAU sur le même millésime.
+
+   « Durant la configuration pays, insérer plusieurs shapefiles : adm1 à
+   adm4 pour pouvoir avoir un affichage par type de breakdown sur la carte
+   après. » Le commit construit un millésime ; cette route-ci AJOUTE une
+   maille de contours à celui qui existe.
+   ═══════════════════════════════════════════════════════════════════════ */
+/* Le millésime sur lequel portent les trois tests suivants. Il est pris du
+   COMMIT qui vient de le créer, et non d'un `SELECT … WHERE is_current=1` :
+   l'unicité du millésime courant est cloisonnée par pays (migration 013), et
+   cette requête-là peut rendre le courant d'un autre pays. */
+let vContours;
+const deposerContours = (token, niveau, { shp, dbf, remplacer } = {}) => {
+  let req = request(app).post("/api/geo/shapefile/contours")
+    .set("Authorization", `Bearer ${token}`)
+    .attach("fichier", shp ?? shpMdg(), "c.shp");
+  if(dbf !== null) req = req.attach("fichier", dbf ?? dbfMdg(), "c.dbf");
+  req = req.field("niveau", niveau);
+  if(remplacer !== undefined) req = req.field("remplacer", String(remplacer));
+  return req;
+};
+
+test("contours par niveau : un dépôt adm1 s'ajoute aux communes sans reconstruire l'arbre", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  /* On repart d'un millésime propre : l'arbre des trois communes COD-AB. */
+  const commit = await commitShp(t, { label:"Millésime pour contours par niveau" });
+  assert.equal(commit.status, 200, JSON.stringify(commit.body));
+  vContours = commit.body.versionId;
+  const v = db.prepare("SELECT * FROM geo_version WHERE id=?").get(vContours);
+  const versionsAvant = db.prepare("SELECT COUNT(*) c FROM geo_version").get().c;
+  const unitesAvant = db.prepare("SELECT COUNT(*) c FROM geo_unit WHERE version_id=?").get(v.id).c;
+  const adm3Avant = db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm3'").get(v.id).c;
+  assert.ok(adm3Avant > 0, "le commit a posé les contours des communes");
+
+  /* Un fichier de RÉGION : une seule colonne de niveau, donc une seule unité
+     résolue — la région Anosy. Trois polygones y mènent, le dernier gagne. */
+  const dbfRegion = forgeDbf([{ nom:"ADM1_PCODE", len:10 }, { nom:"ADM1_EN", len:12 }],
+    LIGNES_MDG.map(l => ({ ADM1_PCODE:l.ADM1_PCODE, ADM1_EN:l.ADM1_EN })));
+  const r = await deposerContours(t, "adm1", { dbf:dbfRegion });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.niveau ?? r.body.niveau, "adm1");
+  assert.ok(r.body.écrites > 0, JSON.stringify(r.body));
+
+  /* Aucun millésime créé, aucune unité touchée : c'est la différence avec le commit. */
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM geo_version").get().c, versionsAvant);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM geo_unit WHERE version_id=?").get(v.id).c,
+    unitesAvant);
+  /* Et les communes sont TOUJOURS là : déposer les régions ne les a pas effacées. */
+  assert.equal(db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm3'").get(v.id).c, adm3Avant);
+  assert.equal(db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm1'").get(v.id).c, 1);
+
+  /* Le bilan par niveau vient du serveur, et il porte les deux mailles. */
+  const niveaux = Object.fromEntries(r.body.parNiveau.map(x => [x.level, x.units]));
+  assert.equal(niveaux.adm1, 1);
+  assert.equal(niveaux.adm3, adm3Avant);
+
+  /* La carte peut désormais demander l'une ou l'autre maille. */
+  const carte1 = await request(app).get("/api/geo/geometry?level=adm1")
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(carte1.body.features.length, 1);
+  assert.equal(carte1.body.features[0].properties.level, "adm1");
+  const carte3 = await request(app).get("/api/geo/geometry?level=adm3")
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(carte3.body.features.length, adm3Avant);
+});
+
+test("contours par niveau : un fichier déposé au mauvais niveau est rejeté, pas écrit", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const v = db.prepare("SELECT * FROM geo_version WHERE id=?").get(vContours);
+  const adm1Avant = db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm1'").get(v.id).c;
+
+  /* Le fichier des COMMUNES annoncé comme régions : chaque polygone se résout
+     à une commune, aucun n'est du niveau annoncé. */
+  const r = await deposerContours(t, "adm1", { remplacer:false });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.écrites, 0, "rien n'est écrit sous une étiquette fausse");
+  assert.equal(r.body.rejetes, 3);
+  assert.ok(/niveau adm3/.test(r.body.rejets[0].message), r.body.rejets[0].message);
+  assert.equal(db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm1'").get(v.id).c, adm1Avant,
+    "le niveau visé n'a pas bougé (dépôt sans remplacement)");
+});
+
+test("contours par niveau : le .dbf est exigé, et un millésime doit exister", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const sansDbf = await deposerContours(t, "adm2", { dbf:null });
+  assert.equal(sansDbf.status, 422, JSON.stringify(sansDbf.body));
+  assert.ok(/\.dbf est indispensable/.test(sansDbf.body.error), sansDbf.body.error);
+
+  const mauvaisNiveau = await deposerContours(t, "adm9");
+  assert.equal(mauvaisNiveau.status, 422);
+});
+
+test("contours par niveau : le retrait ne vise qu'une maille, et recompte le millésime", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const v = db.prepare("SELECT * FROM geo_version WHERE id=?").get(vContours);
+  const adm3 = db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm3'").get(v.id).c;
+
+  const r = await request(app).delete("/api/geo/geometry?level=adm1")
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.niveau, "adm1");
+  assert.equal(r.body.supprimes, 1);
+  assert.equal(r.body.reste, adm3, "les communes sont intactes");
+  /* Le compteur du millésime est RECOMPTÉ, pas remis à zéro. */
+  assert.equal(db.prepare("SELECT geom_units FROM geo_version WHERE id=?").get(v.id).geom_units,
+    adm3);
+
+  /* Sans niveau, tout part — et le millésime redevient sans contours. */
+  const tout = await request(app).delete("/api/geo/geometry").set("Authorization", `Bearer ${t}`);
+  assert.equal(tout.body.supprimes, adm3);
+  assert.equal(tout.body.reste, 0);
+  assert.equal(db.prepare("SELECT geom_units FROM geo_version WHERE id=?").get(v.id).geom_units, 0);
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Dérivation des niveaux supérieurs par dissolution.
+
+   « Pour le découpage géographique tu peux utiliser le dbf de adm3 ou adm4
+   pour les dériver. » Un seul fichier — les communes — porte l'arbre
+   entier dans sa table attributaire : les contours des districts et des
+   régions sont ces mêmes polygones réunis par parent.
+   ═══════════════════════════════════════════════════════════════════════ */
+test("dissolution : deux carrés mitoyens n'en font qu'un, sans la frontière intérieure", async () => {
+  const { dissoudre, sommets } = await import("../src/lib/dissoudre.js");
+  /* Deux carrés qui partagent exactement l'arête x=1. Réunis, ils forment un
+     rectangle de quatre coins — pas un assemblage de huit. */
+  const gauche = { type:"Polygon", coordinates:[[[0,0],[0,1],[1,1],[1,0],[0,0]]] };
+  const droite = { type:"Polygon", coordinates:[[[1,0],[1,1],[2,1],[2,0],[1,0]]] };
+  const d = dissoudre([gauche, droite]);
+  assert.equal(d.approximatif, false, d.motif);
+  assert.equal(d.geometry.type, "Polygon");
+  assert.equal(sommets(d.geometry), 5, "quatre coins et la fermeture");
+  const xs = d.geometry.coordinates[0].map(p => p[0]);
+  assert.equal(Math.min(...xs), 0);
+  assert.equal(Math.max(...xs), 2);
+  /* Le point (1,0) intérieur à l'arête disparue ne subsiste pas comme sommet
+     isolé : la frontière est bien tombée. */
+  assert.ok(!d.geometry.coordinates[0].some(p => p[0] === 1),
+    JSON.stringify(d.geometry.coordinates[0]));
+});
+
+test("dissolution : deux carrés disjoints restent deux, et une enclave devient un trou", async () => {
+  const { dissoudre } = await import("../src/lib/dissoudre.js");
+  const a = { type:"Polygon", coordinates:[[[0,0],[0,1],[1,1],[1,0],[0,0]]] };
+  const loin = { type:"Polygon", coordinates:[[[5,5],[5,6],[6,6],[6,5],[5,5]]] };
+  const separes = dissoudre([a, loin]);
+  assert.equal(separes.approximatif, false);
+  assert.equal(separes.geometry.type, "MultiPolygon");
+  assert.equal(separes.geometry.coordinates.length, 2);
+
+  /* Un anneau carré (extérieur + trou) : le trou survit à la dissolution —
+     c'est le cas de l'enclave appartenant à un autre parent. */
+  const anneau = { type:"Polygon", coordinates:[
+    [[0,0],[0,10],[10,10],[10,0],[0,0]],
+    [[4,4],[6,4],[6,6],[4,6],[4,4]] ] };
+  const d = dissoudre([anneau]);
+  assert.equal(d.approximatif, false, d.motif);
+  assert.equal(d.geometry.coordinates.length, 2, "l'extérieur et son trou");
+});
+
+test("dissolution : deux voisins qui ne partagent pas leurs sommets ne sont pas fusionnés d'office",
+  async () => {
+    const { dissoudre } = await import("../src/lib/dissoudre.js");
+    /* Décalage de trois dix-millièmes de degré — une trentaine de mètres : les
+       deux carrés se jouxtent à l'œil mais ne se touchent pas dans les données.
+       La dissolution ne les recolle PAS : elle réunit ce qui est topologiquement
+       adjacent, elle n'invente pas l'adjacence. La couture, elle, se referme
+       parfaitement — chacun de son côté. */
+    const a = { type:"Polygon", coordinates:[[[0,0],[0,1],[1,1],[1,0],[0,0]]] };
+    const b = { type:"Polygon", coordinates:[[[1,0.0003],[1,1.0003],[2,1.0003],[2,0.0003],[1,0.0003]]] };
+    const d = dissoudre([a, b]);
+    assert.equal(d.approximatif, false, d.motif);
+    assert.equal(d.geometry.type, "MultiPolygon");
+    assert.equal(d.geometry.coordinates.length, 2, "les deux contours restent distincts");
+  });
+
+test("dérivation : les districts et la région naissent des communes du millésime", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  /* On repart du jeu COD-AB à trois communes : elles partagent une région et
+     un district, l'arbre est donc adm1 → adm2 → adm3. */
+  const commit = await commitShp(t, { label:"Millésime pour dérivation" });
+  assert.equal(commit.status, 200, JSON.stringify(commit.body));
+  const vid = commit.body.versionId;
+  const compte = (l) => db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level=?").get(vid, l).c;
+  assert.equal(compte("adm3"), 3);
+  assert.equal(compte("adm2"), 0, "rien au-dessus avant la dérivation");
+
+  const r = await request(app).post("/api/geo/geometry/deriver")
+    .set("Authorization", `Bearer ${t}`).send({});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.source, "adm3", "le niveau le plus fin sert de départ");
+  assert.equal(compte("adm2"), 1, "le district est dérivé");
+  assert.equal(compte("adm1"), 1, "la région aussi");
+  assert.equal(compte("adm3"), 3, "et les communes sont intactes");
+
+  /* Le cadre d'un parent dérivé est exactement celui de ses enfants réunis :
+     c'est ce qui dit que rien n'a été perdu ni ajouté. */
+  const cadre = db.prepare(`SELECT p.min_lon pl, p.min_lat pb, p.max_lon pr, p.max_lat pt,
+      MIN(c.min_lon) cl, MIN(c.min_lat) cb, MAX(c.max_lon) cr, MAX(c.max_lat) ct
+    FROM geo_geom p
+    JOIN geo_unit u  ON u.pcode=p.pcode AND u.version_id=p.version_id
+    JOIN geo_unit uc ON uc.parent_pcode=u.pcode AND uc.version_id=u.version_id
+    JOIN geo_geom c  ON c.pcode=uc.pcode AND c.version_id=uc.version_id
+    WHERE p.version_id=? AND p.level='adm2' GROUP BY p.pcode`).get(vid);
+  assert.equal(cadre.pl, cadre.cl); assert.equal(cadre.pb, cadre.cb);
+  assert.equal(cadre.pr, cadre.cr); assert.equal(cadre.pt, cadre.ct);
+
+  /* Deuxième passage : un niveau déjà pourvu n'est pas recalculé en silence. */
+  const encore = await request(app).post("/api/geo/geometry/deriver")
+    .set("Authorization", `Bearer ${t}`).send({});
+  assert.equal(encore.body.total, 0, JSON.stringify(encore.body.etapes));
+  assert.ok(encore.body.etapes.some(e => /déjà présents/.test(e.saute || "")),
+    JSON.stringify(encore.body.etapes));
+  /* Sauf demande explicite. */
+  const force = await request(app).post("/api/geo/geometry/deriver")
+    .set("Authorization", `Bearer ${t}`).send({ remplacerExistants:true });
+  assert.ok(force.body.total > 0, JSON.stringify(force.body));
+
+  /* Et la carte sert désormais les trois mailles. */
+  for(const [niv, n] of [["adm1",1],["adm2",1],["adm3",3]]){
+    const c = await request(app).get(`/api/geo/geometry?level=${niv}`)
+      .set("Authorization", `Bearer ${t}`);
+    assert.equal(c.body.features.length, n, `la carte sert ${niv}`);
+  }
+});
+
+test("dérivation : refusée sans contours, et réservée à l'administration", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await request(app).delete("/api/geo/geometry").set("Authorization", `Bearer ${t}`);
+  const vide = await request(app).post("/api/geo/geometry/deriver")
+    .set("Authorization", `Bearer ${t}`).send({});
+  assert.equal(vide.status, 409, JSON.stringify(vide.body));
+  assert.ok(/aucun contour/.test(vide.body.error), vide.body.error);
+
+  const te = (await login("listedit@test.local", "ListEditMotDePasse1")).body.token;
+  assert.equal((await request(app).post("/api/geo/geometry/deriver")
+    .set("Authorization", `Bearer ${te}`).send({})).status, 403);
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   « Liste des activités = activity tag (valeur unique) ».
+
+   Le tag est la clé de jointure de dix colonnes de texte : deux activités
+   qui le partagent rendent ces colonnes ambiguës, et aucune requête ne
+   peut dire laquelle des deux elles désignent (migration 028).
+   ═══════════════════════════════════════════════════════════════════════ */
+test("activité : le tag est unique, et le doublon est refusé en nommant l'activité en place", async () => {
+  const existante = db.prepare("SELECT * FROM activity_categories LIMIT 1").get();
+  const r = await request(app).post("/api/activities").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Une autre activité qui vole un tag", tag: existante.tag.toLowerCase() });
+  assert.equal(r.status, 409, JSON.stringify(r.body));
+  assert.ok(new RegExp(existante.name.slice(0, 12)).test(r.body.error), r.body.error);
+  assert.ok(/clé de jointure/.test(r.body.error), r.body.error);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM activity_categories WHERE tag=? COLLATE NOCASE")
+    .get(existante.tag).c, 1);
+});
+
+test("activité : un tag espacé est normalisé, pas dédoublé", async () => {
+  /* « FBA _CCS » et « FBA_CCS » sont le même tag : le classeur du PAM porte
+     les deux écritures, et les laisser cohabiter ferait deux activités. */
+  const a = await request(app).post("/api/activities").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Activité à tag espacé", tag:"  tst _esp  " });
+  assert.equal(a.status, 201, JSON.stringify(a.body));
+  assert.equal(a.body.activity.tag, "TST_ESP");
+
+  const b = await request(app).post("/api/activities").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Le même tag autrement écrit", tag:"TST _ ESP" });
+  assert.equal(b.status, 409, "la seconde écriture du même tag est refusée");
+
+  /* Et la base elle-même refuse, index unique à l'appui : la garde de la
+     route n'est pas la seule défense. */
+  assert.throws(() => db.prepare(
+    "INSERT INTO activity_categories (id,name,tag) VALUES ('act_dbl','Doublon direct','tst_esp')").run(),
+    /UNIQUE/);
+  await request(app).delete(`/api/activities/${a.body.activity.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+});
+
+test("activité : aucun tag en double dans le référentiel servi", async () => {
+  const r = await request(app).get("/api/activities").set("Authorization", `Bearer ${adminToken}`);
+  const tags = r.body.activities.map(a => a.tag.toUpperCase());
+  assert.equal(new Set(tags).size, tags.length,
+    "la liste des activités est la liste des tags, chacun une fois");
+  assert.ok(tags.every(t => t && !/\s/.test(t)), "aucun tag vide ni espacé");
 });

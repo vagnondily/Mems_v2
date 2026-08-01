@@ -7,6 +7,7 @@
     "install:all": "cd server && npm install && cd ../web && npm install",
     "migrate": "cd server && npm run migrate",
     "seed": "cd server && npm run seed",
+    "seed:reel": "cd server && npm run seed:reel",
     "dev": "bash scripts/dev.sh",
     "dev:server": "cd server && npm run dev",
     "dev:web": "cd web && npm run dev",

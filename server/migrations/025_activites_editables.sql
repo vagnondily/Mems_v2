@@ -1,0 +1,22 @@
+-- =====================================================================
+--  Le référentiel des activités devient éditable  (chantier S4 / S7)
+--
+--  `activity_categories` (001_init.sql:18) est la LISTE CANONIQUE des
+--  activités du programme — chaque ligne porte un nom, un tag (le code :
+--  URT, SMP, NTA…), un domaine programme et un drapeau actif —, et elle est
+--  référencée par clé étrangère depuis `sites` et `coverage_params`. Mais
+--  aucune route ne l'écrivait : elle n'existait qu'au semis, et l'écran ne
+--  manipulait que des reflets épars (la liste de tags et la liste de noms,
+--  rangées dans les réglages). C'est la fragmentation que l'étoile polaire
+--  S4 veut supprimer : « l'activité, configurée une fois, réutilisée
+--  partout ».
+--
+--  On lui donne donc sa route d'administration (routes/activities.js), sur
+--  le modèle des bureaux. Comme eux, elle a besoin d'une colonne `rev` pour
+--  le verrouillage optimiste : deux administrateurs qui éditent la même
+--  activité ne doivent pas s'écraser en silence.
+--
+--  Naît à 1 partout ; le défaut couvre les lignes existantes sans reprise.
+-- =====================================================================
+
+ALTER TABLE activity_categories ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;

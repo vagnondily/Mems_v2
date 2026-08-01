@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
+import { randomBytes } from "crypto";
 import { config } from "../config.js";
 import { db } from "../db.js";
 import { newId } from "./crypto.js";
@@ -16,6 +17,27 @@ export function passwordProblems(pw){
   if(!/[0-9]/.test(pw||"")) p.push("un chiffre");
   if(/^(.)\1+$/.test(pw||"")) p.push("autre chose qu'un caractère répété");
   return p;
+}
+
+/* Un mot de passe provisoire GÉNÉRÉ, jamais choisi (demande du 01/08 : « l'admin
+   ne connaît pas le mot de passe des utilisateurs »). Le serveur le forge, le
+   renvoie UNE seule fois à l'administrateur pour qu'il le communique, ne le
+   stocke qu'en empreinte, et pose `must_change_pw`.
+
+   Quinze caractères tirés au sort, mais les trois premiers fixent une minuscule,
+   une majuscule et un chiffre : la politique passwordProblems est ainsi TOUJOURS
+   satisfaite, sans boucle de rejet. L'alphabet écarte les caractères qu'on
+   confond en lisant à voix haute (0/O, 1/l/I) — ce mot de passe est fait pour
+   être dicté. Le biais du modulo est sans importance pour un secret jetable qui
+   doit être remplacé à la première connexion. */
+export function motDePasseProvisoire(){
+  const bas = "abcdefghijkmnpqrstuvwxyz", haut = "ABCDEFGHJKLMNPQRSTUVWXYZ", chiffres = "23456789";
+  const tout = bas + haut + chiffres;
+  const o = randomBytes(15);
+  const pick = (src, i) => src[o[i] % src.length];
+  let s = pick(bas, 0) + pick(haut, 1) + pick(chiffres, 2);
+  for(let i = 3; i < 15; i++) s += pick(tout, i);
+  return s;
 }
 
 export function issueToken(user, req){

@@ -1,9 +1,83 @@
 import { useEffect, useMemo, useState } from "react";
-import { BarChart3, Bell, CalendarRange, Check, ChevronDown, Cog, Database, FileText, LayoutDashboard, LogOut, MapPin, ShieldCheck } from "lucide-react";
-import { Badge, BrandMark, Empty } from "../components/ui.jsx";
+import { BarChart3, Bell, CalendarRange, Check, ChevronDown, Cog, Database, FileText, KeyRound, LayoutDashboard, LogOut, MapPin, Save, ShieldCheck, UserCog } from "lucide-react";
+import { Badge, Btn, BrandMark, Empty, Field, Input, Modal, Note } from "../components/ui.jsx";
+import { api } from "../lib/api.js";
 import { clsx } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
 import { SEVERITES, ecrireLues, elaguerLues, lireLues, tachesUtilisateur } from "../lib/taches.js";
+
+/* ══════════════════ Mon compte ══════════════════
+   Self-service du compte, ouvert depuis le menu du compte de l'en-tête (demande du
+   01/08) : accessible à TOUT rôle, y compris ceux qui n'ont pas l'onglet Paramètres.
+   On y consulte ses infos, on change son mot de passe à tout moment, et on définit
+   son identifiant de connexion. Aucune donnée d'un autre compte n'y transite. */
+function AccountModal({ open, me, db, notify, onMe, onClose }){
+  const [ident,setIdent] = useState("");
+  const [pw,setPw] = useState({ current:"", next:"", confirm:"" });
+  const [busy,setBusy] = useState(false);
+  useEffect(()=>{ if(open){ setIdent(me.username||""); setPw({ current:"", next:"", confirm:"" }); } },[open, me]);
+  if(!open) return null;
+
+  const enregistrerIdent = async () => {
+    setBusy(true);
+    try{ const r = await api.setUsername(ident.trim());
+      onMe?.(r.user);
+      notify(ident.trim() ? "Identifiant enregistré" : "Identifiant retiré", "ok");
+    }catch(e){ notify(e.message, "err"); }
+    setBusy(false);
+  };
+  const changerMdp = async () => {
+    if(pw.next !== pw.confirm){ notify("La confirmation ne correspond pas", "err"); return; }
+    setBusy(true);
+    try{ await api.changePassword(pw.current, pw.next);
+      setPw({ current:"", next:"", confirm:"" });
+      notify("Mot de passe modifié — les autres sessions sont fermées", "ok");
+    }catch(e){ notify(e.message, "err"); }
+    setBusy(false);
+  };
+
+  const info = [["Nom", `${me.firstName} ${me.lastName}`.trim() || "—"],
+    ["Fonction", me.title || "—"], ["Adresse électronique", me.email],
+    ["Rôle", db.roles[me.role]?.label || me.role],
+    ["Rattachement", me.office || (me.tpm ? `Prestataire — ${me.tpm}` : "Tous les bureaux")]];
+
+  return (
+    <Modal open onClose={onClose} title="Mon compte" subtitle="Vos informations, votre identifiant et votre mot de passe">
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 mb-4">
+        {info.map(([k,v])=>(
+          <div key={k} className="flex flex-col">
+            <span className="f10 uppercase tracking-wide font-bold text-slate-400">{k}</span>
+            <span className="f13 text-slate-800">{v}</span></div>))}
+      </div>
+
+      <div className="border-t border-slate-100 pt-3">
+        <div className="font-semibold text-slate-800 f13 mb-1.5 flex items-center gap-2"><UserCog size={15}/> Identifiant de connexion</div>
+        <Note>Facultatif. Défini, il permet de se connecter avec cet identifiant à la place de l'adresse
+          électronique. 3 à 40 caractères : lettres minuscules, chiffres, point, tiret, tiret bas.</Note>
+        <div className="flex items-end gap-2">
+          <Field label="Identifiant" className="flex-1"><Input value={ident}
+            onChange={e=>setIdent(e.target.value)} placeholder="prenom.nom" /></Field>
+          <Btn kind="sec" icon={Save} disabled={busy || (ident.trim()===(me.username||""))} onClick={enregistrerIdent}>
+            {me.username ? "Mettre à jour" : "Définir"}</Btn>
+        </div>
+      </div>
+
+      <div className="border-t border-slate-100 pt-3 mt-1">
+        <div className="font-semibold text-slate-800 f13 mb-1.5 flex items-center gap-2"><KeyRound size={15}/> Mot de passe</div>
+        <div className="grid grid-cols-3 gap-x-3">
+          <Field label="Mot de passe actuel"><Input type="password" value={pw.current}
+            onChange={e=>setPw(p=>({...p,current:e.target.value}))} /></Field>
+          <Field label="Nouveau mot de passe" hint="12 caractères minimum"><Input type="password" value={pw.next}
+            onChange={e=>setPw(p=>({...p,next:e.target.value}))} /></Field>
+          <Field label="Confirmer"><Input type="password" value={pw.confirm}
+            onChange={e=>setPw(p=>({...p,confirm:e.target.value}))} /></Field>
+        </div>
+        <Btn icon={KeyRound} className="mt-1"
+          disabled={busy || !pw.current || pw.next.length<12 || !pw.confirm} onClick={changerMdp}>
+          Changer le mot de passe</Btn>
+      </div>
+    </Modal>);
+}
 
 /* ══════════════════ Coquille ══════════════════ */
 /* Les destinations, et rien d'autre. Chaque écran déclare lui-même ses
@@ -152,9 +226,10 @@ function Cloche({ db, me, allowed, setTab, ouvert, setOuvert }){
 
 /* `allowed` est calculé une seule fois par App (resolveTabs) et transmis ici :
    deux règles divergentes laissaient un compte sans aucune navigation. */
-function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, allowed = [] }){
+function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, notify, onMe, allowed = [] }){
   const [menu,setMenu] = useState(false);
   const [cloche,setCloche] = useState(false);
+  const [compte,setCompte] = useState(false);
   useEffect(()=>{ const h=()=>{setMenu(false);setCloche(false);};
     window.addEventListener("click",h); return ()=>window.removeEventListener("click",h); },[]);
   const initials = (me.firstName?.[0]||"") + (me.lastName?.[0]||"");
@@ -232,9 +307,12 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, allowed = [
                     <Badge tone="b">{db.roles[me.role]?.label}</Badge>
                     <Badge>{me.office || "Tous les bureaux"}</Badge></div>
                 </div>
+                <button onClick={()=>{setCompte(true);setMenu(false);}}
+                  className="flex items-center gap-2 w-full px-4 py-2.5 f13 text-slate-700 hover:bg-slate-50">
+                  <UserCog size={14} /> Mon compte</button>
                 {allowed.includes("settings") && (
                   <button onClick={()=>{setTab("settings");setMenu(false);}}
-                    className="flex items-center gap-2 w-full px-4 py-2.5 f13 text-slate-700 hover:bg-slate-50">
+                    className="flex items-center gap-2 w-full px-4 py-2.5 f13 text-slate-700 hover:bg-slate-50 border-t border-slate-100">
                     <Cog size={14} /> Paramètres de l'application</button>)}
                 <button onClick={onLogout} className="flex items-center gap-2 w-full px-4 py-2.5 f13 text-slate-700 hover:bg-slate-50 border-t border-slate-100">
                   <LogOut size={14} /> Se déconnecter</button>
@@ -253,6 +331,7 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, allowed = [
           <b className="font-semibold text-slate-600">MEMS</b> · Monitoring and Evaluation
           Management System · exercice {db.year}</span>
       </footer>
+      <AccountModal open={compte} me={me} db={db} notify={notify} onMe={onMe} onClose={()=>setCompte(false)} />
     </div>);
 }
 /* Titre de page. Il était à 23 px en gras, suivi d'un paragraphe à 13 px, au-dessus

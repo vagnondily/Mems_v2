@@ -25,6 +25,12 @@ module s'appuie sur le précédent :
    le reste s'y accroche. Et la **configuration du pays** (découpage géographique importé par
    shapefile/dbf) devient **LA base de référence adm0→adm4 de tout le système** — sites,
    caseload, plan de suivi, carte, dashboards y puisent.
+   **Confirmé le 01/08 :** ce référentiel est la **source unique des cascades de filtre** —
+   région → district → commune → fokontany — partout où une localisation est utilisée : le
+   **filtrage de la carte** ET tout paramètre/écran qui manipule un lieu. Conséquence de
+   conception : les sélecteurs de filtre (carte, sites, ciblage, plan de suivi, TPM…) se
+   construisent depuis le millésime courant du pays, pas depuis des listes séparées qui
+   divergeraient. Un lieu se choisit toujours par la même cascade, alimentée par ce référentiel.
 2. **Suivi-évaluation** : Planification → Suivi → **Dashboard des indicateurs de suivi de
    processus** sur données **Kobo v1 mappées** (chantier T). Jeu de test : `List Sites per
    Tag.xlsx` (le fichier « tag ») pour les sites par activité.
@@ -49,7 +55,7 @@ Ce document décrit un état daté. Ce qui a été livré depuis est consigné i
 qui le porte — le corps du document reste écrit au moment de l'audit, et le lire sans ce
 journal donnerait une image fausse de ce qui reste à faire.
 
-**Tests au dernier commit : 217 côté serveur, 44 côté web, 0 échec. Audit de production :
+**Tests au dernier commit : 263 côté serveur, 45 côté web, 0 échec. Audit de production :
 aucun avis grave, ni serveur ni web.**
 
 | Commit | Ce qui est livré | Effet sur ce document |
@@ -64,6 +70,20 @@ aucun avis grave, ni serveur ni web.**
 | `8ebe2f1` | **Exécution de scripts R et SPSS sur le serveur** (`lib/moteur.js`, `POST /api/scripts/:id/executer`) et **console d'administration de l'instance** (`/api/admin` : sessions, journal de sécurité, santé du fichier de base, sauvegarde et restauration) | Répond aux deux dernières demandes. **Le rôle `super` cesse d'être un doublon d'`admin`** : `requireSuper` (lib/auth.js) marque la frontière que la matrice `CAPS` ne savait pas exprimer — administrer *l'installation* et non son contenu. **La sauvegarde et la restauration demandées en Paramètres sont livrées ici**, où elles ont leur place. |
 | `03eb422` | **La visite saisie à la main devient l'exception justifiée** (migration 019, `lib/visites.js`) et **référentiel de codes d'identification importable** (migration 020, `lib/codes.js`, type d'import `codes`, écran Paramètres → Référentiels de codes) | **SMP est rattachable, pour de bon** : le référentiel chargé pose les alias, et le résolveur rattache la soumission par son code école à confiance 1,0. La ligne « SMP reste non rattachable » du bas de ce document tombe. **Un défaut de destruction de données est fermé** : décocher un mois effaçait la visite du mois quelle qu'elle soit, y compris une visite ODK portant sa soumission. |
 | *(ce commit)* | **Justificatif propre à chaque source de collecte** (migration 021, `lib/authSortante.js`) : schémas d'authentification déclarables (`porteur`/Bearer, `jeton`/Token pour Kobo, `basique`/Basic, session ODK Central renouvelée), **deux secrets** — un justificatif durable et un jeton de session court qui en dérive, mis en cache et renouvelé —, épreuve de connexion réelle qui distingue les cinq causes d'échec, **zoom souris et bascule des contours sur la carte**, et la **synthèse des 27 documents** reçus (indicateurs CRF, rations PDD, shapefile, règles QC) | Répond à « il faut un token à part l'API » : le schéma est une donnée de la source, plus une hypothèse du code — **Kobo, jusqu'ici déclarable mais muet, envoyait `Bearer` au lieu de `Token`**. Le « Jeton général » ODK, qui promettait un repli que le serveur refusait, est supprimé. Ouvre les **chantiers R** (catalogue de rations, fiche de saisie PDD) et **S** (réorganisation produit + UI), et la **synthèse documentaire** transforme les chantiers N et P d'« inventer » en « importer ». |
+| `33a5def` | **Import géo unifié et intégré au pays** : un seul chemin (serveur) monté dans la fiche du pays, les deux anciens flux navigateur retirés, le lecteur client `web/src/lib/shapefile.js` supprimé ; **lecture d'un `.shp` sans `.dbf`** (polygones « Polygone N » à adm3, comme QGIS) ; plafond porté à **150 Mo** ; rattachement du millésime au pays (bascule `is_current` cloisonnée). Vérifié sur le fichier réel Madagascar adm3 (1701 polygones, deux chemins). | Ferme la restriction S3 « trois flux géo coexistants » et la demande « lire un shapefile sans dbf ». L'import du découpage devient une étape de la config pays (S7), non un écran isolé. |
+| `cb76519` | **Indicateurs scindés en CRF et XLSForm** (migration 022) : `indicators` porte `kind`/`level`/`activity`, l'écran Paramètres → Indicateurs présente deux sous-onglets (résultats / processus) avec colonnes, fiche et CSV propres à chaque nature ; toute ligne existante devient CRF. Test d'aller-retour des deux natures ajouté (221 serveur). | Livre la **scission structurelle du chantier P** demandée le 01/08. Prépare la colonne « indicateur » de l'étoile polaire S4 et l'étape indicateurs du parcours fondateur S7. |
+| `a475818` | **Compte en self-service + mots de passe provisoires générés** (migration 023) : « Mon compte » dans le menu de l'en-tête (infos, changement de mot de passe, **identifiant de connexion** `username` unique — connexion par courriel OU identifiant) ; la **création et la réinitialisation admin GÉNÈRENT** un provisoire affiché une seule fois (`POST /api/users/:id/reset-password`), posent `must_change_pw` et ferment les sessions. Tests : identifiant + connexion par identifiant, provisoire non rejoué, reset qui révoque (224 serveur, 45 web). | Répond à « un user devrait pouvoir regarder ses infos, changer son mot de passe, créer un username » et « l'admin ne connaît pas le mot de passe, il réinitialise et le provisoire s'affiche que lui ». Ferme la partie compte de la réorganisation S. |
+| `912c717` | **Un éditeur peut planifier les suivis** (S6) : route `PUT /api/planning-config` en droit éditeur pour les **paramètres MRE** et le **calendrier de collecte**, ce dernier écrit dans sa **table `outcome_plan`** (migration 024 reprend puis purge l'ancien reflet dans `settings`). L'édition MRE + calendrier passe de `admin` à `edit` ; `mmr`/`outcomePlan` quittent le transport `settings` pour le leur. Tests : éditeur autorisé, lecteur refusé, décochage qui efface, reflet purgé (225 serveur). | Ferme S6 et la « restriction 2 » (le blob ombrait la table). L'opérationnel — planifier, saisir — est bien délégué à l'éditeur ; l'admin garde la vraie configuration. |
+| `d546f49` | **Référentiel des activités éditable** (migration 025, `routes/activities.js`) : `activity_categories` — la liste canonique référencée par les sites et la couverture — devient administrable (CRUD admin, verrou optimiste `rev`, suppression refusée si référencée), exposée en `db.activities`, avec l'onglet Paramètres → **Activités**. L'indicateur de processus (XLSForm) se rattache à cette source canonique, plus aux reflets épars. Tests : lecture/création/révision/refus de suppression, éditeur en lecture seule (226 serveur). | Livre la **colonne « activité » de l'étoile polaire S4** (« configurée une fois, réutilisée partout ») et la brique Activités du parcours fondateur S7. Gating **admin** conformément à la décision du 01/08 (l'assistant fondateur sera `super`, les référentiels restent `admin`). |
+| *(ce commit)* | **L'activité EST son tag, en valeur unique** (migration 028) : « liste des activités = activity tag (valeur unique) ». Le schéma imposait l'unicité du NOM — un libellé, qui se traduit et se reformule — et laissait le TAG libre, alors que **dix colonnes le portent en texte** comme clé de jointure : deux activités partageant un tag rendaient ces colonnes ambiguës. La migration **normalise** (espaces intérieurs retirés, majuscules : « FBA _CCS » = « FBA_CCS »), **fusionne** les doublons en reportant les clés étrangères sur la ligne la plus ancienne — aucun site détaché — puis **contraint** par un index unique insensible à la casse. La route refuse le doublon en NOMMANT l'activité en place, le semis réel se rapproche par tag seul et désambiguïse un nom déjà pris plutôt que de perdre une ligne. Tests : 263 serveur, 45 web. | Répond à la demande du 01/08. Vérifié aussi hors suite : trois activités « URT », « urt » et « UR T » portant chacune des sites fusionnent en une, tous les rattachements préservés. |
+| `b6f9d43` | **Dérivation des niveaux supérieurs par dissolution** (`lib/dissoudre.js`, `POST /api/geo/geometry/deriver`) : « tu peux utiliser le dbf de adm3 ou adm4 pour les dériver ». Les contours d'un district sont ceux de ses communes **réunies** — pas empilées : une frontière intérieure est parcourue deux fois en sens inverse par les deux polygones qui la partagent, ces parcours **s'annulent**, et les arêtes survivantes sont recousues en anneaux (puis débarrassées de leurs sommets alignés). Un MultiPolygon des enfants aurait donné un remplissage juste mais un trait faux — or le trait EST l'information d'une carte de découpage. La remontée est en cascade (communes → districts → régions → pays), un parent à la fois, et n'écrase jamais un niveau déjà déposé sans demande explicite. Branchée dans `seed:reel`. **Vérifié sur le vrai fichier Madagascar : 120 districts, 24 régions et le pays dérivés, 0 approximation, −56 % de sommets, et le cadre de chaque parent exactement égal à celui de ses enfants réunis.** Tests : 260 serveur, 45 web. | Ferme la réserve « ⚠ seul adm3 est fourni » du point 6. **adm4** reste à déposer : il est plus fin qu'adm3, il ne se dérive pas. |
+| `9ba0969` | **Un shapefile PAR NIVEAU sur le même millésime** (S8-6, `POST /api/geo/shapefile/contours`) : les contours s'AJOUTENT maille par maille (adm1→adm4) au découpage courant, sans reconstruire l'arbre — quatre dépôts, un millésime, au lieu de quatre millésimes concurrents dont un seul serait courant. `reset` ne vide QUE le niveau déposé, et un contour qui se résout à un AUTRE niveau est **rejeté avec son motif** (sans quoi un fichier de communes déposé dans l'emplacement des régions s'écrirait sans erreur et la carte afficherait 1 701 contours sous l'étiquette « régions »). `DELETE /geo/geometry?level=` retire une seule maille et **recompte** le millésime. Écrans : tableau « Contours par niveau » dans la fiche du pays (unités, contours, complétude, dépôt/remplacement/retrait par niveau) ; le sélecteur de la carte annonce ce que chaque niveau porte et dit quand il ne porte rien. Vérifié sur le vrai fichier Madagascar : 1 701 contours à adm3, et le même fichier annoncé adm1 entièrement rejeté sans toucher aux communes. Tests : 255 serveur, 45 web. | Ferme le point 6 du chantier S8. **Reste** : adm1/adm2/adm4 ne sont pas fournis — soit le propriétaire les dépose, soit on implémente la dissolution d'adm3 par p-code parent (non fait). |
+| `e6ba1ba` | **Semis des données RÉELLES** (S8-5, migration 027, `src/seed-reel.js`, `npm run seed:reel`) : les TABLES sont préremplies depuis `docs/`, pas des constantes `D_*` — **58 tags d'activité** (Annex 5 Activity tags), **842 indicateurs** de la masterlist rangés par nature ET par **catégorie thématique** filtrable (Annex 2 Outcome 94 → CRF/outcome ; Annex 3 Output 157 → CRF/output ; Detailed Output 566 → other output ; Annex 4 Crosscutting 25 → nouveau niveau `crosscutting`), et le **découpage de Madagascar** (1 701 communes, 120 districts, 24 régions, 1 701 contours, aucun p-code en double). Idempotent : relancé, il corrige sans dupliquer et **ne défait aucune saisie** (cible, sens, panier d'analyse préservés). L'écran des indicateurs gagne ses filtres (niveau, catégorie, recherche) et sa pagination — à 842 lignes, ils SONT l'écran. Tests : 251 serveur (sur les vrais fichiers, base à part), 45 web. | Ferme le point 5 du chantier S8. Le compte réel des onglets rectifie celui du cadrage (les 268/207/567/204 étaient des hauteurs de feuille, pas des indicateurs). |
+| `8f8ae0c` | **Mappage puis validation explicite** (S8-4) : `POST …/renommer-code/plan` rend la **correspondance ancien → nouveau, table par table**, avec le nombre de lignes touchées et son **empreinte** — et n'écrit rien. L'écriture EXIGE ce jeton, et le plan est **recalculé** avant d'appliquer : si la base a bougé entre l'affichage et le clic (ligne apparue, item créé qui transforme le renommage en fusion), les empreintes diffèrent, rien ne s'écrit, et le plan à jour est rendu. Écran : fiche de renommage en deux temps (calculer la correspondance → valider et appliquer), tableau de mappage, avertissement de fusion, bilan avec **reliquat**. Aucun état stocké côté serveur — l'empreinte se recalcule, donc rien n'expire ni ne se nettoie. Tests : 248 serveur, 45 web (e2e : le rail des onze listes, l'usage affiché, la validation fermée tant que la correspondance n'est pas calculée). | Ferme le point 4 du chantier S8. Même esprit que `connector_mapping` : rien ne s'écrase en silence. |
+| `7dc4e75` | **Renommage de code en cascade, réservé au super** (S8-3, `lib/renommage.js`, `POST /api/listes/:cle/:id/renommer-code`) : une **transaction** réécrit la table maîtresse ET toutes ses filles — pas un supprimer-recréer, l'item garde son identifiant. Deux modes, et le second ne se devine jamais : **renommer** (code libre) ou **fusionner** (code déjà pris → les lignes filles sont reportées, les clés étrangères repointées, l'item d'origine disparaît), le mode étant CONFIRMÉ par l'appelant. La réponse porte un **reliquat** — le nombre de lignes portant encore l'ancien code, qui doit être zéro : la seule preuve que la cascade a été complète. Tests : 243 serveur (cascade sur les dix colonnes d'un tag d'activité, fusion, refus admin). | Ferme le point 3 du chantier S8. L'écran de correspondance et la validation explicite (point 4) viennent au lot suivant ; la route calcule déjà le plan et le rend en cas de refus. |
+| `17c6606` | **Intégrité référentielle généralisée** (S8-2) : le **code d'identification est préservé** par toute mise à jour — `PUT /api/listes/:cle/:id` REFUSE un code différent (409) au lieu de l'ignorer poliment, et nomme la voie sûre (renommage en cascade) ; **`routes/activities.js` cesse de réécrire le tag**, ce qui laissait dix colonnes de texte désigner un code disparu sans qu'aucune requête n'échoue ; l'usage d'une activité se compte désormais sur les **douze** colonnes du registre et non sur les deux clés étrangères ; **désactiver devient un geste à part** (`PUT …/:id/actif`), avec verrou optimiste, plutôt qu'un enregistrement complet qui pouvait écraser un libellé. Écrans : tag en lecture seule, total référencé, bascule du statut d'un clic. Tests : 237 serveur, 45 web. | Ferme le point 2 du chantier S8. Le refus n'est plus une précaution générale : il **énumère** ce qui retient l'item, table par table, et propose la désactivation. |
+| `7c72485` | **Gestionnaire de listes typées, en maître-détail** (S8-1, migration 026, `lib/listes.js`, `routes/listes.js`, écran Paramètres → **Listes paramétrables**) : **onze** référentiels servis par UNE route — activités, denrées, modalités, partenaires, types de partenariat, tiers/TPM, sous-types de PI, types de site, types de suivi, durées, domaines programme. Rail des TYPES à gauche, CRUD + **validation de la liste** à droite. Quatre listes gardent leur table native (`activity_categories`, `partners`, `poi_subtypes`, `tpm`) ; les sept autres, qui n'existaient que comme constantes du navigateur, obtiennent la table `list_item`. Verrou optimiste `rev`, usage compté sur les vraies tables filles, suppression refusée si référencée. L'énumération `CHECK` de `pdd.modality` est levée (table reconstruite) : une liste paramétrable ne peut pas être figée par le schéma. Tests : 233 serveur, 45 web. | Livre le point 1 du chantier S8 et généralise le patron `offices`/`activities` à tout le paramétrage. Le **code d'identification est la valeur que portent les tables filles** — c'est ce qui rend l'intégrité (S8-2) et le renommage en cascade (S8-3) calculables depuis une seule déclaration. |
+| `aa4d2cb` | **Parcours de configuration guidée** (S7, `SetGuided`) : onglet Paramètres → Configuration guidée réservé au super, cinq briques fondatrices (pays → découpage → activités → indicateurs → sources) sur une page, état lu de la base, progression « X / 5 prêtes », bouton vers chaque onglet. e2e : le super voit l'onglet, il s'ouvre, le décompte s'affiche (45 web). | Livre l'exigence S7 « la config en une fois, par le super user, avec mise à jour » : un assistant-orchestrateur qui enchaîne les référentiels sans les dupliquer, gaté super conformément à la décision du 01/08. |
 
 ### La visite à la main : ce qui change, et pourquoi
 
@@ -1210,7 +1230,7 @@ contenu à droite :**
 |---|---|
 | Organisation | Général · Pays · Bureaux · Périmètre des bureaux |
 | Référentiels géographiques | Localités (+ import shapefile/contours) |
-| Référentiels M&E | **Activités** · Indicateurs · Calculs · Rations · Codes d'identification |
+| Référentiels M&E | **Activités** · Indicateurs (**CRF** + **XLSForm/processus**) · Calculs · Rations · Codes d'identification |
 | Sources de données | ODK Central · Connecteurs |
 | Rapports | Modèles de rapport |
 | Système | **Mon compte** · API · Utilisateurs · À propos |
@@ -1218,6 +1238,19 @@ contenu à droite :**
 Même principe pour la gestion des listes : des sous-catégories plutôt qu'un écran surchargé.
 Chaque onglet est parcouru, testé et corrigé un par un — l'objectif est que TOUT fonctionne,
 pas seulement que ce soit mieux rangé.
+
+**✅ LIVRÉ (01/08/2026).** Le self-service « Mon compte » est ouvert depuis le menu du compte
+de l'en-tête (composant `AccountModal` dans `Shell.jsx`), donc accessible à TOUT rôle, y
+compris ceux sans l'onglet Paramètres : on y voit ses infos, on change son mot de passe à tout
+moment, on définit son **identifiant de connexion** (migration 023 : `username` unique et
+facultatif, utilisable à la place du courriel — `login` cherche `email = ? OR username = ?`).
+La **réinitialisation admin génère** un provisoire affiché une seule fois
+(`POST /api/users/:id/reset-password`), la **création génère** aussi le provisoire quand
+l'admin n'en fournit pas (il ne le choisit plus), les deux posant `must_change_pw` et fermant
+les sessions ouvertes. Tests : aller-retour identifiant + connexion par identifiant, provisoire
+généré non rejoué, reset qui ferme les sessions (224 serveur, 45 web). **Reste** : brancher
+« Mon compte » aussi dans la future réorganisation Paramètres (groupe Système) si l'on veut un
+second point d'entrée pour les admins.
 
 **« Mon compte » (demande du 01/08) — self-service du compte, distinct de l'administration
 des utilisateurs.** Aujourd'hui l'écran Utilisateurs est réservé aux administrateurs, et un
@@ -1230,7 +1263,189 @@ identifiant de connexion (en plus du courriel) ou seulement un nom affiché — 
 au minimum le champ et son unicité. Accessible depuis le menu du compte (l'en-tête), pas
 seulement depuis Paramètres.
 
+**Réinitialisation par l'admin — le mot de passe provisoire est GÉNÉRÉ, pas choisi (demande
+du 01/08).** Règle du propriétaire : « l'administrateur ne connaît pas le mot de passe des
+utilisateurs, mais peut faire une réinitialisation, et le mot de passe provisoire s'affiche
+que lui pour qu'il le communique ; une fois ce reset fait et l'utilisateur connecté avec le
+provisoire, on lui demande d'en changer à la première connexion. » État actuel : le forçage
+de changement (`must_change_pw`, écran « Nouveau mot de passe ») EXISTE déjà (lib/auth.js,
+Login.jsx), MAIS à la création et à la réinitialisation (`routes/users.js:48,96`) **c'est
+l'admin qui TAPE le mot de passe** — donc il le connaît. À changer : un bouton
+« Réinitialiser » qui **génère** un mot de passe provisoire côté serveur, le **renvoie une
+seule fois** dans la réponse pour que l'admin le lise et le communique (jamais stocké en
+clair, jamais renvoyé une seconde fois), et pose `must_change_pw=1`. Idem à la création : le
+provisoire est généré, l'admin ne le choisit pas. C'est un changement d'API (la route ne
+prend plus de mot de passe en entrée pour ces deux cas) — le brief du prochain lot Utilisateurs.
+
+### S5 — Deux directives de cadrage (01/08/2026)
+
+- **Priorité PROD, pas la démo.** « Oublie pour le moment la partie démo, concentre-toi sur la
+  prod. » Ne pas investir dans le jeu de démonstration / le seed ; construire pour l'usage
+  réel. (La base de démo reste utile à MES vérifications, mais les fonctionnalités visent la
+  prod.)
+- **Ne pas babysitter la CI.** « Les tests CI, ne t'en préoccupe pas pour le moment, laisse-le
+  tourner. » La vérification LOCALE (deux suites, build, audits, navigateur, migration) reste
+  le vrai filet avant chaque push ; la CI tourne en fond comme backstop, sans que j'y consacre
+  des tours à sonder minute par minute. (Correction : ce n'était pas « CL »/Cadre Logique.)
+
+### S6 — DÉCISION : un éditeur peut planifier les suivis (01/08/2026)
+
+**✅ LIVRÉ (01/08/2026).** Route dédiée `PUT /api/planning-config` en droit **éditeur**
+(distincte de `PUT /api/settings`, qui reste admin) : elle persiste les **paramètres MRE**
+(`mmr`) et le **calendrier de collecte** (`outcomePlan`). Le calendrier va désormais dans sa
+**table `outcome_plan`** — migration 024 reprend l'ancien reflet `settings.outcomePlan` puis le
+purge, réglant la « restriction 2 » (le blob ombrait la table). Côté client, `mmr`/`outcomePlan`
+quittent `PERSISTED_SETTINGS` et voyagent par leur propre transport (`planningConfig`), et
+l'édition des paramètres MRE + du calendrier passe de `can("admin")` à `can("edit")`. Tests :
+un éditeur enregistre, un lecteur est refusé, le décochage fait disparaître le mois, le reflet
+est purgé (225 serveur).
+
+Tranche la restriction 4 du lot de persistance (PR #13). Le propriétaire : « un éditeur peut
+être attribué à planifier les suivis. » État :
+- **Plan de suivi des sites** (grille sites × mois, « Générer le plan », « Générer par
+  commune ») : DÉJÀ éditeur — `PUT /api/sites/:id/months` = `requireCap("edit")`. Rien à
+  changer.
+- **Paramètres MRE** (`Planning.jsx:392-401` : durée, type de site, fréquence, coefficient par
+  activité) : le lot de persistance les a passés en `can("admin")` parce qu'ils s'enregistrent
+  via `PUT /api/settings` (admin). À CORRIGER : les repasser en `edit`, ET leur donner une
+  **persistance éditeur** — une route/collection dédiée `requireCap("edit")` (pas la route
+  settings admin), pour qu'un éditeur planifie ET que ça tienne. Même traitement pour le
+  calendrier de collecte (`outcomePlan`) : sortir de `settings`, route propre en `edit`.
+
+C'est le pendant « fait proprement » de la restriction 2 (outcomePlan qui ombrait sa table) et
+de la restriction 4 (droit admin). À faire dans un lot « persistance de la planification en
+droit éditeur », distinct de la route settings admin qui, elle, reste réservée à la vraie
+configuration.
+
+### S7 — Gouvernance de la configuration (01/08/2026)
+
+Le propriétaire : « la config est à faire en une fois et stockée dans la base de données (à
+faire par le super user), avec possibilité de mise à jour. » Quatre exigences :
+
+1. **EN UNE FOIS** — **✅ LIVRÉ (01/08/2026).** Onglet **Paramètres → Configuration guidée**
+   (`SetGuided`), réservé au super (`me.role === "super"`), placé en tête : les cinq briques
+   fondatrices (pays → découpage → activités → indicateurs → sources) sur une page, chacune avec
+   son état LU de la base, une barre de progression « X / 5 prêtes », et un bouton qui mène à
+   l'onglet de configuration. C'est l'assistant-orchestrateur : il ne duplique pas les écrans, il
+   les enchaîne — chaque référentiel garde sa source unique. **Reste** : l'enrichir en vrai
+   assistant pas-à-pas embarqué (facultatif) si l'on veut la saisie in-situ plutôt que le renvoi
+   vers l'onglet.
+2. **STOCKÉE EN BASE** — rien côté client volatil. C'est déjà la direction (persistance des
+   réglages via `settings`, `geo_version`, référentiels en tables) ; la généraliser à TOUTE la
+   config fondatrice.
+3. **PAR LE SUPER UTILISATEUR** — **✅ TRANCHÉ (01/08/2026) : option (a).** Le propriétaire a
+   choisi « Assistant = super, référentiels = admin » : le **parcours fondateur guidé** sera
+   gaté en `requireSuper`, tandis que l'admin **continue de gérer au quotidien** les référentiels
+   (indicateurs, **activités** — livrées en `admin`, codes, bureaux, comptes). La délégation
+   actuelle est préservée : `super` = instance + config fondatrice, `admin` = gestion courante,
+   `editor` = planifie/saisit (S6). Aucun droit existant n'est déplacé ; seul l'assistant, à
+   créer, portera `requireSuper`.
+4. **MISE À JOUR POSSIBLE** — la config n'est pas figée après le premier passage : chaque
+   bloc (pays, découpage, activités, indicateurs, sources) se rouvre et se révise, avec la
+   traçabilité déjà en place (audit, révisions `rev`, millésimes pour le géo).
+
+### S8 — Listes paramétrables typées, intégrité référentielle, seed données réelles, multi-shapefile (01/08/2026)
+
+**Demandes du propriétaire (01/08), mot pour mot consignées pour la session suivante.**
+
+1. **Gestionnaire de listes typées, en maître-détail.** « J'aurai besoin des listes à
+   paramétrer par types (activité, denrées, tiers, partenaire, type de partenariat, etc.) en
+   sous-groupe sélectionnable à gauche et à droite la configuration des listes (ajout,
+   modification, suppression, validation). » → Un écran **maître-détail** : rail GAUCHE = les
+   TYPES de liste (activités, denrées/commodités, tiers/TPM, partenaires, types de partenariat,
+   modalités, sous-types de PI, catégories…), volet DROIT = CRUD + **validation** de la liste
+   choisie. C'est la forme aboutie de la « réorganisation maître-détail » déjà cadrée (voir plus
+   haut, tableau des groupes) : ici on l'applique d'abord aux LISTES.
+
+2. **Intégrité référentielle à la suppression.** « Si une liste est enregistrée et a été déjà
+   utilisée, impossible de l'effacer (possibilité de mettre à jour mais le code d'identification
+   reste pour ne pas perdre les données). » → Un ITEM de liste **référencé** (utilisé quelque
+   part) ne se **supprime pas** (409 + proposition de désactivation, comme bureaux/activités
+   déjà faits) ; il se **met à jour**, mais **son code d'identification est préservé** — le code
+   est la clé de jointure, on ne la casse pas. C'est déjà le patron livré pour les bureaux
+   (`routes/offices.js`) et les activités (`routes/activities.js`) : à **généraliser** à toutes
+   les listes typées.
+
+3. **Renommage de code en cascade, réservé au super.** « Si le super user change un code
+   d'identification, tout ce qui lui est relié devrait aussi changer avec. » → Contrairement au
+   point 2 (le code est stable pour l'usage courant), le **super** peut **changer un code**, et
+   l'opération **cascade** vers toutes les lignes qui le référencent, **de façon atomique** (une
+   transaction : renommer le code + réécrire toutes les FK/tags liés). Ce n'est PAS un
+   supprimer-recréer. Concrètement : une route `super` de « renommage de code » par type de
+   liste, qui met à jour la table maîtresse ET toutes les tables filles (sites, coverage_params,
+   pdd, outputs, visits, odk_forms, indicators… selon le type).
+
+4. **Mise à jour d'un paramètre interconnecté = mappage puis validation.** « Si je fais une mise
+   à jour d'un paramètre interconnecté, toujours procéder à un mappage puis validation pour ne
+   pas perdre des données. » → Toute modification d'un paramètre relié (surtout un renommage de
+   code, point 3, ou une fusion) passe par un **écran de correspondance** (ancien → nouveau) PUIS
+   une **validation explicite** avant écriture — même philosophie que la couche
+   `connector_mapping` / l'import mappé. Rien ne s'écrase en silence.
+
+5. **Seed des données RÉELLES comme valeurs par défaut de MEMS.** « Dans les settings utilise mes
+   data réels et stocke-les comme valeurs par défaut de MEMS. » Fichiers présents dans `docs/` :
+   - **Pays Madagascar** — `mdg_bnd_adm3_com_pam_2025.shp/.dbf/.prj` (adm3, 23 Mo, 1701
+     polygones ; la table d'attributs porte déjà `ADM0..3_EN` + `ADM0..3_PCODE`, donc l'arbre
+     adm0→adm3 est complet). **⚠ adm1/adm2/adm4 NON fournis** (voir point 6).
+   - **Activités** — `WFP Indicator Master List_UpdMai_2025.xlsx`, onglet **`Annex 5 Activity
+     tags`** (59 lignes) : la liste des activités à charger dans le référentiel Activités.
+   - **Indicateur master, par catégories filtrables (onglets = catégories)** —
+     `WFP Indicator Master List_UpdMai_2025.xlsx` : `Annex 2 Outcome Indicators` (268) →
+     **CRF/outcome** ; `Annex 3 Output Indicators` (207) + `Detailed Output Indicators` (567) →
+     **CRF/output** (dont *other output*) ; `Annex 4 Crosscutting` (204) → CRF transversal.
+     `Resilience Indicator Collection.xlsx` porte les indicateurs de résilience (onglet
+     `1. CRF indicators` + thématiques). Charger la masterlist **par catégorie** (le champ
+     `level`/`kind` de la migration 022 est déjà là pour ça), **filtrable** à l'écran.
+   - Autres pièces utiles déjà présentes : `List Sites per Tag.xlsx` (onglet `Sites` 2874 lignes,
+     `Parameter` 32), `CM-L005_..._Logframe`, `logframe_FSRP.xlsx`, `indicators mapping DOC across
+     old and new CRF.xlsx`, PDD et « Plan de suivi 2026 ».
+   - **À décider** : import ponctuel (CLI/seed) qui remplit les tables réelles, vs. valeurs par
+     défaut codées. Le propriétaire dit « stocke-les comme valeurs par défaut » → viser un
+     **seed de production** (tables réelles préremplies), pas des constantes `D_*`.
+
+6. **Multi-shapefile par pays (adm1→adm4) pour le breakdown cartographique.** « Durant la
+   configuration pays, insérer plusieurs shapefiles : adm1 à adm4 pour pouvoir avoir un affichage
+   par type de breakdown sur la carte après. » → Aujourd'hui un import de découpage crée UN
+   millésime avec l'arbre + les contours du niveau fourni. Il faut pouvoir **déposer un shapefile
+   PAR NIVEAU** (adm1, adm2, adm3, adm4) rattaché au même pays, pour que la carte affiche les
+   contours **au niveau de breakdown choisi**. `geo_geom` porte déjà `level` ; le flux d'import
+   (`routes/geo.js`, `lib/shapefile.js`) accepte un niveau — reste à permettre PLUSIEURS dépôts
+   successifs par niveau dans la fiche pays, et à la carte de basculer de niveau de contour.
+   **⚠ Seul adm3 est fourni** : soit le propriétaire fournit adm1/2/4, soit on **dérive** les
+   niveaux supérieurs en dissolvant adm3 par p-code adm1/adm2 (opération à implémenter).
+   > **✅ LIVRÉ (01/08).** Les deux voies existent : dépôt d'un shapefile par niveau
+   > (`POST /api/geo/shapefile/contours`) **et** dérivation par dissolution
+   > (`POST /api/geo/geometry/deriver`, `lib/dissoudre.js`). Le propriétaire ayant tranché
+   > — « tu peux utiliser le dbf de adm3 ou adm4 pour les dériver » —, la dérivation est
+   > branchée dans le semis réel : le fichier des communes donne les 120 districts, les
+   > 24 régions et le pays, frontières intérieures **dissoutes** (annulation d'arêtes), pas
+   > empilées. Vérifié : 0 approximation, et le cadre de chaque parent dérivé est exactement
+   > celui de ses enfants réunis. Reste ouvert : **adm4** ne se dérive pas d'adm3 (il est plus
+   > fin) — il demande son propre fichier, que la route accepte déjà.
+
 ### S4 — La passe de cohérence transversale
+
+**Étoile polaire (réflexion du 01/08 « rendre MEMS le plus professionnel et facile possible »).**
+Trois colonnes vertébrales auxquelles TOUT écran doit s'accrocher, pour que 40 fonctions
+forment un système et non un sac d'écrans :
+1. **La cascade géographique adm0→4** — un référentiel, un filtre région→district→commune→
+   fokontany, partout où un lieu est manipulé.
+2. **L'activité** — configurée une fois dans Paramètres, réutilisée partout (indicateurs,
+   dashboards, données, rations, plans).
+3. **L'indicateur** — une bibliothèque unique (CRF / XLSForm) qui alimente le dashboard vivant
+   ET le rapport exporté : écran et document lisent la même source.
+
+Toute intégration de source suit LES MÊMES 3 ÉTAPES — Relier (nature + auth) · Mapper
+(variables → champs MEMS) · Utiliser (alimenter site/soumission/bénéficiaire/réception) —
+un seul modèle mental pour ODK, Kobo v1/v2, Ona, Foundry, Excel, HTTP, JDBC. Le « facile »
+se gagne sur l'ÉCRAN DE CORRESPONDANCE : colonnes source ↔ champs MEMS, suggestion auto,
+validation, aperçu des lignes mappées avant de valider. Les intégrations internes (géo→filtres,
+activités→indicateurs, indicateurs→dashboards+rapports, QC→score, ciblage↔PDD) sont ce qui
+fait le système.
+
+Principes d'usage : parcours guidés pour la config lourde (« Configurer le pays » : pays →
+découpage → activités → sources), états vides qui disent l'action suivante, coût des actions
+destructives montré avant, une vue d'accueil par rôle.
 
 Le reste de la discussion « professionnelle vs bricolage » : hiérarchie visuelle, densité,
 états vides qui disent quoi faire, chargements, vocabulaire uniforme entre écrans, parcours
@@ -1532,6 +1747,35 @@ L229). C'est la matière de « les coordonnées GPS qui ressortiront des data se
 ---
 
 ## Chantier P — Aligner les indicateurs sur le cadre RBM
+
+**✅ LIVRÉ (01/08/2026) — la scission structurelle.** Migration 022 : `indicators` porte
+désormais `kind` (`crf`/`xlsform`), `level` (CRF : `outcome`/`output`/`other_output`) et
+`activity` (l'activité suivie par un indicateur de processus). Une seule table, deux natures ;
+toute ligne d'avant la migration devient CRF. L'écran Paramètres → Indicateurs présente les
+deux sous-onglets (CRF résultats / XLSForm processus), avec colonnes, champs de fiche et
+export CSV propres à chaque nature. **Reste à faire dans P** (ci-dessous) : le rattachement
+Strategic Outcome → Activity → Output et `outputs.indicator_id` (volet cadre logique fin) ; le
+volet processus (calcul depuis les soumissions) est cadré au chantier T.
+
+**DEUX SOUS-MODULES d'indicateurs (décision du 01/08/2026).** Le référentiel d'indicateurs se
+scinde en deux, parce qu'ils n'ont ni la même origine ni le même usage :
+
+- **CRF** — indicateurs **outcome et output** (y compris *other output*). Source : la WFP
+  Indicator Master List et le logframe pays approuvé (CM-L005), avec la table de passage
+  ancien/nouveau CRF. Usage : redevabilité et rapports de résultats (ACR, bailleurs). C'est
+  l'objet du présent chantier P (niveau de résultat, Strategic Outcome → Activity → Output,
+  baseline/cible/réalisé, moyens de vérification).
+- **XLSForm / suivi de processus** — indicateurs **calculés depuis les soumissions** de
+  collecte (Kobo/MoDa mappées), tirés des XLSForms et des scripts QC. Usage : les **dashboards
+  de couverture et de conformité par activité** (chantier T). Ce ne sont pas des indicateurs
+  de résultat : ils mesurent la QUALITÉ DE MISE EN ŒUVRE (un site a-t-il été suivi, le
+  formulaire est-il complet, l'indice de conformité, le scorecard).
+
+Les deux vivent dans le même écran Paramètres → Indicateurs, en deux sous-onglets, et
+alimentent des sorties différentes (CRF → rapports de résultats ; processus → dashboards de
+suivi). Ils partagent la mécanique (un indicateur porte code, libellé, unité, méthode de
+calcul, désagrégations) mais pas la source ni la destination. Le chantier P couvre le CRF ;
+le volet processus est cadré au chantier T.
 
 Le classeur *Cadre M&E Résilience* et le PPTX RBM montrent ce qu'un indicateur doit porter.
 `indicators` (`001_init.sql:205-215`) porte `id, code, name, basket, unit, target, direction,

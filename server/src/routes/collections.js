@@ -42,9 +42,24 @@ const COLLECTIONS = {
   indicators: { table:"indicators", cap:"edit",
     schema: z.object({ id:S(64), code:z.string().min(1).max(20), name:z.string().min(1).max(300),
       basket:S(120), unit:z.string().max(20).default("%"), target:N(-1e6,1e6),
-      direction:z.enum(["up","down"]).default("up"), method:S(200), frequency:S(40) }),
+      direction:z.enum(["up","down"]).default("up"), method:S(200), frequency:S(40),
+      /* Nature de l'indicateur (migration 022). `level` n'a de sens que pour le
+         CRF, `activity` que pour l'XLSForm : tous deux sont donc facultatifs, le
+         serveur ne les impose pas selon `kind` — l'écran s'en charge. */
+      kind:z.enum(["crf","xlsform"]).default("crf"),
+      /* `crosscutting` est la quatrième nature du cadre de résultats, celle de
+         l'Annex 4 de la masterlist (migration 027). Elle s'ajoute aux trois
+         d'origine : la colonne est du TEXT sans contrainte, c'est cette
+         énumération-ci qui fait foi. */
+      level:z.enum(["outcome","output","other_output","crosscutting"]).nullish()
+        .transform(v => v ?? null),
+      /* La catégorie thématique du classeur institutionnel — la maille à
+         laquelle un bureau cherche un indicateur, et celle que l'écran filtre. */
+      category:S(160),
+      activity:S(40) }),
     map: (x) => ({ code:x.code, name:x.name, basket:x.basket, unit:x.unit,
-      target:x.target, direction:x.direction, method:x.method, frequency:x.frequency }) },
+      target:x.target, direction:x.direction, method:x.method, frequency:x.frequency,
+      kind:x.kind, level:x.level, category:x.category, activity:x.activity }) },
 
   outcomes: { table:"outcomes", cap:"edit",
     schema: z.object({ id:S(64), indicator_id:z.string().min(1).max(64), adm1:S(120),
@@ -267,6 +282,53 @@ r.put("/settings", requireCap("admin"), (req, res) => {
   tx(() => { for(const [k,v] of Object.entries(parsed.data)){
     if(FORBIDDEN.has(k)) continue;                     /* aucun secret ne transite par ici */
     stmt.run(k, JSON.stringify(v)); } })();
+  res.json({ ok:true });
+});
+
+/* Configuration de la PLANIFICATION du suivi — en droit ÉDITEUR (chantier S6 :
+   « un éditeur peut être attribué à planifier les suivis »). Distincte de
+   PUT /api/settings, qui reste réservée à l'admin pour la vraie configuration.
+
+   Deux objets voyagent ici : les paramètres MRE (`mmr`, un réglage) et le
+   calendrier de collecte (`outcomePlan`). Le calendrier va désormais dans sa
+   TABLE `outcome_plan`, plus dans le blob `settings` : le reflet n'ombre plus la
+   table (restriction 2 du lot de persistance). */
+const mmrRow = z.object({ id:S(40), area:S(120), cashVoucher:S(10),
+  duration:S(60), siteType:S(80), monitoring:S(80), guidance:S(400),
+  coef:z.coerce.number().min(0).max(100) }).passthrough();
+const planningConfigSchema = z.object({
+  mmr: z.array(mmrRow).max(200).optional(),
+  outcomePlan: z.record(z.array(z.boolean()).max(12)).optional(),
+});
+r.put("/planning-config", requireCap("edit"), (req, res, next) => {
+  const p = planningConfigSchema.safeParse(req.body);
+  if(!p.success) return res.status(422).json({ error:"configuration de planification invalide",
+    details: p.error.issues.slice(0,8).map(i=>({ champ:i.path.join("."), message:i.message })) });
+  const year = new Date().getFullYear();
+  try{
+    tx(() => {
+      if(p.data.mmr !== undefined)
+        db.prepare(`INSERT INTO settings (key,value) VALUES ('mmr',?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(p.data.mmr));
+      if(p.data.outcomePlan !== undefined){
+        /* Remplacement de l'année entière : une case décochée doit DISPARAÎTRE,
+           pas seulement les cochées apparaître. */
+        db.prepare("DELETE FROM outcome_plan WHERE year=?").run(year);
+        const ins = db.prepare(`INSERT INTO outcome_plan (indicator_id,year,month,planned) VALUES (?,?,?,1)
+                                ON CONFLICT(indicator_id,year,month) DO UPDATE SET planned=1`);
+        const idDe = db.prepare("SELECT id FROM indicators WHERE code=?");
+        for(const [code, mois] of Object.entries(p.data.outcomePlan)){
+          const ind = idDe.get(code); if(!ind) continue;      /* un code inconnu est ignoré, pas une erreur */
+          mois.forEach((on, m) => { if(on && m >= 0 && m < 12) ins.run(ind.id, year, m); });
+        }
+        /* Purge de l'ancien reflet dans settings : il ne doit plus ombrer la table. */
+        db.prepare("DELETE FROM settings WHERE key='outcomePlan'").run();
+      }
+    })();
+  }catch(e){ return next(e); }
+  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
+              VALUES (?,?,?,'plan','planning','config',?)`)
+    .run(newId("aud"), req.user.id, req.user.first_name, "Configuration de planification mise à jour");
   res.json({ ok:true });
 });
 

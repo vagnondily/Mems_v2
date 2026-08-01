@@ -127,7 +127,17 @@ export default function MapView({ db, me, notify, go }){
      observée » n'est pas tranchée. */
   const [gps, setGps] = useState(false);
   const [releves, setReleves] = useState({ points:[], count:0, loading:false, error:"" });
-  const GEO_LEVELS = niveaux(db, { from:"adm1", to:"adm4" });
+  /* Les niveaux de breakdown, et ce que le millésime porte réellement à chacun
+     (chantier S8, point 6 : un shapefile par maille). Un niveau sans contour
+     reste PROPOSÉ mais le dit — le choisir n'affiche rien, et un menu qui ne
+     l'annonce pas laisse croire à une carte vide plutôt qu'à un fichier
+     manquant. */
+  const contoursParNiveau = Object.fromEntries(
+    (db.geoVersion?.geom?.parNiveau || []).map(x => [x.level, x.units]));
+  const GEO_LEVELS = niveaux(db, { from:"adm1", to:"adm4" })
+    .map(([code, libelle]) => [code,
+      contoursParNiveau[code] ? `${libelle} (${fmt(contoursParNiveau[code])})`
+                              : `${libelle} — aucun contour`]);
 
   const load = async () => {
     setBusy(true); setError("");
@@ -661,9 +671,16 @@ export default function MapView({ db, me, notify, go }){
                     Affichage tronqué : filtrez par région ou district pour voir ce niveau en entier.</div>)}
               </div>)}
 
-            {!db.geoVersion?.geom?.units && (
+            {!db.geoVersion?.geom?.units ? (
               <Note tone="warn">Aucun contour chargé : les limites administratives n'apparaissent
-                pas. Paramètres → Localités → Contours administratifs.</Note>)}
+                pas. Paramètres → Pays → Contours par niveau.</Note>
+            ) : !contoursParNiveau[geoLevel] && (
+              /* Le millésime porte des contours, mais pas à CETTE maille. Le dire
+                 ici, au moment où la carte est vide, est la seule façon de ne pas
+                 laisser croire à une panne. */
+              <Note tone="warn">Ce niveau de breakdown n'a pas de contours dans le millésime
+                courant. Déposez son shapefile — Paramètres → Pays → <b>Contours par niveau</b> —
+                ou choisissez un niveau qui en porte.</Note>)}
 
             {selShape && (() => {
               const feat = shapes.features.find(x => x.properties.pcode === selShape);

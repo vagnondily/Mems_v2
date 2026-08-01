@@ -97,7 +97,13 @@ r.get("/state", (req, res) => {
 
   const indicators = db.prepare("SELECT * FROM indicators ORDER BY code").all().map(i => ({
     id:i.code, key:i.id, rev:i.rev, name:i.name, basket:i.basket||"", unit:i.unit,
-    target:i.target, dir:i.direction, method:i.method||"", freq:i.frequency||"" }));
+    target:i.target, dir:i.direction, method:i.method||"", freq:i.frequency||"",
+    /* Deux natures d'un même objet (migration 022) : le CRF porte un `level`
+       de cadre logique, l'XLSForm de processus porte l'`activity` qu'il suit. */
+    kind:i.kind||"crf", level:i.level||"", activity:i.activity||"",
+    /* La catégorie thématique de la masterlist (migration 027) : c'est par
+       elle que l'écran filtre 842 indicateurs, elle voyage donc avec eux. */
+    category:i.category||"" }));
   const indByKey = Object.fromEntries(indicators.map(i=>[i.key, i.id]));
 
   /* Les résultats n'ont aucune dimension « bureau » dans le schéma : ils sont mesurés par
@@ -236,8 +242,8 @@ r.get("/state", (req, res) => {
                     ORDER BY at DESC, rowid DESC LIMIT 60`).all()
     ).map(a => ({ id:a.id, at:a.at, user:a.user_label||"", office:a.office||"", kind:a.kind, text:a.text })),
     users: (u.role==="super" || u.role==="admin")
-      ? db.prepare("SELECT id,email,first_name,last_name,title,office_id,tpm_id,role,tabs,active FROM users ORDER BY first_name").all()
-          .map(x => ({ ...x, tabs:J(x.tabs,[]), active:!!x.active }))
+      ? db.prepare("SELECT id,email,username,first_name,last_name,title,office_id,tpm_id,role,tabs,active FROM users ORDER BY first_name").all()
+          .map(x => ({ ...x, username:x.username||"", tabs:J(x.tabs,[]), active:!!x.active }))
       : [],
   });
 });

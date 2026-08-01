@@ -142,7 +142,9 @@ test("sécurité : aucun identifiant n'est affiché ni présent dans le code liv
 });
 
 test("connexion : identifiants erronés refusés avec un message clair", async () => {
-  await type(all("input[type=email]")[0], ADMIN.email);
+  /* Le champ accepte désormais un courriel OU un identifiant (migration 023) : il
+     n'est donc plus `type=email`. On le vise par son rôle d'autocomplétion. */
+  await type(all("input[autocomplete=username]")[0], ADMIN.email);
   await type(all("input[type=password]")[0], "mauvais-mot-de-passe");
   await click(byText("button", "Se connecter"), "bouton de connexion");
   await attendre(() => byText("div", "identifiants incorrects"), "le message d'échec s'affiche");
@@ -523,6 +525,64 @@ test("paramètres : « Sites » a quitté la configuration, mais le registre res
   assert.ok(sousOnglet("Localités"), "les onglets des Paramètres sont bien affichés");
   assert.ok(!sousOnglet("Sites"), "l'onglet « Sites » ne figure plus dans les Paramètres");
 
+  /* Le référentiel des activités, nouvel onglet, s'ouvre et affiche sa liste. */
+  await click(sousOnglet("Activités"), "sous-onglet Activités"); await flush();
+  assert.ok(document.body.textContent.includes("Activités du programme"),
+    "le référentiel des activités s'affiche");
+
+  /* La fiche du pays porte désormais les contours MAILLE PAR MAILLE (S8-6) :
+     un shapefile par niveau sur le même millésime, pour que la carte puisse
+     changer de niveau de breakdown. */
+  await click(sousOnglet("Pays"), "sous-onglet Pays"); await flush(); await flush();
+  assert.ok(document.body.textContent.includes("Contours par niveau"),
+    "la fiche du pays propose les contours par niveau");
+  assert.ok(document.body.textContent.includes("breakdown"),
+    "l'écran dit à quoi sert le dépôt par niveau");
+
+  /* Les listes paramétrables typées (S8) : maître-détail, rail des types à
+     gauche, liste choisie à droite. On y vérifie ce qui distingue cet écran —
+     qu'il tient onze référentiels, qu'il montre l'usage, et que le renommage
+     de code passe par une correspondance avant d'écrire. */
+  await click(sousOnglet("Listes paramétrables"), "sous-onglet Listes paramétrables");
+  await flush(); await flush();
+  assert.ok(document.body.textContent.includes("Types de liste"),
+    "le rail des types de liste s'affiche");
+  const railListes = all("main button").filter(b => b.className.includes("border-b border-slate-100"));
+  assert.ok(railListes.length >= 8, `le rail porte les types (${railListes.length})`);
+  assert.ok(document.body.textContent.includes("Denrées et commodités")
+    && document.body.textContent.includes("Types de partenariat"),
+    "les listes demandées figurent au rail");
+  assert.ok(document.body.textContent.includes("Référencée par"),
+    "l'écran dit quelles tables référencent la liste choisie");
+
+  const denrees = railListes.find(b => b.textContent.includes("Denrées"));
+  await click(denrees, "liste des denrées"); await flush(); await flush();
+  assert.ok(byText("main td", "Riz"), "les denrées réelles sont listées");
+
+  /* Le renommage de code : réservé au super, il commence par la correspondance. */
+  const lignesDenrees = all("main tbody tr");
+  const boutonsLigne = [...lignesDenrees[0].querySelectorAll("button")];
+  await click(boutonsLigne[boutonsLigne.length - 3], "renommer le code"); await flush();
+  assert.ok(byText(".z60 h3", "Renommer le code"), "la fiche de renommage s'ouvre");
+  assert.ok(document.body.textContent.includes("Calculer la correspondance"),
+    "le mappage précède l'écriture");
+  const valider = byText(".z60 button", "Calculez d'abord");
+  assert.ok(valider && valider.disabled,
+    "la validation est fermée tant que la correspondance n'a pas été calculée");
+  await act(async () => {
+    window.dispatchEvent(new window.KeyboardEvent("keydown", { key:"Escape", bubbles:true }));
+    await sleep(60);
+  });
+  await flush();
+
+  /* Le parcours de configuration guidée (S7) est proposé au super et s'ouvre. */
+  assert.ok(sousOnglet("Configuration guidée"),
+    "l'onglet Configuration guidée est proposé au super-utilisateur");
+  await click(sousOnglet("Configuration guidée"), "Configuration guidée"); await flush();
+  assert.ok(document.body.textContent.includes("parcours fondateur"),
+    "le parcours de configuration guidée s'affiche");
+  assert.ok(document.body.textContent.includes("prêtes"), "le décompte des étapes prêtes s'affiche");
+
   await click(nav("Suivi-évaluation"), "Suivi-évaluation"); await flush();
   await click(sousOnglet("Registre des sites"), "sous-onglet Registre des sites");
   await flush(); await flush();
@@ -693,6 +753,22 @@ test("administration : la destination existe pour le compte super et l'onglet Sa
   await flush();
 
   assert.equal(ctx.errors.length, 0, "aucune erreur sur la console d'administration");
+});
+
+test("mon compte : le self-service s'ouvre depuis le menu du compte", async () => {
+  const menu = all("header.sticky button").pop();
+  await click(menu, "menu du compte"); await flush();
+  await click(byText("button", "Mon compte"), "ouvrir Mon compte"); await flush();
+  assert.ok(byText(".z60 h3", "Mon compte"), "la fiche Mon compte s'affiche");
+  assert.ok(byText(".z60 button", "Changer le mot de passe"), "le changement de mot de passe y est offert");
+  assert.ok(byText(".z60 button", "Définir") || byText(".z60 button", "Mettre à jour"),
+    "l'identifiant de connexion s'y définit");
+  /* Refermer par Échap, pour que le test de déconnexion retrouve un en-tête net. */
+  await act(async () => {
+    window.dispatchEvent(new window.KeyboardEvent("keydown", { key:"Escape", bubbles:true }));
+    await sleep(60);
+  });
+  await flush();
 });
 
 test("déconnexion : la session est fermée et l'écran de connexion revient", async () => {

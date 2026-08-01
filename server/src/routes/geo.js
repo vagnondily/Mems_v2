@@ -8,9 +8,9 @@ import { requireCap } from "../lib/auth.js";
 import { validate, schemas } from "../lib/validate.js";
 import { buildUnits, writeVersion, currentVersion, LEVELS } from "../lib/geo.js";
 import { scopeOf, declaredFor, unitsIn, outsideDeclared } from "../lib/scope.js";
-import { extent, geomSummary, readGeometries, writeGeometries } from "../lib/geom.js";
-import { construire, lireTable, attributsContour, parcourirGeometriesShp,
-         extraireArchiveGeo } from "../lib/shapefile.js";
+import { deriverNiveaux, extent, geomSummary, readGeometries, writeGeometries } from "../lib/geom.js";
+import { construire, lireTable, tableProvisoire, attributsContour,
+         parcourirGeometriesShp, extraireArchiveGeo } from "../lib/shapefile.js";
 
 const r = Router();
 
@@ -304,6 +304,34 @@ const echantillonUnites = (units, level, n = 8) =>
 
 const veutDoublons = (req) => /^(1|true|on|yes|oui)$/i.test(String(req.body?.allowDuplicates || ""));
 
+/* multer signale un dépassement de taille par un code technique et un message
+   anglais. On le rend en clair — avec la limite effective, et le rappel qu'un
+   proxy en amont peut plafonner le corps AVANT le serveur, auquel cas l'échec se
+   voit côté client et non ici. */
+function messageMulter(err){
+  if(err?.code === "LIMIT_FILE_SIZE")
+    return `fichier trop volumineux : la limite est de ${config.maxShapefileMb} Mo. `
+      + "Déposez plutôt une archive .zip — elle compresse fortement le .shp. Si l'envoi échoue "
+      + "avant même d'atteindre le serveur, c'est qu'un proxy en amont plafonne la taille du corps.";
+  return err?.message || "téléversement refusé";
+}
+
+/* Le pays auquel rattacher le millésime. Le découpage est configuré depuis la
+   fiche du pays courant, qui envoie ici son code : le rattachement est ainsi
+   EXPLICITE, et la bascule du millésime courant ne touche que CE pays — l'unicité
+   de `is_current` est cloisonnée par pays (voir lib/geo.js). Vide, writeVersion
+   retombe sur le pays courant, qui est le bon repli au tout premier import. */
+const paysSchema = z.string().trim().length(3).regex(/^[A-Za-z]{3}$/).transform(v => v.toUpperCase());
+function lirePays(req){
+  const brut = req.body?.country;
+  if(brut == null || String(brut).trim() === "") return { code: null };
+  const p = paysSchema.safeParse(brut);
+  if(!p.success) return { erreur: "code pays invalide : trois lettres (ISO 3166-1 alpha-3)" };
+  if(!db.prepare("SELECT 1 FROM country WHERE code=?").get(p.data))
+    return { erreur: `pays inconnu : ${p.data} n'est pas configuré` };
+  return { code: p.data };
+}
+
 /* ① Aperçu : lecture, correspondance, comptages — RIEN n'est écrit.
    Sans mapping, la réponse porte les colonnes détectées et la correspondance
    proposée : l'écran remplit son volet, l'utilisateur ajuste, et rappelle cette
@@ -315,11 +343,14 @@ const veutDoublons = (req) => /^(1|true|on|yes|oui)$/i.test(String(req.body?.all
    navigateur. On ne rend que des compteurs et un échantillon. */
 r.post("/shapefile/apercu", requireCap("admin"), (req, res, next) => {
   televerseShapefile.any()(req, res, async (err) => {
-    if(err) return res.status(422).json({ error: err.message });
+    if(err) return res.status(422).json({ error: messageMulter(err) });
     try{
       const { shp, dbf, prj } = await fichiersDuDepot(req.files);
-      if(!dbf) return res.status(422).json({
-        error: "table attributaire .dbf absente : déposez le .zip complet, ou le .shp ET le .dbf" });
+      /* Le .dbf n'est plus exigé : sans lui, on importe les polygones seuls (voir
+         construire). Il faut au moins le .shp — sans géométrie ni attribut, il n'y
+         a rien à lire. */
+      if(!shp && !dbf) return res.status(422).json({
+        error: "aucun fichier lisible : déposez le .shp (et son .dbf pour nommer les unités), ou une archive .zip" });
 
       const allowDuplicates = veutDoublons(req);
       const données = construire({ shp, dbf, prj, mapping: lireMapping(req.body?.mapping) },
@@ -366,18 +397,27 @@ r.post("/shapefile/apercu", requireCap("admin"), (req, res, next) => {
    le second passage streame les géométries et les libère au fil de l'écriture. */
 r.post("/shapefile/commit", requireCap("admin"), (req, res, next) => {
   televerseShapefile.any()(req, res, async (err) => {
-    if(err) return res.status(422).json({ error: err.message });
+    if(err) return res.status(422).json({ error: messageMulter(err) });
     try{
       const { shp, dbf } = await fichiersDuDepot(req.files);
-      if(!dbf) return res.status(422).json({
-        error: "table attributaire .dbf absente : déposez le .zip complet, ou le .shp ET le .dbf" });
+      /* Le .dbf n'est plus exigé : sans lui, on importe les polygones seuls, nommés
+         « Polygone N ». Il faut au moins le .shp, qui porte les géométries. */
+      if(!shp && !dbf) return res.status(422).json({
+        error: "aucun fichier lisible : déposez au moins le .shp, ou une archive .zip" });
+
+      const pays = lirePays(req);
+      if(pays?.erreur) return res.status(422).json({ error: pays.erreur });
 
       const label = String(req.body?.label || "").trim()
         || `Shapefile du ${new Date().toISOString().slice(0, 10)}`;
       const source = String(req.body?.source || "").trim() || null;
       const allowDuplicates = veutDoublons(req);
 
-      const table = lireTable({ dbf, mapping: lireMapping(req.body?.mapping) });
+      /* Avec .dbf : la table attributaire, sa correspondance de colonnes. Sans :
+         une identité provisoire par polygone, pour l'afficher tout de suite. */
+      const table = dbf
+        ? lireTable({ dbf, mapping: lireMapping(req.body?.mapping) })
+        : tableProvisoire(shp);
       const { units, collisions, counts } = buildUnits(table.lignes, { allowDuplicates });
       if(!units.length) return res.status(422).json({
         error: "aucune unité exploitable : vérifiez la correspondance des colonnes",
@@ -403,7 +443,8 @@ r.post("/shapefile/commit", requireCap("admin"), (req, res, next) => {
          imbriquées dans celle-ci, better-sqlite3 les traite en points de reprise
          (SAVEPOINT), si bien que l'ensemble reste tout-ou-rien. */
       tx(() => {
-        versionId = writeVersion({ label, source, units, userId: req.user.id, makeCurrent: true });
+        versionId = writeVersion({ label, source, units, userId: req.user.id, makeCurrent: true,
+          country: pays.code });
         if(shp){
           let lot = [], premier = true;
           const vider = () => {
@@ -443,6 +484,113 @@ r.post("/shapefile/commit", requireCap("admin"), (req, res, next) => {
           + (collisions.length
             ? ` ${collisions.length} p-code(s) en double conservé(s) : rattachement par p-code au premier trouvé.`
             : ""),
+      });
+    }catch(e){
+      if(e.code === "SHAPEFILE") return res.status(422).json({ error: e.message });
+      next(e);
+    }
+  });
+});
+
+
+/* ③ Contours d'UN NIVEAU, ajoutés au millésime courant  (chantier S8, point 6)
+
+   « Durant la configuration pays, insérer plusieurs shapefiles : adm1 à adm4
+   pour pouvoir avoir un affichage par type de breakdown sur la carte après. »
+
+   Le commit ci-dessus fait autre chose : il construit un millésime — l'arbre
+   ET les contours du fichier déposé. Rejouer ce geste pour chaque niveau
+   créerait quatre millésimes concurrents dont un seul serait courant, et les
+   contours des trois autres seraient invisibles. Ce qu'il faut est l'inverse :
+   UN millésime, l'arbre qu'il porte déjà, et des contours qui s'AJOUTENT
+   niveau par niveau. `geo_geom.level` existe depuis la migration 012 ; il ne
+   manquait que la porte pour l'alimenter.
+
+   Le .dbf est ici indispensable, et ce n'est pas la même exigence qu'au commit :
+   sans lui on ne sait rattacher aucun polygone à une unité existante, alors
+   qu'un commit sans .dbf CRÉE des identités provisoires. Ici il n'y a rien à
+   créer — l'arbre est là, il faut le reconnaître. */
+r.post("/shapefile/contours", requireCap("admin"), (req, res, next) => {
+  televerseShapefile.any()(req, res, async (err) => {
+    if(err) return res.status(422).json({ error: messageMulter(err) });
+    try{
+      const q = z.object({
+        niveau: z.enum(LEVELS),
+        /* Vrai par défaut : redéposer un niveau REMPLACE ce niveau. Un ajout
+           silencieux laisserait cohabiter deux découpages successifs de la même
+           maille, et la carte dessinerait les deux l'un sur l'autre. */
+        remplacer: z.enum(["true","false","1","0"]).optional()
+          .transform(v => v === undefined ? true : (v === "true" || v === "1")),
+      }).safeParse({ niveau: req.body?.niveau, remplacer: req.body?.remplacer });
+      if(!q.success) return res.status(422).json({
+        error: `niveau invalide : attendu l'un de ${LEVELS.join(", ")}` });
+      const { niveau, remplacer } = q.data;
+
+      const v = version();
+      if(!v) return res.status(409).json({
+        error:"aucun découpage courant : importez d'abord l'arbre administratif du pays, "
+          + "puis déposez les contours niveau par niveau" });
+
+      const { shp, dbf } = await fichiersDuDepot(req.files);
+      if(!shp) return res.status(422).json({
+        error:"aucun .shp : c'est lui qui porte les géométries" });
+      if(!dbf) return res.status(422).json({
+        error:"le .dbf est indispensable ici : sans table attributaire, aucun polygone ne peut "
+          + "être rattaché à une unité du découpage déjà chargé. Déposez le .shp et le .dbf, "
+          + "ou une archive .zip." });
+
+      const table = lireTable({ dbf, mapping: lireMapping(req.body?.mapping) });
+      const source = String(req.body?.source || "").trim()
+        || `Contours ${niveau} du ${new Date().toISOString().slice(0, 10)}`;
+
+      /* Même streaming par lots que le commit : les contours ne sont jamais
+         tous tenus en mémoire à la fois. */
+      let écrites = 0, rejetes = 0, lus = 0;
+      const rejets = [];
+      const LOT = 500;
+      let lot = [], premier = true;
+      const vider = () => {
+        if(!lot.length) return;
+        const b = writeGeometries({ versionId:v.id, features:lot,
+          reset: premier && remplacer, source, niveau });
+        premier = false; écrites += b.écrites; rejetes += b.rejetes || 0;
+        for(const rj of b.rejets || []) if(rejets.length < 20) rejets.push(rj);
+        lot = [];
+      };
+      parcourirGeometriesShp(shp, (i, g) => {
+        if(!g) return;
+        lus++;
+        const at = attributsContour(table.lignes[i]);
+        if(!at) return;
+        lot.push({ ...at, geometry:g });
+        if(lot.length >= LOT) vider();
+      });
+      vider();
+      /* Un dépôt qui ne remplace rien et n'écrit rien n'a pas vidé le niveau :
+         la garde `premier && remplacer` n'a jamais été exécutée. On le fait ici,
+         sinon « remplacer » sur un fichier entièrement rejeté serait un
+         non-geste silencieux qui laisse l'ancien contenu en place. */
+      if(premier && remplacer && !écrites)
+        db.prepare("DELETE FROM geo_geom WHERE version_id=? AND level=?").run(v.id, niveau);
+
+      db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+                  VALUES (?,?,?,'plan','geo_geom',?,'import',?)`)
+        .run(newId("aud"), req.user.id, req.user.first_name, v.id,
+          `Contours ${niveau} — ${écrites} écrit(s)`
+          + (rejetes ? `, ${rejetes} rejeté(s)` : "") + ` (${source})`);
+
+      res.json({
+        niveau, lus, écrites, rejetes, rejets,
+        version: { id:v.id, label:v.label },
+        /* Ce que le millésime porte MAINTENANT, niveau par niveau : c'est l'état
+           que la fiche du pays affiche, et il doit venir du serveur — le client
+           qui l'additionnerait lui-même se tromperait au premier rejet. */
+        parNiveau: geomSummary(v.id),
+        message: écrites
+          ? `${écrites} contour(s) ${niveau} ${remplacer ? "remplacent les précédents" : "ajoutés"}.`
+            + (rejetes ? ` ${rejetes} rejeté(s) — voir le détail.` : "")
+          : `Aucun contour écrit : les ${rejetes || lus} polygone(s) lus ne correspondent à aucune `
+            + `unité de niveau ${niveau} dans le découpage courant.`,
       });
     }catch(e){
       if(e.code === "SHAPEFILE") return res.status(422).json({ error: e.message });
@@ -529,16 +677,84 @@ r.get("/geometry", (req, res) => {
   });
 });
 
+/* ── Dériver les niveaux supérieurs par dissolution ──────────────────
+   « Pour le découpage géographique tu peux utiliser le dbf de adm3 ou adm4
+   pour les dériver. »
+
+   Un seul fichier est fourni — les communes —, mais sa table attributaire
+   porte l'arbre entier : chaque commune sait son district et sa région.
+   Les contours des niveaux supérieurs sont donc les mêmes polygones réunis
+   par parent, et non une donnée manquante.
+
+   La dérivation remonte de proche en proche : les districts naissent des
+   communes, les régions des districts, le pays des régions. À chaque étage
+   on part du niveau qu'on VIENT de calculer, pas du plus fin — c'est dix
+   fois moins de sommets à coudre, et le résultat est identique puisque les
+   frontières intérieures sont déjà tombées à l'étage précédent. */
+r.post("/geometry/deriver", requireCap("admin"), (req, res, next) => {
+  const p = z.object({
+    /* Le niveau de départ. Par défaut le plus PROFOND qui porte des
+       contours : c'est celui qui décrit le mieux le pays. */
+    source: z.enum(LEVELS).nullish().transform(v => v ?? undefined),
+    /* Écraser un niveau déjà déposé n'est pas anodin : un contour officiel
+       vaut mieux qu'un contour dérivé. Par défaut, on ne remplace pas. */
+    remplacerExistants: z.boolean().default(false),
+  }).safeParse(req.body || {});
+  if(!p.success) return res.status(422).json({ error:"paramètres de dérivation invalides" });
+
+  const v = version();
+  if(!v) return res.status(409).json({ error:"aucun découpage courant" });
+
+  try{
+    const bilan = deriverNiveaux({ versionId:v.id, source:p.data.source,
+      remplacerExistants:p.data.remplacerExistants });
+    if(bilan.erreur) return res.status(bilan.statut || 409).json({ error:bilan.erreur });
+
+    db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+                VALUES (?,?,?,'plan','geo_geom',?,'derive',?)`)
+      .run(newId("aud"), req.user.id, req.user.first_name, v.id,
+        `Contours dérivés depuis ${bilan.source} — `
+        + (bilan.etapes.filter(e => e.ecrites).map(e => `${e.niveau}: ${e.ecrites}`).join(", ")
+           || "aucun niveau recalculé"));
+
+    res.json({
+      ...bilan, parNiveau: geomSummary(v.id),
+      message: bilan.total
+        ? `${bilan.total} contour(s) dérivés depuis ${bilan.source}.`
+          + (bilan.approximatifs ? ` ${bilan.approximatifs} n'ont pas pu être dissous et sont rendus `
+            + "comme assemblage des unités filles : leur remplissage est juste, mais leur trait "
+            + "montre les limites intérieures." : "")
+        : "Rien à dériver : les niveaux supérieurs portent déjà leurs contours "
+          + "(cochez le remplacement pour les recalculer).",
+    });
+  }catch(e){ next(e); }
+});
+
+/* Retrait des contours. `?level=adm1` n'en retire qu'un niveau : depuis que les
+   contours arrivent niveau par niveau (chantier S8, point 6), tout effacer pour
+   corriger une seule maille reviendrait à redéposer les quatre fichiers. */
 r.delete("/geometry", requireCap("admin"), (req, res) => {
   const v = version();
   if(!v) return res.status(409).json({ error:"aucun millésime courant" });
-  const n = db.prepare("DELETE FROM geo_geom WHERE version_id=?").run(v.id).changes;
-  db.prepare("UPDATE geo_version SET geom_units=0, geom_source=NULL, geom_at=NULL WHERE id=?").run(v.id);
+  const q = z.object({ level: z.enum(LEVELS).optional() }).safeParse(req.query);
+  if(!q.success) return res.status(422).json({ error:"niveau invalide" });
+  const niveau = q.data.level || null;
+
+  const n = niveau
+    ? db.prepare("DELETE FROM geo_geom WHERE version_id=? AND level=?").run(v.id, niveau).changes
+    : db.prepare("DELETE FROM geo_geom WHERE version_id=?").run(v.id).changes;
+  /* Le compteur du millésime est RECOMPTÉ, jamais mis à zéro d'office : retirer
+     les régions ne fait pas disparaître les communes. */
+  const reste = db.prepare("SELECT COUNT(*) c FROM geo_geom WHERE version_id=?").get(v.id).c;
+  db.prepare(`UPDATE geo_version SET geom_units=?,
+              geom_source=CASE WHEN ?=0 THEN NULL ELSE geom_source END,
+              geom_at=CASE WHEN ?=0 THEN NULL ELSE geom_at END WHERE id=?`)
+    .run(reste, reste, reste, v.id);
   db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'plan','geo_geom',?,'delete',?)`)
     .run(newId("aud"), req.user.id, req.user.first_name, v.id,
-         `Contours administratifs retirés — ${n} unité(s)`);
-  res.json({ ok:true, supprimes:n });
+         `Contours ${niveau || "administratifs"} retirés — ${n} unité(s)`);
+  res.json({ ok:true, supprimes:n, niveau, reste, parNiveau: geomSummary(v.id) });
 });
 
 /* ── Périmètre géographique des bureaux ──────────────────────────────
