@@ -2412,10 +2412,15 @@ function SetRations({ db, set, notify, can }){
 
   /* Les denrées, chargées à l'ouverture puis après chaque création/renommage :
      le sélecteur de denrée et la liste du haut partagent la même source. */
+  const [groupes,setGroupes] = useState([]);   /* familles alimentaires (groupe_denree) */
   const chargerDenrees = () => api.liste("denrees")
     .then(r => setDenrees((r.items||[]).map(x=>({ id:x.id, code:x.code, label:x.label,
-      active:x.active!==false, rev:x.rev, usage:x.usageTotal||0 })))).catch(e=>{ notify(e.message,"err"); setDenrees([]); });
-  useEffect(()=>{ chargerDenrees(); },[]);
+      active:x.active!==false, rev:x.rev, usage:x.usageTotal||0,
+      group:x.champs?.food_group || "" })))).catch(e=>{ notify(e.message,"err"); setDenrees([]); });
+  useEffect(()=>{ chargerDenrees();
+    api.liste("groupes_denree").then(r=>setGroupes((r.items||[]).filter(g=>g.active!==false)
+      .map(g=>({ code:g.code, label:g.label })))).catch(()=>{});
+  },[]);
   const denreesActives = (denrees||[]).filter(d=>d.active);
 
   /* Le catalogue est une collection synchronisée : on l'édite par `set`, comme
@@ -2432,10 +2437,11 @@ function SetRations({ db, set, notify, can }){
   /* Création d'une denrée sans quitter l'écran : la liste typée l'accueille, et
      on recharge pour que le sélecteur la propose aussitôt. Le code EST la valeur
      que portera `pdd.commodity` et `ration_catalog.commodity` — d'où sa présence. */
-  const creerDenree = async (label) => {
+  const creerDenree = async (label, group) => {
     const nom = (label||"").trim(); if(!nom) return null;
     try{
-      const r = await api.createItem("denrees", { code:nom, label:nom });
+      const r = await api.createItem("denrees", { code:nom, label:nom,
+        champs: group ? { food_group: group } : {} });
       await chargerDenrees();
       notify(`Denrée « ${nom} » créée`,"ok");
       return r.item?.code || nom;
@@ -2466,7 +2472,7 @@ function SetRations({ db, set, notify, can }){
         distribution parce qu'ils changent à chaque livraison.</Aide>
 
       {/* ── Denrées : la création combinée à la config des rations ── */}
-      <DenreesPanel denrees={denrees} can={can} notify={notify}
+      <DenreesPanel denrees={denrees} groupes={groupes} can={can} notify={notify}
         onCreate={creerDenree} onReload={chargerDenrees} />
 
       {/* ── Le catalogue proprement dit ── */}
@@ -2539,12 +2545,13 @@ function SetRations({ db, set, notify, can }){
 /* Le panneau de denrées, dans l'écran des rations : créer, renommer, retirer une
    denrée sans quitter la config des rations. Les denrées sont une liste typée
    (routes/listes.js) — édition réservée à l'administration comme toute liste. */
-function DenreesPanel({ denrees, can, notify, onCreate, onReload }){
+function DenreesPanel({ denrees, groupes, can, notify, onCreate, onReload }){
   const [ajout,setAjout] = useState("");
+  const [grp,setGrp]     = useState("");
   const [busy,setBusy]   = useState(false);
   if(denrees === null) return <Card title="Denrées & commodités"><Empty icon={ClipboardList} title="Chargement des denrées…" /></Card>;
   const ajouter = async () => { if(!ajout.trim()) return; setBusy(true);
-    const code = await onCreate(ajout.trim()); if(code) setAjout(""); setBusy(false); };
+    const code = await onCreate(ajout.trim(), grp||null); if(code){ setAjout(""); } setBusy(false); };
   const basculer = async (d) => { setBusy(true);
     try{ await api.activerItem("denrees", d.id, !d.active, d.rev); await onReload(); }
     catch(e){ notify(e.message,"err"); } setBusy(false); };
@@ -2554,29 +2561,52 @@ function DenreesPanel({ denrees, can, notify, onCreate, onReload }){
     try{ await api.deleteItem("denrees", d.id); await onReload(); notify("Denrée supprimée","ok"); }
     catch(e){ notify(e.message,"err"); } setBusy(false);
   };
+  const labelGroupe = (code) => (groupes||[]).find(g=>g.code===code)?.label || code;
+  /* Les denrées regroupées par FAMILLE, à la manière de COMET. L'ordre des
+     familles suit la liste des groupes ; les denrées sans groupe finissent
+     ensemble. Une chip par denrée, sous l'en-tête de sa famille. */
+  const parFamille = (() => {
+    const ordre = (groupes||[]).map(g=>g.code);
+    const m = new Map();
+    for(const d of denrees){ const k = d.group || ""; if(!m.has(k)) m.set(k, []); m.get(k).push(d); }
+    return [...m.entries()].sort((a,b)=>{
+      const ia = a[0]===""?999:ordre.indexOf(a[0]), ib = b[0]===""?999:ordre.indexOf(b[0]);
+      return (ia<0?998:ia)-(ib<0?998:ib);
+    });
+  })();
+  const chip = (d) => (
+    <div key={d.id} className={clsx("inline-flex items-center gap-1.5 rounded-full border pl-3 pr-1.5 py-1 f11",
+      d.active ? "bg-white border-slate-200 text-slate-700" : "bg-slate-50 border-slate-200 text-slate-400")}>
+      <span className="font-semibold">{d.label}</span>
+      {d.usage>0 && <span className="f10 text-slate-400" title="Utilisée dans le PDD ou le catalogue">·{d.usage}</span>}
+      {!d.active && <span className="f10 uppercase tracking-wide">inactif</span>}
+      {can("admin") && <>
+        <button onClick={()=>basculer(d)} disabled={busy} title={d.active?"Désactiver":"Réactiver"}
+          className="text-slate-300 hover:text-slate-600 px-1">{d.active?"⦸":"↺"}</button>
+        {!d.usage && <button onClick={()=>retirer(d)} disabled={busy} title="Supprimer"
+          className="text-slate-300 hover:text-rose-600"><Trash2 size={12}/></button>}
+      </>}
+    </div>);
   return (
     <Card flush title="Denrées & commodités"
-      subtitle="Créées et gérées ici même — le code est la valeur portée par le plan de distribution et le catalogue"
-      right={can("admin") && <div className="flex items-center gap-2">
+      subtitle="Créées et gérées ici même, rangées par famille — le code est la valeur portée par le plan de distribution et le catalogue"
+      right={can("admin") && <div className="flex items-center gap-2 flex-wrap">
         <Input value={ajout} onChange={e=>setAjout(e.target.value)} placeholder="Nouvelle denrée (ex. Farine)"
-          onKeyDown={e=>e.key==="Enter"&&ajouter()} className="mi-py1 mi-xs" style={{width:200}} />
+          onKeyDown={e=>e.key==="Enter"&&ajouter()} className="mi-py1 mi-xs" style={{width:180}} />
+        {!!(groupes||[]).length && <Select value={grp} onChange={e=>setGrp(e.target.value)} empty="Famille…"
+          options={groupes.map(g=>[g.code, g.label])} className="mi-py1 mi-xs mi-wauto" />}
         <Btn size="sm" icon={Plus} disabled={busy||!ajout.trim()} onClick={ajouter}>Créer</Btn>
       </div>}>
-      <div className="p-3 flex flex-wrap gap-2">
-        {denrees.length ? denrees.map(d=>(
-          <div key={d.id} className={clsx("inline-flex items-center gap-1.5 rounded-full border pl-3 pr-1.5 py-1 f11",
-            d.active ? "bg-white border-slate-200 text-slate-700" : "bg-slate-50 border-slate-200 text-slate-400")}>
-            <span className="font-semibold">{d.label}</span>
-            {d.usage>0 && <span className="f10 text-slate-400" title="Utilisée dans le PDD ou le catalogue">·{d.usage}</span>}
-            {!d.active && <span className="f10 uppercase tracking-wide">inactif</span>}
-            {can("admin") && <>
-              <button onClick={()=>basculer(d)} disabled={busy} title={d.active?"Désactiver":"Réactiver"}
-                className="text-slate-300 hover:text-slate-600 px-1">{d.active?"⦸":"↺"}</button>
-              {!d.usage && <button onClick={()=>retirer(d)} disabled={busy} title="Supprimer"
-                className="text-slate-300 hover:text-rose-600"><Trash2 size={12}/></button>}
-            </>}
-          </div>)) : <span className="f11 text-slate-400">Aucune denrée — créez-en une ci-dessus.</span>}
-      </div>
+      {denrees.length ? (
+        <div className="p-3 space-y-3">
+          {parFamille.map(([code,list])=>(
+            <div key={code||"__none__"}>
+              <div className="f10 font-bold uppercase tracking-wider text-slate-400 mb-1.5">
+                {code ? labelGroupe(code) : "Sans famille"}</div>
+              <div className="flex flex-wrap gap-2">{list.map(chip)}</div>
+            </div>))}
+        </div>
+      ) : <div className="p-3"><span className="f11 text-slate-400">Aucune denrée — créez-en une ci-dessus.</span></div>}
     </Card>);
 }
 
