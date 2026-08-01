@@ -386,8 +386,9 @@ test("bureaux : l'écran de configuration liste les bureaux et leur périmètre"
   await click(menu, "menu du compte"); await flush();
   await click(byText("button", "Paramètres de l'application"), "paramètres");
   await flush(); await flush();
-  const onglet = all("main button").filter(b => b.className.includes("-mb-px"))
-    .find(b => b.textContent.trim() === "Bureaux");
+  /* La sous-navigation des Paramètres est un rail de catégories (<nav>), plus
+     une rangée d'onglets : on y cherche l'écran par son intitulé. */
+  const onglet = all("main nav button").find(b => b.textContent.trim() === "Bureaux");
   await click(onglet, "sous-onglet Bureaux");
   await flush(); await flush(); await flush();
 
@@ -407,10 +408,10 @@ test("persistance : une formule éditée dans les Paramètres est enregistrée s
      correctif, l'édition ne partait nulle part (les formules n'entraient dans
      aucune collection synchronisée) et cette relecture de l'état ne la trouvait
      pas — le test échoue alors sur la première assertion. */
-  const sousOnglet = (l) => all("main button").filter(b => b.className.includes("-mb-px"))
-    .find(b => b.textContent.trim() === l);
+  /* La sous-navigation des Paramètres est un rail de catégories (<nav>). */
+  const railItem = (l) => all("main nav button").find(b => b.textContent.trim() === l);
   /* On est encore dans les Paramètres, à la suite du test précédent. */
-  await click(sousOnglet("Calculs"), "sous-onglet Calculs"); await flush(); await flush();
+  await click(railItem("Calculs"), "écran Calculs"); await flush(); await flush();
 
   const expr = all("main input").find(i => String(i.value).includes("riskLevel"));
   assert.ok(expr, "le champ d'expression du premier calcul est présent");
@@ -435,8 +436,9 @@ test("ODK Central : l'écran ne propose plus de « jeton général », et le bad
      jeton compris, et le serveur le reçoit avant de le jeter. Le champ ne servait
      à rien — aucun code ne le lit —, il ne pouvait donc pas être décrit
      honnêtement : il est parti. */
-  const onglet = all("main button").filter(b => b.className.includes("-mb-px"))
-    .find(b => b.textContent.trim() === "ODK Central");
+  /* La sous-navigation des Paramètres est un rail de catégories (<nav>), plus
+     une rangée d'onglets : on y cherche l'écran par son intitulé. */
+  const onglet = all("main nav button").find(b => b.textContent.trim() === "ODK Central");
   await click(onglet, "sous-onglet ODK Central");
   await flush(); await flush();
 
@@ -457,8 +459,9 @@ test("connecteurs : la table de correspondance est bâtie sur le registre servi 
      transformations affichés ne sont écrits nulle part dans le navigateur. S'ils
      apparaissent, c'est qu'ils viennent de GET /api/connectors/champs — donc du
      même registre que celui contre lequel l'enregistrement est validé. */
-  const onglet = all("main button").filter(b => b.className.includes("-mb-px"))
-    .find(b => b.textContent.trim() === "Connecteurs");
+  /* La sous-navigation des Paramètres est un rail de catégories (<nav>), plus
+     une rangée d'onglets : on y cherche l'écran par son intitulé. */
+  const onglet = all("main nav button").find(b => b.textContent.trim() === "Connecteurs");
   await click(onglet, "sous-onglet Connecteurs");
   await flush(); await flush();
 
@@ -491,8 +494,9 @@ test("référentiels de codes : l'écran s'ouvre sur ses compteurs, même sans a
   /* Le seed n'en charge aucun — c'est le premier état que verra l'utilisateur, et
      celui qu'un écran chiffré rate le plus facilement : il doit afficher des zéros
      et dire quoi faire, pas un tableau vide ni un bandeau de tirets. */
-  const onglet = all("main button").filter(b => b.className.includes("-mb-px"))
-    .find(b => b.textContent.trim() === "Référentiels de codes");
+  /* La sous-navigation des Paramètres est un rail de catégories (<nav>), plus
+     une rangée d'onglets : on y cherche l'écran par son intitulé. */
+  const onglet = all("main nav button").find(b => b.textContent.trim() === "Référentiels de codes");
   await click(onglet, "sous-onglet Référentiels de codes");
   await flush(); await flush();
 
@@ -520,30 +524,51 @@ test("paramètres : « Sites » a quitté la configuration, mais le registre res
   const nav = (l) => all("header nav button").find(b => b.textContent.trim().startsWith(l));
   const sousOnglet = (l) => all("main button").filter(b => b.className.includes("-mb-px"))
     .find(b => b.textContent.trim() === l);
+  /* La configuration est désormais CATÉGORISÉE : un rail de sujets à gauche
+     (<nav>), chaque sujet ouvrant son écran à droite. On y navigue par
+     l'intitulé du sujet. */
+  const railItem = (l) => all("main nav button").find(b => b.textContent.trim() === l);
 
-  /* Toujours dans les Paramètres à ce stade : leurs onglets sont là, « Sites » non. */
-  assert.ok(sousOnglet("Localités"), "les onglets des Paramètres sont bien affichés");
-  assert.ok(!sousOnglet("Sites"), "l'onglet « Sites » ne figure plus dans les Paramètres");
+  /* Toujours dans les Paramètres à ce stade : les sujets sont au rail, « Sites » non. */
+  assert.ok(railItem("Localités"), "le rail des sujets de configuration est affiché");
+  assert.ok(!railItem("Sites"), "« Sites » ne figure plus dans la configuration");
+  /* Les catégories elles-mêmes sont visibles : c'est ce que « catégoriser avec
+     des sous-catégories » veut dire. */
+  assert.ok(document.body.textContent.includes("Référentiels")
+    && document.body.textContent.includes("Organisation & lieux"),
+    "les catégories de la configuration sont affichées au rail");
 
-  /* Le référentiel des activités, nouvel onglet, s'ouvre et affiche sa liste. */
-  await click(sousOnglet("Activités"), "sous-onglet Activités"); await flush();
+  /* Le référentiel des activités, sous « Référentiels », s'ouvre et affiche sa liste. */
+  await click(railItem("Activités"), "écran Activités"); await flush();
   assert.ok(document.body.textContent.includes("Activités du programme"),
     "le référentiel des activités s'affiche");
 
-  /* La fiche du pays porte désormais les contours MAILLE PAR MAILLE (S8-6) :
-     un shapefile par niveau sur le même millésime, pour que la carte puisse
-     changer de niveau de breakdown. */
-  await click(sousOnglet("Pays"), "sous-onglet Pays"); await flush(); await flush();
+  /* « Pays & découpage » : le découpage se configure DANS la fiche du pays.
+     On ouvre le pays courant et l'on y trouve l'injection du shapefile, les
+     contours par niveau et le récapitulatif par niveau. */
+  await click(railItem("Pays & découpage"), "écran Pays & découpage"); await flush(); await flush();
+  assert.ok(document.body.textContent.includes("Pays configurés"), "la liste des pays s'affiche");
+  const modifier = byText("main button", "Modifier");
+  assert.ok(modifier, "chaque pays s'ouvre pour configuration");
+  await click(modifier, "ouvrir la fiche du pays"); await flush(); await flush();
+  assert.ok(byText(".z60", "Découpage administratif"),
+    "la fiche du pays porte l'injection du shapefile et du dbf");
   assert.ok(document.body.textContent.includes("Contours par niveau"),
     "la fiche du pays propose les contours par niveau");
-  assert.ok(document.body.textContent.includes("breakdown"),
-    "l'écran dit à quoi sert le dépôt par niveau");
+  assert.ok(document.body.textContent.includes("Récapitulatif par niveau"),
+    "et un récapitulatif des nombres par niveau, en bas");
+  /* Refermer la fiche avant de continuer. */
+  await act(async () => {
+    window.dispatchEvent(new window.KeyboardEvent("keydown", { key:"Escape", bubbles:true }));
+    await sleep(60);
+  });
+  await flush();
 
   /* Les listes paramétrables typées (S8) : maître-détail, rail des types à
      gauche, liste choisie à droite. On y vérifie ce qui distingue cet écran —
      qu'il tient onze référentiels, qu'il montre l'usage, et que le renommage
      de code passe par une correspondance avant d'écrire. */
-  await click(sousOnglet("Listes paramétrables"), "sous-onglet Listes paramétrables");
+  await click(railItem("Listes paramétrables"), "écran Listes paramétrables");
   await flush(); await flush();
   assert.ok(document.body.textContent.includes("Types de liste"),
     "le rail des types de liste s'affiche");
@@ -576,9 +601,9 @@ test("paramètres : « Sites » a quitté la configuration, mais le registre res
   await flush();
 
   /* Le parcours de configuration guidée (S7) est proposé au super et s'ouvre. */
-  assert.ok(sousOnglet("Configuration guidée"),
-    "l'onglet Configuration guidée est proposé au super-utilisateur");
-  await click(sousOnglet("Configuration guidée"), "Configuration guidée"); await flush();
+  assert.ok(railItem("Configuration guidée"),
+    "« Configuration guidée » est proposée au super-utilisateur");
+  await click(railItem("Configuration guidée"), "Configuration guidée"); await flush();
   assert.ok(document.body.textContent.includes("parcours fondateur"),
     "le parcours de configuration guidée s'affiche");
   assert.ok(document.body.textContent.includes("prêtes"), "le décompte des étapes prêtes s'affiche");
