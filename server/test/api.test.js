@@ -337,11 +337,24 @@ test("tirage ODK Central : pagine, aplatit les groupes, met à jour le cache et 
 });
 
 test("tirage ODK Central : sans jeton propre, refus explicite plutôt qu'un jeton emprunté", async () => {
+  /* Le refus est le même ; ce qui le prononce a changé. Il était posé en tête de
+     route, inconditionnel, au motif que « tous les schémas exigent un justificatif
+     durable » — ce qui est faux du schéma « Aucune (source publique) », que
+     l'écran propose. C'est donc le SCHÉMA de la source qui décide, par
+     `porteurAuth`, et le tirage rend exactement ce que l'épreuve de connexion
+     rend sur la même ligne. Ici le schéma est « Porteur », qui exige bien un
+     jeton, et l'absence se dit avant tout appel sortant. */
   const f = await odkForm({ name:"Sans jeton", formId:"testform-notoken", token:"" });
+  const avant = odkMockRequests.length;
   const r = await request(app).post(`/api/odk-forms/${f.id}/pull`)
     .set("Authorization", `Bearer ${adminToken}`);
   assert.equal(r.status, 422);
-  assert.match(r.body.error, /jeton propre/);
+  assert.equal(r.body.cause, "AUTH_ABSENT");
+  assert.match(r.body.error, /n'a pas de justificatif complet/);
+  assert.match(r.body.error, /chaque source porte le sien/,
+    "le refus dit pourquoi aucune autre source ne lui prêtera le sien");
+  assert.equal(odkMockRequests.length, avant,
+    "un justificatif manquant se constate sans sortir sur le réseau");
 });
 
 test("tirage ODK Central : jeton refusé par le serveur distant renvoyé en 422, pas en 500", async () => {
@@ -3021,6 +3034,1184 @@ test("connecteurs : la valeur par défaut passe par la même transformation que 
 });
 
 /* ═══════════════════════════════════════════════════════════════════════
+   AUTHENTIFICATION SORTANTE — le schéma est une donnée, pas une hypothèse
+
+   Ce qui est éprouvé ici, c'est le COMPORTEMENT, contre un serveur simulé en
+   mémoire : la suite tourne sans réseau, et elle ne prouve donc rien du
+   comportement d'une vraie instance ODK Central ou KoboToolbox. Ce qu'elle
+   prouve, en revanche, ne dépend d'aucune supposition :
+
+     — l'en-tête réellement émis, mot-clé compris, pour chacun des six schémas ;
+     — qu'une source déclarée AVANT la migration 021 continue d'émettre
+       exactement `Bearer <jeton>`, sans ressaisie ;
+     — qu'une session expirée est renouvelée UNE fois et une seule ;
+     — qu'un échec de renouvellement se signale et ne se rejoue pas, et qu'un
+       justificatif corrigé lève ce blocage sur-le-champ ;
+     — que deux tirages simultanés n'ouvrent qu'une seule session ;
+     — que chacune des causes d'échec rend son propre message ;
+     — qu'aucun secret ne sort d'aucune de ces réponses.
+
+   Le serveur simulé ci-dessous imite les DEUX familles à la fois — ouverture de
+   session façon ODK Central, clé d'API et refus façon KoboToolbox — parce que
+   c'est le croisement des deux qui a fait le défaut : un seul schéma codé en dur
+   pour des sources qui n'en attendent pas le même.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Le chiffrement au repos, pour planter des justificatifs comme la base les
+   porte. Nommé autrement que le `encrypt` importé plus bas : deux `const` du
+   même nom dans le même module ne coexistent pas. */
+const { encrypt: chiffrer } = await import("../src/lib/crypto.js");
+
+const AUTH = {
+  courriel: "agent@odk.test",
+  motDePasse: "MotDePasseOdk2026",
+  cleKobo: "cle-api-kobo-40-caracteres-exactement-x",
+  jetonFixe: "jeton-fixe-de-la-source",
+};
+const basique = (id, mdp) => "Basic " + Buffer.from(`${id}:${mdp}`, "utf8").toString("base64");
+
+let srcMock, srcUrl, srcRequetes, srcSessions;
+{
+  srcRequetes = [];
+  /* `emises` compte les ouvertures de session : c'est le chiffre sur lequel
+     reposent « une seule fois » et « une seule en vol ». `courante` est le seul
+     jeton accepté — une session périmée est donc simplement un jeton qui n'est
+     plus `courante`, exactement comme chez ODK Central, où la vérification se
+     fait à chaque requête. */
+  srcSessions = { emises: 0, courante: null, refuseIdentifiants: false,
+    refuseToujours: false, lenteurMs: 0,
+    /* Ce que la source ANNONCE comme échéance. `dureeMs` la raccourcit —
+       `sessionLifetime` est un réglage de l'exploitant ODK, rien n'oblige qu'il
+       dépasse la marge de renouvellement de MEMS. `expireIllisible` rend une
+       valeur qui n'est pas une date : le module se veut tolérant sur la forme de
+       la réponse, encore faut-il que ce qu'il met en cache reste calculable. */
+    dureeMs: null, expireIllisible: null,
+    /* La source ne répond plus du tout : la panne d'une seconde, la bascule de
+       proxy. Ce n'est PAS un refus, et les deux ne s'expient pas pareil. */
+    injoignable: false };
+
+  const json = (res, code, corps, entetes = {}) => {
+    res.statusCode = code;
+    res.setHeader("Content-Type", "application/json");
+    for(const [k, v] of Object.entries(entetes)) res.setHeader(k, v);
+    res.end(JSON.stringify(corps));
+  };
+  /* Le refus de KoboToolbox, tel que kpi/authentication.py le produit : le
+     `WWW-Authenticate` nomme le schéma attendu, et c'est le SEUL signal qui
+     sépare « mauvais mot-clé » de « mauvais jeton ». */
+  const refusKobo = (res, attendu, detail) =>
+    json(res, 401, { detail }, { "WWW-Authenticate": attendu });
+
+  srcMock = http.createServer(async (req, res) => {
+    const auth = req.headers.authorization;
+    const chemin = req.url.split("?")[0];
+    srcRequetes.push({ url: req.url, chemin, methode: req.method, auth });
+
+    /* ── Ouverture de session, façon ODK Central ── */
+    if(chemin === "/v1/sessions" && req.method === "POST"){
+      let corps = ""; for await (const c of req) corps += c;
+      if(srcSessions.injoignable) return req.socket.destroy();
+      if(srcSessions.lenteurMs) await new Promise(r => setTimeout(r, srcSessions.lenteurMs));
+      const d = JSON.parse(corps || "{}");
+      if(srcSessions.refuseIdentifiants || d.email !== AUTH.courriel || d.password !== AUTH.motDePasse)
+        return json(res, 401, { message: "Could not authenticate with the provided credentials.",
+          code: 401.2 });
+      srcSessions.emises++;
+      srcSessions.courante = `session-${srcSessions.emises}`;
+      return json(res, 200, { token: srcSessions.courante, csrf: "peu-importe",
+        expiresAt: srcSessions.expireIllisible
+          || new Date(Date.now() + (srcSessions.dureeMs || 3600_000)).toISOString(),
+        createdAt: new Date().toISOString() });
+    }
+
+    const sessionValide = () => !srcSessions.refuseToujours
+      && !!srcSessions.courante && auth === `Bearer ${srcSessions.courante}`;
+
+    if(chemin === "/v1/users/current"){
+      if(!sessionValide()) return json(res, 401,
+        { message: "Could not authenticate with the provided credentials.", code: 401.2 });
+      return json(res, 200, { id: 7, email: AUTH.courriel });
+    }
+
+    /* Un formulaire dont le nom commence par « sans-droit » répond 403 : compte
+       reconnu, action interdite. Il est examiné AVANT le cas général, sans quoi
+       le cas général l'absorberait et 403 ne serait jamais produit. */
+    if(/^\/v1\/projects\/[^/]+\/forms\/sans-droit[^/]*\.svc\/Submissions$/.test(chemin))
+      return json(res, 403, { message: "The authenticated actor does not have rights to perform "
+        + "that action.", code: 403.1 });
+
+    /* Un formulaire qui refuse en 401 même sous une session valide : jeton révoqué
+       entre deux appels, proxy inverse qui filtre la voie OData. C'est le seul
+       chemin par lequel l'étape 2 de l'épreuve rencontre un 401 après une étape 1
+       réussie — et donc le seul qui montre si son message dit vrai. */
+    if(/^\/v1\/projects\/[^/]+\/forms\/refus-401[^/]*\.svc\/Submissions$/.test(chemin))
+      return json(res, 401, { message: "Could not authenticate.", code: 401.2 });
+
+    /* Le tirage OData, réservé à une session valide : c'est le cœur du test de
+       renouvellement — un jeton périmé y revient en 401 sans autre indice. */
+    if(/^\/v1\/projects\/[^/]+\/forms\/[^/]+\.svc\/Submissions$/.test(chemin)){
+      if(!sessionValide()) return json(res, 401,
+        { message: "Could not authenticate with the provided credentials.", code: 401.2 });
+      return json(res, 200, { value: [{ __id: "sess1", SvyDate: "2026-04-01", EnuName: "Session" }] });
+    }
+
+    /* ── Clé d'API et lecture, façon KoboToolbox ── */
+    if(chemin === "/token/"){
+      if(auth !== basique(AUTH.courriel, AUTH.motDePasse))
+        return json(res, 401, { detail: "Invalid username/password." });
+      return json(res, 200, { token: AUTH.cleKobo });
+    }
+    /* Rend `true` quand la demande est refusée — la réponse est alors déjà écrite. */
+    const koboRefuse = (bon) => {
+      if(!auth || !/^Token /.test(auth)){
+        refusKobo(res, "Session", "Authentication credentials were not provided."); return true;
+      }
+      if(auth !== `Token ${bon}`){ refusKobo(res, "Token", "Invalid token."); return true; }
+      return false;
+    };
+    if(chemin === "/me/"){
+      if(koboRefuse(AUTH.cleKobo)) return;
+      return json(res, 200, { username: "agent" });
+    }
+    if(/^\/api\/v2\/assets\/[^/]+\/data\/$/.test(chemin)){
+      if(koboRefuse(AUTH.cleKobo)) return;
+      return json(res, 200, { count: 2, next: null, previous: null, results: [
+        { pcode: "mg 232 09050001", annee: "2026", mois: "4", planifie: "1 400", atteint: "1 380" },
+        { pcode: "MG23209050002", annee: "2026", mois: "4", planifie: "700", atteint: "690" }] });
+    }
+
+    /* ── Points d'entrée neutres, pour lire l'en-tête réellement émis ── */
+    if(chemin === "/entetes")
+      return json(res, 200, { results: [{ recu: auth === undefined ? null : auth }] });
+    /* Un refus SANS le moindre indice : ni code Problem, ni WWW-Authenticate.
+       C'est le cas où aucune des cinq causes n'est démontrable, et où le message
+       doit le dire au lieu d'en désigner une au hasard. */
+    if(chemin === "/muet"){ res.statusCode = 401; return res.end("refusé"); }
+    /* Le 403 de Django REST Framework — donc de KoboToolbox — quand
+       l'authentifieur en tête de liste n'expose pas de `WWW-Authenticate` : le
+       code dit 403, le corps dit qu'aucun justificatif n'a été fourni. */
+    if(chemin === "/403drf")
+      return json(res, 403, { detail: "Authentication credentials were not provided." });
+    /* Le même refus, mais la source NOMME le mot-clé qu'elle attendait. Seul le
+       code HTTP diffère du 401 équivalent : le diagnostic ne doit pas en dépendre. */
+    if(chemin === "/403token")
+      return json(res, 403, { detail: "Invalid token." }, { "WWW-Authenticate": "Token" });
+
+    json(res, 404, { detail: "Not found." });
+  });
+  await new Promise(r => srcMock.listen(0, "127.0.0.1", r));
+  srcUrl = `http://127.0.0.1:${srcMock.address().port}`;
+  after(() => srcMock.close());
+}
+
+const dernierAppel = (chemin) => [...srcRequetes].reverse().find(q => q.chemin === chemin);
+const compter = (chemin) => srcRequetes.filter(q => q.chemin === chemin).length;
+
+/* Un connecteur « http » qui interroge /entetes : le plus court chemin pour
+   observer ce qui part réellement dans l'en-tête, schéma par schéma. */
+const connecteurEntetes = async (nom, extra) => (await creerConnecteur({
+  name: nom, kind: "http", base_url: srcUrl, config: { chemin: "/entetes" },
+  ...extra })).body.connector;
+
+const apercuDe = (id) => request(app).post(`/api/connectors/${id}/apercu`)
+  .set("Authorization", `Bearer ${adminToken}`)
+  .send({ entity: "beneficiaire", limite: 1, mappings: [
+    { entity: "beneficiaire", mems_field: "geo_pcode", source_path: "pcode" }] });
+
+test("authentification sortante : chaque schéma émet SON en-tête, et « Bearer » n'est plus une hypothèse", async () => {
+  /* Le point que la demande vise : un jeton Kobo présenté en « Bearer » est
+     refusé alors qu'il est bon. Le mot-clé doit donc venir de la source, pas du
+     code — et se vérifier octet par octet, pas de confiance. */
+  const cas = [
+    ["porteur",  { secret: AUTH.jetonFixe }, `Bearer ${AUTH.jetonFixe}`],
+    ["jeton",    { secret: AUTH.jetonFixe }, `Token ${AUTH.jetonFixe}`],
+    ["basique",  { secret: AUTH.motDePasse, auth_identifiant: AUTH.courriel },
+                 basique(AUTH.courriel, AUTH.motDePasse)],
+    ["aucun",    {}, null],
+  ];
+  for(const [schema, extra, attendu] of cas){
+    const c = await connecteurEntetes(`En-tête — ${schema}`, { auth_schema: schema, ...extra });
+    const r = await apercuDe(c.id);
+    assert.equal(r.status, 200, `${schema} : ${JSON.stringify(r.body)}`);
+    assert.equal(dernierAppel("/entetes").auth, attendu ?? undefined,
+      `le schéma « ${schema} » doit émettre exactement « ${attendu ?? "aucun en-tête"} »`);
+  }
+
+  /* Les deux schémas qui DÉRIVENT un second secret : ce qui part n'est pas ce
+     qui a été saisi. C'est littéralement le « token à part » de la demande. */
+  const cSession = await connecteurEntetes("En-tête — session ODK", {
+    auth_schema: "odk_session", auth_identifiant: AUTH.courriel, secret: AUTH.motDePasse });
+  assert.equal((await apercuDe(cSession.id)).status, 200);
+  assert.equal(dernierAppel("/entetes").auth, `Bearer ${srcSessions.courante}`,
+    "le jeton émis est la SESSION dérivée, jamais le mot de passe saisi");
+  assert.ok(!srcRequetes.some(q => String(q.auth || "").includes(AUTH.motDePasse)),
+    "le mot de passe ne part jamais dans un en-tête d'autorisation Bearer ou Token");
+
+  const cKobo = await connecteurEntetes("En-tête — clé Kobo dérivée", {
+    auth_schema: "kobo_jeton", auth_identifiant: AUTH.courriel, secret: AUTH.motDePasse });
+  assert.equal((await apercuDe(cKobo.id)).status, 200);
+  assert.equal(dernierAppel("/entetes").auth, `Token ${AUTH.cleKobo}`,
+    "la clé d'API obtenue en Basic repart ensuite sous le mot-clé « Token »");
+  /* Elle n'expire pas : un second appel ne la redemande pas. */
+  const avant = compter("/token/");
+  assert.equal((await apercuDe(cKobo.id)).status, 200);
+  assert.equal(compter("/token/"), avant,
+    "une clé d'API Kobo ne périme pas : elle est obtenue une fois, pas à chaque appel");
+});
+
+test("authentification sortante : la table des schémas est servie par le serveur, jamais recopiée dans l'écran", async () => {
+  for(const chemin of ["/api/connectors/champs", "/api/state"]){
+    const r = await request(app).get(chemin).set("Authorization", `Bearer ${adminToken}`);
+    assert.equal(r.status, 200);
+    const table = r.body.schemasAuth;
+    assert.ok(Array.isArray(table), `${chemin} sert la table des schémas`);
+    for(const cle of ["aucun", "porteur", "jeton", "basique", "odk_session", "kobo_jeton"])
+      assert.ok(table.some(x => x.cle === cle), `${chemin} déclare le schéma ${cle}`);
+    /* Chaque entrée porte de quoi bâtir l'écran sans rien deviner : ce qu'il faut
+       demander, et où l'administrateur trouve ce justificatif chez la source. */
+    for(const s of table){
+      assert.ok(s.libelle && s.note && s.note.length > 30, `${s.cle} : libellé et explication`);
+      assert.ok(s.ou_trouver, `${s.cle} : où trouver le justificatif`);
+      assert.ok(Array.isArray(s.champs), `${s.cle} : les champs à demander`);
+    }
+    const session = table.find(x => x.cle === "odk_session");
+    assert.equal(session.derive, true);
+    assert.equal(session.perissable, true, "une session ODK expire");
+    assert.equal(table.find(x => x.cle === "kobo_jeton").perissable, false,
+      "une clé d'API Kobo n'expire pas — la table sait exprimer les deux");
+    assert.equal(session.chemin.defaut, "/v1/sessions");
+  }
+});
+
+test("authentification sortante : une source déclarée AVANT la migration continue d'émettre Bearer, sans ressaisie", async () => {
+  /* La ligne est insérée sans nommer `auth_schema` ni `auth_identifiant` : c'est
+     exactement l'état d'une source existante au moment où la migration 021
+     s'applique. Rien n'est ressaisi, et l'en-tête doit être identique à l'octet
+     près à ce qu'il était avant le chantier. */
+  db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind)
+              VALUES ('odkf_heritee','Source héritée','testform','9',?,'process')`)
+    .run(chiffrer("jeton-de-test"));
+  const f = db.prepare("SELECT * FROM odk_forms WHERE id='odkf_heritee'").get();
+  assert.equal(f.auth_schema, "porteur", "la migration a posé « porteur » par défaut");
+  assert.equal(f.auth_identifiant, null);
+
+  await request(app).put("/api/settings").set("Authorization", `Bearer ${adminToken}`)
+    .send({ odkBase: odkMockUrl });
+  const avant = odkMockRequests.length;
+  const r = await request(app).post("/api/odk-forms/odkf_heritee/pull")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.records, 3);
+  assert.ok(odkMockRequests.slice(avant).length > 0);
+  assert.ok(odkMockRequests.slice(avant).every(q => q.auth === "Bearer jeton-de-test"),
+    "le jeton collé part tel quel, sous le même mot-clé qu'avant la migration");
+  db.prepare("DELETE FROM odk_forms WHERE id='odkf_heritee'").run();
+
+  /* L'autre moitié de la reprise, celle qu'on oublie : un connecteur réseau SANS
+     secret n'émettait aucun en-tête et fonctionnait donc sur une source publique.
+     La migration écrit noir sur blanc ce qu'il faisait déjà, plutôt que de le
+     refuser du jour au lendemain au nom d'un justificatif qu'il n'a jamais eu. */
+  const { default: SQLiteReprise } = await import("better-sqlite3");
+  const avant021 = new SQLiteReprise(path.join(os.tmpdir(), `mems-reprise-${Date.now()}.db`));
+  try{
+    const dossier = path.resolve("./migrations");
+    for(const nom of fs.readdirSync(dossier).filter(x => x.endsWith(".sql")).sort()){
+      if(nom.startsWith("021")) continue;
+      avant021.exec(fs.readFileSync(path.join(dossier, nom), "utf8"));
+    }
+    avant021.prepare("INSERT INTO connector (id,name,kind,base_url,secret_enc) VALUES (?,?,?,?,?)")
+      .run("c_public", "Export public", "http", "https://ouvert.test", null);
+    avant021.prepare("INSERT INTO connector (id,name,kind,base_url,secret_enc) VALUES (?,?,?,?,?)")
+      .run("c_prive", "Export privé", "http", "https://ferme.test", "deja-chiffre");
+    avant021.prepare("INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind) VALUES (?,?,?,?,?,?)")
+      .run("f_avant", "Source d'avant", "F", "1", "deja-chiffre", "process");
+
+    avant021.exec(fs.readFileSync(path.join(dossier, "021_auth_sortante.sql"), "utf8"));
+
+    const lu = (id) => avant021.prepare("SELECT auth_schema FROM connector WHERE id=?").get(id).auth_schema;
+    assert.equal(lu("c_public"), "aucun",
+      "un connecteur qui n'émettait aucun en-tête continue de n'en émettre aucun");
+    assert.equal(lu("c_prive"), "porteur", "celui qui avait un secret garde le schéma d'avant");
+    assert.equal(avant021.prepare("SELECT auth_schema FROM odk_forms WHERE id='f_avant'").get().auth_schema,
+      "porteur", "une source ODK existante garde « Bearer »");
+    assert.equal(avant021.pragma("integrity_check", { simple:true }), "ok");
+    assert.equal(avant021.pragma("foreign_key_check").length, 0);
+  } finally {
+    const f = avant021.name; avant021.close();
+    for(const x of [f, f + "-wal", f + "-shm"]) if(fs.existsSync(x)) fs.unlinkSync(x);
+  }
+});
+
+/* Une source ODK réglée en « session » : c'est le cas B de la demande — ODK
+   Central ne délivre pas de jeton permanent à un compte web. */
+const sourceSession = async (id, nom, formId, identifiant = AUTH.courriel,
+                             motDePasse = AUTH.motDePasse) => {
+  /* La suppression préalable vaut aussi purge du cache de session : le
+     déclencheur de la migration 021 emporte la ligne de `source_session`. Chaque
+     test repart donc d'un état net sans avoir à le dire. */
+  db.prepare("DELETE FROM odk_forms WHERE id=?").run(id);
+  db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind,auth_schema,auth_identifiant)
+              VALUES (?,?,?,'1',?,'process','odk_session',?)`)
+    .run(id, nom, formId, chiffrer(motDePasse), identifiant);
+  await request(app).put("/api/settings").set("Authorization", `Bearer ${adminToken}`)
+    .send({ odkBase: srcUrl });
+  return db.prepare("SELECT * FROM odk_forms WHERE id=?").get(id);
+};
+const tirer = (id) => request(app).post(`/api/odk-forms/${id}/pull`)
+  .set("Authorization", `Bearer ${adminToken}`);
+/* `odk_forms` impose l'unicité du couple (projet, formulaire) : chaque source de
+   test porte donc son propre identifiant de formulaire. */
+const soumissionsDe = (formId) => compter(`/v1/projects/1/forms/${formId}.svc/Submissions`);
+
+test("authentification sortante : une session expirée est renouvelée UNE fois, et une seule", async () => {
+  await sourceSession("odkf_sess", "Session ODK", "sess");
+  srcSessions.refuseToujours = false;
+  srcSessions.refuseIdentifiants = false;
+
+  /* Premier tirage : aucune session en cache, MEMS en ouvre une. */
+  const emises0 = srcSessions.emises;
+  assert.equal((await tirer("odkf_sess")).status, 200);
+  assert.equal(srcSessions.emises, emises0 + 1, "une session ouverte, pas deux");
+
+  /* Second tirage : la session est encore valable, on ne la redemande pas.
+     C'est ce qui distingue un cache d'une ouverture à chaque appel. */
+  assert.equal((await tirer("odkf_sess")).status, 200);
+  assert.equal(srcSessions.emises, emises0 + 1, "la session en cache est réutilisée");
+
+  /* La source périme la session dans son dos, SANS que l'échéance annoncée soit
+     passée : c'est le cas « une date d'expiration annoncée peut mentir ». Le
+     401 doit donc suffire à déclencher le renouvellement. */
+  srcSessions.courante = "session-perimee-cote-source";
+  const appels0 = soumissionsDe("sess");
+  const r = await tirer("odkf_sess");
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(srcSessions.emises, emises0 + 2, "exactement un renouvellement");
+  assert.equal(soumissionsDe("sess"), appels0 + 2,
+    "un refus, un renouvellement, un rejeu — et rien de plus");
+});
+
+test("authentification sortante : un refus qui persiste après renouvellement ne boucle pas, et nomme son hypothèse", async () => {
+  await sourceSession("odkf_boucle", "Session obstinée", "boucle");
+  srcSessions.refuseIdentifiants = false;
+  srcSessions.refuseToujours = false;
+  /* Un premier tirage réussi met une session en cache : on isole ainsi le
+     RENOUVELLEMENT de l'ouverture initiale, qui n'est pas la même chose. */
+  assert.equal((await tirer("odkf_boucle")).status, 200);
+
+  /* La source continue d'ouvrir des sessions mais refuse désormais tout appel :
+     le justificatif est frais et pourtant rejeté. Sans garde-fou, on
+     renouvellerait indéfiniment. */
+  srcSessions.refuseToujours = true;
+  const emises0 = srcSessions.emises;
+  const appels0 = soumissionsDe("boucle");
+
+  const r = await tirer("odkf_boucle");
+  assert.equal(r.status, 422, JSON.stringify(r.body));
+  assert.equal(r.body.cause, "AUTH_SCHEMA");
+  assert.match(r.body.error, /renouvelé à l'instant/);
+  assert.match(r.body.error, /Ce n'est pas un verdict/,
+    "le diagnostic se formule en hypothèse nommée, pas en verdict");
+  assert.equal(srcSessions.emises, emises0 + 1, "un seul renouvellement, jamais deux");
+  assert.equal(soumissionsDe("boucle"), appels0 + 2,
+    "deux appels au plus : l'original et le rejeu");
+  srcSessions.refuseToujours = false;
+});
+
+test("authentification sortante : un échec d'ouverture se signale, ne se rejoue pas, et se débloque en corrigeant", async () => {
+  await sourceSession("odkf_echec", "Mot de passe faux", "echec", AUTH.courriel, "mauvais-mot-de-passe");
+  srcSessions.refuseToujours = false;
+  const tentatives0 = compter("/v1/sessions");
+
+  const un = await tirer("odkf_echec");
+  assert.equal(un.status, 422, JSON.stringify(un.body));
+  assert.equal(un.body.cause, "AUTH_SESSION");
+  assert.match(un.body.error, /courriel ou mot de passe refusé/);
+  assert.equal(compter("/v1/sessions"), tentatives0 + 1, "une tentative d'ouverture");
+
+  /* Le deuxième tirage ne doit RIEN redemander à la source : l'échec est
+     consigné et rendu tel quel. C'est la différence entre signaler et marteler. */
+  const deux = await tirer("odkf_echec");
+  assert.equal(deux.status, 422);
+  assert.equal(deux.body.cause, "AUTH_SESSION");
+  assert.match(deux.body.error, /n'est pas rejoué/);
+  assert.match(deux.body.error, /courriel ou mot de passe refusé/,
+    "la cause du premier échec est conservée et rendue, pas remplacée par un message vague");
+  assert.equal(compter("/v1/sessions"), tentatives0 + 1,
+    "aucune nouvelle tentative tant que le justificatif n'a pas changé");
+  assert.ok(db.prepare(`SELECT echec_motif FROM source_session
+                        WHERE source_kind='odk_forms' AND source_id='odkf_echec'`).get().echec_motif,
+    "le motif est consigné en base, donc affichable à l'administrateur");
+
+  /* Corriger le mot de passe change l'empreinte du justificatif : le blocage
+     tombe sans que personne n'ait eu à vider un cache. */
+  db.prepare("UPDATE odk_forms SET token_enc=? WHERE id='odkf_echec'").run(chiffrer(AUTH.motDePasse));
+  const trois = await tirer("odkf_echec");
+  assert.equal(trois.status, 200, JSON.stringify(trois.body));
+  assert.equal(compter("/v1/sessions"), tentatives0 + 2,
+    "le justificatif corrigé relance une tentative, immédiatement");
+});
+
+test("authentification sortante : deux tirages simultanés n'ouvrent qu'une seule session", async () => {
+  await sourceSession("odkf_concur", "Deux tirages", "concur");
+  srcSessions.refuseToujours = false;
+  /* Sans le partage de la promesse en cours, les deux appels constateraient
+     l'absence de cache en même temps et ouvriraient chacun leur session. La
+     lenteur simulée garantit que le second démarre bien avant que le premier
+     n'ait fini. */
+  srcSessions.lenteurMs = 120;
+  const emises0 = srcSessions.emises;
+  const [a, b] = await Promise.all([tirer("odkf_concur"), tirer("odkf_concur")]);
+  srcSessions.lenteurMs = 0;
+  assert.equal(a.status, 200, JSON.stringify(a.body));
+  assert.equal(b.status, 200, JSON.stringify(b.body));
+  assert.equal(srcSessions.emises, emises0 + 1,
+    "une seule session ouverte pour deux tirages concurrents");
+});
+
+test("authentification sortante : chaque cause d'échec rend son propre message", async () => {
+  const messages = new Map();
+  const noter = (cause, message) => {
+    assert.ok(cause, `cause attendue, message rendu : ${message}`);
+    assert.ok(!messages.has(cause) || messages.get(cause) === message,
+      `la cause ${cause} doit rendre un message stable`);
+    messages.set(cause, message);
+  };
+
+  /* 1. AUTH_ABSENT — se constate sans sortir sur le réseau. */
+  const absent = (await creerConnecteur({ name: "Sans justificatif", kind: "http",
+    base_url: srcUrl, config: { chemin: "/entetes" }, auth_schema: "porteur" })).body.connector;
+  const appels0 = srcRequetes.length;
+  const rAbsent = await apercuDe(absent.id);
+  assert.equal(rAbsent.status, 422, JSON.stringify(rAbsent.body));
+  assert.equal(rAbsent.body.cause, "AUTH_ABSENT");
+  assert.match(rAbsent.body.error, /n'a pas de justificatif complet/);
+  assert.equal(srcRequetes.length, appels0,
+    "un justificatif manquant se constate avant de sortir, pas après un 401");
+  noter(rAbsent.body.cause, rAbsent.body.error);
+
+  /* 2. AUTH_SCHEMA — le mot-clé émis n'est pas celui que la source attendait.
+     C'est le défaut Kobo, dans sa forme exacte : le jeton est bon, le mot-clé non.
+     Le message rend le mot-clé annoncé ET le schéma déclarable à essayer : chez
+     Kobo, « Session » n'est pas un schéma qu'on puisse choisir — c'est la façon
+     dont Django REST Framework dit qu'aucun authentifieur n'a reconnu l'en-tête.
+     Un test qui figeait « adoptez celui qu'elle réclame » figeait la mauvaise
+     consigne ; voir le test dédié plus bas. */
+  const mauvaisSchema = (await creerConnecteur({ name: "Kobo en Bearer", kind: "kobo",
+    base_url: srcUrl, config: { uid: "aXyZ" }, auth_schema: "porteur",
+    secret: AUTH.cleKobo })).body.connector;
+  const rSchema = await apercuDe(mauvaisSchema.id);
+  assert.equal(rSchema.status, 422, JSON.stringify(rSchema.body));
+  assert.equal(rSchema.body.cause, "AUTH_SCHEMA");
+  assert.match(rSchema.body.error, /« Bearer »/);
+  assert.match(rSchema.body.error, /« Session »/);
+  assert.match(rSchema.body.error, /Jeton \(Token\)/);
+  noter(rSchema.body.cause, rSchema.body.error);
+
+  /* 3. AUTH_SESSION — la session n'a pas pu être ouverte. */
+  await sourceSession("odkf_echec_bis", "Session impossible", "echec-bis", AUTH.courriel, "faux");
+  const rSess = await tirer("odkf_echec_bis");
+  assert.equal(rSess.status, 422);
+  assert.equal(rSess.body.cause, "AUTH_SESSION");
+  noter(rSess.body.cause, rSess.body.error);
+
+  /* 4. AUTH_DROITS — authentifié, mais sans droit. 403 et 401 ne se confondent
+     plus : c'est le gain de diagnostic le moins cher du chantier. */
+  await sourceSession("odkf_droits", "Sans droit sur le formulaire", "sans-droit-a");
+  srcSessions.refuseToujours = false;
+  const rDroits = await tirer("odkf_droits");
+  assert.equal(rDroits.status, 422, JSON.stringify(rDroits.body));
+  assert.equal(rDroits.body.cause, "AUTH_DROITS");
+  assert.match(rDroits.body.error, /droits/);
+  assert.match(rDroits.body.error, /CHEZ LA SOURCE/);
+  noter(rDroits.body.cause, rDroits.body.error);
+
+  /* 5. AUTH_HOTE — refusé avant tout appel par la garde anti-SSRF. */
+  const horsListe = (await creerConnecteur({ name: "Hôte refusé", kind: "http",
+    base_url: "http://169.254.169.254", config: { chemin: "/entetes" },
+    auth_schema: "porteur", secret: "x" })).body.connector;
+  const rHote = await apercuDe(horsListe.id);
+  assert.equal(rHote.status, 422);
+  assert.equal(rHote.body.cause, "AUTH_HOTE");
+  assert.match(rHote.body.error, /CONNECTOR_ALLOWED_HOSTS/);
+
+  /* 6. AUTH_REFUS — la source refuse sans rien dire. Le message le DIT, au lieu
+     d'accuser le jeton comme le faisait le texte unique d'avant. */
+  const muet = (await creerConnecteur({ name: "Refus muet", kind: "http",
+    base_url: srcUrl, config: { chemin: "/muet" }, auth_schema: "jeton",
+    secret: AUTH.jetonFixe })).body.connector;
+  const rMuet = await apercuDe(muet.id);
+  assert.equal(rMuet.status, 422, JSON.stringify(rMuet.body));
+  assert.equal(rMuet.body.cause, "AUTH_REFUS");
+  assert.match(rMuet.body.error, /sans qu'elle en précise la cause/);
+  assert.match(rMuet.body.error, /n'expire pas/,
+    "le message explique ce que ce schéma-là implique, au lieu d'énumérer cinq causes");
+  noter(rMuet.body.cause, rMuet.body.error);
+
+  /* Aucun des messages n'est le message fourre-tout d'avant, et ils sont tous
+     différents les uns des autres. */
+  const textes = [...messages.values(), rHote.body.error];
+  assert.equal(new Set(textes).size, textes.length, "cinq causes, cinq messages distincts");
+  for(const t of textes)
+    assert.ok(!/jeton absent, expiré, ou sans droit/.test(t),
+      "le message qui confondait trois causes a disparu");
+});
+
+test("connecteur KoboToolbox : la nature « kobo » est réellement lue, avec le mot-clé qu'elle attend", async () => {
+  /* Avant ce chantier, un connecteur Kobo était déclarable mais mort : l'aperçu
+     répondait qu'une source de ce type « n'est pas lue par le serveur », tout en
+     exigeant son adresse de base. */
+  const c = (await creerConnecteur({ name: "Kobo — bénéficiaires", kind: "kobo",
+    base_url: srcUrl, config: { uid: "aXyZ123" }, auth_schema: "jeton",
+    secret: AUTH.cleKobo })).body.connector;
+
+  await request(app).put(`/api/connectors/${c.id}/mappings`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ entity: "beneficiaire", mappings: [
+      { entity: "beneficiaire", mems_field: "geo_pcode", source_path: "pcode", transform: "pcode" },
+      { entity: "beneficiaire", mems_field: "annee", source_path: "annee", transform: "entier" },
+      { entity: "beneficiaire", mems_field: "mois", source_path: "mois", transform: "entier" },
+      { entity: "beneficiaire", mems_field: "planifies", source_path: "planifie", transform: "entier" },
+      { entity: "beneficiaire", mems_field: "atteints", source_path: "atteint", transform: "entier" }] });
+
+  const r = await request(app).post(`/api/connectors/${c.id}/apercu`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ entity: "beneficiaire", limite: 5 });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.match(r.body.provenance, /lecture distante \(kobo/);
+  assert.equal(r.body.lignesLues, 2);
+  assert.equal(r.body.ok, true, JSON.stringify(r.body.manquants));
+  assert.equal(r.body.lignes[0].apres.geo_pcode, "MG23209050001");
+  assert.equal(r.body.lignes[0].apres.planifies, 1400);
+
+  const appel = dernierAppel("/api/v2/assets/aXyZ123/data/");
+  assert.ok(appel, "le serveur va bien lire l'asset Kobo");
+  assert.equal(appel.auth, `Token ${AUTH.cleKobo}`, "mot-clé « Token », jamais « Bearer »");
+  assert.match(appel.url, /limit=5/, "la pagination de Kobo est celle de Kobo, pas celle d'OData");
+
+  /* Un uid manquant se dit à la déclaration, pas au premier aperçu. */
+  const sansUid = await creerConnecteur({ name: "Kobo sans uid", kind: "kobo",
+    base_url: srcUrl, config: {}, auth_schema: "jeton", secret: "x" });
+  assert.equal(sansUid.status, 422);
+  assert.match(sansUid.body.error, /uid/);
+});
+
+test("épreuve de connexion : un diagnostic utilisable, et jamais le secret", async () => {
+  await sourceSession("odkf_epreuve", "Épreuve", "epreuve");
+  srcSessions.refuseToujours = false; srcSessions.refuseIdentifiants = false;
+
+  const ok = await request(app).post("/api/odk-forms/odkf_epreuve/test")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.ok, true, JSON.stringify(ok.body));
+  assert.equal(ok.body.etapes.length, 2, "deux étapes : le justificatif, puis CE formulaire");
+  assert.equal(ok.body.etapes[0].etape, "justificatif");
+  assert.equal(ok.body.etapes[0].schema_employe, "odk_session");
+  assert.equal(ok.body.etapes[0].mot_cle, "Bearer");
+  assert.equal(ok.body.etapes[0].hote_verifie, true);
+  assert.equal(ok.body.etapes[0].code_http, 200);
+  assert.equal(ok.body.etapes[0].indices.present, true);
+  assert.equal(ok.body.etapes[0].indices.longueur, AUTH.motDePasse.length);
+  assert.equal(ok.body.etapes[1].etape, "formulaire");
+
+  /* Les deux étapes ne disent pas la même chose, et c'est tout leur intérêt :
+     un justificatif valide qui n'ouvre pas CE formulaire se voit à l'étape 2. */
+  await sourceSession("odkf_epreuve2", "Épreuve sans droit", "sans-droit-b");
+  const partiel = await request(app).post("/api/odk-forms/odkf_epreuve2/test")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(partiel.body.ok, false);
+  assert.equal(partiel.body.etapes[0].ok, true, "le compte est bon");
+  assert.equal(partiel.body.etapes[1].cause, "AUTH_DROITS", "les droits sur le formulaire, non");
+
+  /* Côté connecteurs, la même épreuve, avec le même engagement sur le secret. */
+  const c = (await creerConnecteur({ name: "Épreuve Kobo", kind: "kobo", base_url: srcUrl,
+    config: { uid: "aXyZ" }, auth_schema: "jeton", secret: AUTH.cleKobo })).body.connector;
+  const rc = await request(app).post(`/api/connectors/${c.id}/test`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(rc.status, 200, JSON.stringify(rc.body));
+  assert.equal(rc.body.ok, true, JSON.stringify(rc.body));
+  assert.equal(rc.body.etapes[0].mot_cle, "Token");
+  assert.equal(dernierAppel("/me/").auth, `Token ${AUTH.cleKobo}`,
+    "l'épreuve vise un point d'entrée qui ne lit aucune donnée");
+
+  /* Aucun secret, sous aucune forme, dans aucune de ces réponses. */
+  for(const corps of [ok, partiel, rc].map(x => JSON.stringify(x.body))){
+    for(const secret of [AUTH.motDePasse, AUTH.cleKobo, AUTH.jetonFixe])
+      assert.ok(!corps.includes(secret), "l'épreuve ne renvoie jamais le secret");
+    for(const cle of ['"token"', '"secret"', '"password"', '"token_enc"', '"secret_enc"',
+                      '"jeton_enc"'])
+      assert.ok(!corps.includes(cle), `l'épreuve expose le champ ${cle}`);
+    /* Pas davantage les quatre derniers caractères : la maison ne rend que la
+       présence, et la longueur — qui diagnostique un copier-coller tronqué. */
+    assert.ok(!corps.includes(AUTH.cleKobo.slice(-4)), "aucun fragment du secret ne sort");
+  }
+
+  /* Et l'épreuve est réservée à l'administration, comme le tirage et l'aperçu :
+     elle déchiffre un secret et sort sur le réseau au nom du bureau. */
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"lecteur-epreuve@test.local", password:"LecteurEpreuve2026", first_name:"Lecteur",
+            role:"viewer", tabs:["home"], active:true });
+  motDePasseAdopte("lecteur-epreuve@test.local");
+  const lr = await login("lecteur-epreuve@test.local", "LecteurEpreuve2026");
+  assert.equal(lr.status, 200, JSON.stringify(lr.body));
+  assert.equal((await request(app).post(`/api/connectors/${c.id}/test`)
+    .set("Authorization", `Bearer ${lr.body.token}`)).status, 403);
+  assert.equal((await request(app).post("/api/odk-forms/odkf_epreuve/test")
+    .set("Authorization", `Bearer ${lr.body.token}`)).status, 403);
+});
+
+test("authentification sortante : le jeton dérivé est chiffré au repos et ne sort par aucune route", async () => {
+  await sourceSession("odkf_cache", "Cache chiffré", "cache");
+  srcSessions.refuseToujours = false;
+  assert.equal((await tirer("odkf_cache")).status, 200);
+
+  const ligne = db.prepare(`SELECT * FROM source_session
+                            WHERE source_kind='odk_forms' AND source_id='odkf_cache'`).get();
+  assert.ok(ligne, "la session dérivée est bien mise en cache");
+  assert.ok(ligne.jeton_enc && !ligne.jeton_enc.includes(srcSessions.courante),
+    "le jeton de session est chiffré comme tout secret au repos, malgré sa courte vie");
+  assert.ok(ligne.expire_le, "l'échéance annoncée par la source est conservée telle quelle");
+  assert.ok(!ligne.empreinte.includes(AUTH.motDePasse),
+    "l'empreinte ne porte pas le mot de passe : c'est un HMAC, pas une copie");
+
+  /* La session vit à part des tables éditées à la main : la renouveler ne doit
+     pas incrémenter `rev` et provoquer un 409 chez l'administrateur qui édite
+     tranquillement sa fiche. */
+  const rev0 = db.prepare("SELECT rev FROM odk_forms WHERE id='odkf_cache'").get().rev;
+  srcSessions.courante = "perimee-encore";
+  assert.equal((await tirer("odkf_cache")).status, 200);
+  const rev1 = db.prepare("SELECT rev FROM odk_forms WHERE id='odkf_cache'").get().rev;
+  assert.equal(rev1, rev0 + 1,
+    "le tirage incrémente `rev` une fois — le renouvellement de session, lui, ne l'a pas touché");
+
+  for(const chemin of ["/api/state", "/api/connectors", "/api/connectors/champs"]){
+    const corps = JSON.stringify((await request(app).get(chemin)
+      .set("Authorization", `Bearer ${adminToken}`)).body);
+    for(const secret of [AUTH.motDePasse, AUTH.cleKobo, AUTH.jetonFixe, ligne.jeton_enc])
+      assert.ok(!corps.includes(secret), `${chemin} laisse sortir un secret`);
+    for(const cle of ['"token_enc"', '"secret_enc"', '"jeton_enc"', '"secret"', '"password"'])
+      assert.ok(!corps.includes(cle), `${chemin} expose le champ ${cle}`);
+  }
+
+  /* Supprimer la source emporte le jeton dérivé qu'elle avait ouvert : un secret,
+     même éphémère, ne survit pas à ce qu'il déverrouille. */
+  db.prepare("DELETE FROM odk_forms WHERE id='odkf_cache'").run();
+  assert.equal(db.prepare(`SELECT COUNT(*) c FROM source_session
+                           WHERE source_kind='odk_forms' AND source_id='odkf_cache'`).get().c, 0);
+});
+
+test("authentification sortante : la pagination ne peut pas faire sortir l'appel de l'hôte vérifié", async () => {
+  /* `@odata.nextLink` est une URL ABSOLUE fabriquée par le serveur distant. La
+     suivre telle quelle rendait la garde anti-SSRF contournable par la source
+     elle-même — et l'en-tête d'autorisation partait avec.
+
+     La refuser dès que l'origine diffère fermait bien la faille, mais cassait un
+     déploiement légitime : chez ODK Central le lien est composé du réglage
+     `default.domain` de l'INSTANCE, qui n'a aucune raison d'être l'adresse par
+     laquelle MEMS la joint. On ne retient donc du lien que le chemin, et on le
+     rattache à l'origine du premier appel — la source choisit la page suivante,
+     jamais le serveur où aller la chercher. */
+  const { pullSubmissions, verifierBaseOdk } = await import("../src/lib/odkClient.js");
+  const { porteurAuth } = await import("../src/lib/authSortante.js");
+
+  /* L'hôte vers lequel la source essaie de faire partir l'appel. Il compte ses
+     requêtes : c'est la seule preuve qui vaille que rien n'y est allé. */
+  let recuesAilleurs = 0;
+  const ailleurs = http.createServer((req, res) => { recuesAilleurs++; res.end("{}"); });
+  await new Promise(r => ailleurs.listen(0, "127.0.0.1", r));
+  const ailleursUrl = `http://127.0.0.1:${ailleurs.address().port}`;
+
+  const vues = [];
+  const menteur = http.createServer((req, res) => {
+    vues.push(req.url);
+    res.setHeader("Content-Type", "application/json");
+    /* Page 1 : un lien qui désigne un AUTRE hôte, exactement comme le ferait une
+       instance dont `default.domain` diffère — ou une instance compromise. */
+    if(vues.length === 1) return res.end(JSON.stringify({ value: [{ __id: "p1" }],
+      "@odata.nextLink": `${ailleursUrl}/v1/projects/1/forms/f.svc/Submissions?%24skiptoken=abc` }));
+    res.end(JSON.stringify({ value: [{ __id: "p2" }] }));
+  });
+  await new Promise(r => menteur.listen(0, "127.0.0.1", r));
+  const menteurUrl = `http://127.0.0.1:${menteur.address().port}`;
+
+  const porteur = porteurAuth({ nature: "odk_forms", id: "peu-importe", schema: "porteur",
+    secret: "jeton", baseUrl: menteurUrl, verifierBase: verifierBaseOdk, codeErreur: "ODK_AUTH" });
+  let tirage;
+  try{
+    tirage = await pullSubmissions({ baseUrl: menteurUrl, project: "1", formId: "f", porteur });
+  } finally { menteur.close(); ailleurs.close(); }
+
+  assert.equal(recuesAilleurs, 0,
+    "aucun appel — et donc aucun en-tête d'autorisation — ne part vers l'hôte que la source désigne");
+  assert.equal(tirage.pages, 2, "la pagination est suivie, sur l'hôte vérifié");
+  assert.equal(tirage.rows.length, 2);
+  assert.match(vues[1], /skiptoken=abc/i,
+    "le chemin et la requête du lien sont repris tels quels — seule l'origine est imposée");
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   LOT DE CORRECTIONS — ce que la relecture adverse a trouvé.
+
+   Chaque test ci-dessous a d'abord échoué contre le code livré. Ils sont écrits
+   par DÉFAUT CORRIGÉ et non par fonction, parce que c'est ainsi qu'ils se
+   relisent : le titre dit ce qui était faux, le corps montre le cas qui le
+   prouvait.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+test("connecteur : un enregistrement qui ne parle pas d'authentification n'y touche pas", async () => {
+  /* Le défaut : `auth_schema` portait `.default("porteur")`. Un client qui ignore
+     ce champ neuf — script d'exploitation, écran d'une version antérieure —
+     renvoyait la fiche sans lui, et le mot de passe d'un compte de service
+     repartait alors en clair comme jeton porteur, sous un mot-clé que personne
+     n'avait choisi. routes/collections.js évitait explicitement ce piège pour les
+     sources ODK ; il était reconduit ici. */
+  const c = (await creerConnecteur({ name: "Partenaire — Basic", kind: "http", base_url: srcUrl,
+    config: { chemin: "/entetes" }, auth_schema: "basique",
+    auth_identifiant: "svc@partenaire.org", secret: "MotDePasseDuCompteDeService" })).body.connector;
+  assert.equal(c.auth_schema, "basique");
+  assert.equal((await apercuDe(c.id)).status, 200);
+  assert.equal(dernierAppel("/entetes").auth, basique("svc@partenaire.org", "MotDePasseDuCompteDeService"));
+
+  const r = await request(app).put(`/api/connectors/${c.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ name: c.name, kind: c.kind, base_url: c.base_url, config: c.config, rev: c.rev });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.connector.auth_schema, "basique", "le schéma n'est pas réécrit par défaut");
+  assert.equal(r.body.connector.auth_identifiant, "svc@partenaire.org",
+    "l'identifiant n'est pas effacé par un corps qui ne le porte pas");
+
+  assert.equal((await apercuDe(c.id)).status, 200);
+  assert.equal(dernierAppel("/entetes").auth, basique("svc@partenaire.org", "MotDePasseDuCompteDeService"),
+    "le mot de passe ne repart pas en « Bearer » après un enregistrement muet");
+
+  /* L'autre moitié du même défaut : un connecteur réseau sans secret, que la
+     migration 021 a basculé en « aucun » pour qu'il continue de fonctionner. */
+  const ouvert = (await creerConnecteur({ name: "Export public", kind: "http", base_url: srcUrl,
+    config: { chemin: "/entetes" }, auth_schema: "aucun" })).body.connector;
+  const r2 = await request(app).put(`/api/connectors/${ouvert.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ name: "Export public renommé", kind: "http", base_url: srcUrl,
+            config: { chemin: "/entetes" }, rev: ouvert.rev });
+  assert.equal(r2.status, 200, JSON.stringify(r2.body));
+  assert.equal(r2.body.connector.auth_schema, "aucun");
+  assert.equal((await apercuDe(ouvert.id)).status, 200,
+    "la source publique n'est pas refusée après un enregistrement qui ne parlait pas d'authentification");
+
+  /* Et le champ reste MODIFIABLE : facultatif ne veut pas dire ignoré. */
+  const r3 = await request(app).put(`/api/connectors/${ouvert.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ name: "Export public renommé", kind: "http", base_url: srcUrl,
+            config: { chemin: "/entetes" }, auth_schema: "jeton", secret: AUTH.jetonFixe,
+            rev: r2.body.connector.rev });
+  assert.equal(r3.status, 200, JSON.stringify(r3.body));
+  assert.equal(r3.body.connector.auth_schema, "jeton");
+  const r4 = await request(app).put(`/api/connectors/${c.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ name: c.name, kind: c.kind, base_url: c.base_url, config: c.config,
+            auth_schema: "basique", auth_identifiant: "", rev: r.body.connector.rev });
+  assert.equal(r4.status, 422, "un identifiant vidé sur un schéma qui en exige un est refusé");
+});
+
+test("justificatif illisible : les deux routes disent la même chose, et disent la bonne", async () => {
+  /* Une clé de chiffrement changée, ou une base recopiée d'une autre instance :
+     `decrypt` rend null. Le lot livré rendait alors AUTH_ABSENT « renseignez-le »
+     avec des indices qui se contredisaient (présent, longueur nulle), et le
+     tirage ODK disait l'inverse de l'épreuve sur la MÊME ligne. */
+  const c = (await creerConnecteur({ name: "Secret abîmé", kind: "http", base_url: srcUrl,
+    config: { chemin: "/entetes" }, auth_schema: "porteur", secret: AUTH.jetonFixe })).body.connector;
+  db.prepare("UPDATE connector SET secret_enc='enp6enp6enp6enp6enp6enp6enp6enp6enp6' WHERE id=?").run(c.id);
+
+  const test = await request(app).post(`/api/connectors/${c.id}/test`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(test.status, 200);
+  assert.equal(test.body.etapes[0].cause, "AUTH_ILLISIBLE");
+  assert.match(test.body.etapes[0].message, /clé/);
+  assert.match(test.body.etapes[0].message, /DATA_KEY/);
+  assert.equal(test.body.etapes[0].indices.present, true);
+  assert.equal(test.body.etapes[0].indices.lisible, false,
+    "« présent » et « longueur 0 » ne peuvent pas être vrais ensemble : l'indice le dit");
+
+  const apercu = await apercuDe(c.id);
+  assert.equal(apercu.status, 422);
+  assert.equal(apercu.body.cause, "AUTH_ILLISIBLE", "l'aperçu rend la même cause que l'épreuve");
+
+  /* La même ligne abîmée, côté ODK : le tirage rendait 500 « ressaisissez-le »
+     et l'épreuve 422 « renseignez-le » — deux verdicts opposés. */
+  db.prepare("DELETE FROM odk_forms WHERE id='odkf_kaput'").run();
+  db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind,auth_schema)
+              VALUES ('odkf_kaput','Source abîmée','kaput','1','enp6enp6enp6enp6enp6enp6','process','porteur')`).run();
+  await request(app).put("/api/settings").set("Authorization", `Bearer ${adminToken}`)
+    .send({ odkBase: srcUrl });
+
+  const tOdk = await request(app).post("/api/odk-forms/odkf_kaput/test")
+    .set("Authorization", `Bearer ${adminToken}`);
+  const pOdk = await tirer("odkf_kaput");
+  assert.equal(tOdk.body.etapes[0].cause, "AUTH_ILLISIBLE");
+  assert.equal(pOdk.status, 422, JSON.stringify(pOdk.body));
+  assert.equal(pOdk.body.cause, "AUTH_ILLISIBLE", "le tirage et l'épreuve nomment la même cause");
+  assert.equal(tOdk.body.etapes[0].message, pOdk.body.error, "et rendent le même message");
+});
+
+test("identifiant du compte de service : servi à l'administration, pas au premier compte venu", async () => {
+  /* Ce n'est pas un secret au sens de la maison, et c'est bien pour cela qu'il
+     est sorti sans qu'on y prenne garde : c'est la moitié NOMMÉE d'un couple.
+     Servi à tout compte authentifié, il donnait à un lecteur de terrain le nom de
+     connexion du compte de service, avec l'adresse du serveur déjà publiée. */
+  const c = (await creerConnecteur({ name: "Bailleur — Basic", kind: "http", base_url: srcUrl,
+    config: { chemin: "/entetes" }, auth_schema: "basique",
+    auth_identifiant: "compte.de.service@bailleur.org", secret: "mdp" })).body.connector;
+  db.prepare("DELETE FROM odk_forms WHERE id='odkf_ident'").run();
+  db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind,auth_schema,auth_identifiant)
+              VALUES ('odkf_ident','Source nommée','ident','1',?,'process','odk_session','agent.odk@wfp.org')`)
+    .run(chiffrer(AUTH.motDePasse));
+
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"lecteur-ident@test.local", password:"LecteurIdent2026", first_name:"Lecteur",
+            role:"viewer", tabs:["home"], active:true });
+  motDePasseAdopte("lecteur-ident@test.local");
+  const jetonLecteur = (await login("lecteur-ident@test.local", "LecteurIdent2026")).body.token;
+
+  const etatLecteur = await request(app).get("/api/state").set("Authorization", `Bearer ${jetonLecteur}`);
+  assert.equal(etatLecteur.status, 200);
+  assert.ok(!JSON.stringify(etatLecteur.body).includes("agent.odk@wfp.org"),
+    "un lecteur ne reçoit pas le courriel du compte de service ODK Central");
+  assert.equal(etatLecteur.body.odkForms.find(f => f.id === "odkf_ident").hasToken, true,
+    "il continue de voir ce dont l'écran a besoin : la présence du justificatif");
+
+  const listeLecteur = await request(app).get("/api/connectors")
+    .set("Authorization", `Bearer ${jetonLecteur}`);
+  assert.ok(!JSON.stringify(listeLecteur.body).includes("compte.de.service@bailleur.org"),
+    "ni l'identifiant Basic d'un connecteur");
+
+  /* L'administration, elle, en a besoin : c'est elle qui remplit la fiche. */
+  const etatAdmin = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(etatAdmin.body.odkForms.find(f => f.id === "odkf_ident").authIdentifiant,
+    "agent.odk@wfp.org");
+  assert.equal((await request(app).get("/api/connectors").set("Authorization", `Bearer ${adminToken}`))
+    .body.rows.find(x => x.id === c.id).auth_identifiant, "compte.de.service@bailleur.org");
+});
+
+test("épreuve de connexion : un 2xx sur un point d'entrée public ne vaut pas « justificatif accepté »", async () => {
+  /* Le défaut : pour les natures « http » et « foundry », l'épreuve sonde le
+     chemin réglé — souvent « / » — et déclarait « justificatif accepté » sur
+     n'importe quel 2xx. Une page publique répond 200 à un secret entièrement
+     faux, et l'écran affichait un feu vert que tout aperçu démentait. */
+  const public_ = (await creerConnecteur({ name: "Source ouverte", kind: "http", base_url: srcUrl,
+    config: { chemin: "/entetes" }, auth_schema: "porteur",
+    secret: "UN-JETON-COMPLETEMENT-FAUX" })).body.connector;
+  const r = await request(app).post(`/api/connectors/${public_.id}/test`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.etapes[0].code_http, 200);
+  assert.equal(r.body.etapes[0].verdict, "indetermine",
+    "un point d'entrée qui répond aussi sans justificatif ne prouve rien");
+  assert.ok(!/justificatif accepté/.test(r.body.etapes[0].message),
+    `l'épreuve ne doit pas conclure : ${r.body.etapes[0].message}`);
+  assert.match(r.body.etapes[0].message, /sans aucun\s+justificatif/);
+
+  /* Et là où le point d'entrée exige vraiment une authentification, le verdict
+     revient — prouvé, cette fois, en refaisant l'appel sans justificatif. */
+  const kobo = (await creerConnecteur({ name: "Épreuve prouvée", kind: "http", base_url: srcUrl,
+    config: { chemin: "/me/", cheminEpreuve: "/me/" }, auth_schema: "jeton",
+    secret: AUTH.cleKobo })).body.connector;
+  const rk = await request(app).post(`/api/connectors/${kobo.id}/test`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(rk.body.etapes[0].verdict, "accepte", JSON.stringify(rk.body.etapes[0]));
+  assert.match(rk.body.etapes[0].message, /sans justificatif/,
+    "le verdict s'appuie sur le refus constaté en l'absence de justificatif");
+});
+
+test("épreuve de connexion : un 404 ne se rend pas en « la source n'a pas accepté l'appel »", async () => {
+  const c = (await creerConnecteur({ name: "Chemin absent", kind: "http", base_url: srcUrl,
+    config: { chemin: "/nulle-part" }, auth_schema: "jeton", secret: AUTH.jetonFixe })).body.connector;
+  const r = await request(app).post(`/api/connectors/${c.id}/test`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.body.etapes[0].code_http, 404);
+  assert.equal(r.body.etapes[0].ok, false, "`ok` est posé, jamais laissé absent");
+  assert.equal(r.body.etapes[0].verdict, "indetermine");
+  assert.equal(r.body.etapes[0].cause, null,
+    "sans cause nommée, l'écran n'a pas à afficher un refus d'authentification");
+});
+
+test("épreuve Foundry : le chemin éprouvé est celui que la lecture appellera", async () => {
+  /* `{rid}` n'était pas substitué : l'épreuve appelait « /api/v2/datasets/
+     %7Brid%7D/readTable », récoltait un 404, et accusait un chemin correct. */
+  const c = (await creerConnecteur({ name: "Foundry — gabarit", kind: "foundry",
+    base_url: foundryUrl, config: { datasetRid: "ri.dataset.42",
+      chemin: "/api/v2/datasets/{rid}/readTable" },
+    auth_schema: "porteur", secret: AUTH.jetonFixe })).body.connector;
+  const avant = foundryRequetes.length;
+  await request(app).post(`/api/connectors/${c.id}/test`).set("Authorization", `Bearer ${adminToken}`);
+  const appels = foundryRequetes.slice(avant).map(q => q.url);
+  assert.ok(appels.length, "l'épreuve appelle bien la source");
+  assert.ok(!appels.some(u => /%7Brid%7D|\{rid\}/i.test(u)),
+    `le gabarit doit être résolu, pas envoyé tel quel : ${appels.join(", ")}`);
+  assert.ok(appels.some(u => u.includes("ri.dataset.42")),
+    `l'épreuve vise l'adresse réelle du dataset : ${appels.join(", ")}`);
+});
+
+test("connecteur Kobo hérité : il reste modifiable, sans qu'on lui invente un uid", async () => {
+  /* Un connecteur « kobo » est déclarable depuis la migration 016 : ceux d'alors
+     portent le couple projet / formulaire d'ODK, que l'écran leur proposait à
+     tort. Exiger `config.uid` de tout enregistrement les rendait immodifiables —
+     ni renommables, ni désactivables, ni rattachables à un bureau. */
+  db.prepare(`INSERT INTO connector (id,name,kind,base_url,config,secret_enc,auth_schema)
+              VALUES ('conn_kobo_vieux','Kobo pays','kobo',?,'{"project":"1","formId":"abc"}',?,'jeton')`)
+    .run(srcUrl, chiffrer(AUTH.cleKobo));
+  const c = db.prepare("SELECT * FROM connector WHERE id='conn_kobo_vieux'").get();
+
+  const r = await request(app).put("/api/connectors/conn_kobo_vieux")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ name: "Kobo pays (inactif)", kind: "kobo", base_url: srcUrl,
+            config: { project: "1", formId: "abc" }, active: false, rev: c.rev });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.connector.active, false);
+
+  /* Il reste illisible tant que l'uid manque — mais c'est la LECTURE qui le dit,
+     au moment où l'on essaie de lire, avec le geste à faire. */
+  const ap = await apercuDe("conn_kobo_vieux");
+  assert.equal(ap.status, 422);
+  assert.match(ap.body.error, /uid/);
+
+  /* Et un uid déjà là ne s'efface pas par mégarde. */
+  const avecUid = await request(app).put("/api/connectors/conn_kobo_vieux")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ name: "Kobo pays", kind: "kobo", base_url: srcUrl, config: { uid: "aXyZ" },
+            rev: r.body.connector.rev });
+  assert.equal(avecUid.status, 200);
+  const sansUid = await request(app).put("/api/connectors/conn_kobo_vieux")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ name: "Kobo pays", kind: "kobo", base_url: srcUrl, config: {},
+            rev: avecUid.body.connector.rev });
+  assert.equal(sansUid.status, 422, "on ne retire pas un uid qui était là");
+  /* La création, elle, l'exige toujours. */
+  assert.equal((await creerConnecteur({ name: "Kobo neuf", kind: "kobo", base_url: srcUrl,
+    config: {}, auth_schema: "jeton", secret: "x" })).status, 422);
+});
+
+test("source ODK sans justificatif déclaré : le tirage et l'épreuve disent la même chose", async () => {
+  /* Le schéma « Aucune (source publique) » est proposé par le sélecteur. Le
+     tirage refusait pourtant toute source sans `token_enc`, avant même de lire le
+     schéma, en réclamant un jeton que ce schéma déclare inutile. */
+  db.prepare("DELETE FROM odk_forms WHERE id='odkf_ouverte'").run();
+  db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,kind,auth_schema)
+              VALUES ('odkf_ouverte','Source publique','ouverte','1','process','aucun')`).run();
+  await request(app).put("/api/settings").set("Authorization", `Bearer ${adminToken}`)
+    .send({ odkBase: srcUrl });
+
+  const t = await request(app).post("/api/odk-forms/odkf_ouverte/test")
+    .set("Authorization", `Bearer ${adminToken}`);
+  const p = await tirer("odkf_ouverte");
+  assert.equal(t.body.etapes[0].cause, "AUTH_ABSENT");
+  assert.equal(p.status, 422, JSON.stringify(p.body));
+  assert.equal(p.body.cause, "AUTH_ABSENT", "la même cause des deux côtés");
+  assert.ok(!/renseignez-lui un jeton dédié/.test(p.body.error),
+    "on ne réclame pas un jeton pour un schéma qui déclare qu'il n'en faut pas");
+  assert.match(p.body.error, /déclarée sans justificatif/);
+});
+
+test("épreuve ODK : une étape escamotée ne vaut pas une étape réussie", async () => {
+  /* `etapes.every(x => x.ok)` sur la seule étape restante rendait « ok », donc un
+     bandeau vert, à une source dont le tirage refuse en 422 la seconde d'après. */
+  db.prepare("DELETE FROM odk_forms WHERE id='odkf_sans_projet'").run();
+  db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind,auth_schema,auth_identifiant)
+              VALUES ('odkf_sans_projet','Sans projet','sansprojet','','x','process','odk_session',?)`)
+    .run(AUTH.courriel);
+  db.prepare("UPDATE odk_forms SET token_enc=? WHERE id='odkf_sans_projet'").run(chiffrer(AUTH.motDePasse));
+  srcSessions.refuseToujours = false; srcSessions.refuseIdentifiants = false;
+
+  const r = await request(app).post("/api/odk-forms/odkf_sans_projet/test")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.etapes[0].ok, true, "le justificatif est bon, et le reste");
+  assert.equal(r.body.etapes.length, 2, "l'étape « formulaire » est rendue, même sans appel");
+  assert.equal(r.body.etapes[1].ok, false);
+  assert.match(r.body.etapes[1].message, /identifiant de projet/);
+  assert.equal(r.body.ok, false, "une épreuve annoncée en deux étapes n'en escamote pas une");
+});
+
+test("épreuve ODK : l'étape 2 ne parle pas d'un renouvellement qu'elle n'a pas tenté", async () => {
+  /* `sonder` n'appelle jamais `appelAuthentifie` : il ne renouvelle rien. La
+     branche « le justificatif n'a pas pu être renouvelé » était donc toujours
+     fausse à l'étape 2 — laquelle ne s'exécute qu'après une étape 1 réussie,
+     c'est-à-dire après un renouvellement qui a marché. */
+  await sourceSession("odkf_etape2", "Refus à l'étape 2", "refus-401-a");
+  srcSessions.refuseToujours = false; srcSessions.refuseIdentifiants = false;
+  const r = await request(app).post("/api/odk-forms/odkf_etape2/test")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.body.etapes[0].ok, true, JSON.stringify(r.body.etapes[0]));
+  assert.equal(r.body.etapes[1].ok, false);
+  assert.equal(r.body.etapes[1].code_http, 401);
+  assert.ok(!/n'a pas pu être renouvelé/.test(r.body.etapes[1].message),
+    `rien n'a été renouvelé à l'étape 2 : ${r.body.etapes[1].message}`);
+  assert.equal(r.body.etapes[1].cause, "AUTH_REFUS",
+    "la session vient d'être acceptée à l'étape 1 : la cause du refus n'est pas déterminable");
+
+  /* Un refus de DROITS, lui, reste nommé : c'est la raison d'être de l'étape 2. */
+  await sourceSession("odkf_etape2b", "Sans droit à l'étape 2", "sans-droit-c");
+  const b = await request(app).post("/api/odk-forms/odkf_etape2b/test")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(b.body.etapes[1].cause, "AUTH_DROITS");
+});
+
+test("diagnostic : un 403 ne prouve pas qu'un justificatif ait été accepté", async () => {
+  /* La branche 403 passait avant « rien n'a été présenté » et avant « la source a
+     nommé le mot-clé qu'elle attendait ». Un connecteur déclaré sans
+     justificatif se voyait donc répondre « le justificatif est accepté, mais il
+     n'a pas les droits » — alors qu'aucun en-tête n'avait été émis. */
+  const rien = (await creerConnecteur({ name: "403 sans justificatif", kind: "http",
+    base_url: srcUrl, config: { chemin: "/403drf" }, auth_schema: "aucun" })).body.connector;
+  const a = await apercuDe(rien.id);
+  assert.equal(a.status, 422, JSON.stringify(a.body));
+  assert.equal(a.body.cause, "AUTH_ABSENT", "MEMS n'a rien présenté : c'est la cause");
+  assert.ok(!/est accepté par la source/.test(a.body.error), a.body.error);
+
+  /* Même corps, même code : le mot-clé annoncé prime aussi sur le 403. */
+  const mauvais = (await creerConnecteur({ name: "403 mot-clé", kind: "http", base_url: srcUrl,
+    config: { chemin: "/403token" }, auth_schema: "porteur", secret: AUTH.cleKobo })).body.connector;
+  const b = await apercuDe(mauvais.id);
+  assert.equal(b.body.cause, "AUTH_SCHEMA", JSON.stringify(b.body));
+  assert.match(b.body.error, /Jeton \(Token\)/,
+    "le remède nomme un schéma que l'administrateur peut réellement choisir");
+
+  /* Et un vrai refus de droits reste un refus de droits. */
+  await sourceSession("odkf_403", "Sans droit", "sans-droit-d");
+  srcSessions.refuseToujours = false;
+  const d = await tirer("odkf_403");
+  assert.equal(d.body.cause, "AUTH_DROITS");
+});
+
+test("diagnostic : « Session » n'est pas un schéma, et le message ne l'ordonne plus", async () => {
+  /* Chez KoboToolbox, « Session » dans `WWW-Authenticate` signifie qu'AUCUN
+     authentifieur n'a reconnu l'en-tête — le module le sait, son propre
+     commentaire le dit. Le message ordonnait pourtant « adoptez celui qu'elle
+     réclame » : l'administrateur choisissait alors « Session ODK Central », le
+     seul libellé contenant ce mot, et MEMS se mettait à poster courriel et mot de
+     passe sur /v1/sessions d'un serveur Kobo. */
+  const c = (await creerConnecteur({ name: "Kobo en Bearer", kind: "kobo", base_url: srcUrl,
+    config: { uid: "aXyZ" }, auth_schema: "porteur", secret: AUTH.cleKobo })).body.connector;
+  const r = await apercuDe(c.id);
+  assert.equal(r.body.cause, "AUTH_SCHEMA", JSON.stringify(r.body));
+  assert.match(r.body.error, /« Bearer »/);
+  assert.match(r.body.error, /Jeton \(Token\)/, "le schéma à essayer est nommé");
+  assert.ok(!/pour celui qu'elle réclame/.test(r.body.error),
+    "on n'ordonne pas d'adopter un mot-clé qui ne désigne aucun schéma déclarable");
+  assert.match(r.body.error, /aucun de ses authentifieurs/i,
+    "le message dit ce que « Session » veut réellement dire");
+});
+
+test("session courte : une durée de vie inférieure à la marge n'ouvre pas une session par appel", async () => {
+  /* `reste <= marge` déclarait le cache vide à chaque lecture dès que la source
+     annonçait une échéance plus proche que la marge de renouvellement. Un tirage
+     de cinquante pages ouvrait alors cinquante sessions, chacune coûtant une
+     vérification de mot de passe chez la source. */
+  await sourceSession("odkf_courte", "Session courte", "courte");
+  srcSessions.refuseToujours = false; srcSessions.refuseIdentifiants = false;
+  srcSessions.dureeMs = 60_000;                 /* plus court que AUTH_SESSION_MARGIN_S */
+  try{
+    const emises0 = srcSessions.emises;
+    for(let i = 0; i < 4; i++) assert.equal((await tirer("odkf_courte")).status, 200);
+    assert.equal(srcSessions.emises, emises0 + 1,
+      "quatre tirages, une seule ouverture : la marge ne peut pas excéder la durée de vie annoncée");
+
+    /* Même chose quand l'échéance annoncée est illisible : la recopier telle
+       quelle faisait déclarer le cache périmé à chaque lecture, indéfiniment. */
+    await sourceSession("odkf_illisible", "Échéance illisible", "illisible");
+    srcSessions.dureeMs = null; srcSessions.expireIllisible = "24h";
+    const emises1 = srcSessions.emises;
+    for(let i = 0; i < 4; i++) assert.equal((await tirer("odkf_illisible")).status, 200);
+    assert.equal(srcSessions.emises, emises1 + 1, "une échéance illisible n'est pas une échéance passée");
+    const ligne = db.prepare(`SELECT expire_le FROM source_session
+                              WHERE source_kind='odk_forms' AND source_id='odkf_illisible'`).get();
+    assert.ok(!Number.isNaN(Date.parse(ligne.expire_le)),
+      "ce qui est mis en cache est une date, pas la chaîne reçue telle quelle");
+  } finally { srcSessions.dureeMs = null; srcSessions.expireIllisible = null; }
+});
+
+test("session : un silence de la source n'efface pas une session valable et ne bloque rien", async () => {
+  /* Une panne d'une seconde chez la source détruisait une session valable six
+     heures ET bloquait la source cinq minutes, avec un message qui accusait un
+     justificatif qui n'avait jamais été en cause. */
+  await sourceSession("odkf_hoquet", "Hoquet", "hoquet");
+  srcSessions.refuseToujours = false; srcSessions.refuseIdentifiants = false;
+  assert.equal((await tirer("odkf_hoquet")).status, 200);
+  const jetonAvant = db.prepare(`SELECT jeton_enc FROM source_session
+                                 WHERE source_kind='odk_forms' AND source_id='odkf_hoquet'`).get().jeton_enc;
+
+  /* La source ne répond plus : l'épreuve, qui force l'ouverture, échoue. */
+  srcSessions.injoignable = true;
+  const t = await request(app).post("/api/odk-forms/odkf_hoquet/test")
+    .set("Authorization", `Bearer ${adminToken}`);
+  srcSessions.injoignable = false;
+  assert.equal(t.body.ok, false);
+  assert.equal(t.body.etapes[0].cause, "AUTH_SESSION");
+
+  const apres = db.prepare(`SELECT jeton_enc, echec_le FROM source_session
+                            WHERE source_kind='odk_forms' AND source_id='odkf_hoquet'`).get();
+  assert.equal(apres.jeton_enc, jetonAvant, "la session valable survit à la panne d'un tiers");
+  assert.equal(apres.echec_le, null, "et la source n'est pas bloquée pour cinq minutes");
+  assert.equal((await tirer("odkf_hoquet")).status, 200,
+    "la source revenue, le tirage repart sans attendre le délai de blocage");
+});
+
+test("session : changer de justificatif pendant une ouverture en vol ne rend pas l'ancienne", async () => {
+  /* `enVol` était indexée sur « nature:id » sans l'empreinte : le porteur du
+     NOUVEAU compte recevait la session ouverte avec l'ANCIEN, et l'épreuve
+     prononçait un verdict sur des identifiants jamais présentés à la source. */
+  const { porteurAuth } = await import("../src/lib/authSortante.js");
+  const { verifierBaseOdk } = await import("../src/lib/odkClient.js");
+  srcSessions.refuseToujours = false; srcSessions.refuseIdentifiants = false;
+  srcSessions.lenteurMs = 200;
+  const commun = { nature: "odk_forms", id: "odkf_en_vol", schema: "odk_session",
+    baseUrl: srcUrl, verifierBase: verifierBaseOdk, codeErreur: "ODK_AUTH" };
+  try{
+    const ancien = porteurAuth({ ...commun, identifiant: AUTH.courriel, secret: "ancien-mot-de-passe" });
+    const nouveau = porteurAuth({ ...commun, identifiant: AUTH.courriel, secret: AUTH.motDePasse });
+    const [a, b] = await Promise.all([
+      ancien.enTetes({ forcer: true }).then(x => x, e => ({ erreur: e.message })),
+      new Promise(r => setTimeout(r, 40)).then(() => nouveau.enTetes({ forcer: true })),
+    ]);
+    assert.ok(a.erreur, "l'ancien mot de passe est refusé, et c'est lui qui est refusé");
+    assert.equal(b.Authorization, `Bearer ${srcSessions.courante}`,
+      "le porteur au BON mot de passe reçoit SA session, pas le verdict de l'autre");
+  } finally { srcSessions.lenteurMs = 0; }
+});
+
+test("source qui n'achève jamais sa réponse : elle ne fige pas MEMS pour toujours", async () => {
+  /* Le délai était désarmé à l'arrivée des EN-TÊTES, le corps lu après sans
+     aucune échéance. Une source qui répond « 200 » puis se tait figeait la
+     promesse d'ouverture — partagée par `enVol` — et rendait la source
+     définitivement injoignable pour tout le serveur, jusqu'au redémarrage. */
+  const { porteurAuth } = await import("../src/lib/authSortante.js");
+  const { verifierBaseOdk } = await import("../src/lib/odkClient.js");
+  const ouvertes = [];
+  const muet = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.writeHead(200);
+    res.write("{");            /* le corps commence et ne finit jamais */
+    ouvertes.push(res);
+  });
+  await new Promise(r => muet.listen(0, "127.0.0.1", r));
+  const muetUrl = `http://127.0.0.1:${muet.address().port}`;
+  const ancienDelai = process.env.AUTH_SESSION_TIMEOUT_S;
+  process.env.AUTH_SESSION_TIMEOUT_S = "1";
+  try{
+    const p = () => porteurAuth({ nature: "odk_forms", id: "odkf_muette", schema: "odk_session",
+      identifiant: AUTH.courriel, secret: AUTH.motDePasse, baseUrl: muetUrl,
+      verifierBase: verifierBaseOdk, codeErreur: "ODK_AUTH" });
+    const un = await p().enTetes().then(() => null, e => e);
+    assert.ok(un, "l'appel se règle au lieu de rester en suspens");
+    /* Et la source suivante — porteur NEUF — n'hérite pas d'une promesse morte. */
+    const deux = await p().enTetes().then(() => null, e => e);
+    assert.ok(deux, "un second appel se règle lui aussi, il n'attend pas le premier indéfiniment");
+  } finally {
+    if(ancienDelai === undefined) delete process.env.AUTH_SESSION_TIMEOUT_S;
+    else process.env.AUTH_SESSION_TIMEOUT_S = ancienDelai;
+    for(const r of ouvertes) r.end();
+    muet.close();
+    db.prepare("DELETE FROM source_session WHERE source_id='odkf_muette'").run();
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
    Chaîne ODK : soumissions, rattachement aux sites, dernière visite, GPS.
 
    « Et si 01 sites existe sur les bases de données alors on note qu'il a été
@@ -5381,6 +6572,22 @@ test("administration : aucune route ne laisse sortir un secret", async () => {
     JSON.stringify((await auSuper(request(app).post(`${ADMIN}/base/checkpoint`))).body)]);
   reponses.push(["purge",
     JSON.stringify((await auSuper(request(app).post("/api/auth/sessions/purge?jours=3650"))).body)]);
+
+  /* Les deux épreuves de connexion entrent dans le même balayage : ce sont les
+     seules routes qui DÉCHIFFRENT un secret pour s'en servir et rendent ensuite
+     un diagnostic. Une garantie « aucune route ne laisse sortir un secret » qui
+     ne couvrirait pas les nouvelles routes ne garantirait plus grand-chose.
+     Le connecteur témoin porte le même secret en clair que la source ODK, pour
+     que la recherche ci-dessous cherche quelque chose qui existe. */
+  const temoinConn = (await auSuper(request(app).post("/api/connectors"))
+    .send({ name: "Connecteur témoin", kind: "http", base_url: "https://exemple.invalide",
+            config: { chemin: "/x" }, auth_schema: "porteur", secret: EN_CLAIR })).body.connector;
+  reponses.push(["épreuve ODK",
+    JSON.stringify((await auSuper(request(app).post("/api/odk-forms/odkf_secret/test"))).body)]);
+  reponses.push(["épreuve connecteur",
+    JSON.stringify((await auSuper(request(app).post(`/api/connectors/${temoinConn.id}/test`))).body)]);
+  reponses.push(["liste des connecteurs",
+    JSON.stringify((await auSuper(request(app).get("/api/connectors"))).body)]);
 
   for(const [chemin, corps] of reponses){
     for(const interdit of [EN_CLAIR, chiffre, empreinte, "MotDePasseTest2026",

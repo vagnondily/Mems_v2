@@ -72,6 +72,35 @@ export const config = {
      nom public, elle n'a normalement pas besoin d'y figurer. */
   connectorAllowedHosts: (process.env.CONNECTOR_ALLOWED_HOSTS || "")
     .split(",").map(s => s.trim().toLowerCase()).filter(Boolean),
+  /* ── Justificatifs dérivés des sources extérieures ───────────────────────
+     Quand une source ne délivre pas de justificatif durable mais une SESSION
+     (ODK Central), MEMS l'ouvre lui-même et la renouvelle. Ces quatre valeurs
+     règlent ce renouvellement, et aucune ne code de durée absolue : la durée de
+     vie d'une session ODK est un réglage de l'INSTANCE ODK (`sessionLifetime`,
+     86 400 s par défaut chez eux), pas une propriété du monde. MEMS lit donc
+     l'échéance annoncée par la source, et ne se rabat sur `dureeParDefautMs`
+     que si elle n'en annonce aucune — volontairement courte, pour découvrir une
+     expiration par un renouvellement plutôt que par un échec de tirage. */
+  authSortante: {
+    /* De combien on renouvelle AVANT l'échéance annoncée. Cette marge est un
+       plafond, pas une règle absolue : une source qui annonce une durée de vie
+       plus courte qu'elle rendrait tout jeton périmé à sa naissance, et MEMS
+       rouvrirait une session à chaque appel sortant — voir `etatCache`. */
+    get margeMs(){ return int(process.env.AUTH_SESSION_MARGIN_S, 120) * 1000; },
+    /* Le temps minimal entre deux ouvertures de session pour une même source.
+       C'est le garde-fou de dernier recours contre le martèlement : quelle que
+       soit l'échéance annoncée — courte, passée, absurde — une session ouverte il
+       y a moins que cela est réemployée. Un 401 reste le filet, et lui ne passe
+       pas par le cache. */
+    get plancherOuvertureMs(){ return int(process.env.AUTH_SESSION_MIN_INTERVAL_S, 30) * 1000; },
+    get dureeParDefautMs(){ return int(process.env.AUTH_SESSION_DEFAULT_TTL_S, 3600) * 1000; },
+    /* Combien de temps un échec d'ouverture bloque les tentatives suivantes.
+       Un échec se signale, il ne se rejoue pas : sans ce délai, chaque tirage
+       martèlerait une source qui vient de dire non. Enregistrer un justificatif
+       corrigé lève le blocage sans attendre — voir lib/authSortante.js. */
+    get delaiApresEchecMs(){ return int(process.env.AUTH_SESSION_RETRY_DELAY_S, 300) * 1000; },
+    get delaiMs(){ return int(process.env.AUTH_SESSION_TIMEOUT_S, 20) * 1000; },
+  },
   bootstrapEmail: process.env.BOOTSTRAP_EMAIL || "admin@mems.local",
   bootstrapPassword: process.env.BOOTSTRAP_PASSWORD || "",
   logLevel: process.env.LOG_LEVEL || "info",

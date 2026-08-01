@@ -5,6 +5,8 @@ import { officeBound } from "../lib/scope.js";
 import { currentCountry } from "../lib/country.js";
 import { dernieresVisitesOdk } from "../lib/soumissions.js";
 import { MOTIFS_MANUELS } from "../lib/visites.js";
+import { schemasAuthPublics, CAUSES_AUTH } from "../lib/authSortante.js";
+import { can } from "../lib/auth.js";
 
 const r = Router();
 const J = (v, d) => { try{ return JSON.parse(v); }catch(e){ return d; } };
@@ -16,6 +18,11 @@ r.get("/state", (req, res) => {
   /* Une seule définition du cloisonnement par bureau, partagée avec la géographie :
      un bureau déclaré national n'en cloisonne aucun de ses comptes. */
   const officeFilter = officeBound(u);
+  /* Ce que l'état initial dit de plus à un administrateur. La règle de la maison
+     est qu'aucun secret ne sort ; celle-ci est plus fine et vaut d'être nommée :
+     ce qui n'est pas un secret mais n'est utile qu'à l'administration ne descend
+     pas plus bas qu'elle. */
+  const admin = can(u, "admin");
 
   const offices = db.prepare("SELECT * FROM offices ORDER BY name").all();
   const officeName = Object.fromEntries(offices.map(o=>[o.id, o.name]));
@@ -156,7 +163,23 @@ r.get("/state", (req, res) => {
     id:f.id, rev:f.rev, name:f.name, formId:f.form_id, project:f.project||"", kind:f.kind,
     tag:f.activity_tag||"", siteField:f.site_field||"", dateField:f.date_field||"",
     labels: J(f.labels, {}), records:f.records, last:f.last_pull||"",
-    hasToken: !!f.token_enc, rows: J(f.raw, []) }));
+    /* La présence du justificatif, jamais sa valeur — et le schéma sous lequel il
+       est présenté, qui n'en est pas un et dont l'écran a besoin pour demander les
+       bons champs. Le badge « présent / manquant » se lisait jusqu'ici sur le jeton
+       général du NAVIGATEUR, que le serveur ne reçoit jamais : il affichait donc
+       « présent » pour une source qui n'avait rien, et le tirage échouait juste après. */
+    hasToken: !!f.token_enc,
+    authSchema: f.auth_schema || "porteur",
+    /* L'identifiant du compte de service — le courriel ODK Central, la moitié
+       NOMMÉE du couple — ne part que vers l'administration, seule habilitée à
+       ouvrir la fiche qui le contient. `odk_forms` n'est cloisonné par aucun
+       bureau : servi à tout compte authentifié, ce champ donnait à un lecteur de
+       terrain de n'importe quelle antenne le nom de connexion du compte ODK
+       Central, avec l'adresse du serveur déjà publiée dans `settings.odkBase`.
+       Ce n'est pas un secret au sens de la maison ; rien n'oblige pour autant à
+       le servir plus bas que l'administration. */
+    ...(admin ? { authIdentifiant: f.auth_identifiant || "" } : {}),
+    rows: J(f.raw, []) }));
 
   const settings = Object.fromEntries(
     db.prepare("SELECT key, value FROM settings").all().map(s => [s.key, J(s.value, s.value)]));
@@ -171,6 +194,17 @@ r.get("/state", (req, res) => {
        qu'on ouvre une cellule, et un aller-retour dédié pour six objets se
        paierait avant le premier affichage. Le client n'en garde aucune copie. */
     motifsVisiteManuelle: MOTIFS_MANUELS,
+    /* La table fermée des schémas d'authentification sortante, servie telle
+       qu'elle est déclarée dans lib/authSortante.js — même raison que la ligne
+       au-dessus : l'écran des sources ODK en a besoin dès qu'on ouvre une fiche,
+       et il n'en tient aucune copie. La route des connecteurs la sert aussi, à
+       partir de la même fonction : c'est une seule vérité, livrée par deux
+       portes, parce que l'écran des connecteurs ne passe pas par l'état global. */
+    schemasAuth: schemasAuthPublics(),
+    /* La taxonomie des causes d'échec, servie avec sa table. L'écran affiche un
+       libellé par cause : le laisser recopier cette liste, c'est se garantir qu'il
+       affichera un jour un code brut pour une cause ajoutée côté serveur. */
+    causesAuth: CAUSES_AUTH,
     outcomePlan: Object.fromEntries(
       Object.entries(db.prepare("SELECT * FROM outcome_plan WHERE year=?").all(year)
         .reduce((acc,r2) => { const code = indByKey[r2.indicator_id]; if(!code) return acc;

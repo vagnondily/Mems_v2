@@ -5,6 +5,7 @@ import { newId } from "../lib/crypto.js";
 import { encrypt } from "../lib/crypto.js";
 import { requireCap, can } from "../lib/auth.js";
 import { officeBound } from "../lib/scope.js";
+import { NOMS_SCHEMAS_AUTH } from "../lib/authSortante.js";
 
 const r = Router();
 const S = (max=200) => z.string().max(max).nullish().transform(v => v ?? null);
@@ -102,13 +103,23 @@ const COLLECTIONS = {
   odkForms: { table:"odk_forms", cap:"admin",
     schema: z.object({ id:S(64), name:z.string().min(1).max(200),
       formId:z.string().min(1).max(120), project:S(40), token:S(400),
+      /* Le schéma d'authentification de la source, contrôlé contre la table de
+         lib/authSortante.js. Facultatif ici, et non « par défaut porteur » : une
+         valeur par défaut réécrirait la colonne à chaque synchronisation, donc
+         ramènerait à « porteur » toute source réglée en session ODK dès qu'un
+         client un peu ancien renverrait la collection sans ce champ. */
+      authSchema: z.enum(NOMS_SCHEMAS_AUTH).optional(),
+      authIdentifiant: z.string().trim().max(200).optional(),
       kind:z.enum(["process","output","outcome","sites"]).default("process"),
       tag:S(20), siteField:S(120), dateField:S(120),
       labels:z.record(z.string().max(500)).default({}) }),
     map: (x) => ({ name:x.name, form_id:x.formId, project:x.project,
       kind:x.kind, activity_tag:x.tag, site_field:x.siteField, date_field:x.dateField,
       labels:JSON.stringify(x.labels),
-      /* Le jeton n'est jamais conservé en clair ; laissé vide, l'existant est préservé. */
+      ...(x.authSchema !== undefined ? { auth_schema: x.authSchema } : {}),
+      ...(x.authIdentifiant !== undefined ? { auth_identifiant: x.authIdentifiant || null } : {}),
+      /* Le justificatif durable — jeton collé ou mot de passe selon le schéma —
+         n'est jamais conservé en clair ; laissé vide, l'existant est préservé. */
       ...(x.token ? { token_enc: encrypt(x.token) } : {}) }) },
 };
 

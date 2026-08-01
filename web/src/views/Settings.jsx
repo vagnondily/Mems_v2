@@ -1747,6 +1747,7 @@ function SetOdk({ db, set, notify, can, reload }){
   const save = (f) => { set(d => { const i=d.odkForms.findIndex(x=>x.id===f.id);
       if(i>=0) d.odkForms[i]=f; else d.odkForms.push({ ...f, id:uid("f"), records:0, last:"", rows:[] }); return d; });
     setEdit(null); notify("Source enregistrée","ok"); };
+  const [epreuve,setEpreuve] = useState(null);
   const pull = async (f) => {
     setPulling(f.id);
     try{
@@ -1756,30 +1757,63 @@ function SetOdk({ db, set, notify, can, reload }){
     }catch(e){ notify(e.message || "tirage impossible", "err"); }
     setPulling(null);
   };
+  /* L'épreuve réelle, à la place du bouton décoratif d'avant : c'est le serveur
+     qui sort, avec le justificatif de LA SOURCE — le navigateur n'a rien à
+     présenter et n'aurait de toute façon pas le droit de joindre ODK Central
+     depuis une autre origine. */
+  const tester = async (f) => {
+    setPulling(f.id);
+    try{ setEpreuve(await api.odkFormTest(f.id)); }
+    catch(e){ notify(e.message || "épreuve impossible", "err"); }
+    setPulling(null);
+  };
   return (
     <>
       <Note tool><b>Adresse d'appel.</b> Un formulaire ODK Central est lu à l'adresse
         <code className="bg-white px-1.5 py-0.5 rounded mx-1 f115">{s.odkBase}/v1/projects/&#123;projet&#125;/forms/&#123;formulaire&#125;.svc/Submissions</code>
-        avec un jeton dans l'en-tête d'autorisation. Chaque source déclare le type de données qu'elle apporte,
-        le champ qui identifie le site, et peut recevoir son XLSForm pour restituer les libellés des questions
-        à la place des noms techniques. Le bouton <RefreshCw size={11} className="inline align-text-top" /> tire
-        les soumissions réelles depuis le serveur — il exige un <b>jeton propre à cette source</b> : le jeton
-        général ci-contre reste dans votre navigateur et n'est jamais envoyé au serveur.</Note>
+        avec un justificatif dans l'en-tête d'autorisation. Chaque source déclare le type de données qu'elle
+        apporte, le champ qui identifie le site, et peut recevoir son XLSForm pour restituer les libellés des
+        questions à la place des noms techniques. Le bouton <RefreshCw size={11} className="inline align-text-top" /> tire
+        les soumissions réelles depuis le serveur : il exige un <b>justificatif propre à cette source</b>,
+        chiffré côté serveur, qu'aucune autre source n'emprunte.</Note>
+      {!can("admin") && <Note tone="warn">La configuration des sources ODK Central est réservée aux
+        administrateurs : cet écran est ici en lecture seule.</Note>}
       <div className="grid gap-4" style={{gridTemplateColumns:"340px 1fr"}}>
         <Card title="Serveur">
           <Field label="Adresse du serveur"><Input value={s.odkBase} onChange={e=>u("odkBase",e.target.value)} placeholder="https://odk-central.example.org" /></Field>
-          <Field label="Jeton général" hint="Repris par les sources qui n'ont pas de jeton propre">
-            <Input type="password" value={s.odkToken||""} onChange={e=>u("odkToken",e.target.value)} /></Field>
+          {/* Le « Jeton général » a été retiré, et son retrait est le correctif.
+              Il ne servait à RIEN : le serveur refuse que `odkToken` l'atteigne
+              (routes/collections.js, `PUT /settings`), aucune source ne s'en sert
+              pour tirer, et rien ne le conserve d'une session à l'autre. Il
+              n'était pas non plus, comme son indication l'a successivement promis,
+              « repris par les sources qui n'en ont pas » ni « gardé dans ce
+              navigateur » : la file de synchronisation POSTe l'objet `settings`
+              entier, ce jeton compris, 900 ms après chaque frappe — il traversait
+              donc bien le réseau, et tout journal de mandataire en amont, avant
+              d'être jeté à l'arrivée. Un champ qui ne fait rien et dont l'écran
+              explique de travers ce qu'il ne fait pas se supprime. */}
           <Field label="Identifiant de projet par défaut"><Input value={s.odkProject||""} onChange={e=>u("odkProject",e.target.value)} placeholder="1" /></Field>
-          <Btn size="sm" kind="sec" icon={Link2}
-            onClick={()=>notify("Configuration enregistrée. L'appel réel exige un serveur autorisant cette origine.","warn")}>Tester la connexion</Btn>
+          <Field label="Chemin d'ouverture de session"
+            hint="Laisser vide pour /v1/sessions — à ajuster si votre instance diffère">
+            <Input value={s.odkCheminSession||""} onChange={e=>u("odkCheminSession",e.target.value)} placeholder="/v1/sessions" /></Field>
+          <Field label="Chemin d'épreuve du justificatif"
+            hint="Laisser vide pour /v1/users/current : le point d'entrée qui valide un compte sans lire de données">
+            <Input value={s.odkCheminEpreuve||""} onChange={e=>u("odkCheminEpreuve",e.target.value)} placeholder="/v1/users/current" /></Field>
         </Card>
+        {/* Toutes les actions de cette carte sont gardées par `admin`, et non par
+            `edit`, parce que c'est ce que le serveur exige : la collection
+            `odkForms` est déclarée en `cap:"admin"` (routes/collections.js), le
+            tirage et l'épreuve de connexion sont sous `requireCap("admin")`. Un
+            éditeur voyait donc les boutons, et ne récoltait que des 403 — ce que
+            le dépôt refuse explicitement ailleurs : proposer l'interrupteur pour
+            le voir revenir en erreur apprend à l'utilisateur que l'écran ment. */}
         <Card flush title="Sources de données" subtitle={`${db.odkForms.length} formulaires déclarés`}
-          right={can("edit") && <Btn size="sm" icon={Plus} onClick={()=>setEdit({ name:"", formId:"", project:s.odkProject||"",
-            token:"", kind:"process", tag:"", siteField:"", dateField:"", labels:{}, xlsform:null })}>Nouvelle source</Btn>}>
+          right={can("admin") && <Btn size="sm" icon={Plus} onClick={()=>setEdit({ name:"", formId:"", project:s.odkProject||"",
+            token:"", authSchema:"porteur", authIdentifiant:"", kind:"process", tag:"", siteField:"",
+            dateField:"", labels:{}, xlsform:null })}>Nouvelle source</Btn>}>
           <TableWrap max="mh440">
             <thead><tr><Th>Formulaire</Th><Th>Projet / ID</Th><Th>Type de données</Th><Th>Activité</Th>
-              <Th>Champ site</Th><Th>Jeton</Th><Th>XLSForm</Th><Th num>Enreg.</Th><Th>Dernier tirage</Th><Th /></tr></thead>
+              <Th>Champ site</Th><Th>Justificatif</Th><Th>XLSForm</Th><Th num>Enreg.</Th><Th>Dernier tirage</Th><Th /></tr></thead>
             <tbody>{db.odkForms.map(f=>(
               <tr key={f.id} className="hover:bg-sky-50">
                 <Td className="font-medium">{f.name}</Td>
@@ -1787,22 +1821,120 @@ function SetOdk({ db, set, notify, can, reload }){
                 <Td><Badge tone="b">{ {process:"Suivi de processus", output:"Output", outcome:"Outcome", sites:"Registre des sites"}[f.kind] }</Badge></Td>
                 <Td>{f.tag ? <Badge>{f.tag}</Badge> : <span className="text-slate-400">—</span>}</Td>
                 <Td className="f115">{f.siteField || <span className="text-amber-700">à définir</span>}</Td>
-                <Td>{(f.token||s.odkToken) ? <Badge tone="g">présent</Badge> : <Badge tone="r">manquant</Badge>}</Td>
+                {/* Ce badge se lisait sur `f.token || s.odkToken` : `s.odkToken`
+                    n'est employé par personne, il affichait donc « présent » pour
+                    une source qui n'avait rien, et le tirage échouait aussitôt
+                    après. Il lit maintenant ce que le SERVEUR dit détenir —
+                    complété de ce qui vient d'être saisi dans cette session, sans
+                    quoi une source dont on vient d'enregistrer le justificatif
+                    resterait affichée « manquant », en rouge, jusqu'au prochain
+                    rechargement complet de l'état. */}
+                <Td>{(f.hasToken || !!f.token)
+                  ? <Badge tone="g">{nomSchemaAuth(db, f.authSchema)}</Badge>
+                  : <Badge tone="r">manquant</Badge>}</Td>
                 <Td>{f.xlsform ? <Badge tone="g">{Object.keys(f.labels||{}).length} libellés</Badge> : <Badge>non joint</Badge>}</Td>
                 <Td num>{fmt(f.records)}</Td>
                 <Td className="f115 text-slate-500">{f.last ? new Date(f.last).toLocaleString("fr-FR") : "jamais"}</Td>
                 <Td className="text-right whitespace-nowrap">
-                  {can("edit") && <button title="Tirer les soumissions depuis ODK Central" disabled={pulling===f.id}
+                  {can("admin") && <button title="Éprouver la connexion à cette source" disabled={pulling===f.id}
+                    onClick={()=>tester(f)} className="text-slate-400 hover:text-sky-600 p-1 disabled:opacity-40">
+                    <Link2 size={13} /></button>}
+                  {can("admin") && <button title="Tirer les soumissions depuis ODK Central" disabled={pulling===f.id}
                     onClick={()=>pull(f)} className="text-slate-400 hover:text-sky-600 p-1 disabled:opacity-40">
                     <RefreshCw size={13} className={pulling===f.id?"animate-spin":""} /></button>}
-                  {can("edit") && <button onClick={()=>setEdit(f)} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
-                  {can("del") && <button onClick={()=>set(d=>{ d.odkForms=d.odkForms.filter(x=>x.id!==f.id); return d; })}
+                  {can("admin") && <button onClick={()=>setEdit(f)} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
+                  {can("admin") && <button onClick={()=>set(d=>{ d.odkForms=d.odkForms.filter(x=>x.id!==f.id); return d; })}
                     className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</Td>
               </tr>))}</tbody>
           </TableWrap>
         </Card>
       </div>
+      <Epreuve resultat={epreuve} causes={db.causesAuth} onClose={()=>setEpreuve(null)} />
       <OdkModal open={!!edit} form={edit} db={db} onClose={()=>setEdit(null)} onSave={save} notify={notify} />
+    </>);
+}
+
+/* Le libellé d'un schéma, tel que le serveur l'a déclaré. Aucune table de
+   correspondance dans le navigateur : la clé inconnue est rendue telle quelle
+   plutôt que traduite au jugé. */
+const nomSchemaAuth = (db, cle) =>
+  (db?.schemasAuth || []).find(x => x.cle === (cle || "porteur"))?.libelle || cle || "présent";
+
+/* ── Le résultat d'une épreuve de connexion ───────────────────────────
+   Ce que l'administrateur doit pouvoir lire sans nous appeler : ce qui a été
+   joint, sous quel schéma, ce que la source a répondu, et laquelle des causes
+   nommées s'applique. Le secret n'y figure pas — au plus sa présence et sa
+   longueur, ce qui suffit à voir un copier-coller tronqué.
+
+   `causes` est la taxonomie servie par le serveur (`causesAuth`), pas une table
+   recopiée ici : une cause ajoutée côté serveur s'affiche alors avec son libellé,
+   au lieu de sortir en code brut sous les yeux de l'administrateur. */
+function Epreuve({ resultat, causes, onClose }){
+  if(!resultat) return null;
+  const etapes = resultat.etapes || [];
+  /* Trois issues, et non deux. Une étape peut réussir sans rien prouver du
+     justificatif — un 404, ou un point d'entrée qui n'exige aucune
+     authentification —, et le serveur le dit par `verdict`. Le bandeau se lisait
+     sur le seul `ok` : il affichait « la source n'a pas accepté l'appel » en rouge
+     au-dessus d'un texte qui affirmait le contraire, et l'administrateur ne
+     pouvait pas trancher entre les deux. */
+  const echec = etapes.some(e => !e.ok);
+  const sansVerdict = etapes.some(e => e.verdict === "indetermine");
+  const tone = echec ? (etapes.some(e => e.cause) ? "err" : "warn") : (sansVerdict ? "warn" : "ok");
+  const bandeau = echec
+    ? (etapes.some(e => e.cause)
+        ? "La source n'a pas accepté l'appel. Le détail ci-dessous dit à quelle étape et pourquoi."
+        : "L'épreuve n'a pas abouti, mais le justificatif n'est pas en cause. Le détail dit ce qui l'a arrêtée.")
+    : (sansVerdict
+        ? "La source répond, mais l'épreuve ne prouve pas que le justificatif soit bon : lisez le détail."
+        : "La source répond et accepte le justificatif enregistré.");
+  return (
+    <Modal open wide onClose={onClose} title="Épreuve de connexion"
+      subtitle={resultat.source?.name || resultat.connecteur?.name || ""}
+      footer={<Btn kind="sec" onClick={onClose}>Fermer</Btn>}>
+      <Note tone={tone}>{bandeau}</Note>
+      {etapes.map((e,i)=>(
+        <div key={i} className="border border-slate-200 rounded p-3 mb-3">
+          <div className="flex items-center gap-2 mb-2">
+            <Badge tone={e.ok ? (e.verdict === "indetermine" ? "y" : "g") : (e.cause ? "r" : "y")}>
+              {e.etape === "formulaire" ? "Accès au formulaire" : "Justificatif"}</Badge>
+            {e.cause && <Badge tone="y">{(causes||{})[e.cause] || e.cause}</Badge>}
+            {e.code_http && <Badge tone="b">HTTP {e.code_http}</Badge>}
+          </div>
+          <p className="f125 text-slate-700 leading-relaxed mb-2">{e.message}</p>
+          <div className="f11 text-slate-500">
+            Schéma employé : <b>{e.schema_libelle || e.schema_employe}</b> (mot-clé « {e.mot_cle} ») —
+            hôte {e.hote_verifie ? "vérifié" : "refusé"}, source {e.joignable ? "jointe" : "non jointe"} —
+            justificatif {!e.indices?.present ? "absent"
+              : e.indices.lisible === false ? "enregistré, mais illisible"
+              : `enregistré, ${e.indices.longueur} caractères`}.
+            {e.session && (e.session.echec_motif
+              ? <> Dernier renouvellement en échec : {e.session.echec_motif}.</>
+              : e.session.ouverte
+                ? <> Session ouverte{e.session.expire_le ? `, valable jusqu'au ${new Date(e.session.expire_le).toLocaleString("fr-FR")}` : " (sans expiration annoncée)"}.</>
+                : null)}
+          </div>
+        </div>))}
+    </Modal>);
+}
+
+/* Les champs qu'un schéma réclame, tels qu'il les déclare côté serveur. L'écran
+   ne sait pas ce qu'est « basique » ni « session ODK » : il lit la table. C'est
+   ce qui permet d'ajouter un schéma sans revenir ici. */
+function ChampsAuth({ db, schema, valeurs, onChange, hasSecret }){
+  const def = (db?.schemasAuth || []).find(x => x.cle === (schema || "porteur"));
+  if(!def) return null;
+  return (
+    <>
+      {def.champs.map(c => (
+        <Field key={c.cle} label={c.label}
+          hint={c.cle === "justificatif" && hasSecret
+            ? "Un justificatif est déjà enregistré, chiffré. Laissez vide pour le conserver."
+            : c.masque ? "Chiffré au repos, jamais renvoyé par l'API" : null}>
+          <Input type={c.masque ? "password" : "text"}
+            value={valeurs[c.cle] || ""} onChange={e=>onChange(c.cle, e.target.value)} />
+        </Field>))}
+      <Note tone="info"><b>Où trouver ce justificatif.</b> {def.ou_trouver} {def.note}</Note>
     </>);
 }
 function OdkModal({ open, form, db, onClose, onSave, notify }){
@@ -1848,8 +1980,17 @@ function OdkModal({ open, form, db, onClose, onSave, notify }){
         <Field label="Nom du formulaire" className="col-span-2"><Input value={f.name||""} onChange={e=>u("name",e.target.value)} /></Field>
         <Field label="Identifiant du projet"><Input value={f.project||""} onChange={e=>u("project",e.target.value)} /></Field>
         <Field label="Identifiant du formulaire"><Input value={f.formId||""} onChange={e=>u("formId",e.target.value)} /></Field>
-        <Field label="Jeton d'accès" hint="Laisser vide pour reprendre le jeton général">
-          <Input type="password" value={f.token||""} onChange={e=>u("token",e.target.value)} /></Field>
+        {/* Le schéma d'authentification pilote les champs demandés juste en
+            dessous. La liste vient du serveur (GET /api/state), l'écran n'en tient
+            aucune copie : ajouter un schéma ne se répercute pas ici. */}
+        <Field label="Schéma d'authentification" className="col-span-2">
+          <Select value={f.authSchema||"porteur"} onChange={e=>u("authSchema",e.target.value)}
+            options={(db.schemasAuth||[]).map(x=>[x.cle, x.libelle])} /></Field>
+        <div className="col-span-3">
+          <ChampsAuth db={db} schema={f.authSchema||"porteur"} hasSecret={!!f.hasToken}
+            valeurs={{ justificatif:f.token||"", identifiant:f.authIdentifiant||"" }}
+            onChange={(cle,v)=>u(cle==="justificatif" ? "token" : "authIdentifiant", v)} />
+        </div>
         <Field label="Type de données apportées"><Select value={f.kind||"process"} onChange={e=>u("kind",e.target.value)}
           options={[["process","Suivi de processus"],["output","Output — bénéficiaires"],["outcome","Outcome — indicateurs"],["sites","Registre des sites"]]} /></Field>
         <Field label="Activité rattachée"><Select value={f.tag||""} onChange={e=>u("tag",e.target.value)} empty="Toutes"
@@ -1908,6 +2049,10 @@ const NATURES_CONNECTEUR = [
   ["odk","ODK Central"], ["kobo","KoboToolbox"], ["foundry","Palantir Foundry"],
   ["csv","Fichier ou données collées"], ["http","API HTTP (JSON ou CSV)"]];
 const NOM_NATURE = Object.fromEntries(NATURES_CONNECTEUR);
+/* Les natures qui vont chercher la donnée par le réseau, donc les seules qu'une
+   épreuve de connexion puisse éprouver. Le serveur applique la même règle et
+   refuse les autres : cette constante ne fait que masquer un bouton inutile. */
+const RESEAU_CONNECTEUR = new Set(["odk","kobo","foundry","http"]);
 
 /* Ni `db` ni `set` : cet écran ne passe pas par l'état global. Les connecteurs
    ont leurs propres routes, et les faire transiter par la file de synchronisation
@@ -1923,7 +2068,15 @@ function SetConnectors({ notify, can }){
   const [vars,setVars]         = useState([]);     /* variables d'un XLSForm téléversé */
   const [ech,setEch]           = useState("");     /* échantillon collé, en JSON */
   const [apercu,setApercu]     = useState(null);
+  const [epreuve,setEpreuve]   = useState(null);   /* diagnostic de « tester cette source » */
   const [busy,setBusy]         = useState(false);
+
+  const tester = async (c) => {
+    setBusy(true);
+    try{ setEpreuve(await api.connectorTest(c.id)); }
+    catch(e){ notify(e.message,"err"); }
+    setBusy(false);
+  };
 
   const charger = () => api.connectors().then(r=>setRows(r.rows||[]))
     .catch(e=>{ notify(e.message,"err"); setRows([]); });
@@ -2056,10 +2209,13 @@ function SetConnectors({ notify, can }){
     setBusy(true);
     const payload = { name:(f.name||"").trim(), kind:f.kind||"csv",
       base_url:(f.base_url||"").trim()||null, config:f.config||{},
+      auth_schema:f.auth_schema||"porteur",
+      auth_identifiant:(f.auth_identifiant||"").trim()||null,
       office_id:f.office_id||null, active:f.active!==false };
-    /* Le jeton n'est envoyé que s'il a été saisi : laissé vide, celui qui est
+    /* Le secret n'est envoyé que s'il a été saisi : laissé vide, celui qui est
        déjà chiffré en base est conservé — le serveur ne le renvoie jamais, on ne
-       pourrait donc pas le réémettre à chaque modification. */
+       pourrait donc pas le réémettre à chaque modification. L'identifiant, lui,
+       n'est pas un secret : il part à chaque fois, sinon l'effacer serait impossible. */
     if((f.secret||"").trim()) payload.secret = f.secret.trim();
     if(f.id) payload.rev = f.rev;
     try{
@@ -2101,11 +2257,15 @@ function SetConnectors({ notify, can }){
                       {c.base_url ? ` — ${c.base_url.replace(/^https?:\/\//,"")}` : ""}</div>
                     <div className="flex gap-1 mt-1.5 flex-wrap">
                       <Badge tone={c.mappings?"g":"y"}>{c.mappings} correspondance(s)</Badge>
-                      <Badge tone={c.hasSecret?"g":"n"}>{c.hasSecret?"jeton présent":"sans jeton"}</Badge>
+                      <Badge tone={c.hasSecret?"g":"n"}>{c.hasSecret
+                        ? nomSchemaAuth(registre, c.auth_schema) : "sans justificatif"}</Badge>
                       {!c.active && <Badge tone="r">inactif</Badge>}
                     </div>
                   </button>
                   {can("admin") && <div className="shrink-0">
+                    {RESEAU_CONNECTEUR.has(c.kind) && <button title="Éprouver la connexion à cette source"
+                      disabled={busy} onClick={()=>tester(c)}
+                      className="text-slate-400 hover:text-sky-600 p-1 disabled:opacity-40"><Link2 size={13}/></button>}
                     <button onClick={()=>setEdit({ ...c, secret:"" })} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>
                     <button onClick={()=>supprimer(c)} className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>
                   </div>}
@@ -2222,7 +2382,8 @@ function SetConnectors({ notify, can }){
               </Card>)}
           </div>)}
       </div>
-      <ConnectorModal open={!!edit} c={edit} offices={offices} busy={busy}
+      <Epreuve resultat={epreuve} causes={registre?.causesAuth} onClose={()=>setEpreuve(null)} />
+      <ConnectorModal open={!!edit} c={edit} offices={offices} busy={busy} registre={registre}
         onClose={()=>setEdit(null)} onSave={enregistrerConnecteur} />
     </>);
 }
@@ -2230,13 +2391,18 @@ function SetConnectors({ notify, can }){
 /* La fiche d'un connecteur. Les champs de configuration dépendent de la nature de
    la source : les afficher tous ferait un formulaire dont les trois quarts ne
    servent jamais, et laisserait croire qu'un RID de dataset a un sens pour ODK. */
-function ConnectorModal({ open, c, offices, busy, onClose, onSave }){
+function ConnectorModal({ open, c, offices, busy, registre, onClose, onSave }){
   const [f,setF] = useState({});
   useEffect(()=>{ setF(c ? { ...c, config:{ ...(c.config||{}) }, secret:"" } : {}); },[c]);
   if(!open) return null;
   const u = (k,v)=>setF(p=>({ ...p, [k]:v }));
   const uc = (k,v)=>setF(p=>({ ...p, config:{ ...(p.config||{}), [k]:v } }));
   const reseau = ["odk","kobo","foundry","http"].includes(f.kind);
+  /* Le même composant que pour les sources ODK, alimenté par la même table —
+     servie ici par GET /api/connectors/champs, parce que cet écran ne passe pas
+     par l'état global. Une seule vérité, deux portes. */
+  const dbSchemas = { schemasAuth: registre?.schemasAuth || [] };
+  const defAuth = (registre?.schemasAuth || []).find(x => x.cle === (f.auth_schema || "porteur"));
   return (
     <Modal open wide onClose={onClose} title={c?.id ? "Modifier le connecteur" : "Nouveau connecteur"}
       subtitle="Nature de la source, adresse, jeton et rattachement"
@@ -2252,13 +2418,34 @@ function ConnectorModal({ open, c, offices, busy, onClose, onSave }){
           hint="https obligatoire, sauf hôte explicitement autorisé par l'équipe technique (CONNECTOR_ALLOWED_HOSTS)">
           <Input value={f.base_url||""} onChange={e=>u("base_url",e.target.value)}
             placeholder="https://exemple.palantirfoundry.com" /></Field>}
-        <Field label="Jeton d'accès" hint={c?.hasSecret
-            ? "Un jeton est déjà enregistré, chiffré. Laissez vide pour le conserver."
-            : "Chiffré au repos, jamais renvoyé par l'API"}>
-          <Input type="password" value={f.secret||""} onChange={e=>u("secret",e.target.value)} /></Field>
+        <Field label="Schéma d'authentification"
+          hint="Ce que la source attend dans l'en-tête. Un jeton valide présenté sous le mauvais mot-clé est refusé.">
+          <Select value={f.auth_schema||"porteur"} onChange={e=>u("auth_schema",e.target.value)}
+            options={(registre?.schemasAuth||[]).map(x=>[x.cle, x.libelle])} /></Field>
         <Field label="Bureau" hint="Un connecteur rattaché à un bureau n'est visible que par ce bureau">
           <Select value={f.office_id||""} onChange={e=>u("office_id",e.target.value)} empty="Tous les bureaux"
             options={offices.map(o=>[o.id, o.name])} /></Field>
+        <div className="col-span-2">
+          <ChampsAuth db={dbSchemas} schema={f.auth_schema||"porteur"} hasSecret={!!c?.hasSecret}
+            valeurs={{ justificatif:f.secret||"", identifiant:f.auth_identifiant||"" }}
+            onChange={(cle,v)=>u(cle==="justificatif" ? "secret" : "auth_identifiant", v)} />
+        </div>
+        {defAuth?.derive && <Field label={defAuth.chemin?.label || "Chemin d'obtention du justificatif"}
+          className="col-span-2"
+          hint={`Laisser vide pour ${defAuth.chemin?.defaut} — à ajuster si votre instance diffère`}>
+          <Input value={f.config?.cheminAuth||""} onChange={e=>uc("cheminAuth",e.target.value)}
+            placeholder={defAuth.chemin?.defaut} /></Field>}
+        {/* Le chemin sur lequel « éprouver la connexion » va frapper. Le serveur
+            le lisait déjà (`config.cheminEpreuve`) mais aucun champ ne permettait
+            de le saisir : l'épreuve d'une source « http » ou « foundry » retombait
+            donc sur le chemin de lecture, voire sur « / », c'est-à-dire souvent
+            sur une page publique qui ne prouve rien. */}
+        {(f.kind==="http" || f.kind==="foundry") && <Field label="Chemin d'épreuve du justificatif"
+          className="col-span-2"
+          hint="Un point d'entrée qui EXIGE une authentification. Laissé vide, l'épreuve appelle le chemin
+                de lecture : si la source y répond aussi sans justificatif, elle le dira au lieu de conclure.">
+          <Input value={f.config?.cheminEpreuve||""} onChange={e=>uc("cheminEpreuve",e.target.value)}
+            placeholder="/api/v2/me" /></Field>}
 
         {f.kind==="foundry" && <>
           <Field label="Identifiant du jeu de données (RID)" className="col-span-2">
@@ -2276,10 +2463,23 @@ function ConnectorModal({ open, c, offices, busy, onClose, onSave }){
           <Field label="Pointeur vers les lignes" hint="Chemin JSON du tableau de lignes, si la réponse l'emballe">
             <Input value={f.config?.pointeur||""} onChange={e=>uc("pointeur",e.target.value)} placeholder="data.results" /></Field>
         </>}
-        {(f.kind==="odk"||f.kind==="kobo") && <>
+        {f.kind==="odk" && <>
           <Field label="Projet"><Input value={f.config?.project||""} onChange={e=>uc("project",e.target.value)} placeholder="1" /></Field>
           <Field label="Identifiant du formulaire">
             <Input value={f.config?.formId||""} onChange={e=>uc("formId",e.target.value)} placeholder="MDG_GD_PREVMA_v2" /></Field>
+        </>}
+        {/* Kobo n'a pas de « projet » : un formulaire y est désigné par le seul uid
+            de son asset. Afficher le couple projet / formulaire d'ODK laissait
+            croire le contraire, et le champ « Projet » n'était lu par personne. */}
+        {f.kind==="kobo" && <>
+          <Field label="Identifiant du formulaire (uid de l'asset)" className="col-span-2">
+            <Input value={f.config?.uid||""} onChange={e=>uc("uid",e.target.value)}
+              placeholder="aBcDeFgHiJkLmNoPqRsTuV" /></Field>
+          <Field label="Chemin de lecture"
+            hint="Laisser vide pour /api/v2/assets/{uid}/data/ — à ajuster si l'instance diffère">
+            <Input value={f.config?.chemin||""} onChange={e=>uc("chemin",e.target.value)} /></Field>
+          <Field label="Pointeur vers les lignes" hint="Vide convient : Kobo emballe ses lignes dans « results »">
+            <Input value={f.config?.pointeur||""} onChange={e=>uc("pointeur",e.target.value)} placeholder="results" /></Field>
         </>}
       </div>
       <Sw label="Connecteur actif" hint="Un connecteur inactif reste configuré mais n'est plus proposé"

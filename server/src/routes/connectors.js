@@ -2,13 +2,17 @@ import { Router } from "express";
 import { z } from "zod";
 import { db, tx } from "../db.js";
 import { newId, encrypt, decrypt } from "../lib/crypto.js";
-import { requireCap } from "../lib/auth.js";
+import { can, requireCap } from "../lib/auth.js";
 import { officeBound } from "../lib/scope.js";
 import { log } from "../lib/logger.js";
 import { champ, champsObligatoires, champs as champsDe, entite, entites,
          registrePublic, TRANSFORM_PAR_TYPE } from "../lib/champs.js";
 import { appliquerLot, NOMS_TRANSFORMATIONS, transformationsPubliques } from "../lib/mapping.js";
-import { lireDatasetFoundry, lireJsonHttp } from "../lib/foundry.js";
+import { cheminFoundry, lireDatasetFoundry, lireJsonHttp, lireKobo, verifierBaseSortante,
+         CHEMIN_DONNEES_KOBO_DEFAUT } from "../lib/foundry.js";
+import { porteurAuth, sonder, schemasAuthPublics, indicesSecret, CAUSES_AUTH,
+         NOMS_SCHEMAS_AUTH, SCHEMAS_AUTH, CHEMIN_EPREUVE_KOBO_DEFAUT,
+         CHEMIN_EPREUVE_ODK_DEFAUT } from "../lib/authSortante.js";
 import { TYPES_STRUCTURE } from "../lib/xlsform.js";
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -42,6 +46,16 @@ const NATURES = ["odk", "kobo", "foundry", "csv", "http"];
    de base est indispensable, et son absence doit se dire à la création — pas au
    premier aperçu, trois écrans plus loin. */
 const NATURES_RESEAU = new Set(["odk", "kobo", "foundry", "http"]);
+/* Les natures que le serveur sait réellement ALLER LIRE. « kobo » y entre avec
+   ce chantier : elle était déclarable depuis la migration 016 mais n'était lue
+   par personne — l'aperçu la renvoyait à un échantillon collé, alors que la
+   configuration exigeait une adresse de base. Une nature réseau sans lecteur est
+   une promesse non tenue ; il ne lui manquait que le bon en-tête (`Token` et non
+   `Bearer`) et le bon chemin.
+   « odk » reste dehors, et c'est délibéré : le tirage ODK a son propre écran et
+   son propre cache (`odk_forms.raw`). Le dupliquer ici ferait un second chemin
+   d'appel sortant à sécuriser, pour rien. */
+const NATURES_LUES = new Set(["foundry", "http", "kobo"]);
 
 const J = (v, d) => { try{ return JSON.parse(v); }catch(e){ return d; } };
 
@@ -57,6 +71,29 @@ const schemaConnecteur = z.object({
   config:    z.record(z.any()).default({}),
   /* Écrit, jamais relu : laissé vide lors d'une modification, l'existant est conservé. */
   secret:    z.string().max(4000).optional().nullable(),
+  /* Le schéma d'authentification est une DONNÉE de la source, contrôlée contre la
+     table de lib/authSortante.js et non contre une liste recopiée ici — même règle
+     que pour les transformations, et même raison.
+
+     FACULTATIF, et non « porteur par défaut » : une valeur par défaut réécrit la
+     colonne à chaque enregistrement, donc ramène à « porteur » toute source
+     réglée autrement dès qu'un client qui ignore ce champ neuf — script
+     d'exploitation, écran d'une version antérieure — renvoie la fiche sans lui.
+     Le mot de passe d'un compte de service partirait alors en clair comme jeton
+     porteur, et les connecteurs sans secret que la migration 021 a basculés en
+     « aucun » redeviendraient refusés avant l'appel. routes/collections.js pose
+     la même règle pour les sources ODK, et l'explique dans les mêmes termes ; la
+     poser d'un seul côté revenait à ne pas la poser. « porteur » reste le défaut
+     à la CRÉATION, où l'absence de champ n'écrase rien. */
+  auth_schema: z.enum(NOMS_SCHEMAS_AUTH).optional(),
+  /* La moitié non secrète d'un justificatif à deux parties. Elle n'a rien à faire
+     dans `config` : CLES_INTERDITES y refuse déjà tout ce qui ressemble à un
+     secret, et séparer les deux moitiés d'une même paire entre deux mécanismes de
+     rangement est le meilleur moyen qu'elles cessent un jour de correspondre.
+
+     Facultative pour la même raison que le schéma, et distinguée de la chaîne
+     vide : absente, elle conserve l'existant ; envoyée vide, elle l'efface. */
+  auth_identifiant: z.string().trim().max(200).optional().nullable(),
   office_id: S(64),
   active:    z.boolean().default(true),
   rev:       z.number().int().min(1).optional(),
@@ -81,10 +118,23 @@ const invalide = (res, parsed, message = "données invalides") =>
 /* La forme publique d'un connecteur. Le jeton n'y figure pas — seulement le fait
    qu'il existe : c'est ce dont l'écran a besoin pour afficher « présent » ou
    « manquant », et rien de plus ne doit sortir. */
-const shape = (c) => ({
+const shape = (c, { administration = false } = {}) => ({
   id: c.id, name: c.name, kind: c.kind, base_url: c.base_url || "",
   config: J(c.config, {}),
   hasSecret: !!c.secret_enc,
+  /* Le schéma sort, le secret jamais : l'écran en a besoin pour demander les bons
+     champs à la prochaine ouverture de la fiche.
+
+     L'IDENTIFIANT, lui, ne sort que vers l'administration. Il n'est pas un secret
+     — c'est ce qui l'accompagne qui en est un — mais c'est la moitié NOMMÉE d'un
+     couple : le courriel du compte de service ODK Central, l'identifiant d'un
+     Basic. Servi à tout compte authentifié, il donnait à un rôle « lecteur »,
+     avec l'adresse du serveur déjà publiée, la moitié du travail d'une attaque
+     par mot de passe menée directement chez la source — hors de portée du
+     limiteur de débit de MEMS. La fiche qui le modifie est réservée à
+     l'administration ; sa lecture le sera aussi. */
+  ...(administration ? { auth_identifiant: c.auth_identifiant || "" } : {}),
+  auth_schema: c.auth_schema || "porteur",
   office_id: c.office_id || null,
   active: !!c.active,
   created_at: c.created_at, updated_at: c.updated_at, rev: c.rev || 1,
@@ -122,6 +172,13 @@ r.get("/connectors/champs", (req, res) => {
   res.json({
     entites: registrePublic(),
     transformations: transformationsPubliques(),
+    /* La troisième liste fermée servie par le serveur, au même titre et pour la
+       même raison que les deux autres : l'écran demande les champs qu'exige le
+       schéma choisi, et affiche l'indication « où trouver ce justificatif »
+       telle qu'elle est écrite dans lib/authSortante.js. Une copie dans le
+       navigateur proposerait tôt ou tard un schéma que le serveur refuse. */
+    schemasAuth: schemasAuthPublics(),
+    causesAuth: CAUSES_AUTH,
   });
 });
 
@@ -135,30 +192,38 @@ r.get("/connectors", (req, res) => {
   const rows = bureau
     ? db.prepare("SELECT * FROM connector WHERE office_id=? ORDER BY name").all(bureau)
     : db.prepare("SELECT * FROM connector ORDER BY name").all();
-  res.json({ rows: rows.map(shape) });
+  const administration = can(req.user, "admin");
+  res.json({ rows: rows.map(c => shape(c, { administration })) });
 });
 
 r.post("/connectors", requireCap("admin"), (req, res, next) => {
   const parsed = schemaConnecteur.safeParse(req.body);
   if(!parsed.success) return invalide(res, parsed, "connecteur invalide");
-  const d = parsed.data;
+  /* À la création, l'absence de schéma vaut « porteur » : c'est le seul
+     comportement que l'ancien code ait jamais eu, et rien n'est écrasé puisqu'il
+     n'y avait rien. La modification, elle, ne comble aucun blanc. */
+  const d = { ...parsed.data, auth_schema: parsed.data.auth_schema || "porteur",
+              auth_identifiant: parsed.data.auth_identifiant || null };
 
-  const probleme = verifierConfig(d);
+  const probleme = verifierConfig(d, null);
   if(probleme) return res.status(422).json({ error: probleme });
 
   const id = newId("conn");
   try{
-    db.prepare(`INSERT INTO connector (id,name,kind,base_url,config,secret_enc,office_id,active)
-                VALUES (?,?,?,?,?,?,?,?)`)
+    db.prepare(`INSERT INTO connector
+                  (id,name,kind,base_url,config,secret_enc,auth_schema,auth_identifiant,office_id,active)
+                VALUES (?,?,?,?,?,?,?,?,?,?)`)
       .run(id, d.name, d.kind, d.base_url, JSON.stringify(d.config),
-           d.secret ? encrypt(d.secret) : null, d.office_id, d.active ? 1 : 0);
+           d.secret ? encrypt(d.secret) : null, d.auth_schema, d.auth_identifiant,
+           d.office_id, d.active ? 1 : 0);
   }catch(e){
     if(/FOREIGN KEY/.test(e.message))
       return res.status(409).json({ error: "bureau inconnu : le connecteur n'a pas été créé" });
     return next(e);
   }
   audit(req, "create", id, `Connecteur créé — ${d.name} (${d.kind})`);
-  res.status(201).json({ connector: shape(db.prepare("SELECT * FROM connector WHERE id=?").get(id)) });
+  res.status(201).json({ connector: shape(db.prepare("SELECT * FROM connector WHERE id=?").get(id),
+    { administration: true }) });
 });
 
 r.put("/connectors/:id", requireCap("admin"), (req, res, next) => {
@@ -167,27 +232,38 @@ r.put("/connectors/:id", requireCap("admin"), (req, res, next) => {
   if(!parsed.success) return invalide(res, parsed, "connecteur invalide");
   const d = parsed.data;
 
-  const probleme = verifierConfig(d);
+  const probleme = verifierConfig(d, c);
   if(probleme) return res.status(422).json({ error: probleme });
 
   if(d.rev !== undefined && d.rev !== c.rev)
     return res.status(409).json({
       error: "ce connecteur a été modifié pendant votre saisie. Rechargez pour repartir de la version à jour.",
-      courant: shape(c) });
+      courant: shape(c, { administration: true }) });
+
+  /* Les colonnes d'authentification ne s'écrivent que si le corps les porte.
+     Un `UPDATE` qui les nomme toujours remet la valeur par défaut du schéma de
+     validation à chaque enregistrement — c'est-à-dire qu'un client qui ignore ces
+     champs neufs reconfigure l'authentification de la source sans le savoir, et
+     sans que rien ne l'en avertisse. */
+  const colonnes = ["name=?", "kind=?", "base_url=?", "config=?", "office_id=?", "active=?"];
+  const valeurs = [d.name, d.kind, d.base_url, JSON.stringify(d.config), d.office_id, d.active ? 1 : 0];
+  if(d.auth_schema !== undefined){ colonnes.push("auth_schema=?"); valeurs.push(d.auth_schema); }
+  if(d.auth_identifiant !== undefined){
+    colonnes.push("auth_identifiant=?"); valeurs.push(d.auth_identifiant || null); }
+  if(d.secret){ colonnes.push("secret_enc=?"); valeurs.push(encrypt(d.secret)); }
 
   try{
-    db.prepare(`UPDATE connector SET name=?, kind=?, base_url=?, config=?, office_id=?, active=?,
-                  ${d.secret ? "secret_enc=?," : ""} updated_at=datetime('now'), rev=rev+1
-                WHERE id=?`)
-      .run(d.name, d.kind, d.base_url, JSON.stringify(d.config), d.office_id, d.active ? 1 : 0,
-           ...(d.secret ? [encrypt(d.secret)] : []), c.id);
+    db.prepare(`UPDATE connector SET ${colonnes.join(", ")},
+                  updated_at=datetime('now'), rev=rev+1
+                WHERE id=?`).run(...valeurs, c.id);
   }catch(e){
     if(/FOREIGN KEY/.test(e.message))
       return res.status(409).json({ error: "bureau inconnu : le connecteur n'a pas été modifié" });
     return next(e);
   }
   audit(req, "update", c.id, `Connecteur modifié — ${d.name} (${d.kind})`);
-  res.json({ connector: shape(db.prepare("SELECT * FROM connector WHERE id=?").get(c.id)) });
+  res.json({ connector: shape(db.prepare("SELECT * FROM connector WHERE id=?").get(c.id),
+    { administration: true }) });
 });
 
 r.delete("/connectors/:id", requireCap("admin"), (req, res) => {
@@ -200,8 +276,36 @@ r.delete("/connectors/:id", requireCap("admin"), (req, res) => {
   res.json({ ok: true, mappingsSupprimees: n });
 });
 
-/* Contrôles qui dépendent de la nature de la source, donc hors de portée de zod. */
-function verifierConfig(d){
+/* Le porteur d'authentification d'un connecteur. Construit à un seul endroit —
+   l'aperçu et l'épreuve de connexion s'en servent tous les deux — et il ne
+   déchiffre le secret que là, au moment de sortir. */
+function porteurDeConnecteur(c){
+  const cfg = J(c.config, {});
+  return porteurAuth({
+    nature: "connector", id: c.id,
+    schema: c.auth_schema || "porteur",
+    identifiant: c.auth_identifiant || "",
+    secret: c.secret_enc ? decrypt(c.secret_enc) : "",
+    /* `decrypt` rend null quand la ligne ne s'authentifie pas — clé de
+       chiffrement changée, base recopiée. Le porteur doit savoir distinguer ce
+       cas d'un secret jamais saisi : les deux remèdes sont opposés. */
+    secretPresent: !!c.secret_enc,
+    baseUrl: c.base_url,
+    /* Le chemin d'obtention du second secret, quand le schéma en dérive un.
+       Réglable par connecteur : la valeur par défaut est celle du dépôt source du
+       produit d'aujourd'hui, pas une constante du monde — voir lib/authSortante.js. */
+    cheminSession: cfg.cheminAuth,
+    verifierBase: (u) => verifierBaseSortante(u, `la source « ${c.name} »`),
+    codeErreur: "SOURCE_AUTH",
+    quoi: `la source « ${c.name} »`,
+  });
+}
+
+/* Contrôles qui dépendent de la nature de la source, donc hors de portée de zod.
+   `existant` est la ligne en base lors d'une modification, null à la création :
+   plusieurs de ces règles ne peuvent se prononcer qu'en sachant ce qui était déjà
+   là — un champ neuf ne peut pas être exigé d'une ligne écrite avant lui. */
+function verifierConfig(d, existant){
   const json = JSON.stringify(d.config || {});
   if(json.length > 8000)
     return "configuration trop volumineuse : elle décrit où lire, elle ne porte pas les données.";
@@ -213,6 +317,36 @@ function verifierConfig(d){
     return `une source de type « ${d.kind} » se lit par le réseau : son adresse de base est requise.`;
   if(d.kind === "foundry" && !d.config?.datasetRid)
     return "un connecteur Foundry a besoin de l'identifiant du jeu de données (config.datasetRid).";
+  /* L'uid Kobo est exigé à la CRÉATION, et défendu contre l'effacement — pas
+     réclamé d'une ligne qui n'en a jamais eu. Un connecteur « kobo » est
+     déclarable depuis la migration 016 : ceux d'alors portent le couple
+     projet / formulaire d'ODK, que l'écran leur proposait à tort. Exiger l'uid de
+     tout enregistrement les rendait immodifiables — impossible de les renommer, de
+     les désactiver ou de les rattacher à un bureau sans inventer d'abord un
+     identifiant d'asset que personne n'avait eu à saisir. Ils restent illisibles
+     tant que l'uid manque, et c'est `lireKobo` qui le dit, au moment où l'on
+     essaie de lire, avec le geste à faire. */
+  const uidExistant = existant ? J(existant.config, {}).uid : null;
+  if(d.kind === "kobo" && !d.config?.uid && (!existant || uidExistant))
+    return "un connecteur KoboToolbox a besoin de l'identifiant du formulaire (config.uid). "
+      + "Kobo n'a pas de « projet » au sens d'ODK Central : un formulaire y est désigné par son seul uid.";
+  /* Le schéma choisi dit lui-même ce qu'il exige. Le contrôle est fait ici plutôt
+     qu'au premier appel sortant, pour la même raison que l'adresse de base : une
+     source à qui il manque de quoi s'authentifier doit le dire à la déclaration,
+     pas trois écrans plus loin. `secret` peut rester vide en modification —
+     l'existant est alors conservé, et c'est `hasSecret` qui fait foi.
+
+     Le schéma et l'identifiant EFFECTIFS, c'est-à-dire ceux que la ligne portera
+     après écriture : un corps qui ne les envoie pas conserve les siens, et
+     contrôler la valeur envoyée reviendrait à contrôler autre chose que ce qui
+     sera écrit. */
+  const schemaEffectif = d.auth_schema ?? existant?.auth_schema ?? "porteur";
+  const identifiantEffectif = d.auth_identifiant !== undefined
+    ? d.auth_identifiant : (existant?.auth_identifiant || null);
+  const defAuth = SCHEMAS_AUTH[schemaEffectif];
+  if(!defAuth) return `schéma d'authentification inconnu : « ${schemaEffectif} ».`;
+  if(defAuth.champs.some(x => x.cle === "identifiant" && x.requis) && !identifiantEffectif)
+    return `le schéma « ${defAuth.libelle} » exige un identifiant en plus du secret : renseignez-le.`;
   return null;
 }
 
@@ -360,22 +494,28 @@ r.post("/connectors/:id/apercu", requireCap("admin"), async (req, res, next) => 
   let lignes = echantillon.slice(0, limite);
   let provenance = "échantillon fourni";
   if(!lignes.length){
-    if(c.kind === "foundry" || c.kind === "http"){
+    if(NATURES_LUES.has(c.kind)){
       try{
         const cfg = J(c.config, {});
-        const jeton = c.secret_enc ? decrypt(c.secret_enc) : null;
+        const porteur = porteurDeConnecteur(c);
         const lu = c.kind === "foundry"
           ? await lireDatasetFoundry({ baseUrl: c.base_url, datasetRid: cfg.datasetRid,
-              token: jeton, branche: cfg.branche || cfg.branchName || "master",
+              porteur, branche: cfg.branche || cfg.branchName || "master",
               limite, format: cfg.format || "CSV", chemin: cfg.chemin, pointeur: cfg.pointeur })
-          : await lireJsonHttp({ baseUrl: c.base_url, chemin: cfg.chemin, token: jeton,
+          : c.kind === "kobo"
+          ? await lireKobo({ baseUrl: c.base_url, uid: cfg.uid, porteur,
+              chemin: cfg.chemin || CHEMIN_DONNEES_KOBO_DEFAUT, pointeur: cfg.pointeur, limite })
+          : await lireJsonHttp({ baseUrl: c.base_url, chemin: cfg.chemin, porteur,
               pointeur: cfg.pointeur, limite });
         lignes = (lu.rows || []).slice(0, limite);
         provenance = `lecture distante (${c.kind}, ${lu.format})`;
       }catch(e){
         if(e.code === "SOURCE_URL" || e.code === "SOURCE_CONFIG" || e.code === "SOURCE_AUTH"
            || e.code === "SOURCE_NOT_FOUND")
-          return res.status(422).json({ error: e.message });
+          /* La cause nommée part avec le message : l'écran peut ainsi distinguer
+             « corrigez le justificatif » de « demandez des droits à la source »,
+             ce qu'un texte unique ne permettait pas. */
+          return res.status(422).json({ error: e.message, cause: e.causeAuth || null });
         if(e.code === "SOURCE_NETWORK" || e.code === "SOURCE_HTTP"){
           log.warn("lecture de source en échec", { connecteur: c.id, kind: c.kind, code: e.code });
           return res.status(502).json({ error:
@@ -415,6 +555,75 @@ r.post("/connectors/:id/apercu", requireCap("admin"), async (req, res, next) => 
     ok: manquants.length === 0,
     lignes: resultat,
   });
+});
+
+/* ── Épreuve de connexion ─────────────────────────────────────────────
+   « Tester cette source » : ce que l'écran affichait jusqu'ici sous ce nom
+   n'appelait rien du tout — il se contentait d'un message rassurant. Voici
+   l'épreuve réelle.
+
+   Elle vise le point d'entrée le moins coûteux de chaque produit, celui qui
+   valide un justificatif SANS lire de données : `/me/` chez KoboToolbox,
+   `/v1/users/current` chez ODK Central. Pour les natures sans point d'entrée
+   connu, elle appelle le chemin de lecture réglé — c'est le seul honnête, et un
+   404 y est un renseignement utile plutôt qu'un échec d'authentification.
+
+   `exigeAuth` dit ce qu'un succès prouve, et c'est la moitié du travail. Sur les
+   deux points d'entrée connus, un 2xx prouve que le justificatif a été accepté.
+   Ailleurs, il ne prouve rien : « / » sur une source dont la page d'accueil est
+   publique répond 200 à un secret entièrement faux. Sans cette distinction,
+   l'épreuve rendait « justificatif accepté » là où tout aperçu échouerait en 401
+   — un feu vert sur le bouton dont c'est précisément la raison d'être. Un chemin
+   d'épreuve choisi par l'administrateur ne prouve rien non plus, faute de savoir
+   ce qu'il y a au bout : `sonder` le vérifie alors lui-même, en refaisant l'appel
+   sans justificatif.
+
+   Réservée à l'administration, comme l'aperçu et pour la même raison : elle
+   déchiffre un secret et déclenche un appel sortant au nom du bureau. Elle ne
+   renvoie du secret que ce que la maison s'autorise déjà — sa présence — plus sa
+   longueur, qui diagnostique un copier-coller tronqué. Jamais sa valeur, jamais
+   ses derniers caractères. */
+const POINT_EPREUVE = {
+  kobo:    (cfg) => ({ chemin: cfg.cheminEpreuve || CHEMIN_EPREUVE_KOBO_DEFAUT,
+                       exigeAuth: !cfg.cheminEpreuve }),
+  odk:     (cfg) => ({ chemin: cfg.cheminEpreuve || CHEMIN_EPREUVE_ODK_DEFAUT,
+                       exigeAuth: !cfg.cheminEpreuve }),
+  /* Le gabarit `{rid}` est résolu par la fonction de lecture elle-même : l'épreuve
+     doit viser l'adresse que le tirage vise, sans quoi elle éprouve une adresse
+     qui ne peut pas exister et accuse ensuite le chemin réglé. */
+  foundry: (cfg) => ({ chemin: cfg.cheminEpreuve
+                         || (cfg.datasetRid ? cheminFoundry(cfg.chemin, cfg.datasetRid) : "/"),
+                       exigeAuth: false }),
+  http:    (cfg) => ({ chemin: cfg.cheminEpreuve || cfg.chemin || "/", exigeAuth: false }),
+};
+
+r.post("/connectors/:id/test", requireCap("admin"), async (req, res, next) => {
+  const c = charger(req, res); if(!c) return;
+  if(!NATURES_RESEAU.has(c.kind)) return res.status(422).json({ error:
+    `une source de type « ${c.kind} » ne se joint pas par le réseau : il n'y a rien à éprouver.` });
+
+  const cfg = J(c.config, {});
+  let porteur;
+  try{ porteur = porteurDeConnecteur(c); }
+  catch(e){
+    return res.json({ ok:false, connecteur:{ id:c.id, name:c.name, kind:c.kind },
+      etapes: [{ etape:"justificatif", ok:false, verdict:"indetermine",
+        hote_verifie:false, joignable:false, code_http:null,
+        schema_employe: c.auth_schema || "porteur",
+        schema_libelle: SCHEMAS_AUTH[c.auth_schema || "porteur"]?.libelle || "",
+        cause: e.causeAuth || "AUTH_ABSENT", message: e.message,
+        indices: indicesSecret("", !!c.secret_enc), session: null }] });
+  }
+
+  const point = POINT_EPREUVE[c.kind](cfg);
+  let etape;
+  try{ etape = await sonder({ porteur, etape: "justificatif", ...point }); }
+  catch(e){ return next(e); }
+
+  audit(req, "test", c.id, `Épreuve de connexion — ${c.name} : `
+    + `${etape.ok ? (etape.verdict === "accepte" ? "réussie" : "sans verdict sur le justificatif")
+                  : `échouée (${etape.cause || "cause non déterminée"})`}`);
+  res.json({ ok: !!etape.ok, connecteur: { id: c.id, name: c.name, kind: c.kind }, etapes: [etape] });
 });
 
 /* ── Suggestions ──────────────────────────────────────────────────────

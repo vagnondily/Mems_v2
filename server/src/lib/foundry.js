@@ -39,6 +39,7 @@ import dns from "node:dns/promises";
 import net from "node:net";
 import { config } from "../config.js";
 import { motifPrive } from "./odkClient.js";
+import { appelAuthentifie, causeRefus } from "./authSortante.js";
 
 const TIMEOUT_MS = 20_000;
 /* Un aperçu lit quelques lignes, pas un dataset entier : le plafond protège la
@@ -51,7 +52,14 @@ const MAX_LIGNES = 5_000;
    connecteur : voir l'avertissement en tête de fichier. */
 export const CHEMIN_FOUNDRY_DEFAUT = "/api/v2/datasets/{rid}/readTable";
 
-const refus = (message, code = "SOURCE_URL") => { const e = new Error(message); e.code = code; return e; };
+/* Un refus d'hôte porte aussi sa cause nommée (lib/authSortante.js) : l'écran
+   distingue ainsi « l'adresse est interdite » de « le justificatif est refusé »
+   sans avoir à interpréter le texte du message. */
+const refus = (message, code = "SOURCE_URL") => {
+  const e = new Error(message); e.code = code;
+  if(code === "SOURCE_URL") e.causeAuth = "AUTH_HOTE";
+  return e;
+};
 
 export async function verifierBaseSortante(baseUrl, quoi = "la source"){
   let u;
@@ -109,29 +117,36 @@ async function texteBorne(res){
   return texte + decodeur.decode();
 }
 
-async function appeler(url, token, accept){
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
-  let res;
-  try{
-    res = await fetch(url, {
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        Accept: accept,
-      },
-      signal: ac.signal,
-      redirect: "manual",     /* une redirection sortirait de l'hôte vérifié */
-    });
-  }catch(e){
-    throw refus(e.name === "AbortError" ? "délai dépassé" : e.message, "SOURCE_NETWORK");
-  }finally{ clearTimeout(timer); }
+/* Comme lib/odkClient.js, ce client ne fabrique plus d'en-tête d'autorisation :
+   il reçoit un porteur (lib/authSortante.js). Le `Bearer` qui était écrit ici
+   partait pour TOUTES les natures de connecteur, y compris celles qui attendent
+   `Token` — et il n'avait, pour Foundry lui-même, jamais été vérifié contre une
+   instance réelle. Une hypothèse non vérifiée reconduite tacitement en reste une :
+   elle est désormais réglable par source. */
+async function appeler(url, porteur, accept){
+  const faireAppel = async (enTetes) => {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
+    try{
+      return await fetch(url, {
+        headers: { ...enTetes, Accept: accept },
+        signal: ac.signal,
+        redirect: "manual",     /* une redirection sortirait de l'hôte vérifié */
+      });
+    }catch(e){
+      throw refus(e.name === "AbortError" ? "délai dépassé" : e.message, "SOURCE_NETWORK");
+    }finally{ clearTimeout(timer); }
+  };
+
+  const { res, renouvele, motifRenouvellement } = await appelAuthentifie(porteur, faireAppel);
 
   if(res.status >= 300 && res.status < 400) throw refus(
     "la source répond par une redirection : le serveur ne la suit pas, car elle mènerait "
     + "vers un hôte qui n'a pas été vérifié. Indiquez l'adresse finale.", "SOURCE_HTTP");
-  if(res.status === 401 || res.status === 403) throw refus(
-    "accès refusé par la source : jeton absent, expiré, ou sans droit sur ce jeu de données.",
-    "SOURCE_AUTH");
+  if(res.status === 401 || res.status === 403){
+    const { cause, message } = await causeRefus({ porteur, res, renouvele, motifRenouvellement });
+    const e = refus(message, "SOURCE_AUTH"); e.causeAuth = cause; throw e;
+  }
   if(res.status === 404) throw refus(
     "jeu de données introuvable à cette adresse : vérifiez l'identifiant et le chemin.",
     "SOURCE_NOT_FOUND");
@@ -191,7 +206,17 @@ export function extraireLignes(payload, pointeur){
    Lit les premières lignes d'un dataset. Le format CSV est demandé par défaut :
    c'est celui que l'API documente pour `readTable`, et il ne suppose aucune
    hypothèse sur l'emballage JSON de l'instance. */
-export async function lireDatasetFoundry({ baseUrl, datasetRid, token, branche = "master",
+/* Le chemin d'un dataset, gabarit résolu. Exporté parce que l'épreuve de
+   connexion (routes/connectors.js) doit viser LA MÊME adresse que la lecture :
+   elle reprenait `config.chemin` tel quel, appelait donc « /api/v2/datasets/
+   %7Brid%7D/readTable », et imputait le 404 qui s'ensuit au chemin réglé — un
+   chemin pourtant correct, et que l'écran propose lui-même en indication. Deux
+   substitutions n'auraient pas mieux valu qu'une : c'est en ayant deux façons de
+   composer l'URL qu'on obtient deux URL différentes. */
+export const cheminFoundry = (chemin, datasetRid) =>
+  String(chemin || CHEMIN_FOUNDRY_DEFAUT).replace("{rid}", encodeURIComponent(datasetRid || ""));
+
+export async function lireDatasetFoundry({ baseUrl, datasetRid, porteur, branche = "master",
   limite = 100, format = "CSV", chemin = CHEMIN_FOUNDRY_DEFAUT, colonnes = [], pointeur = "" } = {}){
 
   if(!datasetRid) throw refus(
@@ -200,15 +225,14 @@ export async function lireDatasetFoundry({ baseUrl, datasetRid, token, branche =
   const u = await verifierBaseSortante(baseUrl, "l'instance Foundry");
 
   const base = u.toString().replace(/\/+$/, "");
-  const suffixe = String(chemin || CHEMIN_FOUNDRY_DEFAUT)
-    .replace("{rid}", encodeURIComponent(datasetRid));
+  const suffixe = cheminFoundry(chemin, datasetRid);
   const url = new URL(base + (suffixe.startsWith("/") ? suffixe : "/" + suffixe));
   url.searchParams.set("format", format);
   if(branche) url.searchParams.set("branchName", branche);
   url.searchParams.set("rowLimit", String(Math.min(Math.max(1, Number(limite) || 100), MAX_LIGNES)));
   if(colonnes.length) url.searchParams.set("columns", colonnes.join(","));
 
-  const res = await appeler(url.toString(), token,
+  const res = await appeler(url.toString(), porteur,
     format === "CSV" ? "text/csv, application/json" : "application/json");
   const texte = await texteBorne(res);
   const typeReponse = (res.headers.get("content-type") || "").toLowerCase();
@@ -226,16 +250,21 @@ export async function lireDatasetFoundry({ baseUrl, datasetRid, token, branche =
 }
 
 /* ── HTTP générique ───────────────────────────────────────────────────
-   Toute API qui rend du JSON ou du CSV : l'export d'un partenaire, un
-   KoboToolbox derrière son API, un service interne. Aucune connaissance du
-   produit distant, aucune pagination — un aperçu, pas un import. */
-export async function lireJsonHttp({ baseUrl, chemin = "", token, pointeur = "", limite = 100 } = {}){
+   Toute API qui rend du JSON ou du CSV : l'export d'un partenaire, un service
+   interne. Aucune connaissance du produit distant, aucune pagination — un aperçu,
+   pas un import.
+
+   Ce commentaire nommait aussi KoboToolbox, et c'est par là que le défaut
+   d'en-tête se manifestait : l'administrateur suivait l'invitation, déclarait son
+   Kobo en nature « http », et cette voie partait en `Bearer` alors que Kobo
+   attend `Token`. Kobo a désormais son lecteur, juste en dessous. */
+export async function lireJsonHttp({ baseUrl, chemin = "", porteur, pointeur = "", limite = 100 } = {}){
   const u = await verifierBaseSortante(baseUrl, "la source HTTP");
   const base = u.toString().replace(/\/+$/, "");
   const suffixe = String(chemin || "");
   const url = new URL(base + (suffixe && !suffixe.startsWith("/") ? "/" + suffixe : suffixe));
 
-  const res = await appeler(url.toString(), token, "application/json, text/csv");
+  const res = await appeler(url.toString(), porteur, "application/json, text/csv");
   const texte = await texteBorne(res);
   const typeReponse = (res.headers.get("content-type") || "").toLowerCase();
   if(typeReponse.includes("csv")) return { rows: lireCsv(texte, Number(limite) || 100), format: "CSV" };
@@ -243,4 +272,56 @@ export async function lireJsonHttp({ baseUrl, chemin = "", token, pointeur = "",
   try{ payload = JSON.parse(texte); }
   catch(e){ throw refus("réponse de la source illisible : ni JSON valide, ni CSV annoncé.", "SOURCE_HTTP"); }
   return { rows: extraireLignes(payload, pointeur).slice(0, Number(limite) || 100), format: "JSON" };
+}
+
+/* ── KoboToolbox ──────────────────────────────────────────────────────
+   La nature « kobo » était déclarable depuis la migration 016 mais n'allait
+   chercher nulle part : elle exigeait une adresse de base dont aucun code ne se
+   servait, et l'aperçu la refusait en disant qu'elle « n'est pas lue par le
+   serveur ». C'était le pire des deux mondes — un administrateur configurait une
+   source qui ne serait jamais lue. Il ne lui manquait que le bon en-tête et le
+   bon chemin ; les voici.
+
+   ⚠ CE QUI EST SUPPOSÉ. Le chemin est celui du dépôt kobotoolbox/kpi
+   d'aujourd'hui : kpi/urls/router_api_v2.py enregistre `assets`, puis `data` en
+   route imbriquée, sous le préfixe `api/v2/` de kpi/urls/__init__.py. Une
+   instance auto-hébergée figée sur une version ancienne peut différer — d'où
+   `config.chemin`, réglable par connecteur, exactement comme
+   `CHEMIN_FOUNDRY_DEFAUT`. L'API v1 (kobocat), elle, n'est pas une solution de
+   repli : kobo/urls.py la route vers `v1_api_gone_view`, qui répond 410.
+
+   La pagination de Kobo n'est pas celle d'ODK : `{count, next, previous, results}`
+   avec `limit` et `start` (kpi/paginators.py, DefaultPagination sur
+   LimitOffsetPagination ; plafond MAX_API_PAGE_SIZE = 1000). Un aperçu ne suit
+   PAS `next` : d'une part il ne lit que quelques lignes, d'autre part ce lien est
+   une URL absolue fabriquée par la source, donc à revérifier — la même trappe que
+   celle refermée sur `@odata.nextLink` (lib/odkClient.js). Un import complet, le
+   jour où il existera, devra la suivre et la revérifier. */
+export const CHEMIN_DONNEES_KOBO_DEFAUT = "/api/v2/assets/{uid}/data/";
+const PLAFOND_KOBO = 1000;
+
+export async function lireKobo({ baseUrl, uid, porteur, chemin = CHEMIN_DONNEES_KOBO_DEFAUT,
+  pointeur = "", limite = 100 } = {}){
+
+  if(!uid) throw refus(
+    "identifiant du formulaire Kobo (uid de l'asset) absent : renseignez-le dans la configuration "
+    + "du connecteur. KoboToolbox n'a pas de « projet » au sens d'ODK Central — un formulaire y est "
+    + "désigné par son seul uid.", "SOURCE_CONFIG");
+  const u = await verifierBaseSortante(baseUrl, "le serveur KoboToolbox");
+
+  const base = u.toString().replace(/\/+$/, "");
+  const suffixe = String(chemin || CHEMIN_DONNEES_KOBO_DEFAUT).replace("{uid}", encodeURIComponent(uid));
+  const url = new URL(base + (suffixe.startsWith("/") ? suffixe : "/" + suffixe));
+  url.searchParams.set("format", "json");
+  url.searchParams.set("limit", String(Math.min(Math.max(1, Number(limite) || 100), PLAFOND_KOBO)));
+
+  const res = await appeler(url.toString(), porteur, "application/json");
+  const texte = await texteBorne(res);
+  let payload;
+  try{ payload = JSON.parse(texte); }
+  catch(e){ throw refus("réponse de KoboToolbox illisible : ce n'est pas du JSON valide.", "SOURCE_HTTP"); }
+  /* `results` est la clé du paginateur ; `extraireLignes` la connaît déjà, et le
+     pointeur reste disponible pour une instance qui emballerait autrement. */
+  return { rows: extraireLignes(payload, pointeur).slice(0, Number(limite) || 100), format: "JSON",
+           total: Number.isFinite(payload?.count) ? payload.count : null };
 }
