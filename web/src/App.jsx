@@ -21,6 +21,15 @@ import { Shell } from "./views/Shell.jsx";
 const SYNCED = ["params","outputs","indicators","outcomes","population","pdd",
                 "reportTemplates","dashboards","datasets","scripts","odkForms","settings"];
 
+/* Réglages de configuration sans table ni route propres. Ils étaient édités à
+   l'écran puis réécrits par leurs valeurs codées en dur au rechargement : la
+   saisie était perdue. On les fait voyager dans la collection `settings`, la
+   seule que `PUT /api/settings` persiste sous une clé quelconque. `hydrate` les
+   relit de là (repli sur le défaut D_*), et `set` les y recopie quand ils
+   changent — barème de priorité, matrice des rôles, exigences MMR, formules de
+   calcul, catégories d'activité, listes éditables et calendrier de collecte. */
+const PERSISTED_SETTINGS = ["scoring","roles","mmr","formulas","actCategories","lists","outcomePlan"];
+
 /* Les projections vers le serveur conservent `rev` : c'est la révision lue, que le
    serveur compare à la sienne pour détecter qu'un collègue a modifié la même ligne. */
 const SHAPERS = {
@@ -88,26 +97,41 @@ export default function App(){
     notify("Session expirée, reconnectez-vous", "warn");
   }); }, [notify]);
 
-  const hydrate = useCallback((state) => ({
+  const hydrate = useCallback((state) => {
+    /* Les réglages persistés priment sur les valeurs par défaut ; un compte neuf,
+       qui n'a rien enregistré, retombe sur ces défauts et voit une config sensée. */
+    const cfg = state.settings || {};
+    const listes = cfg.lists || {};
+    return {
     ...state,
     lists: {
+      /* Les bureaux restent VIVANTS : ils ont leur propre écran et leurs routes
+         dédiées (SetOffices), et une copie figée dans les réglages masquerait un
+         bureau ajouté. Le reste des listes se persiste, faute de table à éditer. */
       offices: state.offices.map(o => o.name),
-      partners: state.partners.map(p => p.name),
-      modalities: ["Espèces","Coupons","Vivres","Renforcement de capacités","Mixte"],
-      poiSub: state.poiSubtypes || [],
-      tags: [...new Set(state.categories.map(c => c.tag))].map(t => ({
+      partners: listes.partners ?? state.partners.map(p => p.name),
+      modalities: listes.modalities ?? ["Espèces","Coupons","Vivres","Renforcement de capacités","Mixte"],
+      poiSub: listes.poiSub ?? (state.poiSubtypes || []),
+      tags: listes.tags ?? [...new Set(state.categories.map(c => c.tag))].map(t => ({
         code:t, label:(state.categories.find(c=>c.tag===t)||{}).name || t })),
     },
-    actCategories: state.categories.length ? state.categories.map(c => c.name) : [...ACT_CATEGORIES],
-    roles: D_ROLES, weights: D_WEIGHTS, scoring: D_SCORING, formulas: D_FORMULAS, mmr: D_MMR,
+    actCategories: cfg.actCategories ?? (state.categories.length ? state.categories.map(c => c.name) : [...ACT_CATEGORIES]),
+    /* `weights` reste codé en dur : D_WEIGHTS n'alimente que le score hérité, que
+       plus aucun écran vivant n'atteint (siteScore reçoit toujours `db`). */
+    roles: cfg.roles || D_ROLES, weights: D_WEIGHTS, scoring: cfg.scoring || D_SCORING,
+    formulas: cfg.formulas || D_FORMULAS, mmr: cfg.mmr || D_MMR,
+    /* Le calendrier de collecte a bien une table (outcome_plan), lue par /state,
+       mais aucune route ne l'écrit : la saisie passe donc, elle aussi, par les
+       réglages, qui l'emportent alors sur la table quand ils existent. */
+    outcomePlan: cfg.outcomePlan ?? state.outcomePlan,
     settings: { org:"Bureau pays", unit:"Unité suivi et évaluation", logo:"", currency:"MGA",
       dateFmt:"DD/MM/YYYY", pageSize:25, syncInterval:30, notifications:true,
       odkBase:"https://odk-central.example.org", apiEnabled:false, opSize:"Large",
       /* Vide par défaut, à dessein : la ration réelle par denrée est une donnée de
          programme, propre à chaque opération — personne ne la devine à sa place. */
       rationTable:{},
-      ...(state.settings || {}) },
-  }), []);
+      ...cfg },
+  }; }, []);
 
   const loadState = useCallback(async () => {
     const d = hydrate(await api.state());
@@ -156,6 +180,16 @@ export default function App(){
       const copy = JSON.parse(JSON.stringify(prev));
       const next = fn(copy) || copy;
       const before = prevDb.current || prev;
+      /* Recopie des réglages de configuration modifiés vers `settings`, pour que la
+         collection les emporte au serveur. L'écran qui édite le barème ou les
+         formules n'a ainsi pas à connaître ce détail de transport. Conditionnée au
+         changement réel : sans quoi une frappe sur un réglage voisin réécrirait
+         `settings` entier — et rien d'inchangé ne doit voyager. */
+      for(const key of PERSISTED_SETTINGS){
+        if(before[key] === next[key]) continue;
+        if(JSON.stringify(before[key]) === JSON.stringify(next[key])) continue;
+        next.settings = { ...(next.settings || {}), [key]: next[key] };
+      }
       for(const name of SYNCED){
         if(before[name] === next[name]) continue;
         if(JSON.stringify(before[name]) === JSON.stringify(next[name])) continue;

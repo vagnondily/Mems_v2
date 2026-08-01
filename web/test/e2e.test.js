@@ -396,6 +396,35 @@ test("bureaux : l'écran de configuration liste les bureaux et leur périmètre"
   assert.equal(ctx.errors.length, 0, "aucune erreur sur l'écran des bureaux");
 });
 
+test("persistance : une formule éditée dans les Paramètres est enregistrée sur le serveur", async () => {
+  /* Le défaut fermé (chantier D) : sept réglages — barème de priorité, matrice des
+     rôles, exigences MMR, formules de calcul, catégories d'activité, listes
+     éditables et calendrier de collecte — étaient réécrits par leurs valeurs codées
+     en dur à chaque rechargement, donc perdus. On en éprouve un de bout en bout :
+     une formule de calcul éditée doit se retrouver côté serveur. Avant le
+     correctif, l'édition ne partait nulle part (les formules n'entraient dans
+     aucune collection synchronisée) et cette relecture de l'état ne la trouvait
+     pas — le test échoue alors sur la première assertion. */
+  const sousOnglet = (l) => all("main button").filter(b => b.className.includes("-mb-px"))
+    .find(b => b.textContent.trim() === l);
+  /* On est encore dans les Paramètres, à la suite du test précédent. */
+  await click(sousOnglet("Calculs"), "sous-onglet Calculs"); await flush(); await flush();
+
+  const expr = all("main input").find(i => String(i.value).includes("riskLevel"));
+  assert.ok(expr, "le champ d'expression du premier calcul est présent");
+  const nouvelle = expr.value + " + 0";
+  await type(expr, nouvelle);
+  /* La file d'écriture attend 900 ms avant d'envoyer ; on lui laisse de la marge. */
+  await act(async () => { await sleep(1600); });
+
+  const etat = await (await fetch(`${BASE}/state`)).json();
+  assert.ok(etat.settings && Array.isArray(etat.settings.formulas),
+    "les formules sont désormais persistées dans les réglages");
+  assert.ok(etat.settings.formulas.some(f => f.expr === nouvelle),
+    "l'expression éditée est enregistrée côté serveur : elle survivra au rechargement");
+  assert.equal(ctx.errors.length, 0, "aucune erreur pendant l'édition du réglage");
+});
+
 test("ODK Central : l'écran ne propose plus de « jeton général », et le badge suit ce que le serveur détient", async () => {
   /* Deux affirmations fausses vivaient sur cet écran, et la seconde a remplacé la
      première. « Repris par les sources qui n'ont pas de jeton propre » : ce repli
@@ -479,6 +508,28 @@ test("référentiels de codes : l'écran s'ouvre sur ses compteurs, même sans a
   assert.ok(texte.includes("Sous le seuil de preuve, il ne pose rien"),
     "l'écran énonce ce que le rapprochement refuse de faire");
   assert.equal(ctx.errors.length, 0, "aucune erreur sur l'écran des référentiels de codes");
+});
+
+test("paramètres : « Sites » a quitté la configuration, mais le registre reste dans le suivi", async () => {
+  /* Demande ancienne du propriétaire : le registre des sites est de la gestion de
+     données, pas un réglage. On vérifie qu'il ne figure plus dans les onglets des
+     Paramètres — le rétablir ferait retomber ce test — et qu'il reste atteignable
+     là où il vit désormais : Suivi-évaluation → Registre des sites. */
+  const nav = (l) => all("header nav button").find(b => b.textContent.trim().startsWith(l));
+  const sousOnglet = (l) => all("main button").filter(b => b.className.includes("-mb-px"))
+    .find(b => b.textContent.trim() === l);
+
+  /* Toujours dans les Paramètres à ce stade : leurs onglets sont là, « Sites » non. */
+  assert.ok(sousOnglet("Localités"), "les onglets des Paramètres sont bien affichés");
+  assert.ok(!sousOnglet("Sites"), "l'onglet « Sites » ne figure plus dans les Paramètres");
+
+  await click(nav("Suivi-évaluation"), "Suivi-évaluation"); await flush();
+  await click(sousOnglet("Registre des sites"), "sous-onglet Registre des sites");
+  await flush(); await flush();
+  assert.ok(document.body.textContent.includes("Total des sites"),
+    "le registre des sites s'ouvre bien sous le suivi");
+  assert.ok(all("main tbody tr").length > 0, "le registre liste des sites");
+  assert.equal(ctx.errors.length, 0, "aucune erreur sur le registre des sites");
 });
 
 test("soumissions ODK : l'écran part du vide, puis montre la file de travail et ses motifs", async () => {

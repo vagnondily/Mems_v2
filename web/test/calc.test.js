@@ -16,7 +16,7 @@ import { makeDom } from "./harness.mjs";
    ───────────────────────────────────────────────────────────────────── */
 const OUT = path.resolve("test/_calc.mjs");
 const OUT_CONST = path.resolve("test/_constants.mjs");
-let calc, constants, periode;
+let calc, constants, periode, exportGeo;
 before(async () => {
   makeDom("http://127.0.0.1:1/api");
   const bundle = (src, out) => execFileSync("npx", ["esbuild", src, "--bundle", "--format=esm",
@@ -32,6 +32,8 @@ before(async () => {
   /* periode.js ne dépend d'aucun composant : il se charge tel quel, sans passer
      par esbuild — ce qui vérifie au passage qu'il reste bien sans dépendance. */
   periode = await import(path.resolve("src/lib/periode.js"));
+  /* exportGeo.js ne dépend d'aucun composant non plus : il se charge tel quel. */
+  exportGeo = await import(path.resolve("src/lib/exportGeo.js"));
 });
 after(() => { for(const f of [OUT, OUT_CONST]){ try{ fs.unlinkSync(f); }catch(e){} } });
 
@@ -380,4 +382,59 @@ test("motifs de visite : celui de la reprise s'affiche, il ne se renvoie jamais"
   assert.equal(calc.motifSaisissable(db, undefined), false);
   assert.equal(calc.motifSaisissable({}, "autre"), false);
   assert.equal(calc.motifSaisissable(undefined, "autre"), false);
+});
+
+/* ─────────────────────────────────────────────────────────────────────
+   Export du répertoire des localités (lib/exportGeo.js).
+   Le défaut fermé : l'export ne sortait que la PAGE affichée (plafonnée à
+   200 lignes), donc 200 fokontany sur ~18 000 sans le moindre avertissement.
+   On vérifie ici que la collecte récupère la TOTALITÉ du jeu filtré en
+   paginant, que le p-code part en TEXTE et que le BOM UTF-8 est en tête.
+   ───────────────────────────────────────────────────────────────────── */
+test("collecterLocalites : pagine jusqu'au total, ne s'arrête pas à la première page", async () => {
+  /* Un jeu de 450 unités servi par pages de 200 : la page seule en rendrait 200,
+     la collecte doit toutes les rapporter. */
+  const total = 450;
+  const toutes = Array.from({ length: total }, (_, i) => ({ adm4: "Fkt " + i, pcode: "MG" + i }));
+  let appels = 0;
+  const lecteur = async (offset, limit) => {
+    appels++;
+    return { rows: toutes.slice(offset, offset + limit), total };
+  };
+  const { rows, total: rendu, tronque } = await exportGeo.collecterLocalites(lecteur, { chunk: 200 });
+  assert.equal(rendu, 450);
+  assert.equal(rows.length, 450, "toutes les localités sont récupérées, pas seulement la page");
+  assert.ok(rows.length > 200, "l'export dépasse la page affichée");
+  assert.equal(tronque, false, "rien n'est tronqué en silence");
+  assert.equal(appels, 3, "trois appels paginés (200 + 200 + 50)");
+});
+
+test("collecterLocalites : le plafond de sécurité est signalé, jamais muet", async () => {
+  const total = 5000;
+  const lecteur = async (offset, limit) => ({
+    rows: Array.from({ length: Math.min(limit, total - offset) }, (_, i) => ({ pcode: "P" + (offset + i) })),
+    total,
+  });
+  const { rows, tronque } = await exportGeo.collecterLocalites(lecteur, { chunk: 1000, plafond: 2000 });
+  assert.equal(rows.length, 2000, "la collecte s'arrête au plafond");
+  assert.equal(tronque, true, "et le dit — l'appelant en avertit l'utilisateur à l'écran");
+});
+
+test("csvLocalites : BOM UTF-8, p-codes en texte, guillemets échappés, toutes les lignes", () => {
+  const rows = [
+    { adm1: "Région A", adm2: "District B", adm3: "Commune C", adm4: "Fkt D",
+      pcode: "0102030004", lat: -22.1, lon: 45.3 },
+    { adm1: 'Nom, "à virgule"', adm2: "", adm3: "", adm4: "", pcode: "MG01", lat: "", lon: "" },
+  ];
+  const csv = exportGeo.csvLocalites(rows);
+  assert.ok(csv.charCodeAt(0) === 0xfeff, "le fichier commence par un BOM UTF-8 (accents Excel)");
+  const lignes = csv.split("\n");
+  assert.equal(lignes.length, 3, "en-tête + deux lignes de données");
+  assert.ok(lignes[0].replace(/^﻿/, "").startsWith("adm1,adm2,adm3,adm4,pcode,lat,lon"),
+    "l'en-tête porte les colonnes attendues");
+  /* Le p-code à zéros de tête part en formule texte : Excel ne le tronque pas. */
+  assert.ok(csv.includes('"=""0102030004"""'),
+    "le p-code est forcé en texte pour préserver les zéros non significatifs");
+  /* Le champ à virgule et guillemets est protégé selon la règle CSV. */
+  assert.ok(csv.includes('"Nom, ""à virgule"""'), "les guillemets et virgules sont échappés");
 });

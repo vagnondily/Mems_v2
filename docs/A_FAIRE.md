@@ -15,13 +15,41 @@ Toute affirmation ci-dessous a été vérifiée dans le code. Là où une vérif
 
 ---
 
+## Feuille de route confirmée le 01/08/2026 (ordre des modules)
+
+Le propriétaire a fixé l'ordre de construction, selon une structure professionnelle où chaque
+module s'appuie sur le précédent :
+
+1. **Paramétrage** *(en cours — chantier S3)*. Le socle. Y compris le **référentiel
+   d'activités** : tout MEMS est *par activité*, donc les activités se paramètrent ici et tout
+   le reste s'y accroche. Et la **configuration du pays** (découpage géographique importé par
+   shapefile/dbf) devient **LA base de référence adm0→adm4 de tout le système** — sites,
+   caseload, plan de suivi, carte, dashboards y puisent.
+2. **Suivi-évaluation** : Planification → Suivi → **Dashboard des indicateurs de suivi de
+   processus** sur données **Kobo v1 mappées** (chantier T). Jeu de test : `List Sites per
+   Tag.xlsx` (le fichier « tag ») pour les sites par activité.
+3. **Programme** (PDD, distributions — chantier R pour le catalogue de rations et la fiche PDD).
+4. **Cartographie**.
+5. **Accueil + Analyses + Rapports réunis en un seul module**.
+
+Principe transversal : les **indicateurs de l'XLSForm sont stockés** et servent de base aux
+calculs et à la sortie des dashboards, présentés **par activité** et selon l'audience —
+inspirés du tableau de bord HTML, jamais clonés. Les **données MoDa sont une base par activité
+reliée en temps réel** (chantier T).
+
+Ordre de LIVRAISON professionnel : paramétrage → planification → suivi → dashboards. On ne
+peut pas afficher un indicateur avant d'avoir paramétré l'activité, mappé la donnée et défini
+le référentiel — d'où cet ordre, et d'où la priorité donnée aux Paramètres.
+
+---
+
 # Journal de livraison
 
 Ce document décrit un état daté. Ce qui a été livré depuis est consigné ici, avec le commit
 qui le porte — le corps du document reste écrit au moment de l'audit, et le lire sans ce
 journal donnerait une image fausse de ce qui reste à faire.
 
-**Tests au dernier commit : 205 côté serveur, 39 côté web, 0 échec. Audit de production :
+**Tests au dernier commit : 217 côté serveur, 44 côté web, 0 échec. Audit de production :
 aucun avis grave, ni serveur ni web.**
 
 | Commit | Ce qui est livré | Effet sur ce document |
@@ -689,6 +717,19 @@ figurent pas et ne peuvent pas y être ajoutés.
 `reportTemplates` ; alimenter la liste des choix depuis les formules existantes ; ajouter le
 sélecteur de rendu (recharts est déjà là).
 
+**Précisé le 01/08/2026 — un vrai constructeur de rapport infographique, fondé sur les
+indicateurs.** Un modèle se configure *par type de rapport*. On y dépose les indicateurs
+voulus, tirés du **référentiel d'indicateurs** (Master List du PAM et/ou XLSForms mappés — les
+mêmes qui alimentent les dashboards, chantier T). Pour CHAQUE indicateur retenu, on choisit sa
+**représentation** : graphique (type — barres, ligne, secteurs… —, **couleurs**, forme), tableau,
+ou autre. Cible visuelle : un rapport **infographique**, inspiré de `docs/dashboard_suivi_
+processus_WFP.html` (couleurs, cartes de synthèse, bandes de classes), sans le cloner —
+présentation adaptée à l'audience. C'est le pendant « sortie figée » des dashboards « sortie
+vivante » : les deux lisent le même référentiel d'indicateurs, l'un pour l'écran, l'autre pour
+le document exporté (PDF/Word/HTML). Dépend donc du référentiel d'indicateurs (chantier T) et
+du référentiel d'activités (S3). Vient dans le module **Accueil+Analyses+Rapports** de la
+feuille de route.
+
 → Voir **Q11** (quelles formules exactement).
 
 ### K2 — Sauvegarde sélective et restauration  · **XL**
@@ -1112,6 +1153,55 @@ fois ce lot atterri.
 4. **Rations** : l'onglet actuel est l'ancienne matrice `settings.rationTable` ; il sera
    remplacé par le catalogue du chantier R. Pour cette passe, au minimum garantir qu'il
    persiste ; la refonte complète est R.
+5. **Référentiel d'activités (nouveau, fondateur)** : le propriétaire l'a confirmé le 01/08 —
+   « les activités se paramètrent dans Paramètres, ne l'oublie pas ». C'est la colonne
+   vertébrale : indicateurs, dashboards, données MoDa, PDD, plan de suivi sont tous *par
+   activité*. Aujourd'hui les activités vivent en liste éparpillée (`db.lists.tags`,
+   `actCategories`, `activity_tag`) sans référentiel propre. Poser un vrai onglet Activités
+   (code, libellé, catégorie CSP, tags COMET associés) sous Référentiels M&E, persistant, sur
+   lequel tout le reste s'accroche. La taxonomie réelle est déjà extraite (analyse du 01/08 :
+   Unconditional resource transfer, FFA, SMP, Malnutrition treatment/prevention, Smallholder
+   agriculture…).
+6. **Sites (shapefile/dbf) — présentation** : garder les DEUX entrées de dépôt pour la
+   facilité, avec des descriptions explicites (« déposez le `.shp` ET le `.dbf` ; le `.prj`
+   précise la projection »), ET l'option `.zip` en disant ce qu'il doit contenir (les trois
+   fichiers). Rappeler à l'écran que ce découpage devient la référence adm0→adm4 de tout MEMS.
+7. **UNIFIER l'import géo — urgent (retour terrain du 01/08).** Le propriétaire n'arrive
+   toujours pas à importer, même en `.zip`. Diagnostic établi : **trois flux géo coexistent**
+   dans Localités et il utilise un ancien (lecteur navigateur, « Fichier de contours ») qui
+   lit les géométries mais JAMAIS le `.dbf` — d'où le « 0 champs attributaires » de sa
+   capture. Le flux serveur `SetShapefileServer` (« Lu par le serveur ») fonctionne : vérifié
+   en isolation sur le vrai zip adm3 (extraction shp+dbf+prj correcte, 1701 records, 21
+   colonnes). **Retirer les deux anciens flux**, ne laisser que le serveur — une seule carte
+   évidente. C'est la vraie cause de l'échec, pas un bug du parseur.
+8. **Lire un `.shp` SANS `.dbf` (demande du 01/08 : « comme QGIS »).** `construire()` exige
+   aujourd'hui un `.dbf` (`if(!dbf) 422`). Le rendre OPTIONNEL : sans `.dbf`, importer les
+   géométries seules avec des identités provisoires (« Polygone N ») à un niveau unique, pour
+   qu'elles s'affichent sur la carte immédiatement ; `.dbf` + correspondance restent la voie
+   complète (rattachement adm0→4). Voir d'abord les polygones, mapper ensuite. Touche
+   `lib/shapefile.js` + `routes/geo.js` (serveur, non conflictuel) et `SetShapefileServer`
+   dans `Settings.jsx` (UI). À faire juste après le lot de persistance en cours.
+9. **Échelle adm4 — limite d'envoi à 150 Mo (demande du 01/08).** Le propriétaire demande que
+   MEMS accepte un fichier de configuration jusqu'à **150 Mo** (il a d'abord écrit « 150 »,
+   puis « 15 » — mais son zip adm3 fait déjà 16 Mo, donc 15 est trop petit ; on retient 150,
+   à confirmer). Relever `config.maxShapefileMb` à 150 pour cette route (multer), et signaler
+   à l'écran un éventuel plafond du proxy Codespace si l'envoi échoue quand même.
+10. **INTÉGRER le découpage DANS la création du pays (demande du 01/08, importante pour le
+    multi-pays).** Le shapefile ne doit PAS être une carte flottante : un découpage appartient
+    à SON pays. `geo_version` porte déjà une colonne `country` et `is_current` est cloisonné
+    par pays (`lib/geo.js:125,143`), mais l'UI doit lier l'upload à la configuration du pays
+    (composant `SetCountry`), pas à un onglet séparé. Sinon, en multi-pays, on bascule un
+    découpage sans savoir de quel pays il relève — bug garanti. Donc : l'import shapefile
+    devient une étape de la fiche pays, le millésime créé est rattaché au pays courant, et la
+    bascule ne touche que le découpage de CE pays. C'est l'aboutissement de l'unification
+    (points 7-8) : une seule entrée, dans le pays.
+    **Précisé le 01/08 :** la fiche pays reçoit DEUX injections — (a) le **shapefile** (sa
+    géométrie ET sa table d'attributs) qui donne le découpage adm0→4 et les contours ; (b) un
+    **`.dbf` pour la liste des sites**, qui peut porter **beaucoup de lignes** (échelle adm4 /
+    milliers de sites). Le premier alimente le référentiel géographique, le second le registre
+    des sites. Les deux doivent tenir le volume (lecture serveur en flux, écriture par lots,
+    limite d'envoi à 150 Mo). Le `.dbf` des sites est distinct du `.dbf` du découpage :
+    prévoir deux dépôts clairement libellés dans la fiche pays.
 
 **Réorganisation maître-détail (le « rendu professionnel ») — volet gauche de groupes,
 contenu à droite :**
@@ -1120,14 +1210,25 @@ contenu à droite :**
 |---|---|
 | Organisation | Général · Pays · Bureaux · Périmètre des bureaux |
 | Référentiels géographiques | Localités (+ import shapefile/contours) |
-| Référentiels M&E | Indicateurs · Calculs · Rations · Codes d'identification |
+| Référentiels M&E | **Activités** · Indicateurs · Calculs · Rations · Codes d'identification |
 | Sources de données | ODK Central · Connecteurs |
 | Rapports | Modèles de rapport |
-| Système | API · Utilisateurs · À propos |
+| Système | **Mon compte** · API · Utilisateurs · À propos |
 
 Même principe pour la gestion des listes : des sous-catégories plutôt qu'un écran surchargé.
 Chaque onglet est parcouru, testé et corrigé un par un — l'objectif est que TOUT fonctionne,
 pas seulement que ce soit mieux rangé.
+
+**« Mon compte » (demande du 01/08) — self-service du compte, distinct de l'administration
+des utilisateurs.** Aujourd'hui l'écran Utilisateurs est réservé aux administrateurs, et un
+compte ne peut changer son mot de passe qu'à la première connexion (parcours imposé). Il faut
+un écran où N'IMPORTE QUEL utilisateur voit et gère SON compte : consulter ses infos (nom,
+courriel, rôle, bureau), **changer son mot de passe à tout moment** (route
+`POST /api/auth/password` — elle existe, il manque l'entrée hors premier accès), et **définir
+un identifiant (username)**. Le username est nouveau : décider s'il devient un second
+identifiant de connexion (en plus du courriel) ou seulement un nom affiché — à trancher, mais
+au minimum le champ et son unicité. Accessible depuis le menu du compte (l'en-tête), pas
+seulement depuis Paramètres.
 
 ### S4 — La passe de cohérence transversale
 
@@ -1162,18 +1263,56 @@ propriétaire (Codespace), pas ici. Le code est bâti et testé hors-ligne — g
 XLSForms (noms de variables), les scripts QC (analyse) et le tableau de bord HTML (écran cible),
 tous déjà dans `docs/`. Seul le premier tirage vivant revient au propriétaire.
 
-Le flux, tel que demandé :
-1. **Lier la source** (connecteur `kobo`, base `moda.wfp.org`, chemin `/api/v1/data/340943`,
-   jeton `Token`) et **tirer vers le cache** avec le schéma d'authentification livré.
-2. **Mapping** des champs de soumission mis en cache vers les **indicateurs de l'XLSForm**,
-   via la couche de correspondance des variables (`lib/champs.js`, `lib/mapping.js`,
-   `connector_mapping`) — pas un mécanisme parallèle.
-3. **Onglet de résultats par activité** qui exécute l'analyse des scripts QC (les ~80 règles
-   des quatre applications Shiny déjà consignées) et restitue comme `docs/dashboard_suivi_
-   processus_WFP.html` : couverture, indice de conformité par visite, scorecard, par activité.
+Le flux, précisé par le propriétaire le 01/08 (une base par activité, en temps réel) :
+1. **Un lien = une activité = une base de données.** Chaque connexion MoDa/Kobo porte les
+   données d'UNE activité et les garde **reliées en temps réel** : quand MoDa change, la base
+   de l'activité se met à jour (tirage périodique ou à la demande, cache versionné, jamais un
+   copier-coller figé). Le chemin de lecture reste configurable (kobocat v1 vs KPI v2).
+2. **Mapping par activité vers ses indicateurs.** Les champs de soumission mis en cache sont
+   mis en face des **indicateurs de l'XLSForm de cette activité**, via la couche de
+   correspondance des variables (`lib/champs.js`, `lib/mapping.js`, `connector_mapping`) — pas
+   un mécanisme parallèle. Les indicateurs à afficher se lisent dans le HTML et l'XLSForm
+   partagés (voir la famille « scripts QC » et « bénéficiaires » de l'analyse du 01/08).
+3. **Les indicateurs de l'XLSForm sont STOCKÉS** comme référentiel, et MEMS les utilise comme
+   **base des calculs et de la sortie des dashboards**. Présentation **par activité**, adaptée
+   à l'audience — s'INSPIRER de `docs/dashboard_suivi_processus_WFP.html`, NE PAS le cloner :
+   trouver la bonne façon de présenter couverture, indice de conformité, scorecard selon qui
+   regarde (direction, chargé M&E, terrain).
+4. Les **activités elles-mêmes se paramètrent dans Paramètres** (référentiel d'activités) :
+   c'est la colonne vertébrale, tout le reste (indicateurs, dashboards, données MoDa) s'y
+   accroche. À poser dès la passe Paramètres (chantier S3).
 
-Séquence : après le chantier shapefile (ils touchent tous deux `Settings.jsx` et `api.js` — les
-lancer en parallèle créerait des conflits).
+### Natures de source à proposer (demande du 01/08/2026)
+
+La liste `NATURES` des connecteurs (aujourd'hui `odk, kobo, foundry, csv, http`) devient, au
+format demandé par le propriétaire :
+
+| Nature | Ce que c'est | Chemin / auth |
+|---|---|---|
+| `kobo_v1` | **kobocat v1** — c'est MoDa | `GET {base}/api/v1/data/{id numérique}`, en-tête `Token` |
+| `kobo_v2` | **KPI v2** | `GET {base}/api/v2/assets/{uid}/data`, en-tête `Token` |
+| `ona` | Ona (plateforme ODK, API proche de kobocat) | `GET {base}/api/v1/data/{id}`, `Token` |
+| `foundry` | Palantir Foundry | voir ci-dessous |
+| `excel` | Téléversement seul, **puis** mapping (pas de lien réseau) | fichier + correspondance |
+| `http` | API HTTP générique rendant du JSON/CSV | chemin libre, schéma d'auth au choix |
+| `jdbc` | Base de données (JDBC) | à cadrer — driver, chaîne de connexion, requête |
+
+Le **schéma d'authentification** (livré au lot d'authentification) reste indépendant de la
+nature : `Token` pour kobo/ona, `Bearer` pour Foundry, `Basic`/`Bearer`/session pour http.
+
+**Foundry — établi d'après la doc officielle (lue le 01/08 via recherche ; le sandbox bloque
+le fetch direct).** API v2, OAuth 2.0, en-tête `Authorization: Bearer <jeton>` — **c'est déjà
+le schéma de `lib/foundry.js`, rien à corriger côté auth.** Ce qu'il faut rendre configurable,
+c'est le CHEMIN de lecture :
+- dataset : `GET /api/v2/datasets/{datasetRid}/readTable` — params `format` (CSV/ARROW),
+  `columns`, `rowLimit`, `branchName` ; scope `api:datasets-read` ;
+- objets d'ontologie : `GET /api/v2/ontologies/{ontology}/objects/{objectType}` — paginé
+  (max 10 000 objets en Object Storage V1) ; scope `api:ontologies-read`.
+Un utilisateur Foundry génère un jeton d'API temporaire portant ses propres droits. Pour les
+chiffres de bénéficiaires/réceptions, l'un ou l'autre chemin convient selon la modélisation du
+bureau — d'où le chemin configurable.
+
+Séquence : après Paramètres et le module Suivi-évaluation (voir la feuille de route en tête).
 
 **Le format PDD comme gabarit d'import** : la logique de « Details » (1 ligne = lieu × mois
 × activité × modalité) est le bon modèle, mais le fichier réel est inutilisable tel quel —

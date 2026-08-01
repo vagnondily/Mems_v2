@@ -11,6 +11,7 @@ import { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, DURATIONS, D_FORMULAS, D_SEC
    référentiel de production avait été chargé par le script src/import-geo.js, si
    bien que ce chemin-là n'avait jamais été emprunté. */
 import { GUESS, guessField, readGeoFile } from "../lib/shapefile.js";
+import { collecterLocalites, csvLocalites } from "../lib/exportGeo.js";
 import { niveau, niveaux } from "../lib/levels.js";
 import { Sources } from "./ActualData.jsx";
 import { MonthCellModal, MonthGrid, MonthLegend, PDD_ACTS, PDD_COMMODITIES } from "./Planning.jsx";
@@ -24,7 +25,11 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
      « Périmètre des bureaux » : les deux écrans existaient toujours dans le fichier
      mais n'étaient plus atteignables, et `reload` ne remontait plus. Les voici
      rétablis, avec « À propos » qui venait de main. */
-  const items = [["general","Général"],["country","Pays"],["offices","Bureaux"],["sites","Sites"],
+  /* « Sites » a quitté les Paramètres : c'est de la gestion de données, pas de la
+     configuration. Le registre reste monté à l'identique sous Suivi-évaluation →
+     Registre des sites (Merged.jsx) — le composant n'est donc pas retiré, seulement
+     son entrée ici. */
+  const items = [["general","Général"],["country","Pays"],["offices","Bureaux"],
     ["locations","Localités"],["scope","Périmètre des bureaux"],["indicators","Indicateurs"],
     ["calc","Calculs"],["rations","Rations"],["odk","ODK Central"],["connectors","Connecteurs"],
     ["codes","Référentiels de codes"],["templates","Modèles de rapport"],
@@ -37,7 +42,6 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
       {sub==="country" && <SetCountry db={db} notify={notify} can={can} reload={reload} />}
       {sub==="offices" && <SetOffices db={db} notify={notify} can={can} reload={reload} />}
       {sub==="about" && <SetAbout db={db} />}
-      {sub==="sites" && <SitesModule db={db} set={set} me={me} notify={notify} can={can} context="settings" />}
       {sub==="locations" && <SetLocations db={db} notify={notify} can={can} reload={reload} />}
       {sub==="scope" && <SetScope db={db} notify={notify} can={can} />}
       {sub==="indicators" && <SetIndicators db={db} set={set} notify={notify} can={can} />}
@@ -1441,8 +1445,30 @@ function SetLocations({ db, notify, can, reload }){
     }catch(e){ notify("Changement refusé : " + e.message, "err"); }
   };
 
-  const exp = () => download("localites.csv",
-    toCSV(dir.rows, ["adm1","adm2","adm3","adm4","pcode","lat","lon"]), "text/csv");
+  /* L'export sortait `dir.rows` — la seule page affichée, plafonnée à PER. Sur un
+     millésime malgache (~18 000 fokontany) l'utilisateur repartait avec 200 lignes
+     sans le savoir. On récupère désormais la TOTALITÉ du jeu filtré courant, en
+     paginant le point d'API au-delà de son plafond par appel. */
+  const [exportEnCours,setExportEnCours] = useState(false);
+  const exp = async () => {
+    setExportEnCours(true);
+    const lecteur = (offset, limit) => {
+      const qs = new URLSearchParams({ level:"adm4", limit:String(limit), offset:String(offset) });
+      if(parent) qs.set("parent", parent);
+      if(q.trim()) qs.set("search", q.trim());
+      return api.geo("?"+qs);
+    };
+    try{
+      const { rows, total, tronque } = await collecterLocalites(lecteur);
+      if(!rows.length){ notify("Aucune localité à exporter", "warn"); setExportEnCours(false); return; }
+      const nom = (dir.version?.label || "referentiel").replace(/[^\w.-]+/g, "_");
+      download(`localites_${nom}.csv`, csvLocalites(rows), "text/csv;charset=utf-8");
+      notify(tronque
+        ? `Export plafonné à ${rows.length.toLocaleString("fr-FR")} localités sur ${total.toLocaleString("fr-FR")} — affinez le filtre pour tout obtenir`
+        : `${rows.length.toLocaleString("fr-FR")} localité(s) exportée(s)`, tronque ? "warn" : "ok");
+    }catch(e){ notify("Export impossible : " + e.message, "err"); }
+    setExportEnCours(false);
+  };
 
   /* ── Contours ───────────────────────────────────────────────────────
      La lecture se fait dans le navigateur, comme pour le découpage ; ce qui part
@@ -1604,7 +1630,8 @@ function SetLocations({ db, notify, can, reload }){
       </Card>
 
       <Card title="Importer un découpage administratif"
-        right={<Btn size="sm" kind="sec" icon={Download} onClick={exp} disabled={!dir.rows.length}>Exporter la page</Btn>}>
+        right={<Btn size="sm" kind="sec" icon={Download} onClick={exp} disabled={exportEnCours || !dir.total}>
+          {exportEnCours ? "Export en cours…" : "Exporter tout"}</Btn>}>
         <div className="grid grid-cols-2 gap-x-4">
           <Field label="Fichier du découpage">
             <input type="file" accept=".zip,.shp,.dbf,.geojson,.json" disabled={!can("admin")}
