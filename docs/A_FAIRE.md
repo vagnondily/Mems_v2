@@ -1153,6 +1153,23 @@ fois ce lot atterri.
    facilité, avec des descriptions explicites (« déposez le `.shp` ET le `.dbf` ; le `.prj`
    précise la projection »), ET l'option `.zip` en disant ce qu'il doit contenir (les trois
    fichiers). Rappeler à l'écran que ce découpage devient la référence adm0→adm4 de tout MEMS.
+7. **UNIFIER l'import géo — urgent (retour terrain du 01/08).** Le propriétaire n'arrive
+   toujours pas à importer, même en `.zip`. Diagnostic établi : **trois flux géo coexistent**
+   dans Localités et il utilise un ancien (lecteur navigateur, « Fichier de contours ») qui
+   lit les géométries mais JAMAIS le `.dbf` — d'où le « 0 champs attributaires » de sa
+   capture. Le flux serveur `SetShapefileServer` (« Lu par le serveur ») fonctionne : vérifié
+   en isolation sur le vrai zip adm3 (extraction shp+dbf+prj correcte, 1701 records, 21
+   colonnes). **Retirer les deux anciens flux**, ne laisser que le serveur — une seule carte
+   évidente. C'est la vraie cause de l'échec, pas un bug du parseur.
+8. **Lire un `.shp` SANS `.dbf` (demande du 01/08 : « comme QGIS »).** `construire()` exige
+   aujourd'hui un `.dbf` (`if(!dbf) 422`). Le rendre OPTIONNEL : sans `.dbf`, importer les
+   géométries seules avec des identités provisoires (« Polygone N ») à un niveau unique, pour
+   qu'elles s'affichent sur la carte immédiatement ; `.dbf` + correspondance restent la voie
+   complète (rattachement adm0→4). Voir d'abord les polygones, mapper ensuite. Touche
+   `lib/shapefile.js` + `routes/geo.js` (serveur, non conflictuel) et `SetShapefileServer`
+   dans `Settings.jsx` (UI). À faire juste après le lot de persistance en cours.
+9. **Échelle adm4** : si le zip adm4 dépasse la limite d'envoi (`maxShapefileMb` = 64, plus
+   d'éventuels plafonds du proxy Codespace), le relever pour cette route et le dire à l'écran.
 
 **Réorganisation maître-détail (le « rendu professionnel ») — volet gauche de groupes,
 contenu à droite :**
