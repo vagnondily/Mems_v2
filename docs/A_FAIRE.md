@@ -1230,6 +1230,30 @@ identifiant de connexion (en plus du courriel) ou seulement un nom affiché — 
 au minimum le champ et son unicité. Accessible depuis le menu du compte (l'en-tête), pas
 seulement depuis Paramètres.
 
+**Réinitialisation par l'admin — le mot de passe provisoire est GÉNÉRÉ, pas choisi (demande
+du 01/08).** Règle du propriétaire : « l'administrateur ne connaît pas le mot de passe des
+utilisateurs, mais peut faire une réinitialisation, et le mot de passe provisoire s'affiche
+que lui pour qu'il le communique ; une fois ce reset fait et l'utilisateur connecté avec le
+provisoire, on lui demande d'en changer à la première connexion. » État actuel : le forçage
+de changement (`must_change_pw`, écran « Nouveau mot de passe ») EXISTE déjà (lib/auth.js,
+Login.jsx), MAIS à la création et à la réinitialisation (`routes/users.js:48,96`) **c'est
+l'admin qui TAPE le mot de passe** — donc il le connaît. À changer : un bouton
+« Réinitialiser » qui **génère** un mot de passe provisoire côté serveur, le **renvoie une
+seule fois** dans la réponse pour que l'admin le lise et le communique (jamais stocké en
+clair, jamais renvoyé une seconde fois), et pose `must_change_pw=1`. Idem à la création : le
+provisoire est généré, l'admin ne le choisit pas. C'est un changement d'API (la route ne
+prend plus de mot de passe en entrée pour ces deux cas) — le brief du prochain lot Utilisateurs.
+
+### S5 — Deux directives de cadrage (01/08/2026)
+
+- **Priorité PROD, pas la démo.** « Oublie pour le moment la partie démo, concentre-toi sur la
+  prod. » Ne pas investir dans le jeu de démonstration / le seed ; construire pour l'usage
+  réel. (La base de démo reste utile à MES vérifications, mais les fonctionnalités visent la
+  prod.)
+- **« CL » différé** jusqu'à ce que les Paramètres soient bien configurés et réorganisés
+  professionnellement. *(Interprétation à confirmer : « CL » = Cadre Logique / cadre de
+  résultats ? ou Caseload ? — je le note comme différé quoi qu'il en soit ; à préciser.)*
+
 ### S4 — La passe de cohérence transversale
 
 Le reste de la discussion « professionnelle vs bricolage » : hiérarchie visuelle, densité,
