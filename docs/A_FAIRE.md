@@ -15,6 +15,34 @@ Toute affirmation ci-dessous a été vérifiée dans le code. Là où une vérif
 
 ---
 
+## Feuille de route confirmée le 01/08/2026 (ordre des modules)
+
+Le propriétaire a fixé l'ordre de construction, selon une structure professionnelle où chaque
+module s'appuie sur le précédent :
+
+1. **Paramétrage** *(en cours — chantier S3)*. Le socle. Y compris le **référentiel
+   d'activités** : tout MEMS est *par activité*, donc les activités se paramètrent ici et tout
+   le reste s'y accroche. Et la **configuration du pays** (découpage géographique importé par
+   shapefile/dbf) devient **LA base de référence adm0→adm4 de tout le système** — sites,
+   caseload, plan de suivi, carte, dashboards y puisent.
+2. **Suivi-évaluation** : Planification → Suivi → **Dashboard des indicateurs de suivi de
+   processus** sur données **Kobo v1 mappées** (chantier T). Jeu de test : `List Sites per
+   Tag.xlsx` (le fichier « tag ») pour les sites par activité.
+3. **Programme** (PDD, distributions — chantier R pour le catalogue de rations et la fiche PDD).
+4. **Cartographie**.
+5. **Accueil + Analyses + Rapports réunis en un seul module**.
+
+Principe transversal : les **indicateurs de l'XLSForm sont stockés** et servent de base aux
+calculs et à la sortie des dashboards, présentés **par activité** et selon l'audience —
+inspirés du tableau de bord HTML, jamais clonés. Les **données MoDa sont une base par activité
+reliée en temps réel** (chantier T).
+
+Ordre de LIVRAISON professionnel : paramétrage → planification → suivi → dashboards. On ne
+peut pas afficher un indicateur avant d'avoir paramétré l'activité, mappé la donnée et défini
+le référentiel — d'où cet ordre, et d'où la priorité donnée aux Paramètres.
+
+---
+
 # Journal de livraison
 
 Ce document décrit un état daté. Ce qui a été livré depuis est consigné ici, avec le commit
@@ -1112,6 +1140,19 @@ fois ce lot atterri.
 4. **Rations** : l'onglet actuel est l'ancienne matrice `settings.rationTable` ; il sera
    remplacé par le catalogue du chantier R. Pour cette passe, au minimum garantir qu'il
    persiste ; la refonte complète est R.
+5. **Référentiel d'activités (nouveau, fondateur)** : le propriétaire l'a confirmé le 01/08 —
+   « les activités se paramètrent dans Paramètres, ne l'oublie pas ». C'est la colonne
+   vertébrale : indicateurs, dashboards, données MoDa, PDD, plan de suivi sont tous *par
+   activité*. Aujourd'hui les activités vivent en liste éparpillée (`db.lists.tags`,
+   `actCategories`, `activity_tag`) sans référentiel propre. Poser un vrai onglet Activités
+   (code, libellé, catégorie CSP, tags COMET associés) sous Référentiels M&E, persistant, sur
+   lequel tout le reste s'accroche. La taxonomie réelle est déjà extraite (analyse du 01/08 :
+   Unconditional resource transfer, FFA, SMP, Malnutrition treatment/prevention, Smallholder
+   agriculture…).
+6. **Sites (shapefile/dbf) — présentation** : garder les DEUX entrées de dépôt pour la
+   facilité, avec des descriptions explicites (« déposez le `.shp` ET le `.dbf` ; le `.prj`
+   précise la projection »), ET l'option `.zip` en disant ce qu'il doit contenir (les trois
+   fichiers). Rappeler à l'écran que ce découpage devient la référence adm0→adm4 de tout MEMS.
 
 **Réorganisation maître-détail (le « rendu professionnel ») — volet gauche de groupes,
 contenu à droite :**
@@ -1120,7 +1161,7 @@ contenu à droite :**
 |---|---|
 | Organisation | Général · Pays · Bureaux · Périmètre des bureaux |
 | Référentiels géographiques | Localités (+ import shapefile/contours) |
-| Référentiels M&E | Indicateurs · Calculs · Rations · Codes d'identification |
+| Référentiels M&E | **Activités** · Indicateurs · Calculs · Rations · Codes d'identification |
 | Sources de données | ODK Central · Connecteurs |
 | Rapports | Modèles de rapport |
 | Système | API · Utilisateurs · À propos |
@@ -1162,18 +1203,26 @@ propriétaire (Codespace), pas ici. Le code est bâti et testé hors-ligne — g
 XLSForms (noms de variables), les scripts QC (analyse) et le tableau de bord HTML (écran cible),
 tous déjà dans `docs/`. Seul le premier tirage vivant revient au propriétaire.
 
-Le flux, tel que demandé :
-1. **Lier la source** (connecteur `kobo`, base `moda.wfp.org`, chemin `/api/v1/data/340943`,
-   jeton `Token`) et **tirer vers le cache** avec le schéma d'authentification livré.
-2. **Mapping** des champs de soumission mis en cache vers les **indicateurs de l'XLSForm**,
-   via la couche de correspondance des variables (`lib/champs.js`, `lib/mapping.js`,
-   `connector_mapping`) — pas un mécanisme parallèle.
-3. **Onglet de résultats par activité** qui exécute l'analyse des scripts QC (les ~80 règles
-   des quatre applications Shiny déjà consignées) et restitue comme `docs/dashboard_suivi_
-   processus_WFP.html` : couverture, indice de conformité par visite, scorecard, par activité.
+Le flux, précisé par le propriétaire le 01/08 (une base par activité, en temps réel) :
+1. **Un lien = une activité = une base de données.** Chaque connexion MoDa/Kobo porte les
+   données d'UNE activité et les garde **reliées en temps réel** : quand MoDa change, la base
+   de l'activité se met à jour (tirage périodique ou à la demande, cache versionné, jamais un
+   copier-coller figé). Le chemin de lecture reste configurable (kobocat v1 vs KPI v2).
+2. **Mapping par activité vers ses indicateurs.** Les champs de soumission mis en cache sont
+   mis en face des **indicateurs de l'XLSForm de cette activité**, via la couche de
+   correspondance des variables (`lib/champs.js`, `lib/mapping.js`, `connector_mapping`) — pas
+   un mécanisme parallèle. Les indicateurs à afficher se lisent dans le HTML et l'XLSForm
+   partagés (voir la famille « scripts QC » et « bénéficiaires » de l'analyse du 01/08).
+3. **Les indicateurs de l'XLSForm sont STOCKÉS** comme référentiel, et MEMS les utilise comme
+   **base des calculs et de la sortie des dashboards**. Présentation **par activité**, adaptée
+   à l'audience — s'INSPIRER de `docs/dashboard_suivi_processus_WFP.html`, NE PAS le cloner :
+   trouver la bonne façon de présenter couverture, indice de conformité, scorecard selon qui
+   regarde (direction, chargé M&E, terrain).
+4. Les **activités elles-mêmes se paramètrent dans Paramètres** (référentiel d'activités) :
+   c'est la colonne vertébrale, tout le reste (indicateurs, dashboards, données MoDa) s'y
+   accroche. À poser dès la passe Paramètres (chantier S3).
 
-Séquence : après le chantier shapefile (ils touchent tous deux `Settings.jsx` et `api.js` — les
-lancer en parallèle créerait des conflits).
+Séquence : après Paramètres et le module Suivi-évaluation (voir la feuille de route en tête).
 
 **Le format PDD comme gabarit d'import** : la logique de « Details » (1 ligne = lieu × mois
 × activité × modalité) est le bon modèle, mais le fichier réel est inutilisable tel quel —
