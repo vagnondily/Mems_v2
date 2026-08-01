@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api.js";
 import { useGeoCascade, resetGeoCache } from "../lib/geo.js";
-import { Activity, ArrowRightLeft, Building2, CalendarRange, Check, ClipboardList, Copy, Download, FileText, KeyRound, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
+import { Activity, ArrowRightLeft, Building2, CalendarRange, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, FileText, KeyRound, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
 import { Area, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Aide, Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, SideRail, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, motifLisible, n, pct, r2, r5, siteRequirement, siteScore, uid, visiteOdk } from "../lib/calc.js";
@@ -2146,6 +2146,14 @@ function SetIndicators({ db, set, notify, can }){
   const [act,setAct] = useState("");
   const [q,setQ]     = useState("");
   const [page,setPage] = useState(1);
+  /* Les intermédiaires dépliés. « Les indicateurs intermédiaires, si tu regardes
+     bien, sont des branches expand de l'indicateur, d'où la duplication de code. »
+     Exact : sur l'onglet détaillé, un même indicateur INTERMÉDIAIRE (A.5.g.2…) se
+     répète sur chacun de ses indicateurs détaillés (A.5.1, A.5.2…). On ne le répète
+     plus : il devient un PARENT dépliable, et ses détaillés en sont les branches. */
+  const [deplies,setDeplies] = useState(() => new Set());
+  const basculerDeplie = (k) => setDeplies(s => { const n2 = new Set(s);
+    n2.has(k) ? n2.delete(k) : n2.add(k); return n2; });
   const nature = active === "xls" ? "xlsform" : "crf";
   const niv = nature === "crf" ? active.split(":")[1] : "";
   const crf = nature === "crf";
@@ -2166,9 +2174,27 @@ function SetIndicators({ db, set, notify, can }){
     && (!act || (i.activityTags || []).includes(act))
     && (!q.trim() || `${i.id} ${i.name} ${i.category || ""} ${(i.activityTags||[]).join(" ")} ${i.targets||""}`
          .toLowerCase().includes(q.trim().toLowerCase())));
-  const pages = Math.max(1, Math.ceil(liste.length / IND_PAGE));
+  /* L'onglet détaillé (« other_output ») s'affiche en ARBRE : les indicateurs
+     détaillés se rangent sous leur indicateur intermédiaire. On regroupe donc par
+     `intermediate` (le parent), et la pagination porte sur les PARENTS, pas sur les
+     lignes — sinon une branche se retrouverait coupée d'une page à l'autre. */
+  const estArbre = crf && niv === "other_output";
+  const groupesInterm = useMemo(() => {
+    if(!estArbre) return [];
+    const m = new Map();
+    for(const i of liste){ const k = String(i.intermediate || "").replace(/\s+/g, " ").trim();
+      if(!m.has(k)) m.set(k, []); m.get(k).push(i); }
+    /* Le groupe sans parent en dernier ; les autres par ordre de code. */
+    return [...m.entries()].sort((a,b)=>(a[0]?1:0)-(b[0]?1:0) || a[0].localeCompare(b[0]));
+  }, [estArbre, liste]);
+
+  const ARBRE_PAGE = 40;
+  const nbUnites = estArbre ? groupesInterm.length : liste.length;
+  const tailePage = estArbre ? ARBRE_PAGE : IND_PAGE;
+  const pages = Math.max(1, Math.ceil(nbUnites / tailePage));
   const pageSure = Math.min(page, pages);
-  const visibles = liste.slice((pageSure-1)*IND_PAGE, pageSure*IND_PAGE);
+  const visibles = estArbre ? [] : liste.slice((pageSure-1)*IND_PAGE, pageSure*IND_PAGE);
+  const groupesVisibles = estArbre ? groupesInterm.slice((pageSure-1)*ARBRE_PAGE, pageSure*ARBRE_PAGE) : [];
   const activeLabel = crf ? indLevelLabel(niv) : "Indicateurs de processus";
   const activites = (db.activities || []).filter(a=>a.active).map(a => [a.tag, `${a.tag} — ${a.name}`]);
   const activiteLabel = (tag) => (db.activities || []).find(a=>a.tag===tag)?.name || tag || "";
@@ -2176,6 +2202,8 @@ function SetIndicators({ db, set, notify, can }){
   /* Les colonnes du sous-groupe courant, et le rendu d'une cellule par clé. Un
      indicateur retiré du cadre porte une méthode « Retiré… » ; sinon il est actif. */
   const colClés = IND_COLS[niv] || ["tags","cibles","cat"];
+  /* En arbre, la colonne « interm » n'est plus une colonne : c'est le parent. */
+  const colClésAff = estArbre ? colClés.filter(k => k !== "interm") : colClés;
   const indActif = (ind) => !/retir|inactiv|deac/i.test(ind.status || ind.method || "");
   const badgesTags = (tags) => (tags||[]).length
     ? <div className="flex flex-wrap gap-1">
@@ -2270,9 +2298,43 @@ function SetIndicators({ db, set, notify, can }){
                 (activités, cibles) mais aussi le statut, l'applicabilité, le type
                 output/other, l'unité et sa flexibilité pour le détaillé, etc. */}
             <thead><tr><Th>Code</Th><Th>Intitulé</Th>
-              {crf ? <><Th>Statut</Th>{colClés.map(k => <Th key={k}>{IND_COL_LABEL[k]}</Th>)}</>
+              {crf ? <><Th>Statut</Th>{colClésAff.map(k => <Th key={k}>{IND_COL_LABEL[k]}</Th>)}</>
                    : <><Th>Activité</Th><Th>Unité</Th><Th>Fréquence</Th></>}<Th /></tr></thead>
-            <tbody>{visibles.map(ind=>(
+            {estArbre
+              ? <tbody>{groupesVisibles.map(([interm,enfants])=>{
+                  const sansParent = interm === "";
+                  const ouvert = sansParent || deplies.has(interm);
+                  return (
+                  <Fragment key={interm || "__sans__"}>
+                    {/* Le parent : l'indicateur INTERMÉDIAIRE, une seule fois. Cliquer déplie ses branches. */}
+                    <tr className="bg-slate-50/70 hover:bg-sky-50 cursor-pointer align-top border-t border-slate-200"
+                      onClick={()=>!sansParent && basculerDeplie(interm)}>
+                      <Td>{sansParent ? <span className="text-slate-300">—</span>
+                        : ouvert ? <ChevronDown size={15} className="text-slate-500"/> : <ChevronRight size={15} className="text-slate-500"/>}</Td>
+                      <Td className="mw520 font-semibold text-slate-800" style={{whiteSpace:"normal"}} colSpan={colClésAff.length + 3}>
+                        <span className="inline-flex items-center gap-2">
+                          <Layers size={13} className="text-slate-400 shrink-0" />
+                          <span className={sansParent?"text-slate-400 italic font-normal":""}>{interm || "Sans indicateur intermédiaire"}</span>
+                          <Badge tone="n">{enfants.length} détaillé{enfants.length>1?"s":""}</Badge>
+                        </span>
+                      </Td>
+                    </tr>
+                    {/* Les branches : les indicateurs détaillés de cet intermédiaire. */}
+                    {ouvert && enfants.map(ind=>(
+                      <tr key={ind.id} className="hover:bg-sky-50 align-top">
+                        <Td className="pl-6"><Badge tone="b">{ind.id}</Badge></Td>
+                        <Td className="mw420 text-slate-800" style={{whiteSpace:"normal"}} title={ind.name}>{ind.name}</Td>
+                        <Td>{indActif(ind) ? <Badge tone="g">{ind.status || "Actif"}</Badge> : <Badge tone="r">{ind.status || "Inactif"}</Badge>}</Td>
+                        {colClésAff.map(k => <Td key={k} className="text-slate-600 f11"
+                          style={{whiteSpace:"normal", maxWidth: k==="cat"?240:200}}
+                          title={typeof indCell(k,ind)==="string" ? indCell(k,ind) : undefined}>{indCell(k,ind)}</Td>)}
+                        <Td className="text-right">
+                          {can("edit") && <button onClick={()=>setEdit(ind)} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
+                          {can("del") && <button onClick={()=>set(d=>{ d.indicators=d.indicators.filter(x=>x.id!==ind.id); return d; })}
+                            className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</Td>
+                      </tr>))}
+                  </Fragment>); })}</tbody>
+              : <tbody>{visibles.map(ind=>(
               <tr key={ind.id} className="hover:bg-sky-50 align-top">
                 <Td><Badge tone="b">{ind.id}</Badge></Td>
                 <Td className="mw420 font-medium text-slate-800" style={{whiteSpace:"normal"}} title={ind.name}>{ind.name}</Td>
@@ -2291,12 +2353,18 @@ function SetIndicators({ db, set, notify, can }){
                   {can("edit") && <button onClick={()=>setEdit(ind)} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
                   {can("del") && <button onClick={()=>set(d=>{ d.indicators=d.indicators.filter(x=>x.id!==ind.id); return d; })}
                     className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</Td>
-              </tr>))}</tbody>
+              </tr>))}</tbody>}
           </TableWrap>
+          {estArbre && <div className="px-4 pt-2 flex items-center gap-3">
+            <Btn size="sm" kind="ghost" onClick={()=>setDeplies(new Set(groupesInterm.map(g=>g[0])))}>Tout déplier</Btn>
+            <Btn size="sm" kind="ghost" onClick={()=>setDeplies(new Set())}>Tout replier</Btn>
+            <span className="f11 text-slate-400">{groupesInterm.length} intermédiaire(s) · {liste.length} détaillé(s)</span>
+          </div>}
           {pages > 1 && (
             <div className="px-4 py-3 flex items-center gap-3 f125 text-slate-600">
               <Btn size="sm" kind="sec" disabled={pageSure<=1} onClick={()=>setPage(pageSure-1)}>Précédents</Btn>
-              <span>{(pageSure-1)*IND_PAGE+1} – {Math.min(pageSure*IND_PAGE, liste.length)} sur {fmt(liste.length)}</span>
+              <span>{(pageSure-1)*tailePage+1} – {Math.min(pageSure*tailePage, nbUnites)} sur {fmt(nbUnites)}
+                {estArbre ? " intermédiaires" : ""}</span>
               <Btn size="sm" kind="sec" disabled={pageSure>=pages} onClick={()=>setPage(pageSure+1)}>Suivants</Btn>
             </div>)}
           </>}
