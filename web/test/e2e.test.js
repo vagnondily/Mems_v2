@@ -37,6 +37,26 @@ const flush = async () => { await act(async () => { await sleep(90); }); };
 const all = (sel) => [...document.querySelectorAll(sel)];
 const byText = (sel, t) => all(sel).find(e => (e.textContent || "").trim().includes(t));
 const byExact = (sel, t) => all(sel).find(e => (e.textContent || "").trim() === t);
+
+/* Attendre qu'une condition devienne vraie, plutôt que de dormir une durée
+   choisie au doigt mouillé. `flush()` accorde 90 ms : cela suffit à un rendu,
+   pas à un aller-retour serveur qui compare un mot de passe. bcrypt à douze
+   tours prend deux à quatre cents millisecondes, et davantage sur une machine
+   d'intégration continue partagée — le test de connexion refusée a échoué là
+   pour cette seule raison, après être passé partout ailleurs. Un délai fixe
+   assez long pour ne jamais échouer serait un délai payé à chaque exécution
+   par tout le monde ; on attend donc la condition, et on rend la main dès
+   qu'elle est remplie. */
+const attendre = async (predicat, label, delaiMs = 5000) => {
+  const fin = Date.now() + delaiMs;
+  let valeur = predicat();
+  while(!valeur && Date.now() < fin){
+    await act(async () => { await sleep(50); });
+    valeur = predicat();
+  }
+  assert.ok(valeur, `${label} (rien au bout de ${delaiMs} ms)`);
+  return valeur;
+};
 const click = async (el, label) => {
   assert.ok(el, `élément introuvable : ${label}`);
   await act(async () => {
@@ -125,21 +145,22 @@ test("connexion : identifiants erronés refusés avec un message clair", async (
   await type(all("input[type=email]")[0], ADMIN.email);
   await type(all("input[type=password]")[0], "mauvais-mot-de-passe");
   await click(byText("button", "Se connecter"), "bouton de connexion");
-  await flush();
-  assert.ok(byText("div", "identifiants incorrects"), "le message d'échec s'affiche");
+  await attendre(() => byText("div", "identifiants incorrects"), "le message d'échec s'affiche");
 });
 
 test("connexion : identifiants valides, puis changement de mot de passe imposé", async () => {
   await type(all("input[type=password]")[0], ADMIN.password);
   await click(byText("button", "Se connecter"), "connexion");
-  await flush(); await flush();
-  assert.ok(byText("h2", "Nouveau mot de passe"), "le premier accès impose un nouveau mot de passe");
+  await attendre(() => byText("h2", "Nouveau mot de passe"),
+    "le premier accès impose un nouveau mot de passe");
   const champs = all("input[type=password]");
   await type(champs[0], "NouveauMotDePasse2026");
   await type(champs[1], "NouveauMotDePasse2026");
   await click(byText("button", "Enregistrer et entrer"), "valider le nouveau mot de passe");
-  await flush(); await flush(); await flush();
-  assert.ok(byText("div", "MEMS"), "la coquille de l'application est en place");
+  /* Deux hachages bcrypt de suite ici — celui qui vérifie l'ancien mot de
+     passe, celui qui écrit le nouveau — puis le chargement de /api/state. */
+  await attendre(() => byText("h2", "Accueil"), "la coquille de l'application est en place", 15000);
+  assert.ok(byText("div", "MEMS"), "l'en-tête est rendu");
   assert.equal(ctx.errors.length, 0);
 });
 
