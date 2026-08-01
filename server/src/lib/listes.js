@@ -99,8 +99,14 @@ export const TYPES = [
     /* Le GROUPE ALIMENTAIRE (migration 033), à la manière de COMET : un champ
        propre à la denrée, validé contre la liste des groupes. La colonne
        `food_group` de list_item le porte. */
+    /* La CATÉGORIE (migration 034) : food / cbt / other. Elle range la denrée
+       entre vivres et transfert monétaire, et décide quelles denrées le
+       formulaire de ration propose selon la modalité choisie. Validée contre la
+       liste « categorie_denree ». */
     champs: [{ cle:"food_group", colonne:"food_group", label:"Groupe alimentaire",
-               max:60, liste:"groupes_denree" }],
+               max:60, liste:"groupes_denree" },
+             { cle:"category", colonne:"category", label:"Catégorie",
+               max:20, liste:"categorie_denree" }],
     liens: [lien("pdd",           "commodity", "code", "Plan de distribution"),
             /* Le catalogue de rations (migration 031) désigne aussi la denrée par
                son code : renommer une denrée y réécrit en cascade, et on ne
@@ -111,6 +117,11 @@ export const TYPES = [
     description: "Les familles de denrées — céréales, huiles, aliments composés, "
       + "légumineuses… — à la manière de la sélection des commodités de COMET.",
     liens: [lien("list_item", "food_group", "code", "Denrées")] }),
+
+  generique("categorie_denree", "categorie_denree", "Catégories de denrée", {
+    description: "Vivres (food), transfert monétaire (cbt) ou autre — la nature "
+      + "de la « denrée », qui distingue une ration de vivres d'une ration espèces ou coupon.",
+    liens: [lien("list_item", "category", "code", "Denrées")] }),
 
   generique("modalites", "modalite", "Modalités de transfert", {
     description: "Vivres, espèces, coupons… La liste n'est plus enfermée dans le schéma "
