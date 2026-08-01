@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { motifParId, motifsSaisissables } from "./visites.js";
 
 /* Le corps de requête est validé avant d'atteindre la base : rien ne passe en confiance. */
 export const validate = (schema, source="body") => (req, res, next) => {
@@ -62,6 +63,13 @@ export const schemas = {
     /* Révision lue par le client, pour détecter l'écriture concurrente. */
     rev: z.coerce.number().int().min(1).optional(),
   }),
+  /* La grille mensuelle. Deux règles seulement sont jugeables sur le corps seul,
+     et ce sont les deux qui vivent ici : le motif appartient à la liste fermée,
+     et « Autre » exige une note.
+     La troisième — « cocher « réalisé » exige un motif » — dépend de l'état en
+     base et vit donc dans la route : quand une soumission ODK couvre déjà le
+     mois, la saisie n'a pas lieu d'être et exiger un motif reviendrait à faire
+     inventer une explication à une visite qui n'a rien d'une exception. */
   siteMonth: z.object({
     month: z.coerce.number().int().min(0).max(11),
     year: z.coerce.number().int().min(2000).max(2100),
@@ -70,6 +78,23 @@ export const schemas = {
     done: z.coerce.boolean().default(false),
     cp_name: nullableStr(160), monitor: nullableStr(120),
     report: nullableStr(300), moda: nullableStr(300),
+    /* Construit à partir de lib/visites.js, jamais recopié : ajouter un motif
+       là-bas l'accepte ici sans qu'une ligne bouge. Les motifs non saisissables
+       — `inconnu_anterieur`, que la migration 019 a écrit pour l'existant — sont
+       hors de cette liste : ils s'affichent, ils ne s'envoient pas. */
+    manual_reason: z.enum(motifsSaisissables().map(m => m.id))
+      .nullish().transform(v => v ?? null),
+    /* Sans `transform` vers null, contrairement aux autres champs facultatifs :
+       la clé ABSENTE doit rester absente du corps validé. C'est la seule façon
+       de distinguer « je ne parle pas de la note » de « efface la note », et la
+       route en dépend — un appel qui ne corrige que le motif ne doit pas emporter
+       la précision écrite six mois plus tôt. */
+    manual_note: z.string().max(500).nullish(),
+  }).superRefine((v, ctx) => {
+    if(motifParId(v.manual_reason)?.noteObligatoire && !(v.manual_note || "").trim())
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["manual_note"],
+        message: "« Autre » n'explique rien à lui seul : précisez en clair pourquoi "
+          + "le formulaire n'a pas été rempli." });
   }),
   coverageParam: z.object({
     id: id.optional(), csp: nullableStr(40),

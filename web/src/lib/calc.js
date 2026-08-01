@@ -33,6 +33,36 @@ const KEY = "mems:v4";
    Un site d'avant la chaîne ODK ne porte que lastVisit et retombe sur elle. */
 const derniereVisite = (s) => (s && (s.lastVisitEffective || s.lastVisitOdk || s.lastVisit)) || "";
 
+/* ── D'où vient une visite ────────────────────────────────────────────
+   La voie normale est le formulaire ODK ; la saisie à la main est un rattrapage
+   justifié. Trois écrans doivent faire la différence — le plan mensuel, le suivi
+   de processus et la fiche de site — d'où ces trois fonctions ici plutôt que
+   recopiées dans chacun.
+
+   `visiteOdk` regarde les DEUX marqueurs, comme la garde du serveur : la
+   suppression d'une soumission délie la visite sans la supprimer
+   (ON DELETE SET NULL), et une visite venue du terrain sans son identifiant
+   reste une visite venue du terrain. */
+const visiteOdk = (v) => v?.origin === "odk" || !!v?.submissionId;
+const visitesDuMois = (db, siteId, mi) => {
+  const cle = `${db?.year}-${String(mi + 1).padStart(2, "0")}`;
+  return (db?.visits || []).filter(v => v.siteId === siteId && String(v.date || "").slice(0, 7) === cle);
+};
+/* La liste des motifs n'existe que sur le serveur (lib/visites.js) et arrive avec
+   l'état initial. Le repli sur l'identifiant brut n'est pas cosmétique : un client
+   servi par une instance non redéployée n'a pas la liste, et afficher « autre »
+   vaut mieux que faire tomber le rendu de tout l'écran. */
+const motifLisible = (db, id) =>
+  (db?.motifsVisiteManuelle || []).find(m => m.id === id)?.libelle || id || "";
+/* Le motif qu'un formulaire a le droit de RENVOYER. La distinction n'est pas
+   cosmétique : `inconnu_anterieur`, que la migration 019 a écrit sur toutes les
+   visites antérieures à la règle, s'affiche mais n'est pas dans l'énumération de
+   zod (lib/validate.js). Un écran qui le préremplit puis le renvoie tel quel fait
+   refuser la fiche entière — missionnaire, rapport et décochage compris — sur
+   toute cellule déjà cochée avant le lot. */
+const motifSaisissable = (db, id) =>
+  !!(db?.motifsVisiteManuelle || []).find(m => m.id === id && m.saisissable);
+
 function siteScore(s, weights, db){
   if(db){ const p = sitePriority(s, db);
     return { points:p.priority, max:6, pct: Math.min(100, Math.round(p.priority/6*100)),
@@ -229,4 +259,4 @@ function profileColumn(rows, field){
   return stat;
 }
 
-export { FNS, IND_FNS, KEY, LEVELS, POP_BASE_YEAR, RULE_TYPES, SAFE_CHARS, applyFormulas, applyRules, clsx, codeOf, computeMMR, computeParam, derniereVisite, evalFormula, evalIndicator, fmt, legacyScore, monthsSince, n, paramFor, pct, populationFor, profileColumn, r1, r2, r5, siteRequirement, siteScore, uid };
+export { FNS, IND_FNS, KEY, LEVELS, POP_BASE_YEAR, RULE_TYPES, SAFE_CHARS, applyFormulas, applyRules, clsx, codeOf, computeMMR, computeParam, derniereVisite, evalFormula, evalIndicator, fmt, legacyScore, monthsSince, motifLisible, motifSaisissable, n, paramFor, pct, populationFor, profileColumn, r1, r2, r5, siteRequirement, siteScore, uid, visiteOdk, visitesDuMois };

@@ -24,6 +24,7 @@ import { rejouerRattachement, PASSE_MANUELLE } from "../lib/rattachement.js";
 import { ajouterAlias } from "../lib/alias.js";
 import { ingerer, suiviParPeriode, appliquerSuivi, positionsObservees,
          dernieresVisitesOdk, combinerDerniereVisite } from "../lib/soumissions.js";
+import { retirerVisiteDeSoumission } from "../lib/visites.js";
 
 const r = Router();
 const J = (v, d) => { try{ return JSON.parse(v); }catch(e){ return d; } };
@@ -234,11 +235,18 @@ r.post("/submissions/:id/rattacher-a", requireCap("edit"), (req, res) => {
     + (s.resolution_motif ? ` ; le résolveur avait conclu : ${s.resolution_motif}` : "");
 
   let alias = { cree: false, motif: "non demandé" };
+  let retrait = { visites: 0, mois: [] };
   tx(() => {
     db.prepare(`UPDATE submissions
                 SET site_id=?, resolution_passe=?, resolution_motif=?, resolution_confiance=1,
                     resolution_at=datetime('now'), updated_at=datetime('now')
                 WHERE id=?`).run(site.id, PASSE_MANUELLE, motif, s.id);
+    /* La soumission change de site : la visite qu'elle avait fait naître sur
+       l'ANCIEN n'a plus de fondement. La laisser en place y maintiendrait une
+       visite fantôme et un mois « réalisé » indélébiles, qui gonfleraient sa
+       couverture pour toujours. Le nouveau site, lui, n'en reçoit pas d'office :
+       marquer le suivi reste un geste explicite (POST /submissions/suivi). */
+    if(s.site_id && s.site_id !== site.id) retrait = retirerVisiteDeSoumission(s.id);
     if(p.data.creer_alias){
       alias = brut
         ? { ...ajouterAlias({ site_id: site.id, code: brut, source: s.form_id,
@@ -251,9 +259,10 @@ r.post("/submissions/:id/rattacher-a", requireCap("edit"), (req, res) => {
   audit(req, "rattacher-manuel", s.id,
     `Rattachement manuel — soumission ${s.instance_id} (${s.form_id}) rattachée au site `
     + `${site.name} (${site.code}) par ${qui}`
-    + (alias.cree ? ` ; code externe « ${brut} » mémorisé pour la source ${s.form_id}` : ""));
+    + (alias.cree ? ` ; code externe « ${brut} » mémorisé pour la source ${s.form_id}` : "")
+    + (retrait.visites ? ` ; ${retrait.visites} visite(s) retirée(s) du site précédent` : ""));
 
-  res.json({ ok: true, alias,
+  res.json({ ok: true, alias, visitesRetirees: retrait.visites, moisDemarques: retrait.mois,
     submission: db.prepare(`SELECT s.*, si.code AS site_code, si.name AS site_name
                             FROM submissions s LEFT JOIN sites si ON si.id = s.site_id
                             WHERE s.id=?`).get(s.id) });
@@ -277,14 +286,25 @@ r.post("/submissions/:id/detacher", requireCap("edit"), (req, res) => {
      c'est rendre la question au résolveur, pas la fermer autrement. */
   const motif = `non résolu — détaché à la main par ${qui}, qui était rattaché à `
     + `${site ? nommerSite(site) : "un site supprimé depuis"}`;
-  db.prepare(`UPDATE submissions
-              SET site_id=NULL, resolution_passe=NULL, resolution_motif=?, resolution_confiance=0,
-                  resolution_at=datetime('now'), updated_at=datetime('now')
-              WHERE id=?`).run(motif, s.id);
+  /* La visite née de cette soumission part avec elle. C'est ce que la grille
+     mensuelle promet quand elle refuse un décochage : « détachez la soumission ».
+     Tant que ce geste laissait la visite en place, il ne tenait pas cette
+     promesse — le refus se répétait mot pour mot, `site_months.done` restait à 1,
+     et un suivi appliqué au mauvais site gonflait ses indicateurs pour toujours. */
+  const retrait = tx(() => {
+    db.prepare(`UPDATE submissions
+                SET site_id=NULL, resolution_passe=NULL, resolution_motif=?, resolution_confiance=0,
+                    resolution_at=datetime('now'), updated_at=datetime('now')
+                WHERE id=?`).run(motif, s.id);
+    return retirerVisiteDeSoumission(s.id);
+  })();
   audit(req, "detacher", s.id,
     `Détachement manuel — soumission ${s.instance_id} (${s.form_id}) détachée du site `
-    + `${site ? `${site.name} (${site.code})` : "supprimé"} par ${qui}`);
-  res.json({ ok: true,
+    + `${site ? `${site.name} (${site.code})` : "supprimé"} par ${qui}`
+    + (retrait.visites ? ` ; ${retrait.visites} visite(s) issue(s) de cette soumission retirée(s)`
+      + `${retrait.mois.length ? `, ${retrait.mois.length} mois rendu(s) à « non réalisé »` : ""}`
+      : ""));
+  res.json({ ok: true, visitesRetirees: retrait.visites, moisDemarques: retrait.mois,
     submission: db.prepare("SELECT * FROM submissions WHERE id=?").get(s.id) });
 });
 
@@ -337,7 +357,8 @@ r.post("/submissions/suivi", requireCap("edit"), (req, res, next) => {
     audit(req, "suivi", null,
       `Suivi marqué depuis les soumissions — ${bilan.periode.debut} à ${bilan.periode.fin} : `
       + `${bilan.sites} site(s), ${bilan.marques} nouvellement marqué(s), `
-      + `${bilan.visitesCreees} visite(s) créée(s)`);
+      + `${bilan.visitesCreees} visite(s) créée(s), `
+      + `${bilan.visitesPromues} saisie(s) à la main reliée(s) à leur soumission`);
     res.json(bilan);
   }catch(e){
     if(e.code === "SUIVI_PERIODE") return res.status(422).json({ error: e.message });

@@ -4,7 +4,7 @@ import { useGeoCascade, resetGeoCache } from "../lib/geo.js";
 import { Activity, Building2, CalendarRange, Check, ClipboardList, Download, FileText, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
 import { Area, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
-import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, n, pct, r2, r5, siteRequirement, siteScore, uid } from "../lib/calc.js";
+import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, motifLisible, n, pct, r2, r5, siteRequirement, siteScore, uid, visiteOdk } from "../lib/calc.js";
 import { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, DURATIONS, D_FORMULAS, D_SECURITY, D_STATUS, D_URBAN, MONITORING_TYPES, PROG_AREAS, SITE_TYPES, TABS_ALL, siteDerived, sitePriority } from "../lib/constants.js";
 /* `readGeoFile` était APPELÉ sans être importé : l'import de découpage depuis
    l'interface levait « readGeoFile is not defined » dès le choix du fichier. Le
@@ -14,6 +14,7 @@ import { GUESS, guessField, readGeoFile } from "../lib/shapefile.js";
 import { niveau, niveaux } from "../lib/levels.js";
 import { Sources } from "./ActualData.jsx";
 import { MonthCellModal, MonthGrid, MonthLegend, PDD_ACTS, PDD_COMMODITIES } from "./Planning.jsx";
+import { SetCodeReferentiels } from "./Referentiels.jsx";
 import { BLOCKS } from "./Reports.jsx";
 import { PageHead } from "./Shell.jsx";
 
@@ -26,7 +27,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
   const items = [["general","Général"],["country","Pays"],["offices","Bureaux"],["sites","Sites"],
     ["locations","Localités"],["scope","Périmètre des bureaux"],["indicators","Indicateurs"],
     ["calc","Calculs"],["rations","Rations"],["odk","ODK Central"],["connectors","Connecteurs"],
-    ["templates","Modèles de rapport"],
+    ["codes","Référentiels de codes"],["templates","Modèles de rapport"],
     ["api","API"],["users","Utilisateurs"],["about","À propos"]];
   return (
     <div className="space-y-4">
@@ -44,6 +45,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
       {sub==="rations" && <SetRations db={db} set={set} notify={notify} can={can} />}
       {sub==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} reload={reload} />}
       {sub==="connectors" && <SetConnectors notify={notify} can={can} />}
+      {sub==="codes" && <SetCodeReferentiels notify={notify} can={can} />}
       {sub==="templates" && <SetTemplates db={db} set={set} notify={notify} can={can} />}
       {sub==="api" && <SetApi db={db} notify={notify} />}
       {sub==="users" && <SetUsers db={db} set={set} me={me} notify={notify} />}
@@ -684,6 +686,29 @@ function SiteModal({ open, site, db, onClose, onSave }){
             <Field label="Nombre de fois visité"><Input value={
               d2.visitedFourPlus ? "4 fois ou plus" : d2.visitedThrice ? "3 fois" : d2.visitedTwice ? "2 fois"
               : d2.visitedOnce ? "1 fois" : "Jamais"} readOnly /></Field>
+            {/* Les visites de l'année, avec d'où elles viennent et pourquoi quand
+                aucun formulaire ne les porte. La fiche est l'endroit où l'on juge
+                un site : y lire « quatre visites » sans savoir que trois sont des
+                rattrapages non expliqués reviendrait à juger sur un chiffre creux.
+                `db.visits` est déjà chargé, aucun appel supplémentaire. */}
+            <div className="col-span-4 mt-2">
+              <div className="f11 font-semibold text-slate-600 mb-1">Visites de l'année {db.year}</div>
+              {(()=>{ const vs = (db.visits||[]).filter(v => v.siteId===f.id
+                  && String(v.date||"").startsWith(String(db.year)))
+                  .slice().sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+                if(!vs.length) return <div className="f115 text-slate-500 py-2">Aucune visite enregistrée cette année.</div>;
+                return (<TableWrap max="mh300">
+                  <thead><tr><Th>Date</Th><Th>Origine</Th><Th>Motif</Th><Th>Précision</Th><Th>Statut</Th></tr></thead>
+                  <tbody>{vs.map(v=>{ const odk = visiteOdk(v); return (
+                    <tr key={v.id}>
+                      <Td className="f115">{v.date}</Td>
+                      <Td><Badge tone={odk?"b":"y"}>{odk?"ODK":"Manuelle"}</Badge></Td>
+                      <Td className="f115 text-slate-600">{odk ? "—" : motifLisible(db, v.motif)}</Td>
+                      <Td className="f115 text-slate-500">{v.motifNote || "—"}</Td>
+                      <Td><Badge tone={v.status==="Validé"?"g":v.status==="Erreur"?"r":"y"}>{v.status}</Badge></Td>
+                    </tr>); })}</tbody>
+                </TableWrap>); })()}
+            </div>
           </div>); })()}
     </Modal>);
 }
@@ -1537,7 +1562,8 @@ function SetIndicators({ db, set, notify, can }){
     rd.readAsText(file,"utf-8"); };
   return (
     <>
-      <Note>Cette masterlist alimente le plan de collecte et la saisie des valeurs dans Actual Data.
+      <Note>Cette masterlist alimente le plan de collecte et la saisie des valeurs dans
+        Programme → Résultats.
         Elle s'exporte en CSV pour être partagée, et se réimporte pour une mise à jour groupée.</Note>
       <Card flush title="Masterlist des indicateurs" subtitle={`${db.indicators.length} indicateurs`}
         right={<>

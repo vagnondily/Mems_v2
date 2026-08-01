@@ -316,3 +316,68 @@ test("période : changer de granularité tombe sur la période en cours", () => 
   assert.equal(periode.valeurDefaut("trimestre", 2024, septembre2026), 1);
   assert.equal(periode.valeurDefaut("mois", 2024, septembre2026), 1);
 });
+
+test("origine des visites : la saisie à la main se distingue, et son motif se lit", () => {
+  /* La garde regarde les DEUX marqueurs, comme celle du serveur : supprimer une
+     soumission délie la visite (ON DELETE SET NULL) sans la supprimer, et une
+     visite venue du terrain sans son identifiant reste venue du terrain. */
+  assert.equal(calc.visiteOdk({ origin:"odk", submissionId:"sub1" }), true);
+  assert.equal(calc.visiteOdk({ origin:"odk", submissionId:"" }), true);
+  assert.equal(calc.visiteOdk({ origin:"manuelle", submissionId:"sub1" }), true);
+  assert.equal(calc.visiteOdk({ origin:"manuelle", submissionId:"" }), false);
+  /* Un client servi par une instance non redéployée ne reçoit pas la colonne :
+     l'absence d'origine ne doit pas faire passer un rattrapage pour de l'ODK. */
+  assert.equal(calc.visiteOdk({}), false);
+  assert.equal(calc.visiteOdk(undefined), false);
+
+  const db = { year:2026, visits:[
+    { id:"a", siteId:"s1", date:"2026-05-03", origin:"odk", submissionId:"sub1" },
+    { id:"b", siteId:"s1", date:"2026-05-15", origin:"manuelle", motif:"autre", motifNote:"pluie" },
+    { id:"c", siteId:"s1", date:"2026-06-15", origin:"manuelle" },
+    { id:"d", siteId:"s2", date:"2026-05-15", origin:"manuelle" },
+    { id:"e", siteId:"s1", date:"", origin:"manuelle" },
+  ] };
+  /* Mai est l'indice 4 : le mois est indexé à partir de zéro partout dans le
+     produit, y compris dans la clé de la grille mensuelle du serveur. */
+  assert.deepEqual(calc.visitesDuMois(db, "s1", 4).map(v=>v.id), ["a","b"]);
+  assert.deepEqual(calc.visitesDuMois(db, "s1", 5).map(v=>v.id), ["c"]);
+  assert.deepEqual(calc.visitesDuMois(db, "s1", 0).map(v=>v.id), []);
+  /* Aucune visite chargée : les trois écrans qui appellent ceci doivent rendre. */
+  assert.deepEqual(calc.visitesDuMois({ year:2026 }, "s1", 4), []);
+  assert.deepEqual(calc.visitesDuMois(undefined, "s1", 4), []);
+
+  /* La liste des motifs n'existe que sur le serveur et arrive avec l'état
+     initial. Absente, on retombe sur l'identifiant brut plutôt que de faire
+     tomber le rendu — le bilan e2e échoue sur la moindre exception. */
+  const avecListe = { motifsVisiteManuelle:[
+    { id:"autre", libelle:"Autre", noteObligatoire:true, saisissable:true }] };
+  assert.equal(calc.motifLisible(avecListe, "autre"), "Autre");
+  assert.equal(calc.motifLisible(avecListe, "inconnu_anterieur"), "inconnu_anterieur");
+  assert.equal(calc.motifLisible({}, "autre"), "autre");
+  assert.equal(calc.motifLisible(undefined, "autre"), "autre");
+  assert.equal(calc.motifLisible(avecListe, ""), "");
+});
+
+test("motifs de visite : celui de la reprise s'affiche, il ne se renvoie jamais", () => {
+  /* La distinction que ce test verrouille : `inconnu_anterieur` est écrit par la
+     migration 019 sur TOUTES les visites antérieures à la règle, mais il est hors
+     de l'énumération de zod (server/src/lib/validate.js). Un écran qui le
+     préremplit puis le renvoie tel quel fait refuser la fiche entière — jusqu'au
+     décochage — sur chaque mois déjà coché d'une installation existante. */
+  const db = { motifsVisiteManuelle:[
+    { id:"autre", libelle:"Autre", noteObligatoire:true, saisissable:true },
+    { id:"inconnu_anterieur", libelle:"Motif inconnu — visite enregistrée avant la règle",
+      noteObligatoire:false, saisissable:false }] };
+  assert.equal(calc.motifSaisissable(db, "autre"), true);
+  assert.equal(calc.motifSaisissable(db, "inconnu_anterieur"), false);
+  /* Il reste lisible : l'écran doit pouvoir DIRE ce que porte la ligne. */
+  assert.equal(calc.motifLisible(db, "inconnu_anterieur"),
+    "Motif inconnu — visite enregistrée avant la règle");
+  /* Un motif inconnu de la liste, et une instance non redéployée qui ne la sert
+     pas : dans les deux cas rien n'est saisissable, donc rien n'est renvoyé. */
+  assert.equal(calc.motifSaisissable(db, "parce_que"), false);
+  assert.equal(calc.motifSaisissable(db, ""), false);
+  assert.equal(calc.motifSaisissable(db, undefined), false);
+  assert.equal(calc.motifSaisissable({}, "autre"), false);
+  assert.equal(calc.motifSaisissable(undefined, "autre"), false);
+});

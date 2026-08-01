@@ -671,7 +671,7 @@ elles exigent un jeton — en-tête `Authorization: Bearer …` ou cookie `httpO
 | POST | `/auth/password` | connecté | change le mot de passe et ferme les autres sessions |
 | GET | `/state` | connecté | vue agrégée consommée au démarrage de l'interface |
 | GET/POST/PUT/DELETE | `/sites`, `/sites/:id` | lecture / `edit` / `del` | registre des sites |
-| PUT | `/sites/:id/months` | `edit` | fiche mensuelle ; crée la visite et met à jour la dernière visite |
+| PUT | `/sites/:id/months` | `edit` | fiche mensuelle ; une visite saisie à la main exige un motif, une visite issue d'ODK ne se supprime pas par cette route |
 | POST | `/sites/bulk` | `edit` | modification groupée, champs sur liste blanche |
 | GET | `/geo` | connecté | répertoire paginé, filtré par unité parente ou par recherche |
 | GET | `/geo/levels` | connecté | enfants d'une unité — la cascade se fait un niveau à la fois |

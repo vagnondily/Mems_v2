@@ -21,7 +21,7 @@ Ce document décrit un état daté. Ce qui a été livré depuis est consigné i
 qui le porte — le corps du document reste écrit au moment de l'audit, et le lire sans ce
 journal donnerait une image fausse de ce qui reste à faire.
 
-**Tests au dernier commit : 155 côté serveur, 34 côté web, 0 échec. Audit de production :
+**Tests au dernier commit : 177 côté serveur, 38 côté web, 0 échec. Audit de production :
 aucun avis grave, ni serveur ni web.**
 
 | Commit | Ce qui est livré | Effet sur ce document |
@@ -33,7 +33,39 @@ aucun avis grave, ni serveur ni web.**
 | `f0a6cdd` | Écran Programme → Soumissions ODK, code externe dans la fiche de site, double date de dernière visite, couche GPS sur la carte, **correction d'une perte de données sur `PUT /api/sites/:id`** | **Chantier O largement fait.** Le `PUT` n'était pas partiel : renommer un site effaçait antenne, catégorie, activité, type et code externe. Même défaut que sur les comptes, sur une table où il fait plus de dégâts. |
 
 | `7239bbe` | **Codes externes multiples** (migration 018 : un site peut être désigné différemment par chaque formulaire), import d'une table de correspondance, **rattachement manuel tracé** avec création d'alias à la volée, et **score de risque aligné sur la date qui fait foi** | **SMP devient rattachable dès que le bureau fournit sa table.** Le rattachement manuel est protégé de tout rejeu et de tout re-versement. La divergence entre score, cloche et carte est résorbée : les trois lisent la même date. |
-| *(ce commit)* | **Exécution de scripts R et SPSS sur le serveur** (`lib/moteur.js`, `POST /api/scripts/:id/executer`) et **console d'administration de l'instance** (`/api/admin` : sessions, journal de sécurité, santé du fichier de base, sauvegarde et restauration) | Répond aux deux dernières demandes. **Le rôle `super` cesse d'être un doublon d'`admin`** : `requireSuper` (lib/auth.js) marque la frontière que la matrice `CAPS` ne savait pas exprimer — administrer *l'installation* et non son contenu. **La sauvegarde et la restauration demandées en Paramètres sont livrées ici**, où elles ont leur place. |
+| `8ebe2f1` | **Exécution de scripts R et SPSS sur le serveur** (`lib/moteur.js`, `POST /api/scripts/:id/executer`) et **console d'administration de l'instance** (`/api/admin` : sessions, journal de sécurité, santé du fichier de base, sauvegarde et restauration) | Répond aux deux dernières demandes. **Le rôle `super` cesse d'être un doublon d'`admin`** : `requireSuper` (lib/auth.js) marque la frontière que la matrice `CAPS` ne savait pas exprimer — administrer *l'installation* et non son contenu. **La sauvegarde et la restauration demandées en Paramètres sont livrées ici**, où elles ont leur place. |
+| *(ce commit)* | **La visite saisie à la main devient l'exception justifiée** (migration 019, `lib/visites.js`) et **référentiel de codes d'identification importable** (migration 020, `lib/codes.js`, type d'import `codes`, écran Paramètres → Référentiels de codes) | **SMP est rattachable, pour de bon** : le référentiel chargé pose les alias, et le résolveur rattache la soumission par son code école à confiance 1,0. La ligne « SMP reste non rattachable » du bas de ce document tombe. **Un défaut de destruction de données est fermé** : décocher un mois effaçait la visite du mois quelle qu'elle soit, y compris une visite ODK portant sa soumission. |
+
+### La visite à la main : ce qui change, et pourquoi
+
+Le formulaire ODK est la voie normale. La saisie à la main reste possible — le terrain
+en a besoin, réseau coupé, appareil à plat, visite antérieure au déploiement — mais elle
+n'est plus silencieuse : elle exige **un motif pris dans une liste fermée**, déclarée une
+seule fois côté serveur (`lib/visites.js`) et servie au client, plus une précision libre
+obligatoire pour « autre ». Trois conséquences :
+
+- un mois déjà couvert par une soumission ODK ne se saisit pas une seconde fois ;
+- une visite portant une soumission ne peut plus être supprimée depuis la planification —
+  et le refus renvoie vers l'écran qui, lui, sait la retirer (Programme → Soumissions ODK) ;
+- quand une soumission arrive **après** une saisie à la main du même mois, la visite est
+  promue au lieu d'être doublée : elle devient la preuve de terrain, son motif de
+  rattrapage n'a plus cours. L'historique de ce motif ne survit que dans le journal
+  d'audit — c'est un arbitrage, pas une évidence.
+
+Les 527 visites de la base de démonstration sont reprises en `inconnu_anterieur`, un motif
+qui n'est **pas saisissable** : on ne prête pas aux anciennes lignes une raison que
+personne ne connaît.
+
+### Le référentiel de codes : générique, SMP en est le premier occupant
+
+Une table nomme le référentiel, ce qui évite de recoder au formulaire suivant — même
+raison que `lib/champs.js` et `lib/mapping.js`. Le chargement passe par le cadre d'import
+Excel déjà en place : modèle pré-rempli, aperçu avec écart avant écriture, lot annulable,
+écriture idempotente par le couple (référentiel, code). Le rapprochement pose les alias
+`site_external_code` et **dit ce qu'il n'a pas su faire** — combien d'entrées sans site
+avec le motif de chaque échec, combien de sites sans entrée par activité. Il dit aussi ce
+qu'il **défait** : quand le fichier ne soutient plus un lien établi, le lien tombe, et cela
+se compte au lieu de disparaître.
 
 ### Ce qu'il faut savoir avant d'activer l'exécution de scripts
 
@@ -61,9 +93,16 @@ d'exploitation, prise sciemment, pas un défaut hérité de l'image.
   reste le plus gênant à l'usage.
 - **Chantiers N et P** : intacts. Les référentiels MRE et le modèle d'indicateurs ne
   correspondent toujours à aucun référentiel du PAM.
-- **SMP reste non rattachable** : ses codes sont des entiers hors du référentiel p-code. Le
-  mécanisme d'alias est livré (migration 018) ; la table de correspondance des 1 251 codes
-  école, elle, doit venir du bureau — elle ne s'invente pas.
+- **SMP : le canal est livré, le fichier manque encore.** Ses codes sont des entiers hors du
+  référentiel p-code. Le mécanisme d'alias l'était déjà (migration 018) ; le **chargement de la
+  table** l'est désormais (migration 020, type d'import `codes`, Paramètres → Référentiels de
+  codes). Ce qui reste à obtenir est le fichier lui-même — les 1 251 codes école doivent venir
+  du bureau, ils ne s'inventent pas. Deux limites consignées plutôt que découvertes :
+  le référentiel est **générique** — les 247 codes ZAP en sont le second occupant attendu, sans
+  nouvelle ligne de code ; et le rapprochement **ne pose un code de reconnaissance qu'au-dessus
+  d'un seuil de preuve** (0,7, celui d'un p-code adm4) ou sur désignation humaine explicite.
+  Une entrée rapprochée par son seul nom est comptée « à confirmer » et ne rattache rien :
+  poser l'alias en ferait une certitude au passage suivant, sans que personne l'ait validé.
 - **Q15c** (sur quelle période un site compte comme « déjà suivi »), **Q25** et **Q26**
   (position déclarée contre position observée) restent des décisions métier. Le code les
   prépare — la fenêtre est un paramètre, l'écart en mètres est mesuré et affiché — mais ne les
@@ -903,7 +942,10 @@ selon le formulaire** :
 - **SMP est hors du référentiel** : ses `ADM3CODE`/`ADM4CODE` sont des entiers (91 = TSIVORY)
   alors que ses `ADM1CODE`/`ADM2CODE` sont des p‑codes. `geo_unit.pcode` ne peut pas les
   accueillir → une table de correspondance (1 251 codes école, 247 codes ZAP) est indispensable,
-  sans quoi **aucune soumission SMP n'est rattachable**.
+  sans quoi **aucune soumission SMP n'est rattachable**. *Traité côté outil (lot B)* : la table
+  `code_referentiel` accueille l'une comme l'autre — le nom du référentiel fait partie de la clé
+  métier —, elle se charge par le cadre d'import Excel et se rapproche des sites par un geste
+  séparé qui dit ce qu'il n'a pas su rattacher. Reste à obtenir les deux fichiers.
 - **GD_PREVMA a des codes ambigus** : 7 codes `DPName` désignent deux points de distribution
   différents (`MG51507010014` = « Androka Betohoke » *et* « Betsibarike »), ce que
   `settings.allow_choice_duplicates='yes'` autorise explicitement.

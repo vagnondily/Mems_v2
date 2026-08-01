@@ -7,6 +7,7 @@ import { config } from "../config.js";
 import { currentVersion } from "../lib/geo.js";
 import { KINDS, buildTemplate, readUpload, analyse, saveBatch, readBatch,
          commitBatch, scopeFor } from "../lib/import.js";
+import { MOTIF_SOURCE_RESERVEE, estSourceReservee } from "../lib/alias.js";
 
 const r = Router();
 
@@ -34,36 +35,61 @@ r.get("/kinds", (req, res) => {
 /* ── ① Le modèle ─────────────────────────────────────────────────────
    Pré-rempli avec les lignes du périmètre de l'utilisateur : il remplit des
    cases, il ne saisit pas de clés. C'est ce qui supprime la première source
-   d'erreurs d'un import fait à la main. */
+   d'erreurs d'un import fait à la main.
+
+   Les deux refus géographiques ci-dessous ne s'appliquent qu'aux types de portée
+   « geo ». Exiger un millésime chargé et une unité dans le périmètre pour
+   produire le modèle d'un référentiel de codes serait inventer une condition :
+   ces codes n'appartiennent à aucun découpage administratif — c'est précisément
+   pour cela qu'ils ont leur propre table. */
 r.get("/:kind/template", async (req, res, next) => {
   const def = defOf(req.params.kind);
   if(!def) return res.status(404).json({ error:"type d'import inconnu" });
   if(!can(req.user, def.cap))
     return res.status(403).json({ error:`droit « ${def.cap} » requis` });
+  const geo = def.portee === "geo";
 
   const v = currentVersion();
-  if(!v) return res.status(409).json({
+  if(geo && !v) return res.status(409).json({
     error:"aucun référentiel géographique courant : chargez un millésime avant d'importer" });
 
   const q = z.object({
     year: z.coerce.number().int().min(2000).max(2100).default(new Date().getFullYear()),
+    /* La constante de lot d'un type national. Validée ici comme n'importe quelle
+       entrée : c'est elle qui deviendra la moitié de la clé métier — et la
+       `source` des alias posés au rapprochement, d'où le nom réservé. */
+    referentiel: z.string().trim().min(1).max(60)
+      .refine(v => !estSourceReservee(v), MOTIF_SOURCE_RESERVEE).optional(),
   }).safeParse(req.query);
-  const year = q.success ? q.data.year : new Date().getFullYear();
+  if(!q.success) return res.status(422).json({
+    error: q.error.issues[0]?.message || "paramètres de modèle invalides" });
+  const year = q.data.year;
+  const referentiel = q.data.referentiel;
 
-  const { units } = scopeFor(req.user);
-  if(!units.length) return res.status(409).json({
-    error:"aucune unité dans votre périmètre : rattachez d'abord vos sites au référentiel" });
-
-  const tags = db.prepare(
-    "SELECT DISTINCT tag FROM activity_categories WHERE tag<>'' ORDER BY tag").all().map(x=>x.tag);
   const officeLabel = req.user.office_id
     ? db.prepare("SELECT name FROM offices WHERE id=?").get(req.user.office_id)?.name
     : "tous les bureaux";
 
+  let ctx;
+  if(geo){
+    const { units } = scopeFor(req.user);
+    if(!units.length) return res.status(409).json({
+      error:"aucune unité dans votre périmètre : rattachez d'abord vos sites au référentiel" });
+    const tags = db.prepare(
+      "SELECT DISTINCT tag FROM activity_categories WHERE tag<>'' ORDER BY tag").all().map(x=>x.tag);
+    ctx = { year, units, tags, versionId:v.id, officeLabel, officeId:req.user.office_id };
+  } else {
+    if(!referentiel) return res.status(422).json({
+      error:"précisez le référentiel à charger (paramètre « referentiel ») : c'est lui qui "
+        + "nomme la liste et qui forme, avec le code, la clé de chaque entrée" });
+    ctx = { referentiel, officeLabel };
+  }
+
   try{
-    const wb = await buildTemplate(req.params.kind,
-      { year, units, tags, versionId:v.id, officeLabel, officeId:req.user.office_id });
-    const nom = `mems_${req.params.kind}_${year}.xlsx`;
+    const wb = await buildTemplate(req.params.kind, ctx);
+    const nom = geo
+      ? `mems_${req.params.kind}_${year}.xlsx`
+      : `mems_${req.params.kind}_${referentiel.replace(/[^\w.-]+/g, "_")}.xlsx`;
     res.setHeader("Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", `attachment; filename="${nom}"`);
@@ -81,45 +107,69 @@ r.post("/:kind", (req, res, next) => {
     if(!can(req.user, def.cap))
       return res.status(403).json({ error:`droit « ${def.cap} » requis` });
     if(!req.file) return res.status(422).json({ error:"aucun fichier reçu" });
+    const geo = def.portee === "geo";
 
     const v = currentVersion();
-    if(!v) return res.status(409).json({ error:"aucun référentiel géographique courant" });
+    if(geo && !v) return res.status(409).json({ error:"aucun référentiel géographique courant" });
 
     try{
-      const { meta, rows } = await readUpload(req.params.kind, req.file.buffer);
+      const { meta, rows, absentes } = await readUpload(req.params.kind, req.file.buffer);
 
       /* Un modèle issu d'un autre type ou d'un autre millésime est refusé net :
          importé de travers, il rattacherait des chiffres aux mauvaises unités. */
       if(meta.kind && meta.kind !== req.params.kind)
         return res.status(422).json({ error:
           `ce fichier est un modèle « ${meta.kind} », pas « ${req.params.kind} »` });
-      if(meta.geoVersion && meta.geoVersion !== v.id)
+      /* Le contrôle de millésime se garde tout seul : `buildTemplate` écrit une
+         chaîne vide pour un type national, donc la condition est fausse et rien
+         n'est comparé. */
+      if(meta.geoVersion && meta.geoVersion !== v?.id)
         return res.status(409).json({ error:
           "ce modèle a été produit avec un autre millésime du référentiel. "
           + "Téléchargez un modèle à jour : les p-codes ont pu changer.",
-          details:[{ champ:"millésime", message:`fichier ${meta.geoVersion} · courant ${v.id}` }] });
+          details:[{ champ:"millésime", message:`fichier ${meta.geoVersion} · courant ${v?.id}` }] });
 
       if(!rows.length) return res.status(422).json({
-        error:"aucune ligne exploitable : les lignes doivent porter un p-code" });
+        error:"aucune ligne exploitable : les lignes doivent porter une valeur en colonne "
+          + `« ${def.columns.find(c => c.key)?.header || "clé"} »` });
 
-      const { scope } = scopeFor(req.user);
-      const { rows:analysees, vides } = analyse(req.params.kind, rows, { scope });
+      /* `scopeFor` n'est pas appelé du tout pour un type national : sur une
+         installation sans millésime il rendrait un périmètre VIDE pour un compte
+         borné, et ce Set vide rejetterait toutes les lignes si jamais la garde de
+         portée venait à manquer ailleurs. */
+      const { scope } = geo ? scopeFor(req.user) : { scope:null };
+      const { rows:analysees, vides } = analyse(req.params.kind, rows,
+        { scope, referentiel: meta.referentiel || null, absentes });
       const { id, summary } = saveBatch({ kind:req.params.kind, user:req.user,
-        filename:req.file.originalname, rows:analysees });
+        filename:req.file.originalname, rows:analysees, absentes });
 
       /* On renvoie un aperçu borné : le lot entier est relisible par son identifiant. */
       const echantillon = (action, n) => analysees.filter(x => x.action === action).slice(0, n)
         .map(x => ({ ligne:x.line, message:x.message || null, champ:x.field || null,
-          unite: x.payload?.adm3 || x.payload?.geo_pcode }));
+          /* Ce qui identifie la ligne pour l'œil. Un type non géographique le dit
+             lui-même, sans quoi la colonne resterait vide devant vingt motifs. */
+          unite: def.designation ? def.designation(x.payload)
+                                 : (x.payload?.adm3 || x.payload?.geo_pcode) }));
 
+      /* Ce que le fichier ne porte pas est annoncé AVANT la confirmation : une
+         colonne absente n'est ni comparée ni écrite, et l'opérateur doit savoir
+         que ces valeurs restent celles d'aujourd'hui plutôt que de le déduire
+         d'un aperçu muet. */
+      const colonnesAbsentes = absentes
+        .map(f => def.columns.find(c => c.field === f)?.header).filter(Boolean);
       res.json({ batch:id, fichier:req.file.originalname, lignes:rows.length,
         resume:{ ...summary, vides },
+        colonnesAbsentes,
         apercu: { crees:echantillon("create", 8), modifies:echantillon("update", 8) },
         rejets: echantillon("reject", 20),
         /* Rien n'est écrit à ce stade : c'est le point de tout le dispositif. */
-        message: summary.crees + summary.modifies > 0
+        message: (summary.crees + summary.modifies > 0
           ? `Rien n'a encore été enregistré. Confirmez pour appliquer ${summary.crees + summary.modifies} ligne(s).`
-          : "Rien à appliquer : aucune ligne ne change." });
+          : "Rien à appliquer : aucune ligne ne change.")
+          + (colonnesAbsentes.length
+            ? ` Le fichier ne porte pas la ou les colonnes « ${colonnesAbsentes.join(" », « ")} » : `
+              + "elles ne sont ni comparées ni modifiées."
+            : "") });
     }catch(e){
       /* Archive refusée avant décompression (entrée étrangère au format, ou taille
          inflatée disproportionnée) : c'est un fichier fautif, pas une panne — et son
@@ -164,8 +214,15 @@ r.post("/batches/:id/commit", (req, res, next) => {
     return res.status(403).json({ error:`droit « ${def?.cap || "edit"} » requis` });
 
   /* Verrou consultatif : deux confirmations du même type et du même périmètre
-     s'enchaînent au lieu de s'entrelacer. */
-  const scope = `${b.kind}:${req.user.office_id || "global"}`;
+     s'enchaînent au lieu de s'entrelacer.
+
+     Un type national n'a pas de périmètre, donc pas de verrou par bureau : deux
+     administrateurs de bureaux différents obtiendraient deux verrous distincts et
+     confirmeraient en même temps sur la MÊME table. L'upsert resterait sûr, mais
+     le diff que chacun a vu à l'aperçu ne décrirait plus ce qui s'est passé. */
+  const scope = def.portee === "national"
+    ? `${b.kind}:global`
+    : `${b.kind}:${req.user.office_id || "global"}`;
   try{
     db.prepare("INSERT INTO import_lock (scope,batch_id) VALUES (?,?)").run(scope, b.id);
   }catch(e){

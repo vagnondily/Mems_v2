@@ -3,7 +3,7 @@ import { api } from "../lib/api.js";
 import { Activity, Check, ClipboardList, Download, Globe, Link2, ListChecks, Pencil, Plus, Save, Target, Trash2, Users } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ComposedChart, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Field, Input, Modal, Note, Select, Stat, StatRow, TableWrap, Tabs, Td, Th } from "../components/ui.jsx";
-import { POP_BASE_YEAR, clsx, computeMMR, fmt, n, pct, populationFor, uid } from "../lib/calc.js";
+import { POP_BASE_YEAR, clsx, computeMMR, fmt, motifLisible, n, pct, populationFor, uid, visiteOdk } from "../lib/calc.js";
 import { C, D_ADJUST, MONTHS, MONTHS_L, SERIES } from "../lib/constants.js";
 import { DistributionActual, rate } from "./Planning.jsx";
 import { SitesModule } from "./Settings.jsx";
@@ -80,8 +80,13 @@ function ActualSummary({ db }){
 /* ── Suivi de processus : activités reliées à leurs données ODK ── */
 function ProcessData({ db, set, notify, can, go }){
   const [fStatus,setFStatus] = useState(""); const [fTag,setFTag] = useState("");
-  const rows = db.visits.filter(v=>(!fStatus||v.status===fStatus)&&(!fTag||v.tag===fTag))
+  /* L'origine est un filtre à part entière : « combien de nos visites ne viennent
+     d'aucun formulaire, et pourquoi » est la question que le lot A rend possible. */
+  const [fOrigin,setFOrigin] = useState("");
+  const rows = db.visits.filter(v=>(!fStatus||v.status===fStatus)&&(!fTag||v.tag===fTag)
+      &&(!fOrigin||(fOrigin==="odk")===visiteOdk(v)))
     .slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,300);
+  const manuelles = db.visits.filter(v=>!visiteOdk(v)).length;
   const validate = async (id) => {
     try{
       await api.setVisitStatus(id, "Validé");
@@ -118,19 +123,31 @@ function ProcessData({ db, set, notify, can, go }){
             </tr>))}</tbody>
         </TableWrap>
       </Card>
-      <Card flush title="Soumissions de suivi de processus"
-        subtitle={`${db.visits.length} enregistrements · ${db.visits.filter(v=>v.status==="À valider").length} en attente`}
+      {/* « Soumissions » était juste tant que la liste ne portait que de l'ODK. Elle
+          mêle désormais deux natures — l'observée et le rattrapage — et les nommer
+          toutes « soumissions » masquerait précisément la distinction du lot A. */}
+      <Card flush title="Visites de suivi de processus"
+        subtitle={`${db.visits.length} enregistrements · ${db.visits.filter(v=>v.status==="À valider").length} en attente · ${manuelles} saisie(s) à la main`}
         right={<><Select value={fTag} onChange={e=>setFTag(e.target.value)} empty="Toutes les activités"
             options={db.lists.tags.map(t=>t.code)} className="mi-py1 mi-xs mi-wauto" />
+          <Select value={fOrigin} onChange={e=>setFOrigin(e.target.value)} empty="Toutes origines"
+            options={[["odk","ODK"],["manuelle","Manuelle"]]} className="mi-py1 mi-xs mi-wauto" />
           <Select value={fStatus} onChange={e=>setFStatus(e.target.value)} empty="Tous les statuts"
             options={["Validé","À valider","Erreur"]} className="mi-py1 mi-xs mi-wauto" /></>}>
         <TableWrap>
-          <thead><tr><Th>Date</Th><Th>Site</Th><Th>Bureau</Th><Th>Activité</Th><Th>Moniteur</Th><Th>Formulaire</Th><Th>Statut</Th><Th /></tr></thead>
-          <tbody>{rows.map(v=>{ const s = db.sites.find(x=>x.id===v.siteId);
+          <thead><tr><Th>Date</Th><Th>Site</Th><Th>Bureau</Th><Th>Activité</Th><Th>Origine</Th><Th>Moniteur</Th><Th>Formulaire</Th><Th>Statut</Th><Th /></tr></thead>
+          <tbody>{rows.map(v=>{ const s = db.sites.find(x=>x.id===v.siteId); const odk = visiteOdk(v);
             return (<tr key={v.id} className="hover:bg-sky-50">
               <Td className="f115">{v.date}</Td>
               <Td><div className="font-medium">{s?.poi || v.siteId}</div><div className="f11 text-slate-400">{v.siteId} · {s?.adm3}</div></Td>
-              <Td>{v.office}</Td><Td><Badge tone="b">{v.tag}</Badge></Td><Td>{v.monitor}</Td>
+              <Td>{v.office}</Td><Td><Badge tone="b">{v.tag}</Badge></Td>
+              {/* Le motif se lit sous le badge, sans ouvrir quoi que ce soit : c'est
+                  la raison d'être de la colonne. La précision libre passe en
+                  infobulle pour ne pas étirer la ligne sur une phrase entière. */}
+              <Td><Badge tone={odk?"b":"y"}>{odk?"ODK":"Manuelle"}</Badge>
+                {!odk && v.motif && <div className="f11 text-slate-500 mt-0.5" title={v.motifNote||""}>
+                  {motifLisible(db, v.motif)}{v.motifNote ? " · …" : ""}</div>}</Td>
+              <Td>{v.monitor}</Td>
               <Td className="f11 text-slate-500">{v.form}</Td>
               <Td><Badge tone={v.status==="Validé"?"g":v.status==="Erreur"?"r":"y"}>{v.status}</Badge></Td>
               <Td className="text-right">{can("validate") && v.status!=="Validé" &&
@@ -154,7 +171,15 @@ function ImportView({ db, notify, can }){
   const [err,setErr]     = useState(null);
   const fileRef = useRef(null);
 
+  /* Le sélecteur reste à deux entrées : cet écran impose un exercice et refuse de
+     s'afficher sans millésime géographique (plus bas), deux conditions étrangères
+     à un référentiel de codes — celui-ci se charge depuis Paramètres. */
   const KINDS = [["caseload","Population et ciblage"],["pdd","Plan de distribution"]];
+  /* Le tableau des lots, lui, peut montrer un lot de N'IMPORTE quel type, y
+     compris ceux qui ne se chargent pas ici. Sans cette table il afficherait
+     « codes » en brut. */
+  const LIBELLES = { caseload:"Population et ciblage", pdd:"Plan de distribution",
+    codes:"Référentiel de codes d'identification" };
   const charger = () => api.importBatches().then(r=>setHist(r.rows||[])).catch(()=>{});
   useEffect(()=>{ charger(); },[]);
 
@@ -301,7 +326,7 @@ function ImportView({ db, notify, can }){
             <tbody>{hist.map(b=>(
               <tr key={b.id} className="hover:bg-sky-50">
                 <Td className="f115">{String(b.created_at||"").slice(0,16)}</Td>
-                <Td>{(KINDS.find(k=>k[0]===b.kind)||[])[1] || b.kind}</Td>
+                <Td>{LIBELLES[b.kind] || b.kind}</Td>
                 <Td className="text-slate-600">{b.filename||"—"}</Td>
                 <Td className="text-slate-500">{b.user_label||"—"}</Td>
                 <Td num>{b.summary?.crees ?? "—"}</Td>

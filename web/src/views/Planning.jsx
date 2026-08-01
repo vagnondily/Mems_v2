@@ -3,7 +3,7 @@ import { api } from "../lib/api.js";
 import { Activity, AlertTriangle, CalendarRange, Check, ClipboardList, Download, Layers, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, Users, X } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
-import { clsx, computeParam, fmt, n, pct, r1, r2, siteScore, uid } from "../lib/calc.js";
+import { clsx, computeParam, fmt, motifLisible, motifSaisissable, n, pct, r1, r2, siteScore, uid, visiteOdk, visitesDuMois } from "../lib/calc.js";
 import { ACT_CATEGORIES, C, DURATIONS, D_PARTNERS, MONITORING_TYPES, MONTHS, MONTHS_L, SITE_TYPES, coverageRows, siteDerived } from "../lib/constants.js";
 import { PageHead } from "./Shell.jsx";
 import { useGeoCascade } from "../lib/geo.js";
@@ -476,48 +476,141 @@ function ProcessPlan({ db, set, me, notify, can }){
       <MonthCellModal cell={cell} db={db} set={set} onClose={()=>setCell(null)} notify={notify} />
     </>);
 }
+/* La fiche d'un mois, partagée par DEUX écrans : le plan de suivi ci-dessus et le
+   registre des sites (Settings.jsx, monté par Suivi-évaluation → Registre des
+   sites). Une règle posée ici vaut donc pour les deux — et une règle oubliée ici
+   manque aux deux.
+
+   « Visite ne devrais pas etre saisie que dans le cas echeant ou il y a eu une
+   visite mais qu un formulaire n a pas ete remplie et meme si c est le cas il
+   faudrait expliquer pourquoi. » La voie normale est le formulaire ODK ; cocher
+   ici est un rattrapage, et le motif l'accompagne. Le serveur reste l'arbitre :
+   la projection des visites est plafonnée et filtrée par bureau, donc la
+   détection « ce mois est déjà couvert » peut être en retard sur un site ancien.
+   L'écran informe, il ne décide pas. */
 function MonthCellModal({ cell, db, set, onClose, notify }){
   const [f,setF] = useState({});
+  const visites = cell ? visitesDuMois(db, cell.site.id, cell.mi) : [];
+  const odk = visites.find(visiteOdk);
+  const manuelle = visites.find(v => !visiteOdk(v));
+  /* Le motif de la visite déjà enregistrée, quand il est de ceux qu'on peut
+     choisir. Celui de la reprise (`inconnu_anterieur`, écrit par la migration 019
+     sur TOUT l'existant) n'en est pas : le préremplir puis le renvoyer faisait
+     refuser la fiche entière par zod — missionnaire, rapport et décochage
+     compris — sur chaque mois déjà coché d'une installation existante. Il est
+     donc affiché comme une information, jamais reposté. */
+  const motifRepris = manuelle && !motifSaisissable(db, manuelle.motif) ? manuelle.motif : "";
   useEffect(()=>{ if(cell){ const p = cell.site.plan[cell.mi]||{};
+    const v = visitesDuMois(db, cell.site.id, cell.mi).find(x => !visiteOdk(x));
     setF({ activeMonth:p.activeMonth!==false, cp:p.cp||cell.site.partner||"", planned:!!p.planned,
       done:!!p.done, monitor:p.monitor||cell.site.responsible||"",
-      report:p.report||"", moda:p.moda||"" }); } },[cell]);
+      report:p.report||"", moda:p.moda||"",
+      /* Préremplis depuis la visite du mois : ré-enregistrer la fiche pour
+         corriger le missionnaire ne doit pas effacer la justification. */
+      manualReason: motifSaisissable(db, v?.motif) ? v.motif : "",
+      manualNote:v?.motifNote||"" }); } },[cell]);
   if(!cell) return null;
+  const motifs = (db.motifsVisiteManuelle||[]).filter(m=>m.saisissable);
+  const motifChoisi = (db.motifsVisiteManuelle||[]).find(m=>m.id===f.manualReason);
+  const noteRequise = !!motifChoisi?.noteObligatoire;
+  /* Le bouton reste fermé tant que la justification manque : refuser après coup
+     ce qu'on a laissé remplir est la façon la plus sûre de faire perdre une saisie.
+
+     Il n'est fermé QUE là où le serveur exige un motif : quand cocher va CRÉER
+     une visite. Un mois déjà réalisé en porte déjà une — la lui redemander pour
+     changer le missionnaire verrouillerait la fiche entière, et il suffit que la
+     visite manque à la projection (plafonnée à 5 000 lignes, filtrée par bureau)
+     pour que l'écran croie à tort devoir la réclamer. */
+  const dejaRealise = !!manuelle || !!(cell.site.plan[cell.mi]||{}).done;
+  const motifManquant = !!f.done && !odk
+    && ((!dejaRealise && !f.manualReason) || (noteRequise && !(f.manualNote||"").trim()));
   const save = async () => {
-    /* Le serveur crée la visite associée et met à jour la date de dernière visite. */
+    let r;
     try{
-      await api.saveMonth(cell.site.id, { month:cell.mi, year:db.year, active:!!f.activeMonth,
+      r = await api.saveMonth(cell.site.id, { month:cell.mi, year:db.year, active:!!f.activeMonth,
         planned:!!f.planned, done:!!f.done, cp_name:f.cp || null, monitor:f.monitor || null,
-        report:f.report || null, moda:f.moda || null });
-    }catch(e){ notify(e.message, "err"); return; }
+        report:f.report || null, moda:f.moda || null,
+        /* Le motif et sa note ne partent QUE si l'un d'eux a été choisi ici. Sans
+           motif, le serveur conserve celui de la ligne — et sa note, que l'écran
+           ne connaît pas toujours. Les envoyer à vide effacerait une justification
+           écrite six mois plus tôt pour avoir corrigé un nom de missionnaire.
+
+           La note n'accompagne le motif que si la ligne est SOUS LES YEUX, ou si
+           quelqu'un vient d'en écrire une : une visite absente de la projection
+           (plafonnée, filtrée par bureau) en porte peut-être une, et l'effacer
+           faute de l'avoir affichée serait la perdre sans que personne l'ait voulu. */
+        ...(f.manualReason
+          ? { manual_reason:f.manualReason,
+              ...(manuelle || (f.manualNote||"").trim() ? { manual_note:f.manualNote || null } : {}) }
+          : { manual_reason:null }) });
+    /* Le champ fautif accompagne le refus. « Données invalides » seul laisse
+       l'agent devant un formulaire qui a l'air complet, sans rien à corriger —
+       et le serveur, lui, nomme toujours le champ. */
+    }catch(e){ notify(e.details?.length
+      ? `${e.message} — ${e.details.map(d => d.message).join(" ; ")}` : e.message, "err"); return; }
+    /* Le miroir local suit ce que le serveur DIT avoir fait, et non ce que l'écran
+       supposait : rien n'est créé quand le mois est déjà couvert par une
+       soumission, et rien n'est retiré qui vienne d'un formulaire. */
     set(d => { const s = d.sites.find(x=>x.id===cell.site.id); if(!s) return d;
-      const before = s.plan[cell.mi]?.done;
-      s.plan[cell.mi] = { ...s.plan[cell.mi], ...f };
-      if(f.done && !before){ const date = new Date(d.year, cell.mi, 15).toISOString().slice(0,10);
+      s.plan[cell.mi] = { ...s.plan[cell.mi], activeMonth:f.activeMonth, cp:f.cp,
+        planned:f.planned, done:f.done, monitor:f.monitor, report:f.report, moda:f.moda };
+      if(r?.visite === "creee"){ const date = new Date(d.year, cell.mi, 15).toISOString().slice(0,10);
         d.visits.push({ id:uid("v"), siteId:s.id, date, tag:s.activityTag, office:s.subOffice,
-          monitor:f.monitor, form:"saisie", status:"À valider" }); s.lastVisit = date; }
-      if(!f.done && before) d.visits = d.visits.filter(v =>
-        !(v.siteId===s.id && new Date(v.date).getMonth()===cell.mi && new Date(v.date).getFullYear()===d.year));
+          monitor:f.monitor, form:"saisie", status:"À valider", origin:"manuelle",
+          motif:f.manualReason, motifNote:f.manualNote||"", submissionId:"" }); s.lastVisit = date; }
+      if(r?.visite === "corrigee"){ const v = d.visits.find(x=>x.id===manuelle?.id);
+        if(v){ v.motif = f.manualReason; v.motifNote = f.manualNote||""; } }
+      if(r?.visite === "supprimee") d.visits = d.visits.filter(v =>
+        !(v.siteId===s.id && !visiteOdk(v) && String(v.date||"").slice(0,7)===`${d.year}-${String(cell.mi+1).padStart(2,"0")}`));
       d.audit.unshift({ id:uid("a"), at:new Date().toISOString(), user:"session", office:s.subOffice,
         kind:"plan", text:`${MONTHS_L[cell.mi]} — ${s.poi} : ${f.planned?"visite planifiée":"planification retirée"}${f.done?", visite effectuée":""}` });
       return d; });
-    onClose(); notify("Fiche du mois enregistrée","ok"); };
+    onClose();
+    notify(r?.message || "Fiche du mois enregistrée", r?.message ? "info" : "ok"); };
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
   return (
     <Modal open onClose={onClose} title={`${MONTHS_L[cell.mi]} — ${cell.site.poi}`}
       subtitle={`${cell.site.id} · ${cell.site.subOffice} · ${cell.site.adm3} · ${cell.site.activityTag}`}
-      footer={<><Btn kind="sec" icon={X} onClick={onClose}>Annuler</Btn><Btn icon={Check} onClick={save}>Enregistrer</Btn></>}>
+      footer={<><Btn kind="sec" icon={X} onClick={onClose}>Annuler</Btn>
+        <Btn icon={Check} disabled={motifManquant} onClick={save}>Enregistrer</Btn></>}>
+      {/* La destination est nommée là où elle se trouve : « Actual Data » n'est plus
+          monté nulle part et aucun onglet ne s'appelle « Suivi de processus ». Le
+          détachement retire aussi la visite — sans quoi ce conseil ne mènerait à rien. */}
+      {odk && <Note tone="ok">Ce mois est documenté par un formulaire ODK{odk.submissionId ? " (soumission "+odk.submissionId+")" : ""},
+        daté du {odk.date}. La visite ne se retire pas d'ici : si elle est erronée, corrigez ou
+        détachez la soumission dans Programme → Soumissions ODK, ce qui retire aussi cette visite.</Note>}
       <Sw label="Site actif ce mois" on={f.activeMonth} onChange={v=>u("activeMonth",v)} />
       <Sw label="Visite planifiée" on={f.planned} onChange={v=>u("planned",v)} />
-      <Sw label="Visite effectuée" on={f.done} onChange={v=>u("done",v)} />
+      <Sw label="Visite effectuée" on={f.done} onChange={v=>u("done",v)} disabled={!!odk}
+        hint={odk ? "Établie par la soumission rattachée" : undefined} />
+      {f.done && !odk && (
+        <div className="mt-3">
+          <Note tone="warn">La voie normale d'une visite est le formulaire ODK. Une saisie ici est un
+            rattrapage : dites pourquoi le formulaire n'a pas été rempli.</Note>
+          {!!motifRepris && !f.manualReason && (
+            <Note>Cette visite est antérieure à la règle : son motif n'a jamais été demandé
+              ({motifLisible(db, motifRepris)}). Vous pouvez enregistrer la fiche telle quelle — il
+              sera conservé — ou choisir ci-dessous le motif qui le remplacera.</Note>)}
+          <div className="grid grid-cols-2 gap-x-4">
+            <Field label="Motif de la saisie à la main"
+              hint={dejaRealise ? "Facultatif : le motif enregistré est conservé" : "Obligatoire"}>
+              <Select value={f.manualReason||""} onChange={e=>u("manualReason",e.target.value)}
+                empty="— choisissez un motif —" options={motifs.map(m=>[m.id,m.libelle])} /></Field>
+            <Field label={noteRequise ? "Précisez (obligatoire)" : "Précision (facultative)"}
+              hint={noteRequise ? "« Autre » n'explique rien à lui seul" : "Ce qui aidera à relire cette ligne dans six mois"}>
+              <Input value={f.manualNote||""} onChange={e=>u("manualNote",e.target.value)} /></Field>
+          </div>
+        </div>)}
       <div className="grid grid-cols-2 gap-x-4 mt-4">
         <Field label="CP Name — partenaire coopérant"><Select value={f.cp||""} onChange={e=>u("cp",e.target.value)} empty="—" options={db.lists.partners} /></Field>
         <Field label="Missionnaire"><Input value={f.monitor||""} onChange={e=>u("monitor",e.target.value)} /></Field>
         <Field label="Rapport de mission" hint="Référence ou lien du rapport"><Input value={f.report||""} onChange={e=>u("report",e.target.value)} /></Field>
         <Field label="Rapport MoDa" hint="Identifiant de la soumission"><Input value={f.moda||""} onChange={e=>u("moda",e.target.value)} /></Field>
       </div>
-      <p className="f115 text-slate-500 leading-relaxed">Cocher « visite effectuée » crée une visite au statut
-        <b> À valider</b> dans Actual Data et met à jour la date de dernière visite.</p>
+      <p className="f115 text-slate-500 leading-relaxed">Cocher « visite effectuée » enregistre une visite
+        saisie à la main, au statut <b>À valider</b> dans les visites réalisées, avec son motif. Rien
+        n'est créé si une soumission ODK documente déjà ce mois : elle fait foi. Décocher retire la
+        saisie à la main — jamais une visite issue d'un formulaire.</p>
     </Modal>);
 }
 
