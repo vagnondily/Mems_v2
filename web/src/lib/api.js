@@ -61,6 +61,21 @@ async function postFile(path, file, field = "file"){
   if(!res.ok) throw new ApiError(res.status, payload?.error || `erreur ${res.status}`, payload?.details);
   return payload;
 }
+/* Plusieurs fichiers d'un coup (le shapefile : .shp + .dbf + .prj, ou un .zip),
+   accompagnés de champs texte — la correspondance des colonnes, le nom du
+   millésime. Le serveur les classe par extension ; le nom de champ importe peu. */
+async function postFiles(path, files, fields = {}){
+  const headers = {};
+  if(token) headers["Authorization"] = `Bearer ${token}`;
+  const body = new FormData();
+  for(const f of files) if(f) body.append("fichier", f, f.name);
+  for(const [k, v] of Object.entries(fields)) if(v != null) body.append(k, String(v));
+  const res = await fetch(BASE + path, { method:"POST", headers, credentials:"include", body });
+  let payload = null;
+  try{ payload = await res.json(); }catch(e){}
+  if(!res.ok) throw new ApiError(res.status, payload?.error || `erreur ${res.status}`, payload?.details);
+  return payload;
+}
 
 /* Point de montage des routes d'administration de l'instance. Une seule
    constante : les onze appels ci-dessous ne connaissent pas le préfixe. */
@@ -125,6 +140,18 @@ export const api = {
   setGeoVersion:(id)              => call("PUT", `/geo/versions/${encodeURIComponent(id)}/current`),
   /* Un import crée un millésime complet : le serveur reconstruit l'arbre. */
   importGeo:    (rows, label, source) => call("POST", "/geo/bulk", { rows, label, source }),
+
+  /* Téléversement d'un shapefile, lu par le SERVEUR (le navigateur n'embarque plus
+     de parseur). `files` est un tableau de .shp/.dbf/.prj, ou un unique .zip.
+     `mapping` associe chaque colonne du .dbf à une variable MEMS (adm0…adm4,
+     pcode0…pcode4). L'aperçu ne rien écrit ; le commit bascule le millésime. */
+  shapefilePreview: (files, mapping, allowDuplicates = false) =>
+    postFiles("/geo/shapefile/apercu", files,
+      { mapping: JSON.stringify(mapping || {}), allowDuplicates: allowDuplicates ? "true" : "" }),
+  shapefileCommit:  (files, mapping, label, source, allowDuplicates = false) =>
+    postFiles("/geo/shapefile/commit", files,
+      { mapping: JSON.stringify(mapping || {}), label, source,
+        allowDuplicates: allowDuplicates ? "true" : "" }),
 
   /* Contours administratifs. L'import est envoyé par lots — les contours d'un pays
      entier ne passent pas dans un corps de requête — et le premier lot porte

@@ -55,6 +55,13 @@ export const config = {
   rateLoginMax: int(process.env.RATE_LOGIN_MAX, 10),
   rateApiMax: int(process.env.RATE_API_MAX, 600),
   maxBodyMb: int(process.env.MAX_BODY_MB, 25),
+  /* Un shapefile de communes pèse des dizaines de mégaoctets — le .shp de
+     Madagascar en fait 23,5. Il ne passe donc pas sous `maxBodyMb`, qui protège
+     le corps JSON. Cette borne-ci ne s'applique QUE au téléversement du
+     découpage (multer, route /geo/shapefile), jamais au corps JSON global : un
+     corps JSON de 64 Mo resterait un vecteur d'abus. Un .zip compresse bien et
+     passe largement en dessous ; la marge couvre le dépôt des fichiers séparés. */
+  maxShapefileMb: int(process.env.MAX_SHAPEFILE_MB, 64),
   bcryptRounds: int(process.env.BCRYPT_ROUNDS, 12),
   lockAfter: int(process.env.LOCK_AFTER_FAILED, 8),
   lockMinutes: int(process.env.LOCK_MINUTES, 15),

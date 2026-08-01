@@ -1087,15 +1087,47 @@ tant qu'aucun rapport validé sur l'évolution des populations bénéficiaires n
   année), et réversible tant qu'un rapport validé ne l'a pas remplacé ;
 - quand un rapport validé arrive, il **remplace** la projection et le dit.
 
-### S3 — Paramètres et listes : regrouper, pas empiler
+### S3 — Paramètres : finaliser la configuration D'ABORD (demande du 01/08/2026, priorité relevée)
 
-Aujourd'hui ~16 onglets à plat. Cible : un **volet gauche de catégories** avec sous-onglets,
-le contenu à droite (maître-détail). Regroupement proposé : Organisation (général, pays,
-bureaux, périmètres) · Référentiels géographiques (localités, contours/shapefile) ·
-Référentiels M&E (indicateurs, calculs, rations, codes d'identification) · Sources de
-données (ODK Central, connecteurs) · Modèles de rapport · Système (API, utilisateurs, à
-propos). Même principe pour la gestion des listes : des sous-catégories au lieu d'un écran
-surchargé.
+Le propriétaire relève cette partie en tête : « travaille sur les paramètres en premier lieu
+pour finaliser cette partie configuration, c'est la base de tout, règle chaque souci, fais que
+tout fonctionne, réorganise les options pour un rendu professionnel ». Passe donc AVANT le
+chantier R. Contrainte : `Settings.jsx` est tenu par le lot shapefile en cours — s'exécute une
+fois ce lot atterri.
+
+**Audit des 16 onglets (état stable, commité), soucis réels à régler :**
+
+1. **Sept réglages se perdent au rechargement** — le plus grave, c'est du « saisir dans le
+   vide ». `scoring`, `roles`, `mmr`, `lists` (partenaires, modalités), `actCategories`,
+   `outcomePlan`, `formulas` sont éditables (Calculs, Indicateurs, listes…) et jamais
+   persistés côté serveur (chantier D). À traiter en bloc : soit les persister (les verser
+   dans une collection synchronisée ou dans `settings`), soit passer l'écran en lecture seule.
+   La bonne réponse ici est de PERSISTER — la configuration est le socle, elle doit tenir.
+2. **Export des Localités tronqué en silence** (chantier I1) : `toCSV(dir.rows,…)` n'exporte
+   que la page affichée (`PER=200`) au lieu du jeu filtré complet — 200 lignes sur 18 000
+   fokontany, sans avertissement. Exporter la totalité, avec BOM UTF-8 et p-codes préservés.
+3. **Sites hors de Paramètres** : demande ancienne du propriétaire, jamais faite — l'onglet
+   « Sites » est de la gestion de données, pas de la configuration. Le retirer d'ici (il vit
+   déjà ailleurs via SitesModule).
+4. **Rations** : l'onglet actuel est l'ancienne matrice `settings.rationTable` ; il sera
+   remplacé par le catalogue du chantier R. Pour cette passe, au minimum garantir qu'il
+   persiste ; la refonte complète est R.
+
+**Réorganisation maître-détail (le « rendu professionnel ») — volet gauche de groupes,
+contenu à droite :**
+
+| Groupe | Sous-onglets |
+|---|---|
+| Organisation | Général · Pays · Bureaux · Périmètre des bureaux |
+| Référentiels géographiques | Localités (+ import shapefile/contours) |
+| Référentiels M&E | Indicateurs · Calculs · Rations · Codes d'identification |
+| Sources de données | ODK Central · Connecteurs |
+| Rapports | Modèles de rapport |
+| Système | API · Utilisateurs · À propos |
+
+Même principe pour la gestion des listes : des sous-catégories plutôt qu'un écran surchargé.
+Chaque onglet est parcouru, testé et corrigé un par un — l'objectif est que TOUT fonctionne,
+pas seulement que ce soit mieux rangé.
 
 ### S4 — La passe de cohérence transversale
 
@@ -1109,6 +1141,39 @@ ce qui s'est passé après mon clic.
 Position dans la séquence : **après** les chantiers fonctionnels en cours (authentification,
 shapefile, cadre de résultats, QC, chantier R) — c'est la passe finale voulue par le
 propriétaire (« une fois tout terminé on va s'attaquer au UI »).
+
+## Chantier T — Intégration MoDa/Kobo réelle et onglet de résultats par activité (demande du 01/08/2026)
+
+Le propriétaire a fourni l'API réelle : `https://moda.wfp.org/api/v1/data/340943`, format Kobo,
+avec un jeton d'API. **Le secret ne figure nulle part dans ce dépôt** — il vit dans le coffre
+chiffré (`connector.secret_enc`), saisi à l'exécution dans l'instance. Recommandation faite au
+propriétaire : régénérer ce jeton après mise en place, puisqu'il a transité par une conversation.
+
+**Détail d'intégration établi par l'URL** : `moda.wfp.org` est une instance **kobocat v1**
+(`/api/v1/data/{id numérique}`), et non KPI v2 (`/api/v2/assets/{uid}/data`). Le chemin de
+lecture d'un connecteur Kobo doit donc être **configurable** pour couvrir les deux saveurs —
+c'est précisément la limite notée au lot d'authentification (« mot-clé Token établi d'après le
+code source, pas d'une instance réelle »). Le schéma `Token` livré est le bon ; reste à ne pas
+figer le chemin.
+
+**Contrainte d'environnement** : le bac à sable de développement bloque tout HTTPS sortant
+(même `example.com` répond 403 au tunnel). Le tirage réel se fait donc dans l'environnement du
+propriétaire (Codespace), pas ici. Le code est bâti et testé hors-ligne — grounded sur les
+XLSForms (noms de variables), les scripts QC (analyse) et le tableau de bord HTML (écran cible),
+tous déjà dans `docs/`. Seul le premier tirage vivant revient au propriétaire.
+
+Le flux, tel que demandé :
+1. **Lier la source** (connecteur `kobo`, base `moda.wfp.org`, chemin `/api/v1/data/340943`,
+   jeton `Token`) et **tirer vers le cache** avec le schéma d'authentification livré.
+2. **Mapping** des champs de soumission mis en cache vers les **indicateurs de l'XLSForm**,
+   via la couche de correspondance des variables (`lib/champs.js`, `lib/mapping.js`,
+   `connector_mapping`) — pas un mécanisme parallèle.
+3. **Onglet de résultats par activité** qui exécute l'analyse des scripts QC (les ~80 règles
+   des quatre applications Shiny déjà consignées) et restitue comme `docs/dashboard_suivi_
+   processus_WFP.html` : couverture, indice de conformité par visite, scorecard, par activité.
+
+Séquence : après le chantier shapefile (ils touchent tous deux `Settings.jsx` et `api.js` — les
+lancer en parallèle créerait des conflits).
 
 **Le format PDD comme gabarit d'import** : la logique de « Details » (1 ligne = lieu × mois
 × activité × modalité) est le bon modèle, mais le fichier réel est inutilisable tel quel —
@@ -1124,6 +1189,48 @@ décoratives** (taux de change pointant une cellule vide, blocs Février/Mars ja
 le XLOOKUP, jours recopiés en 31, 32, 33… au lieu de 30, tonnages saisis à la main qui ne
 recollent pas avec ration × jours). C'est l'argument le plus concret en faveur du calcul
 par MEMS : la formule vit à UN endroit, testée, au lieu de 3 911 cellules.
+
+## Trois gabarits du plan de suivi (reçus le 01/08/2026) — ancrent le chantier L et le suivi fondé sur le risque
+
+Le propriétaire a déposé les fichiers réels du plan de suivi. Ils donnent le modèle exact de
+ce qu'il avait décrit (tableau adm1-adm3 avec les sites configurés, planification par
+commune/district, « déjà suivi »), et surtout la MÉTHODE de couverture fondée sur le risque.
+
+- **`List Sites per Tag.xlsx`** — le répertoire des sites croisés aux activités. Feuille
+  « Sites » : 2 874 sites × 26 colonnes (`ID, Field_office(+code, +code ancien), Adm1..Adm4
+  Name/Code (+ codes anciens)`) ; feuille reliant `POIName / POI_code / Activity_tag`. C'est
+  la source du tableau du plan, et elle confirme deux besoins déjà notés : les **codes
+  administratifs anciens** (une colonne `_ancien` par niveau — la bascule de millésime que le
+  chantier shapefile doit outiller) et le rattachement site→activité par tag.
+
+- **`Plan de suivi 2026 - Copy.xlsx`** — un plan réellement rempli : feuille « Mapping plan de
+  suivi » (3 008 lignes × 55 colonnes), « Update_location » (3 373 × 47), et le shapefile adm3
+  embarqué (`mdg_bnd_adm3_com_pam2`, mêmes colonnes que le .dbf déjà analysé). Preuve que le
+  plan, le découpage et les sites vivent aujourd'hui dans un seul classeur — ce que MEMS doit
+  réunir proprement.
+
+- **`Plan de suivi revue.xlsm`** — le plus important : l'outil « Monitoring Plan » du PAM, la
+  MÉTHODE. Il porte, prêts à modéliser :
+  - **Les paramètres du suivi fondé sur le risque** (feuille « Overarching parameters ») :
+    `Minimum required interval`, `Minimum required frequency`, `Targeted number of sites`,
+    `Feasible number of sites`, `CO adjusted required frequency/interval`, `Operation duration`,
+    `Number of sites`, par CSP Activity et par bureau. C'est le cœur du moteur de priorisation
+    et de couverture — les colonnes existent, il n'y a pas à les inventer.
+  - **Le plan de couverture mensuel** (feuille « Monitoring Coverage Plan ») :
+    `CSP Activity | Activity category | Site visits | Janvier…Décembre | Cumulative`.
+  - **Les plans par bureau** (Manakara, Toliara, Ambovombe, Ampanihy, Antananarivo, 134
+    colonnes) : `# | Sous-bureau | Antenne | Site | Région | District | Commune | Fokontany |
+    ID | GPS lat/long | Activity Category | Programme Area | Activity Tags | Security situation
+    | Programme synergies`, avec les colonnes mensuelles de couverture.
+  - La **taxonomie d'activités** (feuilles « dropdown », « Sheet6 ») : Unconditional resource
+    transfer, Asset creation and livelihoods (FFA), Action to protect against…, School based
+    programme (SMP), Malnutrition treatment, Malnutrition prevention, Smallholder agriculture…
+    — le référentiel d'activités CSP réel, à croiser avec les tags MEMS.
+
+Conséquence pour le chantier L : le tableau du plan de suivi (adm1-adm3 × sites × mois), les
+symboles à expliquer par infobulle, et le « déjà suivi » depuis ODK ont désormais leur
+gabarit exact. Et le suivi fondé sur le risque cesse d'être une intention : ses paramètres
+(intervalle/fréquence requis, sites ciblés vs faisables, ajustement CO) sont donnés.
 
 # Documents de référence reçus le 31/07/2026
 
