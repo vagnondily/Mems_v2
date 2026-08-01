@@ -384,16 +384,21 @@ function CoveragePlan({ db, set, me, notify, can }){
                 <tr key={g.id} className="hover:bg-sky-50">
                   <Td className="font-medium text-slate-800 mw300">{g.area}</Td>
                   <Td className="mi-tc">{g.cashVoucher ? <Badge tone="b">{g.cashVoucher}</Badge> : <span className="text-slate-400">—</span>}</Td>
-                  <Td><select value={g.duration} disabled={!can("edit")} onChange={e=>set(d=>{ d.mmr[i].duration=e.target.value; return d; })}
+                  {/* Les exigences MMR sont une configuration valable pour toute
+                      l'installation ; elles se rangent, et se persistent, avec les
+                      réglages — réservés à l'administration. On aligne donc l'édition
+                      sur ce droit, au lieu de laisser saisir dans le vide un compte
+                      dont l'enregistrement des réglages serait refusé. */}
+                  <Td><select value={g.duration} disabled={!can("admin")} onChange={e=>set(d=>{ d.mmr[i].duration=e.target.value; return d; })}
                     className="px-1.5 py-0.5 f115 border border-slate-200 rounded">{DURATIONS.map(x=><option key={x}>{x}</option>)}</select></Td>
-                  <Td><select value={g.siteType} disabled={!can("edit")} onChange={e=>set(d=>{ d.mmr[i].siteType=e.target.value; return d; })}
+                  <Td><select value={g.siteType} disabled={!can("admin")} onChange={e=>set(d=>{ d.mmr[i].siteType=e.target.value; return d; })}
                     className="px-1.5 py-0.5 f115 border border-slate-200 rounded">{SITE_TYPES.map(x=><option key={x}>{x}</option>)}</select></Td>
-                  <Td><select value={g.monitoring} disabled={!can("edit")} onChange={e=>set(d=>{ d.mmr[i].monitoring=e.target.value; return d; })}
+                  <Td><select value={g.monitoring} disabled={!can("admin")} onChange={e=>set(d=>{ d.mmr[i].monitoring=e.target.value; return d; })}
                     className="px-1.5 py-0.5 f115 border border-slate-200 rounded">{MONITORING_TYPES.map(x=><option key={x}>{x}</option>)}</select></Td>
                   <Td className="text-slate-600 mw300">{g.guidance}</Td>
                   <Td num><b>{fmt(g.active)}</b></Td><Td num>{fmt(g.toVisit)}</Td>
                   {g.counts.map((c,k)=><Td key={k} num className="text-slate-600">{c||"—"}</Td>)}
-                  <Td num><input type="number" step="0.1" value={g.coef} disabled={!can("edit")}
+                  <Td num><input type="number" step="0.1" value={g.coef} disabled={!can("admin")}
                     onChange={e=>set(d=>{ d.mmr[i].coef=n(e.target.value); return d; })}
                     className="w-16 px-1.5 py-0.5 f12 text-right border border-slate-200 rounded" /></Td>
                   <Td num>{fmt(g.requirement)}</Td>
@@ -1217,9 +1222,12 @@ function OutcomePlan({ db, set, notify, can }){
         Paramètres → Indicateurs ; une case verte signale qu'une valeur a été enregistrée ce mois-là.</Note>
       <Card flush title="Plan de collecte des indicateurs de résultat">
         <MonthLegend />
+        {/* Le calendrier de collecte est un réglage global, persisté avec les autres
+            réglages (réservés à l'administration) : on aligne l'édition sur ce droit
+            plutôt que de laisser cocher un compte dont l'enregistrement serait refusé. */}
         <MonthGrid rows={rows} labelOf={r=>r.name}
           subOf={r=>`${r.id} · ${r.basket} · ${r.method} · ${r.freq}`}
-          cellOf={cellOf} onCell={(r,mi)=>can("edit")&&toggle(r,mi)} />
+          cellOf={cellOf} onCell={(r,mi)=>can("admin")&&toggle(r,mi)} />
       </Card>
     </>);
 }

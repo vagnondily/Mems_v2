@@ -49,7 +49,7 @@ Ce document décrit un état daté. Ce qui a été livré depuis est consigné i
 qui le porte — le corps du document reste écrit au moment de l'audit, et le lire sans ce
 journal donnerait une image fausse de ce qui reste à faire.
 
-**Tests au dernier commit : 205 côté serveur, 39 côté web, 0 échec. Audit de production :
+**Tests au dernier commit : 217 côté serveur, 44 côté web, 0 échec. Audit de production :
 aucun avis grave, ni serveur ni web.**
 
 | Commit | Ce qui est livré | Effet sur ce document |
@@ -1195,6 +1195,13 @@ fois ce lot atterri.
     devient une étape de la fiche pays, le millésime créé est rattaché au pays courant, et la
     bascule ne touche que le découpage de CE pays. C'est l'aboutissement de l'unification
     (points 7-8) : une seule entrée, dans le pays.
+    **Précisé le 01/08 :** la fiche pays reçoit DEUX injections — (a) le **shapefile** (sa
+    géométrie ET sa table d'attributs) qui donne le découpage adm0→4 et les contours ; (b) un
+    **`.dbf` pour la liste des sites**, qui peut porter **beaucoup de lignes** (échelle adm4 /
+    milliers de sites). Le premier alimente le référentiel géographique, le second le registre
+    des sites. Les deux doivent tenir le volume (lecture serveur en flux, écriture par lots,
+    limite d'envoi à 150 Mo). Le `.dbf` des sites est distinct du `.dbf` du découpage :
+    prévoir deux dépôts clairement libellés dans la fiche pays.
 
 **Réorganisation maître-détail (le « rendu professionnel ») — volet gauche de groupes,
 contenu à droite :**
