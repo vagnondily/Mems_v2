@@ -93,7 +93,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
       {active==="country" && <SetCountry db={db} notify={notify} can={can} reload={reload} />}
       {active==="offices" && <SetOffices db={db} notify={notify} can={can} reload={reload} />}
       {active==="about" && <SetAbout db={db} />}
-      {active==="locations" && <SetLocations db={db} notify={notify} can={can} reload={reload} />}
+      {active==="locations" && <SetLocations db={db} notify={notify} can={can} reload={reload} me={me} />}
       {active==="scope" && <SetScope db={db} notify={notify} can={can} />}
       {active==="activities" && <SetActivities db={db} notify={notify} can={can} reload={reload} me={me} />}
       {active==="listes" && <SetListes notify={notify} can={can} me={me} />}
@@ -1718,8 +1718,9 @@ function SetContoursNiveaux({ db, notify, can, onCommitted, inline }){
    (région → district → commune → fokontany) chargé par millésime. Sites, population
    et distributions s'y raccrochent, donc il ne se modifie pas à la main — on importe
    un nouveau millésime, et l'ancien reste disponible. */
-function SetLocations({ db, notify, can, reload }){
+function SetLocations({ db, notify, can, reload, me }){
   const [versions,setVersions] = useState([]);
+  const [refBusy,setRefBusy]   = useState("");   /* chargement des données de référence */
   /* La suppression des contours reste une action de maintenance (le millésime
      garde son arbre, on n'en retire que le fond de carte) : un seul verrou suffit. */
   const [geomBusy,setGeomBusy] = useState(false);
@@ -1743,10 +1744,17 @@ function SetLocations({ db, notify, can, reload }){
   const [refresh,setRefresh] = useState(0);
   /* Le parent le plus profond réellement choisi borne la requête. */
   const parent = geo.codes.adm3 || geo.codes.adm2 || geo.codes.adm1 || "";
+  /* Le niveau le plus PROFOND réellement chargé. Le répertoire visait « adm4 »
+     en dur — or le shapefile officiel de Madagascar s'arrête aux COMMUNES
+     (adm3), sans fokontany : la requête ne rendait alors rien, et l'écran
+     paraissait vide (« dans l'onglet localité je ne vois rien »). On affiche
+     donc la maille la plus fine qui existe dans le millésime courant. */
+  const niveauProfond = ["adm4","adm3","adm2","adm1"]
+    .find(l => (db.geoVersion?.counts?.[l] || 0) > 0) || "adm4";
   useEffect(()=>{
     let alive = true;
     setDir(d=>({ ...d, loading:true }));
-    const qs = new URLSearchParams({ level:"adm4", limit:String(PER), offset:String(page*PER) });
+    const qs = new URLSearchParams({ level:niveauProfond, limit:String(PER), offset:String(page*PER) });
     if(parent) qs.set("parent", parent);
     if(q.trim()) qs.set("search", q.trim());
     const id = setTimeout(() => {
@@ -1754,7 +1762,7 @@ function SetLocations({ db, notify, can, reload }){
         .catch(e => { if(alive) setDir({ rows:[], total:0, version:null, loading:false, error:e.message }); });
     }, q ? 280 : 0);                       /* la recherche attend la fin de la frappe */
     return () => { alive = false; clearTimeout(id); };
-  }, [parent, q, page, refresh]);
+  }, [parent, q, page, refresh, niveauProfond]);
   useEffect(()=>{ setPage(0); }, [parent, q]);
 
   const activate = async (id, lb) => {
@@ -1773,7 +1781,7 @@ function SetLocations({ db, notify, can, reload }){
   const exp = async () => {
     setExportEnCours(true);
     const lecteur = (offset, limit) => {
-      const qs = new URLSearchParams({ level:"adm4", limit:String(limit), offset:String(offset) });
+      const qs = new URLSearchParams({ level:niveauProfond, limit:String(limit), offset:String(offset) });
       if(parent) qs.set("parent", parent);
       if(q.trim()) qs.set("search", q.trim());
       return api.geo("?"+qs);
@@ -1804,6 +1812,40 @@ function SetLocations({ db, notify, can, reload }){
         fichier sans le charger en mémoire :
         <code className="bg-white px-1 rounded mx-1">node src/import-geo.js fichier.csv --label "COD-AB v2023.1"</code>
       </Aide>
+
+      {/* Chargement des données de référence DEPUIS LE SERVEUR — aucun téléversement,
+          donc aucune limite de taille (le « 413 » sur un shapefile de 23 Mo). Les
+          fichiers réels sont déjà dans docs/ ; le serveur les lit sur place. */}
+      {me?.role==="super" && (() => {
+        const load = async (quoi) => { setRefBusy(quoi);
+          try{ const r = await api.chargerReference(quoi);
+            const b = r.bilan||{};
+            notify(quoi==="decoupage" ? `Découpage chargé : ${fmt(b.geo?.unites||0)} unités, ${fmt(b.geo?.contours||0)} contours`
+              : quoi==="indicateurs" ? `Référentiels chargés : ${fmt(b.activites?.lues||0)} activités, ${fmt(b.indicateurs?.lues||0)} indicateurs`
+              : `Sites chargés : ${fmt(b.crees||0)} créés, ${fmt(b.majs||0)} mis à jour`, "ok");
+            await reload?.(); await loadVersions();
+          }catch(e){ notify(e.message,"err"); } setRefBusy(""); };
+        const geoCount = db.geoVersion?.counts ? Object.values(db.geoVersion.counts).reduce((a,b)=>a+b,0) : 0;
+        return (
+          <Card title="Données de référence (chargement serveur)"
+            subtitle="Chargées depuis les fichiers du serveur (docs/) — aucun téléversement, aucune limite de taille">
+            <Note tone="tool">Le serveur lit directement les fichiers officiels déjà présents : le
+              <b> découpage Madagascar</b> (shapefile), la <b>masterlist</b> (activités + indicateurs) et les
+              <b> sites par tag</b> (2 872 POI géolocalisés). C'est la voie à prendre si un téléversement
+              échoue en <b>413 (fichier trop volumineux)</b> — ici rien n'est envoyé.</Note>
+            <div className="flex flex-wrap gap-2">
+              <Btn kind="sec" icon={MapPin} disabled={!!refBusy}
+                onClick={()=>load("decoupage")}>{refBusy==="decoupage"?"Chargement…":`Découpage Madagascar${geoCount?" (recharger)":""}`}</Btn>
+              <Btn kind="sec" icon={Target} disabled={!!refBusy}
+                onClick={()=>load("indicateurs")}>{refBusy==="indicateurs"?"Chargement…":`Activités + indicateurs${(db.indicators||[]).length?" (recharger)":""}`}</Btn>
+              <Btn kind="sec" icon={MapPin} disabled={!!refBusy||!geoCount}
+                onClick={()=>load("sites")} title={geoCount?"":"Chargez d'abord le découpage"}>{refBusy==="sites"?"Chargement…":`Sites par tag${(db.sites||[]).length?" (recharger)":""}`}</Btn>
+            </div>
+            <div className="f11 text-slate-500 mt-2">
+              État actuel : {fmt(geoCount)} unités géo · {fmt((db.indicators||[]).length)} indicateurs ·
+              {" "}{fmt((db.sites||[]).length)} sites. Chargez le découpage AVANT les sites (ils s'y rattachent).</div>
+          </Card>);
+      })()}
 
       {cur ? (
         <Card title="Référentiel courant" subtitle={`« ${cur.label} » — importé le ${String(cur.importedAt||"").slice(0,10)}`}>
@@ -1903,7 +1945,7 @@ function SetLocations({ db, notify, can, reload }){
 
       <Card flush title="Répertoire des localités"
         subtitle={dir.loading ? "Chargement…"
-          : `${fmt(dir.total)} fokontany dans la sélection · page ${page+1} sur ${Math.max(1,pages)}`}
+          : `${fmt(dir.total)} ${niveau(db, niveauProfond, false).toLowerCase()}(s) dans la sélection · page ${page+1} sur ${Math.max(1,pages)}`}
         right={<>
           <Btn size="sm" kind="sec" icon={Download} onClick={exp} disabled={exportEnCours || !dir.total}>
             {exportEnCours ? "Export…" : "Exporter tout"}</Btn>
@@ -1918,18 +1960,26 @@ function SetLocations({ db, notify, can, reload }){
           <div className="relative"><Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
             <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Rechercher…" className={clsx(inputCls,"pl-7 mi-py1 w-44")} /></div></>}>
         <TableWrap>
-          <thead><tr>{[...niveaux(db, { from:"adm1", to:"adm4", plural:false }).map(x=>x[1]),
-            "P-code"].map(h=><Th key={h}>{h}</Th>)}
-            <Th num>Latitude</Th><Th num>Longitude</Th><Th num>Sites</Th></tr></thead>
-          <tbody>{dir.rows.map(g=>{
-            const cnt = db.sites.filter(s=>g.adm3 && s.adm3===g.adm3).length;
-            return (<tr key={g.pcode} className="hover:bg-sky-50">
-              <Td className="text-slate-500">{g.adm1||"—"}</Td><Td className="text-slate-500">{g.adm2||"—"}</Td>
-              <Td>{g.adm3||"—"}</Td><Td className="font-medium text-slate-800">{g.name}</Td>
-              <Td className="f115 c-bd">{g.pcode}</Td>
-              <Td num className="f115">{g.lat ?? "—"}</Td><Td num className="f115">{g.lon ?? "—"}</Td>
-              <Td num className="text-slate-500">{cnt||""}</Td>
-            </tr>); })}</tbody>
+          {(() => {
+            /* Colonnes jusqu'à la maille la plus fine réellement chargée : pour un
+               découpage aux communes (adm3), on n'affiche pas une colonne fokontany
+               vide. La dernière colonne porte le nom de l'unité (g.name). */
+            const cols = niveaux(db, { from:"adm1", to:niveauProfond, plural:false });
+            return (<>
+              <thead><tr>{cols.map(([c,l])=><Th key={c}>{l}</Th>)}<Th>P-code</Th>
+                <Th num>Latitude</Th><Th num>Longitude</Th><Th num>Sites</Th></tr></thead>
+              <tbody>{dir.rows.map(g=>{
+                const cnt = db.sites.filter(s => s[niveauProfond]
+                  ? s[niveauProfond]===g.name : (g.adm3 && s.adm3===g.adm3)).length;
+                return (<tr key={g.pcode} className="hover:bg-sky-50">
+                  {cols.map(([c])=><Td key={c} className={c===niveauProfond?"font-medium text-slate-800":"text-slate-500"}>
+                    {c===niveauProfond ? g.name : (g[c]||"—")}</Td>)}
+                  <Td className="f115 c-bd">{g.pcode}</Td>
+                  <Td num className="f115">{g.lat ?? "—"}</Td><Td num className="f115">{g.lon ?? "—"}</Td>
+                  <Td num className="text-slate-500">{cnt||""}</Td>
+                </tr>); })}</tbody>
+            </>);
+          })()}
         </TableWrap>
         {!dir.loading && !dir.rows.length && (
           <div className="px-4 py-8 text-center f125 text-slate-500">

@@ -54,8 +54,11 @@ const optionValeur = (nom, defaut) => {
   return i >= 0 && args[i + 1] ? args[i + 1] : defaut;
 };
 const DOCS = path.resolve(optionValeur("--docs", path.join(here, "..", "..", "docs")));
-const SANS_GEO = args.includes("--sans-geo");
-const FORCE_GEO = args.includes("--force-geo");
+/* `let` et non `const` : le semis est aussi appelé PAR le serveur (route
+   d'administration « charger les données de référence »), qui passe ses propres
+   options plutôt que la ligne de commande. */
+let SANS_GEO = args.includes("--sans-geo");
+let FORCE_GEO = args.includes("--force-geo");
 
 const CLASSEUR = "WFP Indicator Master List_UpdMai_2025.xlsx";
 const SHP = "mdg_bnd_adm3_com_pam_2025.shp";
@@ -407,53 +410,70 @@ function semerDecoupage(){
            derives: derive.erreur ? null : derive };
 }
 
-/* ── Exécution ───────────────────────────────────────────────────── */
-if(!fs.existsSync(DOCS)){
-  log.error("dossier de documents introuvable", { dossier:DOCS });
-  process.exit(1);
-}
+/* ── Le semis, réutilisable ───────────────────────────────────────────
+   Le CLI et la route d'administration passent tous deux par ici. Les options
+   remplacent les drapeaux de ligne de commande quand elles sont fournies. Rend
+   un bilan chiffré plutôt que d'appeler process.exit — un appel depuis le
+   serveur ne doit pas tuer le serveur. `quoi` borne ce qu'on charge :
+   « tout » (défaut), « indicateurs » (activités + masterlist), « decoupage ». */
+export async function semerReel({ sansGeo, forceGeo, quoi = "tout" } = {}){
+  if(sansGeo !== undefined) SANS_GEO = sansGeo;
+  if(forceGeo !== undefined) FORCE_GEO = forceGeo;
+  if(!fs.existsSync(DOCS)) return { erreur:"dossier de documents introuvable", dossier:DOCS };
 
-const bilan = {};
-if(existe(CLASSEUR)){
-  const wb = new ExcelJS.Workbook();
-  await wb.xlsx.readFile(fichier(CLASSEUR));
-  bilan.activites = semerActivites(wb);
-  bilan.indicateurs = semerIndicateurs(wb);
-  log.info("activités chargées", bilan.activites);
-  log.info("indicateurs chargés", { ...bilan.indicateurs.parNiveau,
-    crees:bilan.indicateurs.crees, majs:bilan.indicateurs.majs });
-} else {
-  log.warn("classeur d'indicateurs absent : activités et indicateurs non chargés",
-    { attendu: fichier(CLASSEUR) });
-}
-
-if(SANS_GEO){
-  log.info("découpage administratif ignoré (--sans-geo)");
-} else {
-  bilan.geo = semerDecoupage();
-  if(bilan.geo.saute) log.warn("découpage non chargé", { raison:bilan.geo.saute });
-  else if(bilan.geo.erreur) log.error("découpage refusé", { raison:bilan.geo.erreur });
-  else {
-    log.info("découpage chargé", { unites:bilan.geo.unites, communes:bilan.geo.counts?.adm3,
-      contours:bilan.geo.contours });
-    if(bilan.geo.derives?.total) log.info("niveaux supérieurs dérivés", Object.fromEntries(
-      bilan.geo.derives.etapes.filter(e => e.ecrites).map(e => [e.niveau, e.ecrites])));
+  const bilan = {};
+  const veut = (x) => quoi === "tout" || quoi === x;
+  if(veut("indicateurs")){
+    if(existe(CLASSEUR)){
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.readFile(fichier(CLASSEUR));
+      bilan.activites = semerActivites(wb);
+      bilan.indicateurs = semerIndicateurs(wb);
+      log.info("activités chargées", bilan.activites);
+      log.info("indicateurs chargés", { ...bilan.indicateurs.parNiveau,
+        crees:bilan.indicateurs.crees, majs:bilan.indicateurs.majs });
+    } else {
+      bilan.classeurAbsent = fichier(CLASSEUR);
+      log.warn("classeur d'indicateurs absent : activités et indicateurs non chargés",
+        { attendu: fichier(CLASSEUR) });
+    }
   }
+
+  if(veut("decoupage")){
+    if(SANS_GEO){ log.info("découpage administratif ignoré (--sans-geo)"); }
+    else {
+      bilan.geo = semerDecoupage();
+      if(bilan.geo.saute) log.warn("découpage non chargé", { raison:bilan.geo.saute });
+      else if(bilan.geo.erreur) log.error("découpage refusé", { raison:bilan.geo.erreur });
+      else {
+        log.info("découpage chargé", { unites:bilan.geo.unites, communes:bilan.geo.counts?.adm3,
+          contours:bilan.geo.contours });
+        if(bilan.geo.derives?.total) log.info("niveaux supérieurs dérivés", Object.fromEntries(
+          bilan.geo.derives.etapes.filter(e => e.ecrites).map(e => [e.niveau, e.ecrites])));
+      }
+    }
+  }
+
+  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
+              VALUES (?,NULL,'semis données réelles','plan','referentiels','import',?)`)
+    .run(newId("aud"),
+      `Données réelles chargées depuis docs/ — ${bilan.activites?.lues || 0} activité(s), `
+      + `${bilan.indicateurs?.lues || 0} indicateur(s)`
+      + (bilan.geo?.unites ? `, ${bilan.geo.unites} unité(s) géographiques` : ""));
+
+  const compte = (t) => db.prepare(`SELECT COUNT(*) c FROM ${t}`).get().c;
+  bilan.totaux = { activites: compte("activity_categories"), indicateurs: compte("indicators"),
+                   unitesGeo: compte("geo_unit"), contours: compte("geo_geom") };
+  log.info("semis des données réelles terminé", bilan.totaux);
+  return bilan;
 }
 
-/* Le journal d'audit garde trace du chargement : c'est une écriture massive
-   dans des référentiels partagés, elle ne doit pas être anonyme. */
-db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
-            VALUES (?,NULL,'semis données réelles','plan','referentiels','import',?)`)
-  .run(newId("aud"),
-    `Données réelles chargées depuis docs/ — ${bilan.activites?.lues || 0} activité(s), `
-    + `${bilan.indicateurs?.lues || 0} indicateur(s)`
-    + (bilan.geo?.unites ? `, ${bilan.geo.unites} unité(s) géographiques` : ""));
+export { semerActivites, semerIndicateurs, semerDecoupage };
 
-const compte = (t) => db.prepare(`SELECT COUNT(*) c FROM ${t}`).get().c;
-log.info("semis des données réelles terminé", {
-  activites: compte("activity_categories"),
-  indicateurs: compte("indicators"),
-  unitesGeo: compte("geo_unit"),
-  contours: compte("geo_geom"),
-});
+/* ── Exécution en ligne de commande ──────────────────────────────────
+   Uniquement quand le fichier est lancé directement (`node src/seed-reel.js`),
+   jamais quand il est importé par une route. */
+if(process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)){
+  const r = await semerReel();
+  if(r.erreur){ log.error(r.erreur, { dossier:r.dossier }); process.exit(1); }
+}

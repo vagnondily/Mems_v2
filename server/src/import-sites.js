@@ -53,12 +53,6 @@ const nomFeuille = String(flag("sheet") || "Sites");
 const dry = !!flag("dry");
 const limite = Number(flag("limit")) || Infinity;
 
-if(!fs.existsSync(fichier)){
-  console.error(`Fichier introuvable : ${fichier}`);
-  console.error(`Usage : node src/import-sites.js ["List Sites per Tag.xlsx"] [--sheet Sites] [--dry]`);
-  process.exit(1);
-}
-
 /* Les colonnes de la feuille « Sites », par leur en-tête (ligne 2). On lit par
    NOM d'en-tête et non par index fixe : une colonne ajoutée en amont ne décale
    pas la lecture. */
@@ -85,20 +79,20 @@ const txt = (v) => {
 const propre = (v) => txt(v).replace(/\s+/g, " ").trim();
 const nombre = (v) => { const n = parseFloat(String(txt(v)).replace(",", ".")); return Number.isFinite(n) ? n : null; };
 
-async function main(){
+/* Réutilisable : le CLI ET la route d'administration l'appellent. Rend un bilan
+   (ou `{ erreur }`) plutôt que d'appeler process.exit — un import lancé par le
+   serveur ne doit pas tuer le serveur. */
+export async function importerSites(){
   migrate(path.join(here, "..", "migrations"));
+  if(!fs.existsSync(fichier)) return { erreur:`Fichier introuvable : ${fichier}` };
 
   const version = currentVersion();
-  if(!version){
-    console.error("Aucun découpage administratif courant : chargez d'abord le shapefile du pays "
-      + "(npm run seed:reel, ou l'onglet Pays).");
-    process.exit(1);
-  }
+  if(!version) return { erreur:"Aucun découpage administratif courant : chargez d'abord le shapefile du pays." };
 
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(fichier);
   const ws = wb.getWorksheet(nomFeuille);
-  if(!ws){ console.error(`Feuille « ${nomFeuille} » absente du classeur.`); process.exit(1); }
+  if(!ws) return { erreur:`Feuille « ${nomFeuille} » absente du classeur.` };
 
   /* La ligne d'en-tête : la première qui porte « POIName » (ou un de ses
      synonymes). Les feuilles réelles ont une ligne de titre au-dessus. */
@@ -115,10 +109,8 @@ async function main(){
     }
     if(trouve.name && trouve.tag){ ligneEntete = r; colonne = trouve; break; }
   }
-  if(!ligneEntete){
-    console.error("En-tête introuvable : la feuille doit porter au moins « POIName » et « Activity_tag ».");
-    process.exit(1);
-  }
+  if(!ligneEntete)
+    return { erreur:"En-tête introuvable : la feuille doit porter au moins « POIName » et « Activity_tag »." };
 
   /* Le référentiel d'activités, pour rapprocher le libellé long du fichier d'un
      tag réel. On indexe par nom normalisé. */
@@ -244,4 +236,8 @@ async function main(){
   return bilan;
 }
 
-main().catch(e => { log.error("import des sites en échec", { erreur: e.message }); process.exit(1); });
+/* Lancé directement en ligne de commande, pas quand une route l'importe. */
+if(process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)){
+  const r = await importerSites();
+  if(r?.erreur){ log.error("import des sites en échec", { erreur:r.erreur }); process.exit(1); }
+}
