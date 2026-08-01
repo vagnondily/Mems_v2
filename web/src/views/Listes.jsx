@@ -449,4 +449,4 @@ function ItemModal({ open, item, type, busy, onClose, onSave }){
     </Modal>);
 }
 
-export { SetListes };
+export { SetListes, RenommageModal };

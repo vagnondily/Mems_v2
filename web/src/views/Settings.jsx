@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api.js";
 import { useGeoCascade, resetGeoCache } from "../lib/geo.js";
-import { Activity, Building2, CalendarRange, Check, ClipboardList, Copy, Download, FileText, KeyRound, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
+import { Activity, ArrowRightLeft, Building2, CalendarRange, Check, ClipboardList, Copy, Download, FileText, KeyRound, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
 import { Area, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, motifLisible, n, pct, r2, r5, siteRequirement, siteScore, uid, visiteOdk } from "../lib/calc.js";
@@ -10,7 +10,7 @@ import { collecterLocalites, csvLocalites } from "../lib/exportGeo.js";
 import { niveau, niveaux } from "../lib/levels.js";
 import { Sources } from "./ActualData.jsx";
 import { MonthCellModal, MonthGrid, MonthLegend, PDD_ACTS, PDD_COMMODITIES } from "./Planning.jsx";
-import { SetListes } from "./Listes.jsx";
+import { SetListes, RenommageModal } from "./Listes.jsx";
 import { SetCodeReferentiels } from "./Referentiels.jsx";
 import { BLOCKS } from "./Reports.jsx";
 import { PageHead } from "./Shell.jsx";
@@ -95,7 +95,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
       {active==="about" && <SetAbout db={db} />}
       {active==="locations" && <SetLocations db={db} notify={notify} can={can} reload={reload} />}
       {active==="scope" && <SetScope db={db} notify={notify} can={can} />}
-      {active==="activities" && <SetActivities db={db} notify={notify} can={can} reload={reload} />}
+      {active==="activities" && <SetActivities db={db} notify={notify} can={can} reload={reload} me={me} />}
       {active==="listes" && <SetListes notify={notify} can={can} me={me} />}
       {active==="indicators" && <SetIndicators db={db} set={set} notify={notify} can={can} />}
       {active==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
@@ -185,62 +185,66 @@ function SetGuided({ db, setSub }){
     </div>);
 }
 
+/* ══════════════════ Rail maître-détail réutilisable ══════════════════
+   Le même rail à gauche que la navigation des Paramètres, mais AU SEIN d'un
+   écran : les sujets d'un écran (les sections de Général, les niveaux
+   d'indicateurs, les calculs) se choisissent à gauche, se configurent à
+   droite. « Regroupé à gauche comme des sous-menus, à droite les
+   informations à configurer. » Une seule implémentation pour ne pas
+   réinventer trois fois la même liste. */
+function SideRail({ groups, active, onPick, right }){
+  return (
+    <div className="grid gap-4 items-start" style={{ gridTemplateColumns:"240px minmax(0,1fr)" }}>
+      <nav className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-auto sticky"
+        style={{ top:"0.75rem", maxHeight:"calc(100vh - 120px)" }}>
+        <div className="py-1.5">
+          {groups.map((g,gi) => (
+            <div key={g.label || gi} className="mb-0.5">
+              {g.label && <div className="px-4 pt-3 pb-1 f10 font-bold uppercase tracking-wider text-slate-400">{g.label}</div>}
+              {g.items.map(it => (
+                <button key={it.value} onClick={()=>onPick(it.value)}
+                  className={clsx("w-full text-left px-4 py-2 f125 border-l-2 transition-colors flex items-center gap-2",
+                    active===it.value
+                      ? "bg-sky-50 bd-brand c-bd font-semibold"
+                      : "border-l-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-900")}>
+                  <span className="truncate flex-1">{it.label}</span>
+                  {it.count != null && <span className={clsx("f10 tabular-nums shrink-0",
+                    active===it.value ? "c-bd" : "text-slate-400")}>{it.count}</span>}
+                </button>))}
+            </div>))}
+        </div>
+      </nav>
+      <div className="min-w-0 space-y-4">{right}</div>
+    </div>);
+}
+
+/* Général — désormais en maître-détail, et débarrassé de ses éditeurs de
+   listes : partenaires, modalités, sous-types de PI et activity tags étaient
+   dupliqués avec « Listes paramétrables » (et l'onglet « Activités »). On les
+   retire d'ici — une liste, un seul endroit — et Général ne garde que ce qui
+   lui est propre : l'identité de l'instance et le barème de priorité. */
 function SetGeneral({ db, set }){
   const s = db.settings; const u = (k,v)=>set(d=>{ d.settings[k]=v; return d; });
-  /* Les bureaux ne figurent plus ici. Ils étaient présentés comme une liste de noms
-     modifiable, mais cette liste est dérivée de la table `offices` à chaque
-     chargement et n'était jamais renvoyée au serveur : toute saisie était perdue.
-     Un bureau porte de surcroît une nature, un périmètre et des antennes, et il est
-     référencé par les sites et les comptes — il a désormais son propre écran. */
-  const LISTS = [["partners","Partenaires coopérants"],["modalities","Types de modalité"]];
-  return (
-    <div className="grid gap-4" style={{gridTemplateColumns:"repeat(auto-fit,minmax(330px,1fr))"}}>
-      <Card title="Identité et affichage">
-        <Field label="Nom de l'organisation"><Input value={s.org} onChange={e=>u("org",e.target.value)} /></Field>
-        <Field label="Unité responsable"><Input value={s.unit} onChange={e=>u("unit",e.target.value)} /></Field>
-        {/* La politique de sécurité du contenu n'autorise que les images de même origine
-            ou en data: — un lien externe serait bloqué par le navigateur, sans message. */}
-        <Field label="Logo du pied de page"
-          hint="Chemin servi par l'application (/logo.png) ou image en data: — les adresses externes sont bloquées par la politique de sécurité">
-          <Input value={s.logo} onChange={e=>u("logo",e.target.value)} placeholder="/logo.png" /></Field>
-        <div className="grid grid-cols-2 gap-x-3">
-          <Field label="Éléments par page" hint="Pagination des tableaux de planification">
-            <Input type="number" value={s.pageSize} onChange={e=>u("pageSize",n(e.target.value))} /></Field>
-        </div>
-        {/* Devise, format de date, intervalle de synchronisation et notifications ont été
-            retirés : aucun code ne les lisait. Les rétablir suppose de les brancher
-            réellement (formatage des montants et des dates, cadence de la file d'envoi). */}
-      </Card>
-      {LISTS.map(([k,label])=>(
-        <Card key={k} title={label} subtitle={`${db.lists[k].length} entrées`}>
-          <div className="space-y-1.5 mh240 overflow-auto pr-1">
-            {db.lists[k].map((v,i)=>(<div key={i} className="flex gap-1.5">
-              <input value={v} onChange={e=>set(d=>{ d.lists[k][i]=e.target.value; return d; })} className={clsx(inputCls,"mi-py1")} />
-              <button onClick={()=>set(d=>{ d.lists[k].splice(i,1); return d; })} className="px-2 text-slate-400 hover:text-rose-600"><X size={14}/></button>
-            </div>))}
-          </div>
-          <Btn size="sm" kind="sec" icon={Plus} className="mt-3" onClick={()=>set(d=>{ d.lists[k].push(""); return d; })}>Ajouter</Btn>
-        </Card>))}
-      <Card title="Sous-types de point d'intérêt" subtitle="Libellé et code de codification">
-        <div className="space-y-1.5 mh240 overflow-auto pr-1">
-          {db.lists.poiSub.map((v,i)=>(<div key={i} className="flex gap-1.5">
-            <input value={v.label} onChange={e=>set(d=>{ d.lists.poiSub[i].label=e.target.value; return d; })} className={clsx(inputCls,"mi-py1")} />
-            <input value={v.code} onChange={e=>set(d=>{ d.lists.poiSub[i].code=e.target.value; return d; })} className={clsx(inputCls,"mi-py1 w-24")} />
-            <button onClick={()=>set(d=>{ d.lists.poiSub.splice(i,1); return d; })} className="px-2 text-slate-400 hover:text-rose-600"><X size={14}/></button>
-          </div>))}
-        </div>
-        <Btn size="sm" kind="sec" icon={Plus} className="mt-3" onClick={()=>set(d=>{ d.lists.poiSub.push({label:"",code:""}); return d; })}>Ajouter</Btn>
-      </Card>
-      <Card title="Activity tags" subtitle="Code et intitulé de l'activité">
-        <div className="space-y-1.5 mh240 overflow-auto pr-1">
-          {db.lists.tags.map((v,i)=>(<div key={i} className="flex gap-1.5">
-            <input value={v.code} onChange={e=>set(d=>{ d.lists.tags[i].code=e.target.value; return d; })} className={clsx(inputCls,"mi-py1 w-20")} />
-            <input value={v.label} onChange={e=>set(d=>{ d.lists.tags[i].label=e.target.value; return d; })} className={clsx(inputCls,"mi-py1")} />
-            <button onClick={()=>set(d=>{ d.lists.tags.splice(i,1); return d; })} className="px-2 text-slate-400 hover:text-rose-600"><X size={14}/></button>
-          </div>))}
-        </div>
-        <Btn size="sm" kind="sec" icon={Plus} className="mt-3" onClick={()=>set(d=>{ d.lists.tags.push({code:"",label:""}); return d; })}>Ajouter</Btn>
-      </Card>
+  const [sec,setSec] = useState("identity");
+  const groups = [{ label:"Réglages généraux", items:[
+    { value:"identity", label:"Identité et affichage" },
+    { value:"scoring", label:"Barème de priorité de suivi" },
+  ] }];
+  const identity = (
+    <Card title="Identité et affichage" subtitle="Nom de l'instance et présentation">
+      <Field label="Nom de l'organisation"><Input value={s.org} onChange={e=>u("org",e.target.value)} /></Field>
+      <Field label="Unité responsable"><Input value={s.unit} onChange={e=>u("unit",e.target.value)} /></Field>
+      {/* La politique de sécurité du contenu n'autorise que les images de même origine
+          ou en data: — un lien externe serait bloqué par le navigateur, sans message. */}
+      <Field label="Logo du pied de page"
+        hint="Chemin servi par l'application (/logo.png) ou image en data: — les adresses externes sont bloquées par la politique de sécurité">
+        <Input value={s.logo} onChange={e=>u("logo",e.target.value)} placeholder="/logo.png" /></Field>
+      <div className="grid grid-cols-2 gap-x-3">
+        <Field label="Éléments par page" hint="Pagination des tableaux de planification">
+          <Input type="number" value={s.pageSize} onChange={e=>u("pageSize",n(e.target.value))} /></Field>
+      </div>
+    </Card>);
+  const scoring = (
       <Card title="Barème de priorité de suivi" subtitle="Reprend la logique du plan de suivi : quatre sous-scores, puis leur somme arrondie">
         <Note>Priorité = drapeaux urgents + critère nouveau partenaire et ancienneté + moyenne des critères.
           La moyenne porte sur les problèmes du suivi interne, des rapports partenaire et du mécanisme de plainte,
@@ -278,17 +282,18 @@ function SetGeneral({ db, set }){
               <div className="text-lg font-light tabular-nums text-slate-800 mt-0.5">
                 {db.sites.filter(x=>sitePriority(x,db).level===lv).length}</div></div>))}
         </div>
-      </Card>
-      <Card title="Catégories d'activité" subtitle="Liste de référence du plan de suivi">
-        <div className="space-y-1.5 mh300 overflow-auto pr-1">
-          {(db.actCategories||[]).map((v,i)=>(<div key={i} className="flex gap-1.5">
-            <input value={v} onChange={e=>set(d=>{ d.actCategories[i]=e.target.value; return d; })} className={clsx(inputCls,"mi-py1 f115")} />
-            <button onClick={()=>set(d=>{ d.actCategories.splice(i,1); return d; })} className="px-2 text-slate-400 hover:text-rose-600"><X size={14}/></button>
-          </div>))}
-        </div>
-        <Btn size="sm" kind="sec" icon={Plus} className="mt-3" onClick={()=>set(d=>{ d.actCategories.push(""); return d; })}>Ajouter</Btn>
-      </Card>
-    </div>);
+      </Card>);
+  return (
+    <SideRail groups={groups} active={sec} onPick={setSec}
+      right={<>
+        <Note>Les listes — partenaires, modalités, sous-types de point d'intérêt, activity tags,
+          catégories… — se configurent désormais dans <b>Référentiels → Listes paramétrables</b> et
+          l'onglet <b>Activités</b> : une liste, un seul endroit. Général ne garde que ce qui lui est
+          propre — l'identité de l'instance et le barème de priorité.</Note>
+        {sec==="identity" && identity}
+        {sec==="scoring" && scoring}
+      </>} />
+  );
 }
 
 function SetAbout({ db }){
@@ -1941,9 +1946,13 @@ function SetLocations({ db, notify, can, reload }){
    nom, tag (code), domaine programme, actif. C'est la source unique que
    réutilisent le rattachement d'un site, les indicateurs de processus, les
    plans. Les mutations passent par la route dédiée puis rechargent l'état. */
-function SetActivities({ db, notify, can, reload }){
+function SetActivities({ db, notify, can, reload, me }){
   const [edit,setEdit] = useState(null);
   const [busy,setBusy] = useState(false);
+  /* Le renommage de tag en cascade vit désormais ICI (l'activité a quitté le
+     gestionnaire de listes typées pour son onglet propre). Réservé au super. */
+  const [renomme,setRenomme] = useState(null);
+  const superUser = me?.role === "super";
   const liste = db.activities || [];
   const save = async (a) => {
     setBusy(true);
@@ -1973,8 +1982,8 @@ function SetActivities({ db, notify, can, reload }){
       <Note tone="warn">Le <b>tag</b> est le code d'identification : dix tables le portent en texte
         (sites, couverture, plan de distribution, produits, visites, formulaires ODK, caseload,
         zones TPM, soumissions, indicateurs). Il ne se modifie donc pas à l'édition — un
-        super-utilisateur le renomme <b>en cascade</b> depuis Paramètres → Listes paramétrables,
-        ce qui réécrit du même coup toutes les lignes qui le portent.</Note>
+        super-utilisateur le renomme <b>en cascade</b> (bouton dédié, ci-dessous), ce qui
+        réécrit du même coup toutes les lignes qui le portent.</Note>
       <Card flush title="Activités du programme" subtitle={`${liste.length} activité${liste.length>1?"s":""}`}
         right={can("admin") && <Btn size="sm" icon={Plus}
           onClick={()=>setEdit({ id:"", name:"", tag:"", programArea:"", active:true })}>Ajouter</Btn>}>
@@ -1998,6 +2007,9 @@ function SetActivities({ db, notify, can, reload }){
                 title={(a.usageDetail||[]).map(u=>`${u.label} (${u.table}.${u.colonne}) : ${u.lignes}`).join("\n")}>
                 {a.usageTotal ? fmt(a.usageTotal) : "—"}</Td>
               <Td className="text-right">
+                {superUser && <button onClick={()=>setRenomme({ id:a.id, code:a.tag, label:a.name })}
+                  className="text-slate-400 m-ico p-1"
+                  title="Renommer le tag, en entraînant les dix tables qui le portent"><ArrowRightLeft size={14}/></button>}
                 {can("admin") && <button onClick={()=>setEdit(a)} className="text-slate-400 m-ico p-1"><Pencil size={14}/></button>}
                 {can("admin") && <button onClick={()=>remove(a)}
                   className={clsx("p-1", a.usageTotal ? "text-slate-300 cursor-help" : "text-slate-400 hover:text-rose-600")}
@@ -2007,6 +2019,9 @@ function SetActivities({ db, notify, can, reload }){
         </TableWrap>}
       </Card>
       <ActivityModal open={!!edit} act={edit} busy={busy} onClose={()=>setEdit(null)} onSave={save} />
+      <RenommageModal open={!!renomme} item={renomme} cle="activites"
+        type={{ label:"Activités" }} notify={notify}
+        onClose={()=>setRenomme(null)} onDone={async ()=>{ setRenomme(null); await reload(); }} />
     </>);
 }
 function ActivityModal({ open, act, busy, onClose, onSave }){
@@ -2023,7 +2038,7 @@ function ActivityModal({ open, act, busy, onClose, onSave }){
             refuserait de le changer, et proposer un champ qu'on ne peut pas
             enregistrer apprend à l'utilisateur que l'écran ment. */}
         <Field label="Code (tag)" hint={act?.id
-          ? "Non modifiable — clé de jointure ; un super le renomme en cascade (Listes paramétrables)"
+          ? "Non modifiable ici — clé de jointure ; un super le renomme en cascade (bouton dédié)"
           : "Court, en majuscules — porté par les sources"}><Input value={f.tag||""}
           readOnly={!!act?.id} disabled={!!act?.id}
           onChange={e=>u("tag",e.target.value.replace(/\s+/g,"").toUpperCase())} placeholder="URT" /></Field>
@@ -2049,42 +2064,44 @@ const indLevelLabel = (v) => IND_LEVELS.find(([k])=>k===v)?.[1] || "";
 const IND_PAGE = 100;
 
 function SetIndicators({ db, set, notify, can }){
-  const [nat,setNat] = useState("crf");
   const [edit,setEdit] = useState(null);
-  /* La masterlist réelle porte 842 indicateurs rangés par onglet puis par thème
-     (chantier S8-5). Trois filtres et une pagination : sans eux, l'écran servait
-     une liste de huit cents lignes dans laquelle personne ne trouve rien. */
-  const [niv,setNiv] = useState("");
+  /* 842 indicateurs de masterlist, rangés par onglet (niveau) puis par thème.
+     « Mettre à gauche comme avec listes paramétrables au lieu d'un filtre à
+     trois niveaux » : le NIVEAU du cadre de résultats — et la nature de
+     processus — se choisissent dans un RAIL à gauche ; la catégorie et la
+     recherche restent au-dessus du tableau, à droite. */
+  const [active,setActive] = useState("crf:outcome");
   const [cat,setCat] = useState("");
   const [q,setQ]     = useState("");
   const [page,setPage] = useState(1);
-  /* Une ligne sans `kind` est un indicateur d'avant la migration : c'est un CRF. */
+  const nature = active === "xls" ? "xlsform" : "crf";
+  const niv = nature === "crf" ? active.split(":")[1] : "";
+  const crf = nature === "crf";
   const kindOf = (ind) => ind.kind || "crf";
-  const listeNature = db.indicators.filter(ind => kindOf(ind) === nat);
-  /* Les catégories proposées sont celles qui EXISTENT dans la nature affichée,
-     et sous le niveau choisi : proposer un filtre qui ne rend rien est une
-     promesse non tenue. */
-  const categories = [...new Set(listeNature
-    .filter(i => !niv || i.level === niv).map(i => i.category).filter(Boolean))].sort();
+  const countLevel = (lvl) => db.indicators.filter(i => kindOf(i)==="crf" && i.level===lvl).length;
+  const groups = [
+    { label:"CRF — cadre de résultats",
+      items: IND_LEVELS.map(([v,l]) => ({ value:`crf:${v}`, label:l, count:countLevel(v) })) },
+    { label:"XLSForm — processus",
+      items:[{ value:"xls", label:"Indicateurs de processus",
+               count: db.indicators.filter(i => i.kind==="xlsform").length }] },
+  ];
+  const listeNature = db.indicators.filter(ind => kindOf(ind) === nature && (!crf || ind.level === niv));
+  const categories = [...new Set(listeNature.map(i => i.category).filter(Boolean))].sort();
   const liste = listeNature.filter(i =>
-    (!niv || i.level === niv)
-    && (!cat || i.category === cat)
+    (!cat || i.category === cat)
     && (!q.trim() || `${i.id} ${i.name} ${i.category || ""}`.toLowerCase().includes(q.trim().toLowerCase())));
   const pages = Math.max(1, Math.ceil(liste.length / IND_PAGE));
   const pageSure = Math.min(page, pages);
   const visibles = liste.slice((pageSure-1)*IND_PAGE, pageSure*IND_PAGE);
-  /* Le référentiel des activités (Paramètres → Activités) sert d'options pour
-     rattacher un indicateur de processus à SON activité — la source canonique,
-     plus les reflets épars. On propose les activités actives. */
+  const activeLabel = crf ? indLevelLabel(niv) : "Indicateurs de processus";
   const activites = (db.activities || []).filter(a=>a.active).map(a => [a.tag, `${a.tag} — ${a.name}`]);
   const activiteLabel = (tag) => (db.activities || []).find(a=>a.tag===tag)?.name || tag || "";
 
   const save = (ind) => { set(d => { const i=d.indicators.findIndex(x=>x.id===ind.id);
       if(i>=0) d.indicators[i]=ind; else d.indicators.push(ind); return d; });
     setEdit(null); notify("Indicateur enregistré","ok"); };
-  /* L'export ne sort que la nature affichée, mais porte `kind`/`level`/`activity`
-     pour qu'un réimport les rétablisse sans ambiguïté. */
-  const exp = () => download(`indicateurs_${nat}.csv`,
+  const exp = () => download(`indicateurs_${nature}${crf?"_"+niv:""}.csv`,
     toCSV(liste, ["id","name","kind","level","category","activity","basket","unit","target","dir","method","freq"]), "text/csv");
   const imp = (file) => { const rd=new FileReader();
     rd.onload=()=>{ const rows=parseCSV(rd.result);
@@ -2102,89 +2119,80 @@ function SetIndicators({ db, set, notify, can }){
       notify(`${rows.length} indicateur(s) importé(s)`,"ok"); };
     rd.readAsText(file,"utf-8"); };
 
-  const crf = nat==="crf";
   return (
-    <>
-      <Tabs items={IND_NATURES} value={nat} onChange={setNat} />
-      <Note>{crf
-        ? <>Le <b>CRF</b> est le cadre de résultats : indicateurs <b>outcome</b> et <b>output</b> (y compris
-          <i> other output</i>), mesurés par région. Il alimente le plan de collecte et la saisie dans
-          Programme → Résultats.</>
-        : <>Les indicateurs de <b>processus</b> issus des <b>XLSForms</b> suivent l'exécution d'une activité
-          (couverture des visites, complétude des distributions…). Ils sont <b>stockés</b> comme référentiel et
-          alimentent le tableau de bord de suivi.</>}
-        {" "}La liste s'exporte en CSV et se réimporte pour une mise à jour groupée.</Note>
-      <Card flush title={crf ? "Indicateurs CRF" : "Indicateurs de processus (XLSForm)"}
-        subtitle={`${fmt(liste.length)} indicateur${liste.length>1?"s":""}`
-          + (liste.length !== listeNature.length ? ` sur ${fmt(listeNature.length)}` : "")}
-        right={<>
-          <label><input type="file" accept=".csv" className="hidden" onChange={e=>e.target.files[0]&&imp(e.target.files[0])} />
-            <span className="inline-flex items-center gap-1.5 border rounded font-semibold px-2.5 py-1 f11 m-btn-sec cursor-pointer"><Upload size={13}/> Importer</span></label>
-          <Btn size="sm" kind="sec" icon={Download} onClick={exp} disabled={!liste.length}>Exporter</Btn>
-          {can("edit") && <Btn size="sm" icon={Plus} onClick={()=>setEdit({ id:"", name:"",
-            kind:nat, level:crf?"outcome":"", activity:"", category:"", basket:"", unit:"%",
-            target:0, dir:"up", method:"", freq:"Annuel" })}>Ajouter</Btn>}</>}>
-        {/* Les filtres de la masterlist : la nature (onglet du classeur), la
-            catégorie thématique, et la recherche libre. Ils sont au-dessus du
-            tableau, pas dans un repli : à 842 lignes, ils SONT l'écran. */}
-        <div className="px-4 pt-3 flex items-center gap-2 flex-wrap">
-          {crf && <Select value={niv} onChange={e=>{ setNiv(e.target.value); setCat(""); setPage(1); }}
-            empty="Tous les niveaux" options={IND_LEVELS} className="mi-py1 mi-xs mi-wauto" />}
-          {crf && <Select value={cat} onChange={e=>{ setCat(e.target.value); setPage(1); }}
-            empty={`Toutes les catégories (${categories.length})`} options={categories}
-            className="mi-py1 mi-xs mi-wauto" />}
-          <div className="relative">
-            <Search size={13} className="absolute left-2 top-2 text-slate-400" />
-            <Input value={q} onChange={e=>{ setQ(e.target.value); setPage(1); }}
-              placeholder="Code, intitulé ou catégorie" className="mi-py1 mi-xs pl-7" style={{width:240}} />
+    <SideRail groups={groups} active={active} onPick={v=>{ setActive(v); setCat(""); setPage(1); }}
+      right={<>
+        <Note>{crf
+          ? <>Le <b>CRF</b> est le cadre de résultats. Choisissez le niveau à gauche
+            (<b>{activeLabel.toLowerCase()}</b> ici), puis affinez par catégorie thématique ou
+            recherche. Il alimente le plan de collecte et Programme → Résultats.</>
+          : <>Les indicateurs de <b>processus</b> issus des <b>XLSForms</b> suivent l'exécution d'une
+            activité. Ils sont stockés comme référentiel et alimentent le tableau de bord de suivi.</>}
+          {" "}La liste s'exporte en CSV et se réimporte pour une mise à jour groupée.</Note>
+        <Card flush title={crf ? `CRF · ${activeLabel}` : "Indicateurs de processus (XLSForm)"}
+          subtitle={`${fmt(liste.length)} indicateur${liste.length>1?"s":""}`
+            + (liste.length !== listeNature.length ? ` sur ${fmt(listeNature.length)}` : "")}
+          right={<>
+            <label><input type="file" accept=".csv" className="hidden" onChange={e=>e.target.files[0]&&imp(e.target.files[0])} />
+              <span className="inline-flex items-center gap-1.5 border rounded font-semibold px-2.5 py-1 f11 m-btn-sec cursor-pointer"><Upload size={13}/> Importer</span></label>
+            <Btn size="sm" kind="sec" icon={Download} onClick={exp} disabled={!liste.length}>Exporter</Btn>
+            {can("edit") && <Btn size="sm" icon={Plus} onClick={()=>setEdit({ id:"", name:"",
+              kind:nature, level:crf?niv:"", activity:"", category:"", basket:"", unit:"%",
+              target:0, dir:"up", method:"", freq:"Annuel" })}>Ajouter</Btn>}</>}>
+          <div className="px-4 pt-3 flex items-center gap-2 flex-wrap">
+            {crf && !!categories.length && <Select value={cat} onChange={e=>{ setCat(e.target.value); setPage(1); }}
+              empty={`Toutes les catégories (${categories.length})`} options={categories}
+              className="mi-py1 mi-xs mi-wauto" />}
+            <div className="relative">
+              <Search size={13} className="absolute left-2 top-2 text-slate-400" />
+              <Input value={q} onChange={e=>{ setQ(e.target.value); setPage(1); }}
+                placeholder="Code, intitulé ou catégorie" className="mi-py1 mi-xs pl-7" style={{width:240}} />
+            </div>
+            {(cat || q) && <Btn size="sm" kind="ghost"
+              onClick={()=>{ setCat(""); setQ(""); setPage(1); }}>Effacer les filtres</Btn>}
           </div>
-          {(niv || cat || q) && <Btn size="sm" kind="ghost"
-            onClick={()=>{ setNiv(""); setCat(""); setQ(""); setPage(1); }}>Effacer les filtres</Btn>}
-        </div>
-        {!liste.length
-          ? <Empty title={listeNature.length ? "Aucun indicateur ne correspond" : "Aucun indicateur"}
-              text={listeNature.length
-                ? "Aucun indicateur de cette nature ne correspond aux filtres posés."
-                : crf ? "Ajoutez un outcome ou un output, ou chargez la masterlist réelle "
-                        + "(npm run seed:reel) : 842 indicateurs rangés par catégorie."
-                      : "Ajoutez-en un rattaché à une activité, ou importez-le."} />
-          : <><TableWrap>
-          <thead><tr><Th>Code</Th><Th>Intitulé</Th><Th>{crf?"Niveau":"Activité"}</Th>
-            {crf && <Th>Catégorie</Th>}
-            {crf && <Th>Panier</Th>}<Th>Unité</Th><Th num>Cible</Th>
-            <Th>Sens</Th><Th>Méthode</Th><Th>Fréquence</Th>{crf && <Th num>Valeurs</Th>}<Th /></tr></thead>
-          <tbody>{visibles.map(ind=>(
-            <tr key={ind.id} className="hover:bg-sky-50">
-              <Td><Badge tone="b">{ind.id}</Badge></Td>
-              <Td className="mw420 truncate font-medium text-slate-800" title={ind.name}>{ind.name}</Td>
-              <Td className="text-slate-600">{crf
-                ? (ind.level ? <Badge tone="n">{indLevelLabel(ind.level)}</Badge> : "—")
-                : (ind.activity ? <span title={activiteLabel(ind.activity)}>{ind.activity}</span> : "—")}</Td>
-              {crf && <Td className="text-slate-600 mw240 truncate" title={ind.category}>
-                {ind.category || "—"}</Td>}
-              {crf && <Td className="text-slate-600">{ind.basket}</Td>}
-              <Td>{ind.unit}</Td><Td num>{ind.target}</Td>
-              <Td><Badge tone="n">{ind.dir==="up"?"↑ maximiser":"↓ minimiser"}</Badge></Td>
-              <Td className="text-slate-600">{ind.method}</Td><Td>{ind.freq}</Td>
-              {crf && <Td num className="text-slate-500">{db.outcomes.filter(o=>o.indicator===ind.id).length}</Td>}
-              <Td className="text-right">
-                {can("edit") && <button onClick={()=>setEdit(ind)} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
-                {can("del") && <button onClick={()=>set(d=>{ d.indicators=d.indicators.filter(x=>x.id!==ind.id); return d; })}
-                  className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</Td>
-            </tr>))}</tbody>
-        </TableWrap>
-        {pages > 1 && (
-          <div className="px-4 py-3 flex items-center gap-3 f125 text-slate-600">
-            <Btn size="sm" kind="sec" disabled={pageSure<=1} onClick={()=>setPage(pageSure-1)}>Précédents</Btn>
-            <span>{(pageSure-1)*IND_PAGE+1} – {Math.min(pageSure*IND_PAGE, liste.length)} sur {fmt(liste.length)}</span>
-            <Btn size="sm" kind="sec" disabled={pageSure>=pages} onClick={()=>setPage(pageSure+1)}>Suivants</Btn>
-          </div>)}
-        </>}
-      </Card>
-      <IndicatorModal open={!!edit} ind={edit} activites={activites}
-        categories={categories} onClose={()=>setEdit(null)} onSave={save} />
-    </>);
+          {!liste.length
+            ? <Empty title={listeNature.length ? "Aucun indicateur ne correspond" : "Aucun indicateur à ce niveau"}
+                text={listeNature.length
+                  ? "Aucun indicateur ne correspond à la catégorie ou à la recherche."
+                  : crf ? "Ajoutez-en un, ou chargez la masterlist réelle (npm run seed:reel)."
+                        : "Ajoutez-en un rattaché à une activité, ou importez-le."} />
+            : <><TableWrap>
+            <thead><tr><Th>Code</Th><Th>Intitulé</Th>{crf ? <Th>Catégorie</Th> : <Th>Activité</Th>}
+              {crf && <Th>Panier</Th>}<Th>Unité</Th><Th num>Cible</Th>
+              <Th>Sens</Th><Th>Méthode</Th><Th>Fréquence</Th>{crf && <Th num>Valeurs</Th>}<Th /></tr></thead>
+            <tbody>{visibles.map(ind=>(
+              <tr key={ind.id} className="hover:bg-sky-50">
+                <Td><Badge tone="b">{ind.id}</Badge></Td>
+                <Td className="mw420 truncate font-medium text-slate-800" title={ind.name}>{ind.name}</Td>
+                {crf
+                  ? <Td className="text-slate-600 mw240 truncate" title={ind.category}>{ind.category || "—"}</Td>
+                  : <Td className="text-slate-600">{ind.activity ? <span title={activiteLabel(ind.activity)}>{ind.activity}</span> : "—"}</Td>}
+                {crf && <Td className="text-slate-600">{ind.basket}</Td>}
+                <Td>{ind.unit}</Td><Td num>{ind.target}</Td>
+                <Td><Badge tone="n">{ind.dir==="up"?"↑ maximiser":"↓ minimiser"}</Badge></Td>
+                <Td className="text-slate-600">{ind.method}</Td><Td>{ind.freq}</Td>
+                {crf && <Td num className="text-slate-500">{db.outcomes.filter(o=>o.indicator===ind.id).length}</Td>}
+                <Td className="text-right">
+                  {can("edit") && <button onClick={()=>setEdit(ind)} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
+                  {can("del") && <button onClick={()=>set(d=>{ d.indicators=d.indicators.filter(x=>x.id!==ind.id); return d; })}
+                    className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</Td>
+              </tr>))}</tbody>
+          </TableWrap>
+          {pages > 1 && (
+            <div className="px-4 py-3 flex items-center gap-3 f125 text-slate-600">
+              <Btn size="sm" kind="sec" disabled={pageSure<=1} onClick={()=>setPage(pageSure-1)}>Précédents</Btn>
+              <span>{(pageSure-1)*IND_PAGE+1} – {Math.min(pageSure*IND_PAGE, liste.length)} sur {fmt(liste.length)}</span>
+              <Btn size="sm" kind="sec" disabled={pageSure>=pages} onClick={()=>setPage(pageSure+1)}>Suivants</Btn>
+            </div>)}
+          </>}
+        </Card>
+        <IndicatorModal open={!!edit} ind={edit} activites={activites}
+          categories={categories} onClose={()=>setEdit(null)} onSave={save} />
+      </>} />
+  );
 }
+
 function IndicatorModal({ open, ind, activites, categories = [], onClose, onSave }){
   const [f,setF] = useState({});
   useEffect(()=>{ setF(ind||{}); },[ind]);
@@ -2228,80 +2236,94 @@ function IndicatorModal({ open, ind, activites, categories = [], onClose, onSave
 
 /* ── Calculs automatiques ── */
 function SetCalc({ db, set, notify, can }){
-  const [edit,setEdit] = useState(null);
   const TEST = { duration:12, riskLevel:2, nbSites:24, feasiblePerMonth:8, minInterval:6, minFreq:2,
     targetPerMonth:4, feasibilityRatio:2, adjustedFreq:4, adjustedInterval:3, beneficiaries:1500,
     population:85000, visitsDone:3, visitsPlanned:4, score:52 };
+  const [edit,setEdit] = useState(null);
+  /* « Sous-groupe à gauche, informations à droite, pour ne pas surcharger
+     l'écran. » Les calculs se choisissent dans le rail (de base / personnalisés),
+     et les variables utilisables deviennent une entrée de rail à part plutôt
+     qu'une grande table poussée sous tous les calculs. */
+  const [active,setActive] = useState(db.formulas[0]?.id || "__vars__");
   const save = (fm) => { set(d => { const i=d.formulas.findIndex(x=>x.id===fm.id);
       if(i>=0) d.formulas[i]=fm; else d.formulas.push({ ...fm, id:fm.id||uid("f"), core:false }); return d; });
     setEdit(null); notify("Calcul enregistré","ok"); };
+  const groups = [
+    { label:"Calculs de base", items: db.formulas.filter(f=>f.core).map(f=>({ value:f.id, label:f.label })) },
+    { label:"Calculs personnalisés", items: db.formulas.filter(f=>!f.core).map(f=>({ value:f.id, label:f.label })) },
+    { label:"Références", items:[{ value:"__vars__", label:"Variables utilisables", count:CALC_VARS.length }] },
+  ];
+  const isVars = active === "__vars__";
+  const cur = isVars ? null : (db.formulas.find(f=>f.id===active) || db.formulas[0]);
+  const idx = cur ? db.formulas.findIndex(f=>f.id===cur.id) : -1;
+  const t = cur ? evalFormula(cur.expr, TEST) : null;
   return (
-    <>
-      <Note>Chaque calcul est défini par une expression. Les fonctions
-        <code className="bg-white px-1 rounded mx-1">max min round abs sqrt floor ceil</code> sont acceptées, ainsi que
-        les variables listées en bas de page. Les six calculs de base alimentent les paramètres de couverture ;
-        les calculs ajoutés sont disponibles pour les vôtres.</Note>
-      <div className="grid gap-4 mb-4" style={{gridTemplateColumns:"repeat(auto-fit,minmax(380px,1fr))"}}>
-        {db.formulas.map((fm,i)=>{ const t = evalFormula(fm.expr, TEST);
-          return (
-            <Card key={fm.id} title={fm.label} subtitle={fm.desc}
-              right={<>{fm.core ? <Badge tone="n">calcul de base</Badge> : <Badge tone="b">personnalisé</Badge>}
-                {t.ok ? <Badge tone="g">valide</Badge> : <Badge tone="r">erreur</Badge>}</>}>
-              <Field label="Expression">
-                <Input value={fm.expr} disabled={!can("edit")}
-                  onChange={e=>set(d=>{ d.formulas[i].expr=e.target.value; return d; })} className="f12" /></Field>
-              <div className="flex flex-wrap gap-1.5 mb-2">
-                {(fm.vars||[]).map(v=>(
-                  <button key={v} onClick={()=>set(d=>{ d.formulas[i].expr += (d.formulas[i].expr?" ":"")+v; return d; })}
-                    className="px-2 py-0.5 rounded bg-slate-100 hover:bg-sky-100 f11 text-slate-600 border border-slate-200">{v}</button>))}
-              </div>
-              <div className={clsx("f115 px-2.5 py-1.5 rounded", t.ok?"bg-lime-50 text-lime-800":"bg-rose-50 text-rose-800")}>
-                {t.ok ? <>Jeu d'essai → <b className="tabular-nums">{r2(t.value)}</b></> : t.err}</div>
-              {!fm.core && can("edit") && (
-                <div className="flex gap-2 mt-3">
-                  <Btn size="sm" kind="sec" icon={Pencil} onClick={()=>setEdit(fm)}>Modifier</Btn>
-                  <Btn size="sm" kind="ghost" icon={Trash2} onClick={()=>set(d=>{ d.formulas=d.formulas.filter(x=>x.id!==fm.id); return d; })}>Supprimer</Btn></div>)}
-            </Card>); })}
-      </div>
-      <div className="flex gap-2 mb-4">
-        {can("edit") && <Btn icon={Plus} onClick={()=>setEdit({ id:"", label:"", desc:"", expr:"", vars:[] })}>Créer un calcul</Btn>}
-        {can("edit") && <Btn kind="sec" icon={RefreshCw}
-          onClick={()=>{ set(d=>{ d.formulas = JSON.parse(JSON.stringify(D_FORMULAS)); return d; }); notify("Calculs de base rétablis","ok"); }}>Rétablir les calculs de base</Btn>}
-      </div>
-      <Card flush title="Variables utilisables" subtitle="Liste complète des variables acceptées dans les expressions">
-        <TableWrap max="mh340">
-          <thead><tr><Th>Variable</Th><Th>Signification</Th><Th>Origine</Th><Th num>Valeur d'essai</Th></tr></thead>
-          <tbody>{CALC_VARS.map(([v,d2,o])=>(
-            <tr key={v} className="hover:bg-sky-50">
-              <Td><code className="bg-slate-100 px-1.5 py-0.5 rounded f115">{v}</code></Td>
-              <Td className="text-slate-700">{d2}</Td><Td className="text-slate-500">{o}</Td>
-              <Td num className="tabular-nums">{TEST[v] ?? "—"}</Td></tr>))}</tbody>
-        </TableWrap>
-      </Card>
-      <Modal open={!!edit} onClose={()=>setEdit(null)} title={edit?.core===false&&edit?.id?"Modifier le calcul":"Nouveau calcul"}
-        subtitle="Définissez un calcul réutilisable"
-        footer={<><Btn kind="sec" onClick={()=>setEdit(null)}>Annuler</Btn>
-          <Btn icon={Save} disabled={!edit?.label||!edit?.expr} onClick={()=>save(edit)}>Enregistrer</Btn></>}>
-        {edit && (<>
-          <div className="grid grid-cols-2 gap-x-4">
-            <Field label="Intitulé"><Input value={edit.label||""} onChange={e=>setEdit(p=>({...p,label:e.target.value}))} /></Field>
-            <Field label="Identifiant technique"><Input value={edit.id||""} onChange={e=>setEdit(p=>({...p,id:e.target.value.replace(/\W/g,"")}))} placeholder="Généré si vide" /></Field>
-            <Field label="Description" className="col-span-2"><Input value={edit.desc||""} onChange={e=>setEdit(p=>({...p,desc:e.target.value}))} /></Field>
-          </div>
-          <Field label="Expression"><Input value={edit.expr||""} onChange={e=>setEdit(p=>({...p,expr:e.target.value}))} className="f12" /></Field>
-          <div className="flex flex-wrap gap-1.5 mb-3">
-            {CALC_VARS.map(([v])=>(<button key={v} onClick={()=>setEdit(p=>({...p, expr:(p.expr||"")+v,
-              vars:[...new Set([...(p.vars||[]), v])] }))}
-              className="px-2 py-0.5 rounded bg-slate-100 hover:bg-sky-100 f11 text-slate-600 border border-slate-200">{v}</button>))}
-          </div>
-          {(()=>{ const t=evalFormula(edit.expr, TEST);
-            return <Note tone={t.ok?"ok":"err"}>{t.ok ? <>Résultat sur le jeu d'essai : <b>{r2(t.value)}</b></> : t.err}</Note>; })()}
-        </>)}
-      </Modal>
-    </>);
+    <SideRail groups={groups} active={isVars ? "__vars__" : cur?.id} onPick={setActive}
+      right={<>
+        {can("edit") && <div className="flex gap-2 flex-wrap">
+          <Btn size="sm" icon={Plus} onClick={()=>setEdit({ id:"", label:"", desc:"", expr:"", vars:[] })}>Créer un calcul</Btn>
+          <Btn size="sm" kind="sec" icon={RefreshCw}
+            onClick={()=>{ set(d=>{ d.formulas = JSON.parse(JSON.stringify(D_FORMULAS)); return d; }); notify("Calculs de base rétablis","ok"); }}>Rétablir les calculs de base</Btn>
+        </div>}
+        {isVars ? (
+          <Card flush title="Variables utilisables"
+            subtitle="Liste complète des variables acceptées dans les expressions">
+            <div className="p-4 pb-0"><Note>Les variables des <b>XLSForms</b> (MoDa/Kobo) viendront enrichir
+              cette liste : une fois un XLSForm téléversé, ses champs deviennent des variables mappables ici.</Note></div>
+            <TableWrap max="mh440">
+              <thead><tr><Th>Variable</Th><Th>Signification</Th><Th>Origine</Th><Th num>Valeur d'essai</Th></tr></thead>
+              <tbody>{CALC_VARS.map(([v,d2,o])=>(
+                <tr key={v} className="hover:bg-sky-50">
+                  <Td><code className="bg-slate-100 px-1.5 py-0.5 rounded f115">{v}</code></Td>
+                  <Td className="text-slate-700">{d2}</Td><Td className="text-slate-500">{o}</Td>
+                  <Td num className="tabular-nums">{TEST[v] ?? "—"}</Td></tr>))}</tbody>
+            </TableWrap>
+          </Card>
+        ) : cur ? (
+          <Card title={cur.label} subtitle={cur.desc}
+            right={<>{cur.core ? <Badge tone="n">calcul de base</Badge> : <Badge tone="b">personnalisé</Badge>}
+              {t.ok ? <Badge tone="g">valide</Badge> : <Badge tone="r">erreur</Badge>}</>}>
+            <Field label="Expression">
+              <Input value={cur.expr} disabled={!can("edit")}
+                onChange={e=>set(d=>{ d.formulas[idx].expr=e.target.value; return d; })} className="f12" /></Field>
+            {!!(cur.vars||[]).length && <div className="flex flex-wrap gap-1.5 mb-2">
+              {(cur.vars||[]).map(v=>(
+                <button key={v} onClick={()=>set(d=>{ d.formulas[idx].expr += (d.formulas[idx].expr?" ":"")+v; return d; })}
+                  className="px-2 py-0.5 rounded bg-slate-100 hover:bg-sky-100 f11 text-slate-600 border border-slate-200">{v}</button>))}
+            </div>}
+            <div className={clsx("f115 px-2.5 py-1.5 rounded", t.ok?"bg-lime-50 text-lime-800":"bg-rose-50 text-rose-800")}>
+              {t.ok ? <>Jeu d'essai → <b className="tabular-nums">{r2(t.value)}</b></> : t.err}</div>
+            {!cur.core && can("edit") && (
+              <div className="flex gap-2 mt-3">
+                <Btn size="sm" kind="sec" icon={Pencil} onClick={()=>setEdit(cur)}>Modifier</Btn>
+                <Btn size="sm" kind="ghost" icon={Trash2}
+                  onClick={()=>{ const nid=db.formulas[0]?.id||"__vars__"; set(d=>{ d.formulas=d.formulas.filter(x=>x.id!==cur.id); return d; }); setActive(nid); }}>Supprimer</Btn></div>)}
+          </Card>
+        ) : <Card><Empty title="Aucun calcul" text="Créez un calcul, ou consultez les variables utilisables." /></Card>}
+        <Modal open={!!edit} onClose={()=>setEdit(null)} title={edit?.core===false&&edit?.id?"Modifier le calcul":"Nouveau calcul"}
+          subtitle="Définissez un calcul réutilisable"
+          footer={<><Btn kind="sec" onClick={()=>setEdit(null)}>Annuler</Btn>
+            <Btn icon={Save} disabled={!edit?.label||!edit?.expr} onClick={()=>save(edit)}>Enregistrer</Btn></>}>
+          {edit && (<>
+            <div className="grid grid-cols-2 gap-x-4">
+              <Field label="Intitulé"><Input value={edit.label||""} onChange={e=>setEdit(p=>({...p,label:e.target.value}))} /></Field>
+              <Field label="Identifiant technique"><Input value={edit.id||""} onChange={e=>setEdit(p=>({...p,id:e.target.value.replace(/\W/g,"")}))} placeholder="Généré si vide" /></Field>
+              <Field label="Description" className="col-span-2"><Input value={edit.desc||""} onChange={e=>setEdit(p=>({...p,desc:e.target.value}))} /></Field>
+            </div>
+            <Field label="Expression"><Input value={edit.expr||""} onChange={e=>setEdit(p=>({...p,expr:e.target.value}))} className="f12" /></Field>
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {CALC_VARS.map(([v])=>(<button key={v} onClick={()=>setEdit(p=>({...p, expr:(p.expr||"")+v,
+                vars:[...new Set([...(p.vars||[]), v])] }))}
+                className="px-2 py-0.5 rounded bg-slate-100 hover:bg-sky-100 f11 text-slate-600 border border-slate-200">{v}</button>))}
+            </div>
+            {(()=>{ const tt=evalFormula(edit.expr, TEST);
+              return <Note tone={tt.ok?"ok":"err"}>{tt.ok ? <>Résultat sur le jeu d'essai : <b>{r2(tt.value)}</b></> : tt.err}</Note>; })()}
+          </>)}
+        </Modal>
+      </>} />
+  );
 }
 
-/* ── Rations (PDD) ── */
 function SetRations({ db, set, notify, can }){
   const [actType,setActType] = useState(PDD_ACTS[0][0]);
   const table = db.settings.rationTable || {};
