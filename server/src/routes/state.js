@@ -236,6 +236,7 @@ r.get("/state", (req, res) => {
        l'onglet Rations et présélectionne le grammage dans le plan de distribution. */
     rationCatalog: db.prepare("SELECT * FROM ration_catalog ORDER BY sort_order, label").all().map(x => ({
       id:x.id, rev:x.rev, label:x.label, commodity:x.commodity, grams:x.grams,
+      modality:x.modality||"Food",
       activityTag:x.activity_tag||"", note:x.note||"", sort:x.sort_order||0 })),
     dashboards: db.prepare("SELECT * FROM dashboards").all().map(d => ({
       id:d.id, rev:d.rev, name:d.name, widgets:J(d.widgets,[]) })),

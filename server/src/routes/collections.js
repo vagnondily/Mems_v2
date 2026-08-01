@@ -120,9 +120,15 @@ const COLLECTIONS = {
      calcule à l'usage, jamais stocké. */
   rationCatalog: { table:"ration_catalog", cap:"edit",
     schema: z.object({ id:S(64), label:z.string().min(1).max(160),
-      commodity:z.string().min(1).max(120), grams:N(0,1e5),
+      commodity:z.string().min(1).max(120), grams:N(0,1e7),
+      /* La modalité de transfert (migration 034). Facultative et à défaut « Food »
+         (vivres), pour qu'un client d'une version antérieure qui l'ignore n'efface
+         pas la valeur des conventions existantes. Le grammage vaut alors montant
+         (Ar) par personne et par jour pour les modalités espèces/coupons. */
+      modality:z.string().trim().max(40).default("Food"),
       activityTag:S(40), note:S(500), sort:I(0,99999) }),
     map: (x) => ({ label:x.label, commodity:x.commodity, grams:x.grams,
+      modality:x.modality || "Food",
       activity_tag:x.activityTag, note:x.note, sort_order:x.sort }) },
 
   dashboards: { table:"dashboards", cap:"edit",

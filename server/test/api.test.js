@@ -7678,6 +7678,35 @@ test("catalogue de rations : la première charge officielle est servie, et la co
   assert.ok(ajoute, "la ligne ajoutée est servie");
   assert.equal(ajoute.grams, 250);
   assert.equal(ajoute.activityTag, "GD");
+  /* La modalité par défaut est « Food » (vivres) — les conventions déjà au
+     catalogue n'ont pas eu à la déclarer. */
+  assert.equal(ajoute.modality, "Food", "modalité par défaut = Food (vivres)");
+  assert.ok(cat.every(l => l.modality), "chaque ligne officielle porte une modalité");
+
+  /* Une ration ESPÈCES (CBT) : la modalité voyage, le montant vit dans « grams ». */
+  const wc = await request(app).put("/api/collections/rationCatalog").set("Authorization", `Bearer ${adminToken}`)
+    .send({ rows: [{ id:"rc_test_cash", label:"Espèces d'essai", commodity:"Espèces", grams:4000,
+      modality:"Cash", activityTag:"FFA", note:"120 000 Ar/ménage", sort:998 }] });
+  assert.equal(wc.status, 200, JSON.stringify(wc.body));
+  const st3 = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  const cash = st3.body.rationCatalog.find(l => l.id === "rc_test_cash");
+  assert.ok(cash, "la ration espèces est servie");
+  assert.equal(cash.modality, "Cash", "la modalité Cash est conservée");
+  assert.equal(cash.grams, 4000, "le montant/pers/jour vit dans le champ quantité");
+});
+
+test("denrées : la catégorie (food/cbt/other) est servie, et les denrées CBT existent", async () => {
+  const r = await request(app).get("/api/listes/denrees").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200);
+  const riz = r.body.items.find(x => x.code === "Riz");
+  assert.equal(riz?.champs?.category, "food", "le riz est une denrée « food »");
+  const especes = r.body.items.find(x => x.code === "Espèces");
+  assert.ok(especes, "la denrée CBT « Espèces » est semée (migration 034)");
+  assert.equal(especes.champs.category, "cbt", "elle est de catégorie « cbt »");
+  /* La liste des catégories est déclarée au registre et éditable. */
+  const cats = await request(app).get("/api/listes/categorie_denree").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(cats.status, 200);
+  assert.deepEqual(cats.body.items.map(x => x.code).sort(), ["cbt","food","other"]);
 });
 
 test("catalogue de rations : la denrée qu'il utilise ne se supprime pas (lien en cascade)", async () => {

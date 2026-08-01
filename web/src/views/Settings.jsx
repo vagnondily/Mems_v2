@@ -2451,6 +2451,26 @@ function SetCalc({ db, set, notify, can }){
    de ration offre « + créer une denrée » sans quitter la page. Les denrées vivent
    dans la liste typée `denrees` (routes/listes.js), servie ici par l'API — le
    catalogue, lui, est une collection synchronisée comme les autres. */
+
+/* Les modalités de transfert d'une convention (migration 034). Les codes sont
+   ceux de la liste « modalites » semée à la migration 026 ; « Food » vaut vivres.
+   La modalité décide de l'unité du grammage : grammes pour les vivres, montant
+   (Ar) par personne et par jour pour espèces et coupons. */
+const MODALITES_RATION = [
+  ["Food", "Vivres (en nature)"],
+  ["Cash", "Espèces (CBT)"],
+  ["Voucher", "Coupons (voucher)"],
+  ["Mix", "Modalité mixte"],
+  ["Capacity Strengthening", "Renforcement de capacités"],
+];
+const LABEL_MODALITE = Object.fromEntries(MODALITES_RATION);
+const estRationCBT = (m) => m === "Cash" || m === "Voucher";
+const uniteRation = (m) => estRationCBT(m) ? "Ar/pers/j" : "g/pers/j";
+/* La catégorie de denrée attendue par une modalité : espèces/coupons → « cbt »,
+   le reste → « food ». « other » est accepté partout. Sert à ne proposer que des
+   denrées cohérentes dans le formulaire. */
+const categorieAttendue = (m) => estRationCBT(m) ? "cbt" : "food";
+
 function SetRations({ db, set, notify, can }){
   const [edit,setEdit]       = useState(null);   /* ligne de catalogue en édition */
   const [denrees,setDenrees] = useState(null);   /* liste typée « denree », lue par l'API */
@@ -2467,7 +2487,8 @@ function SetRations({ db, set, notify, can }){
   const chargerDenrees = () => api.liste("denrees")
     .then(r => setDenrees((r.items||[]).map(x=>({ id:x.id, code:x.code, label:x.label,
       active:x.active!==false, rev:x.rev, usage:x.usageTotal||0,
-      group:x.champs?.food_group || "" })))).catch(e=>{ notify(e.message,"err"); setDenrees([]); });
+      group:x.champs?.food_group || "", category:x.champs?.category || "food" }))))
+    .catch(e=>{ notify(e.message,"err"); setDenrees([]); });
   useEffect(()=>{ chargerDenrees();
     api.liste("groupes_denree").then(r=>setGroupes((r.items||[]).filter(g=>g.active!==false)
       .map(g=>({ code:g.code, label:g.label })))).catch(()=>{});
@@ -2488,11 +2509,13 @@ function SetRations({ db, set, notify, can }){
   /* Création d'une denrée sans quitter l'écran : la liste typée l'accueille, et
      on recharge pour que le sélecteur la propose aussitôt. Le code EST la valeur
      que portera `pdd.commodity` et `ration_catalog.commodity` — d'où sa présence. */
-  const creerDenree = async (label, group) => {
+  const creerDenree = async (label, group, category) => {
     const nom = (label||"").trim(); if(!nom) return null;
     try{
-      const r = await api.createItem("denrees", { code:nom, label:nom,
-        champs: group ? { food_group: group } : {} });
+      const champs = {};
+      if(group) champs.food_group = group;
+      if(category) champs.category = category;
+      const r = await api.createItem("denrees", { code:nom, label:nom, champs });
       await chargerDenrees();
       notify(`Denrée « ${nom} » créée`,"ok");
       return r.item?.code || nom;
@@ -2515,12 +2538,14 @@ function SetRations({ db, set, notify, can }){
 
   return (
     <>
-      <Aide>Le catalogue applique la règle <b>« une ration, une ligne »</b> : chaque ligne est une
-        convention (un libellé), <b>une denrée</b> et son <b>grammage par personne et par jour</b>. Une
-        ration composée (riz + huile + légumineuses) est <b>plusieurs lignes de même libellé</b>. Les denrées
-        se créent et se gèrent ici même, dans le panneau ci-dessous. Le tonnage n'est pas stocké : il se
-        calcule à l'usage — <b>ration × jours × effectif ÷ 1 000 000</b> — les jours étant saisis au plan de
-        distribution parce qu'ils changent à chaque livraison.</Aide>
+      <Aide>Le catalogue applique la règle <b>« une ration, une ligne »</b> : chaque ligne porte une
+        <b>modalité</b> (vivres, espèces, coupons), une convention (un libellé), <b>une denrée</b> et sa
+        <b>quantité par personne et par jour</b> — grammes pour les vivres, montant (Ar) pour espèces et
+        coupons. Une ration composée (riz + huile + légumineuses) est <b>plusieurs lignes de même libellé</b>.
+        Les denrées se créent et se gèrent ici même, dans le panneau ci-dessous, avec leur <b>catégorie</b>
+        (food / cbt / autre). Le tonnage — ou le montant total — n'est pas stocké : il se calcule à l'usage,
+        <b>quantité × jours × effectif</b>, les jours étant saisis au plan de distribution parce qu'ils
+        changent à chaque livraison.</Aide>
 
       {/* ── Denrées : la création combinée à la config des rations ── */}
       <DenreesPanel denrees={denrees} groupes={groupes} can={can} notify={notify}
@@ -2529,21 +2554,28 @@ function SetRations({ db, set, notify, can }){
       {/* ── Le catalogue proprement dit ── */}
       <Card flush title="Catalogue de rations" subtitle={`${cat.length} ligne(s) · ${parConvention.length} convention(s)`}
         right={can("edit") && <Btn size="sm" icon={Plus}
-          onClick={()=>setEdit({ id:"", label:"", commodity:denreesActives[0]?.code||"", grams:0,
+          onClick={()=>setEdit({ id:"", label:"", modality:"Food", commodity:denreesActives.find(d=>d.category!=="cbt")?.code||denreesActives[0]?.code||"", grams:0,
             activityTag:"", note:"", sort:(cat.reduce((m,l)=>Math.max(m,l.sort||0),0))+10 })}>
           Ajouter une ligne</Btn>}>
         {!cat.length
           ? <Empty icon={ClipboardList} title="Catalogue vide"
               text="Ajoutez une convention, ou chargez la première charge officielle (npm run seed:reel / migration 031)." />
           : <TableWrap max="mh480">
-            <thead><tr><Th>Convention</Th><Th>Denrée</Th><Th num>g/pers/jour</Th>
+            <thead><tr><Th>Modalité</Th><Th>Convention</Th><Th>Denrée</Th><Th num>Quantité/pers/j</Th>
               <Th>Activité par défaut</Th><Th>Note</Th><Th /></tr></thead>
-            <tbody>{parConvention.map(([label,lignes])=>lignes.map((l,i)=>(
+            <tbody>{parConvention.map(([label,lignes])=>lignes.map((l,i)=>{
+              const mod = l.modality || "Food";
+              return (
               <tr key={l.id} className="hover:bg-sky-50 align-top">
+                <Td>{i===0
+                  ? <span className={clsx("px-1.5 py-0.5 rounded f10 font-semibold border",
+                      estRationCBT(mod) ? "bg-violet-50 text-violet-800 border-violet-200" : "bg-emerald-50 text-emerald-800 border-emerald-200")}
+                      title={LABEL_MODALITE[mod]||mod}>{LABEL_MODALITE[mod]||mod}</span>
+                  : <span />}</Td>
                 <Td className={clsx("font-medium text-slate-800", i>0 && "text-transparent")}
                   style={{whiteSpace:"normal",maxWidth:220}}>{i===0 ? label : label}</Td>
                 <Td><span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 f11 font-semibold">{l.commodity}</span></Td>
-                <Td num className="tabular-nums font-semibold">{fmt(l.grams)}</Td>
+                <Td num className="tabular-nums font-semibold">{fmt(l.grams)} <span className="f10 text-slate-400 font-normal">{uniteRation(mod)}</span></Td>
                 <Td>{l.activityTag
                   ? <span title={actLabel(l.activityTag)} className="f11 text-slate-700">{l.activityTag}</span>
                   : <span className="f11 text-slate-400">toutes</span>}</Td>
@@ -2552,14 +2584,14 @@ function SetRations({ db, set, notify, can }){
                   {can("edit") && <button onClick={()=>setEdit(l)} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
                   {can("del") && <button onClick={()=>delLigne(l.id)} className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}
                 </Td>
-              </tr>)))}</tbody>
+              </tr>); }))}</tbody>
           </TableWrap>}
       </Card>
 
-      {/* ── Jeu d'essai : jours + effectif → tonnage, par convention ── */}
+      {/* ── Jeu d'essai : jours + effectif → tonnage OU montant, par convention ── */}
       {!!cat.length && (
-        <Card title="Jeu d'essai — tonnage par convention"
-          subtitle="Le tonnage se calcule, il ne se stocke pas : ration × jours × effectif ÷ 1 000 000">
+        <Card title="Jeu d'essai — tonnage ou montant par convention"
+          subtitle="Rien n'est stocké : quantité × jours × effectif. Vivres → tonnes ; espèces/coupons → montant (Ar)">
           <div className="flex items-end gap-3 flex-wrap mb-3">
             <Field label="Jours de ration" className="mb-0"><Input type="number" min="0" step="1" value={jours}
               onChange={e=>setJours(Math.max(0,n(e.target.value)))} className="w-28" /></Field>
@@ -2571,18 +2603,27 @@ function SetRations({ db, set, notify, can }){
             <div className="f11 text-slate-500 pb-1.5">Effectif retenu : <b>{fmt(Math.round(eff))}</b></div>
           </div>
           <TableWrap max="mh320">
-            <thead><tr><Th>Convention</Th><Th>Denrées</Th><Th num>Ration totale (g/pers/j)</Th>
-              <Th num>Tonnage (kg)</Th><Th num>Tonnage (t)</Th></tr></thead>
+            <thead><tr><Th>Modalité</Th><Th>Convention</Th><Th>Denrées</Th>
+              <Th num>Quantité totale/pers/j</Th><Th num>Résultat</Th></tr></thead>
             <tbody>{parConvention.map(([label,lignes])=>{
-              const gTot = lignes.reduce((s,l)=>s+n(l.grams),0);
-              const t = tonnage(gTot);
+              /* Une convention peut mêler vivres et transfert ; on sépare les deux :
+                 les lignes vivres donnent un tonnage, les lignes CBT un montant. */
+              const cbt = lignes.some(l=>estRationCBT(l.modality));
+              const qTot = lignes.reduce((s,l)=>s+n(l.grams),0);
+              const t = tonnage(qTot);               /* tonnes (pertinent pour les vivres) */
+              const montant = qTot*jours*eff;         /* Ar total (pertinent pour espèces/coupons) */
+              const mod = lignes[0]?.modality || "Food";
               return (
                 <tr key={label} className="hover:bg-sky-50">
-                  <Td className="font-medium text-slate-800" style={{whiteSpace:"normal",maxWidth:220}}>{label}</Td>
+                  <Td><span className={clsx("px-1.5 py-0.5 rounded f10 font-semibold border",
+                    cbt ? "bg-violet-50 text-violet-800 border-violet-200" : "bg-emerald-50 text-emerald-800 border-emerald-200")}>
+                    {LABEL_MODALITE[mod]||mod}</span></Td>
+                  <Td className="font-medium text-slate-800" style={{whiteSpace:"normal",maxWidth:200}}>{label}</Td>
                   <Td className="f11 text-slate-500">{lignes.map(l=>`${l.commodity} ${fmt(l.grams)}`).join(" + ")}</Td>
-                  <Td num className="tabular-nums font-semibold">{fmt(gTot)}</Td>
-                  <Td num className="tabular-nums text-slate-700">{fmt(r2(t*1000))}</Td>
-                  <Td num className="tabular-nums text-slate-500">{r2(t)}</Td>
+                  <Td num className="tabular-nums font-semibold">{fmt(qTot)} <span className="f10 text-slate-400 font-normal">{uniteRation(mod)}</span></Td>
+                  <Td num className="tabular-nums text-slate-700 font-semibold">{cbt
+                    ? <>{fmt(Math.round(montant))} <span className="f10 text-slate-400 font-normal">Ar</span></>
+                    : <>{r2(t)} <span className="f10 text-slate-400 font-normal">t</span></>}</Td>
                 </tr>); })}</tbody>
           </TableWrap>
         </Card>)}
@@ -2599,10 +2640,11 @@ function SetRations({ db, set, notify, can }){
 function DenreesPanel({ denrees, groupes, can, notify, onCreate, onReload }){
   const [ajout,setAjout] = useState("");
   const [grp,setGrp]     = useState("");
+  const [cat,setCat]     = useState("food");
   const [busy,setBusy]   = useState(false);
   if(denrees === null) return <Card title="Denrées & commodités"><Empty icon={ClipboardList} title="Chargement des denrées…" /></Card>;
   const ajouter = async () => { if(!ajout.trim()) return; setBusy(true);
-    const code = await onCreate(ajout.trim(), grp||null); if(code){ setAjout(""); } setBusy(false); };
+    const code = await onCreate(ajout.trim(), grp||null, cat||null); if(code){ setAjout(""); } setBusy(false); };
   const basculer = async (d) => { setBusy(true);
     try{ await api.activerItem("denrees", d.id, !d.active, d.rev); await onReload(); }
     catch(e){ notify(e.message,"err"); } setBusy(false); };
@@ -2629,6 +2671,8 @@ function DenreesPanel({ denrees, groupes, can, notify, onCreate, onReload }){
     <div key={d.id} className={clsx("inline-flex items-center gap-1.5 rounded-full border pl-3 pr-1.5 py-1 f11",
       d.active ? "bg-white border-slate-200 text-slate-700" : "bg-slate-50 border-slate-200 text-slate-400")}>
       <span className="font-semibold">{d.label}</span>
+      {d.category==="cbt" && <span className="f10 px-1 rounded bg-violet-100 text-violet-700" title="Transfert monétaire">CBT</span>}
+      {d.category==="other" && <span className="f10 px-1 rounded bg-slate-100 text-slate-500" title="Autre">autre</span>}
       {d.usage>0 && <span className="f10 text-slate-400" title="Utilisée dans le PDD ou le catalogue">·{d.usage}</span>}
       {!d.active && <span className="f10 uppercase tracking-wide">inactif</span>}
       {can("admin") && <>
@@ -2643,7 +2687,9 @@ function DenreesPanel({ denrees, groupes, can, notify, onCreate, onReload }){
       subtitle="Créées et gérées ici même, rangées par famille — le code est la valeur portée par le plan de distribution et le catalogue"
       right={can("admin") && <div className="flex items-center gap-2 flex-wrap">
         <Input value={ajout} onChange={e=>setAjout(e.target.value)} placeholder="Nouvelle denrée (ex. Farine)"
-          onKeyDown={e=>e.key==="Enter"&&ajouter()} className="mi-py1 mi-xs" style={{width:180}} />
+          onKeyDown={e=>e.key==="Enter"&&ajouter()} className="mi-py1 mi-xs" style={{width:170}} />
+        <Select value={cat} onChange={e=>setCat(e.target.value)}
+          options={[["food","Vivres"],["cbt","CBT (espèces/coupon)"],["other","Autre"]]} className="mi-py1 mi-xs mi-wauto" />
         {!!(groupes||[]).length && <Select value={grp} onChange={e=>setGrp(e.target.value)} empty="Famille…"
           options={groupes.map(g=>[g.code, g.label])} className="mi-py1 mi-xs mi-wauto" />}
         <Btn size="sm" icon={Plus} disabled={busy||!ajout.trim()} onClick={ajouter}>Créer</Btn>
@@ -2668,30 +2714,62 @@ function DenreesPanel({ denrees, groupes, can, notify, onCreate, onReload }){
 function RationModal({ open, ligne, denrees, activites, labels, onCreateDenree, onClose, onSave }){
   const [f,setF] = useState({});
   const [creation,setCreation] = useState("");
+  /* Le « test de calcul » demandé dans l'userform : jours × effectif appliqués à
+     la quantité saisie, en direct, sans quitter la fiche. Local au formulaire. */
+  const [tJours,setTJours] = useState(30);
+  const [tEff,setTEff]     = useState(1000);
   useEffect(()=>{ setF(ligne||{}); setCreation(""); },[ligne]);
   if(!open) return null;
   const u = (k,v)=>setF(p=>({...p,[k]:v}));
+  const mod = f.modality || "Food";
+  const cbt = estRationCBT(mod);
+  const catAttendue = categorieAttendue(mod);
+  /* On ne propose que les denrées cohérentes avec la modalité — les CBT (Espèces,
+     Coupon) pour espèces/coupons, les vivres sinon — plus « other », accepté
+     partout. La denrée déjà choisie reste proposée même si sa catégorie diffère,
+     pour ne jamais la faire disparaître d'une fiche qu'on modifie. */
+  const denreesFiltrees = denrees.filter(d => d.category===catAttendue || d.category==="other" || d.code===f.commodity);
   const choisirDenree = async (v) => {
     if(v==="__new__"){ setCreation(" "); return; }
     u("commodity", v);
   };
   const validerCreation = async () => {
-    const code = await onCreateDenree(creation.trim());
+    const code = await onCreateDenree(creation.trim(), null, catAttendue);
     if(code){ u("commodity", code); setCreation(""); }
   };
+  const q = Math.max(0, n(f.grams));
+  const resultat = cbt
+    ? q * Math.max(0,tJours) * Math.max(0,tEff)            /* Ar total */
+    : q * Math.max(0,tJours) * Math.max(0,tEff) / 1e6;      /* tonnes */
   return (
     <Modal open onClose={onClose} title={ligne?.id ? "Modifier la ligne de ration" : "Nouvelle ligne de ration"}
-      subtitle="Une convention, une denrée, un grammage par personne et par jour"
+      subtitle="Modalité, convention, denrée, quantité par personne et par jour"
       footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
         <Btn icon={Save} disabled={!(f.label||"").trim() || !(f.commodity||"").trim()}
-          onClick={()=>onSave({ ...f, grams:Math.max(0,n(f.grams)), sort:f.sort??0 })}>Enregistrer</Btn></>}>
+          onClick={()=>onSave({ ...f, modality:mod, grams:Math.max(0,n(f.grams)), sort:f.sort??0 })}>Enregistrer</Btn></>}>
+      <div className="grid grid-cols-2 gap-x-4">
+        <Field label="Modalité de transfert" hint="Vivres → grammes ; espèces/coupons → montant (Ar) par personne et par jour">
+          <Select value={mod} onChange={e=>{
+            const m2 = e.target.value;
+            /* Changer de modalité recale la denrée sur une denrée cohérente si
+               l'actuelle ne l'est plus — une ration espèces ne reste pas sur « Riz ». */
+            setF(p=>{ const cur = denrees.find(d=>d.code===p.commodity);
+              const catV = categorieAttendue(m2);
+              const ok = cur && (cur.category===catV || cur.category==="other");
+              const repl = ok ? p.commodity : (denrees.find(d=>d.category===catV)?.code || p.commodity || "");
+              return { ...p, modality:m2, commodity:repl }; });
+          }} options={MODALITES_RATION} /></Field>
+        <Field label="Activité par défaut" hint="Facultatif — présélectionne cette ration pour l'activité au PDD">
+          <Select value={f.activityTag||""} onChange={e=>u("activityTag",e.target.value)} empty="— toutes —"
+            options={activites.map(a=>[a.tag, `${a.tag} — ${a.name}`])} /></Field>
+      </div>
       <Field label="Convention (libellé)" hint="Réutilisez le même libellé pour toutes les denrées d'une ration composée">
         <Input list="mems-ration-labels" value={f.label||""} onChange={e=>u("label",e.target.value)}
-          placeholder="GD standard, Stunting FEFA 2023…" />
+          placeholder="GD standard, Espèces FFA 2024, Stunting FEFA 2023…" />
         <datalist id="mems-ration-labels">{(labels||[]).map(l=><option key={l} value={l} />)}</datalist>
       </Field>
       <div className="grid grid-cols-2 gap-x-4">
-        <Field label="Denrée">
+        <Field label={cbt ? "Denrée / instrument (CBT)" : "Denrée"}>
           {creation.trim() || creation===" " ? (
             <div className="flex items-center gap-1.5">
               <Input autoFocus value={creation.trim()} onChange={e=>setCreation(e.target.value)}
@@ -2701,20 +2779,37 @@ function RationModal({ open, ligne, denrees, activites, labels, onCreateDenree, 
             </div>
           ) : (
             <Select value={f.commodity||""} onChange={e=>choisirDenree(e.target.value)} empty="— choisir —"
-              options={[...denrees.map(d=>[d.code, d.label]), ["__new__","➕ Créer une denrée…"]]} />
+              options={[...denreesFiltrees.map(d=>[d.code, d.label]), ["__new__", cbt?"➕ Créer un instrument CBT…":"➕ Créer une denrée…"]]} />
           )}
         </Field>
-        <Field label="Grammage (g/personne/jour)"><Input type="number" min="0" step="1" value={f.grams??0}
-          onChange={e=>u("grams",n(e.target.value))} /></Field>
-        <Field label="Activité par défaut" hint="Facultatif — présélectionne cette ration pour l'activité au PDD">
-          <Select value={f.activityTag||""} onChange={e=>u("activityTag",e.target.value)} empty="— toutes —"
-            options={activites.map(a=>[a.tag, `${a.tag} — ${a.name}`])} /></Field>
-        <Field label="Ordre d'affichage"><Input type="number" min="0" step="1" value={f.sort??0}
-          onChange={e=>u("sort",Math.max(0,n(e.target.value)))} /></Field>
+        <Field label={cbt ? "Montant (Ar / personne / jour)" : "Grammage (g / personne / jour)"}>
+          <Input type="number" min="0" step={cbt?"1":"1"} value={f.grams??0}
+            onChange={e=>u("grams",n(e.target.value))} /></Field>
       </div>
-      <Field label="Note" hint="Jours typiques, modalité espèces, date de la convention — ce qui la rend relisible">
+      <Field label="Note" hint="Jours typiques, date de la convention — ce qui la rend relisible">
         <Input value={f.note||""} onChange={e=>u("note",e.target.value)}
-          placeholder="30 j (demi : 15). Espèces : 120 000 Ar/ménage." /></Field>
+          placeholder={cbt ? "30 j. 120 000 Ar/ménage (2024)." : "30 j (demi : 15). Convention 2024."} /></Field>
+      <Field label="Ordre d'affichage"><Input type="number" min="0" step="1" value={f.sort??0}
+        onChange={e=>u("sort",Math.max(0,n(e.target.value)))} className="w-28" /></Field>
+
+      {/* ── Test de calcul (partie de l'userform demandée) ── */}
+      <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+        <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">Test de calcul</div>
+        <div className="flex items-end gap-3 flex-wrap">
+          <Field label="Jours" className="mb-0"><Input type="number" min="0" step="1" value={tJours}
+            onChange={e=>setTJours(Math.max(0,n(e.target.value)))} className="w-20" /></Field>
+          <Field label="Effectif" className="mb-0"><Input type="number" min="0" step="1" value={tEff}
+            onChange={e=>setTEff(Math.max(0,n(e.target.value)))} className="w-28" /></Field>
+          <div className="pb-1.5 f125 text-slate-700">
+            {q>0 ? <>
+              <span className="text-slate-500">{fmt(q)} {uniteRation(mod)} × {fmt(tJours)} j × {fmt(tEff)} pers = </span>
+              <b className="text-slate-900">{cbt
+                ? `${fmt(Math.round(resultat))} Ar`
+                : `${r2(resultat)} t (${fmt(Math.round(resultat*1000))} kg)`}</b>
+            </> : <span className="text-slate-400">Saisissez une quantité pour voir le résultat.</span>}
+          </div>
+        </div>
+      </div>
     </Modal>);
 }
 
