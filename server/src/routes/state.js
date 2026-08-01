@@ -107,7 +107,12 @@ r.get("/state", (req, res) => {
     /* La PERTINENCE (migration 029) : à quelles activités l'indicateur
        s'applique, et pour quelles cibles. Ce que l'écran restitue. */
     activityTags: i.activity_tags ? i.activity_tags.split(",").filter(Boolean) : [],
-    targets: i.targets || "" }));
+    targets: i.targets || "",
+    /* Colonnes riches de la masterlist (migration 032), servies par sous-groupe. */
+    status: i.status || "", applicability: i.applicability || "",
+    reportingReq: i.reporting_req || "", outputType: i.output_type || "",
+    unitInterp: i.unit_interp || "", flexibility: i.flexibility || "",
+    followValue: i.follow_value || "", intermediate: i.intermediate || "" }));
   const indByKey = Object.fromEntries(indicators.map(i=>[i.key, i.id]));
 
   /* Les résultats n'ont aucune dimension « bureau » dans le schéma : ils sont mesurés par

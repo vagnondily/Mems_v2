@@ -8068,7 +8068,17 @@ test("données réelles : activités et masterlist d'indicateurs chargées depui
       assert.equal(parNiveau.output, 157,      "Annex 3 Output");
       assert.equal(parNiveau.other_output, 566,"Detailed Output");
       assert.equal(parNiveau.crosscutting, 25, "Annex 4 Crosscutting");
-      assert.equal(d2.prepare("SELECT COUNT(*) c FROM indicators").get().c, 842);
+      assert.equal(parNiveau.sdg, 66,          "Annex 1 SDGs (codes dédoublonnés)");
+      assert.equal(d2.prepare("SELECT COUNT(*) c FROM indicators").get().c, 908);
+      /* Les colonnes riches de la masterlist (migration 032) sont bien remplies
+         par sous-groupe : statut partout, applicabilité en outcome, type et
+         indicateur intermédiaire en détaillé. */
+      assert.ok(d2.prepare("SELECT COUNT(*) c FROM indicators WHERE status IS NOT NULL").get().c > 800,
+        "le statut brut est chargé");
+      assert.ok(d2.prepare("SELECT COUNT(*) c FROM indicators WHERE level='outcome' AND applicability IS NOT NULL").get().c > 80,
+        "l'applicabilité de l'Outcome est chargée");
+      assert.ok(d2.prepare("SELECT COUNT(*) c FROM indicators WHERE level='other_output' AND intermediate IS NOT NULL").get().c > 400,
+        "l'indicateur intermédiaire du détaillé est chargé");
       assert.equal(d2.prepare("SELECT COUNT(*) c FROM indicators WHERE kind<>'crf'").get().c, 0,
         "la masterlist est le cadre de résultats, pas du processus");
       assert.equal(d2.prepare("SELECT COUNT(*) c FROM indicators WHERE category IS NULL").get().c, 0,
@@ -8099,7 +8109,7 @@ test("données réelles : le semis est idempotent — relancé, il corrige sans 
     const { default: Database } = await import("better-sqlite3");
     const d2 = new Database(base, { readonly:true });
     try{
-      assert.equal(d2.prepare("SELECT COUNT(*) c FROM indicators").get().c, 842,
+      assert.equal(d2.prepare("SELECT COUNT(*) c FROM indicators").get().c, 908,
         "aucun doublon au second passage");
       assert.equal(d2.prepare("SELECT COUNT(*) c FROM activity_categories").get().c, 58);
       /* La révision a bougé : les lignes ont bien été RELUES, pas ignorées. */

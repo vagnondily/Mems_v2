@@ -2036,9 +2036,24 @@ const IND_NATURES = [["crf","CRF — résultats"],["xlsform","XLSForm — proces
    range par onglet (migration 027) : Annex 2 Outcome, Annex 3 Output, Detailed
    Output, Annex 4 Crosscutting. */
 const IND_LEVELS = [["outcome","Outcome"],["output","Output"],
-  ["other_output","Other output (détaillé)"],["crosscutting","Transversal (CC)"]];
+  ["other_output","Other output (détaillé)"],["crosscutting","Transversal (CC)"],["sdg","ODD (SDG)"]];
 const indLevelLabel = (v) => IND_LEVELS.find(([k])=>k===v)?.[1] || "";
 const IND_PAGE = 100;
+/* Les colonnes que chaque sous-groupe de la masterlist met en avant — ce que le
+   propriétaire a listé, colonne par colonne (« tu peux adapter les noms »). Le
+   tableau les rend dans cet ordre, après Code et Intitulé ; un tableau plus large
+   que l'écran défile dans son cadre (en-tête collant). */
+const IND_COLS = {
+  outcome:      ["tags","cibles","applic","report","cat"],
+  output:       ["tags","cibles","type","follow","cat"],
+  other_output: ["interm","unite","unitinterp","flex","type","cat"],
+  crosscutting: ["tags","cibles","applic","cat"],
+  sdg:          ["cat","unite"],
+};
+const IND_COL_LABEL = { tags:"Activités concernées", cibles:"Cibles / groupes", applic:"Applicabilité",
+  report:"Exigence de report", follow:"Valeur de suivi reportée", type:"Output / Other output",
+  interm:"Indicateur intermédiaire", unite:"Unité", unitinterp:"Interprétation de l'unité",
+  flex:"Flexibilité", cat:"Catégorie" };
 
 function SetIndicators({ db, set, notify, can }){
   const [edit,setEdit] = useState(null);
@@ -2078,6 +2093,33 @@ function SetIndicators({ db, set, notify, can }){
   const activeLabel = crf ? indLevelLabel(niv) : "Indicateurs de processus";
   const activites = (db.activities || []).filter(a=>a.active).map(a => [a.tag, `${a.tag} — ${a.name}`]);
   const activiteLabel = (tag) => (db.activities || []).find(a=>a.tag===tag)?.name || tag || "";
+
+  /* Les colonnes du sous-groupe courant, et le rendu d'une cellule par clé. Un
+     indicateur retiré du cadre porte une méthode « Retiré… » ; sinon il est actif. */
+  const colClés = IND_COLS[niv] || ["tags","cibles","cat"];
+  const indActif = (ind) => !/retir|inactiv|deac/i.test(ind.status || ind.method || "");
+  const badgesTags = (tags) => (tags||[]).length
+    ? <div className="flex flex-wrap gap-1">
+        {tags.slice(0,8).map(t=>(<span key={t} title={activiteLabel(t)}
+          className="px-1.5 py-0.5 rounded bg-sky-50 text-sky-800 border border-sky-200 f10 font-semibold">{t}</span>))}
+        {tags.length>8 && <span className="f10 text-slate-400">+{tags.length-8}</span>}</div>
+    : <span className="text-slate-400 f11">toutes / non précisé</span>;
+  const indCell = (k, ind) => {
+    switch(k){
+      case "tags": return badgesTags(ind.activityTags);
+      case "cibles": return ind.targets || "—";
+      case "applic": return ind.applicability || "—";
+      case "report": return ind.reportingReq || "—";
+      case "follow": return ind.followValue || "—";
+      case "type": return ind.outputType || "—";
+      case "interm": return ind.intermediate || "—";
+      case "unite": return ind.unit || "—";
+      case "unitinterp": return ind.unitInterp || "—";
+      case "flex": return ind.flexibility || "—";
+      case "cat": return ind.category || "—";
+      default: return "—";
+    }
+  };
 
   const save = (ind) => { set(d => { const i=d.indicators.findIndex(x=>x.id===ind.id);
       if(i>=0) d.indicators[i]=ind; else d.indicators.push(ind); return d; });
@@ -2143,32 +2185,25 @@ function SetIndicators({ db, set, notify, can }){
                   ? "Aucun indicateur ne correspond à la catégorie ou à la recherche."
                   : crf ? "Ajoutez-en un, ou chargez la masterlist réelle (npm run seed:reel)."
                         : "Ajoutez-en un rattaché à une activité, ou importez-le."} />
-            : <><TableWrap>
-            {/* Le tableau ne PLANIFIE pas : il LISTE, et rend lisible la
-                pertinence. Pour un indicateur du CRF, ce qui compte n'est pas
-                tant l'unité ou le sens (dans la fiche) que : à QUELLES ACTIVITÉS
-                il s'applique, et pour QUELLES CIBLES. Ce sont les deux colonnes
-                mises en avant ; le reste vit dans la fiche. */}
+            : <><TableWrap max="mh72">
+            {/* Le tableau ne PLANIFIE pas : il LISTE. Il montre, par sous-groupe,
+                les colonnes réelles de la masterlist (IND_COLS) : la pertinence
+                (activités, cibles) mais aussi le statut, l'applicabilité, le type
+                output/other, l'unité et sa flexibilité pour le détaillé, etc. */}
             <thead><tr><Th>Code</Th><Th>Intitulé</Th>
-              {crf ? <><Th>Activités concernées</Th><Th>Cibles / groupes</Th><Th>Catégorie</Th></>
+              {crf ? <><Th>Statut</Th>{colClés.map(k => <Th key={k}>{IND_COL_LABEL[k]}</Th>)}</>
                    : <><Th>Activité</Th><Th>Unité</Th><Th>Fréquence</Th></>}<Th /></tr></thead>
             <tbody>{visibles.map(ind=>(
               <tr key={ind.id} className="hover:bg-sky-50 align-top">
                 <Td><Badge tone="b">{ind.id}</Badge></Td>
                 <Td className="mw420 font-medium text-slate-800" style={{whiteSpace:"normal"}} title={ind.name}>{ind.name}</Td>
                 {crf ? <>
-                  <Td style={{whiteSpace:"normal",maxWidth:280}}>
-                    {(ind.activityTags||[]).length
-                      ? <div className="flex flex-wrap gap-1">
-                          {ind.activityTags.slice(0,8).map(t=>(
-                            <span key={t} title={activiteLabel(t)}
-                              className="px-1.5 py-0.5 rounded bg-sky-50 text-sky-800 border border-sky-200 f10 font-semibold">{t}</span>))}
-                          {ind.activityTags.length>8 && <span className="f10 text-slate-400">+{ind.activityTags.length-8}</span>}
-                        </div>
-                      : <span className="text-slate-400 f11">toutes / non précisé</span>}
-                  </Td>
-                  <Td className="text-slate-600 f11" style={{whiteSpace:"normal",maxWidth:200}}>{ind.targets || "—"}</Td>
-                  <Td className="text-slate-600 mw240 truncate" title={ind.category}>{ind.category || "—"}</Td>
+                  <Td>{indActif(ind)
+                    ? <Badge tone="g">{ind.status || "Actif"}</Badge>
+                    : <Badge tone="r" >{ind.status || "Inactif"}</Badge>}</Td>
+                  {colClés.map(k => <Td key={k} className="text-slate-600 f11"
+                    style={{whiteSpace:"normal", maxWidth: k==="cat"?240 : k==="tags"?280 : 200}}
+                    title={typeof indCell(k,ind)==="string" ? indCell(k,ind) : undefined}>{indCell(k,ind)}</Td>)}
                 </> : <>
                   <Td className="text-slate-600">{ind.activity ? <span title={activiteLabel(ind.activity)}>{ind.activity}</span> : "—"}</Td>
                   <Td>{ind.unit}</Td><Td>{ind.freq}</Td>
