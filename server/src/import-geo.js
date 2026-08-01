@@ -144,10 +144,13 @@ if(rejected.length){
   if(rejected.length > 10) console.log(`  … et ${rejected.length-10} autre(s)`);
 }
 if(collisions.length){
-  console.error(`\n${collisions.length} collision(s) de code : un même p-code désigne deux unités différentes.`);
-  for(const c of collisions.slice(0,10)) console.error(`  ${c.pcode} : « ${c.a} » et « ${c.b} »`);
-  console.error("\nImport interrompu : corrigez les codes du fichier source.");
-  process.exit(1);
+  /* Non fatal : les unités en conflit sont écartées (comme les lignes rejetées),
+     le reste s'importe. On ne devine pas lequel des chemins est le bon. */
+  console.error(`\n${collisions.length} collision(s) de code écartée(s) : un même p-code désigne `
+    + "plusieurs chemins de noms. Corrigez la source pour les récupérer.");
+  for(const c of collisions.slice(0,10))
+    console.error(`  ${c.pcode} : ${c.chemins.map(p => `« ${p} »`).join(" ≠ ")}`);
+  if(collisions.length > 10) console.error(`  … et ${collisions.length-10} autre(s)`);
 }
 
 if(dry){ console.log("\n--dry : rien n'a été écrit."); process.exit(0); }

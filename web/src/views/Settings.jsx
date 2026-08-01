@@ -1155,6 +1155,161 @@ function SetScope({ db, notify, can }){
     </>);
 }
 
+/* ── Téléversement d'un shapefile, lu par le SERVEUR ──────────────────
+   Le navigateur n'embarque plus de parseur : il dépose les fichiers (un .zip, ou
+   .shp + .dbf + .prj), le serveur les lit et renvoie les colonnes trouvées avec
+   une correspondance proposée. L'utilisateur met chaque colonne en face d'une
+   variable MEMS — même geste que la correspondance des connecteurs — relit
+   l'aperçu, puis valide, ce qui bascule le millésime en une transaction. Le coût
+   du basculement (les sites que le nouveau découpage rend orphelins) est chiffré
+   AVANT toute écriture, jamais masqué. */
+function SetShapefileServer({ db, notify, can, onCommitted }){
+  const [files,setFiles] = useState([]);
+  const [apercu,setApercu] = useState(null);
+  const [mapping,setMapping] = useState({});
+  const [label,setLabel] = useState("");
+  const [allowDup,setAllowDup] = useState(false);
+  const [busy,setBusy] = useState(false);
+  const [stat,setStat] = useState(null);
+
+  const analyser = async (fs, map, dup) => {
+    if(!fs.length) return;
+    setBusy(true); setStat({ kind:"info", text:"Lecture du shapefile par le serveur…" });
+    try{
+      const r = await api.shapefilePreview(fs, map, dup);
+      setApercu(r); setMapping(r.mapping || {});
+      setStat({ kind: r.resume.typeShp === 5 ? "ok" : "warn",
+        text:`${fmt(r.resume.records)} enregistrement(s) · ${fmt(r.resume.avecGeometrie)} avec contour` });
+    }catch(e){ setApercu(null); setStat({ kind:"err", text:e.message }); }
+    setBusy(false);
+  };
+
+  const onFiles = (list) => {
+    const fs = Array.from(list || []);
+    setFiles(fs); setAllowDup(false);
+    setLabel(fs[0] ? fs[0].name.replace(/\.[^.]+$/,"") + " — " + new Date().toISOString().slice(0,10) : "");
+    /* Premier passage sans correspondance : le serveur en propose une, l'écran
+       l'affiche pré-remplie. */
+    analyser(fs, {}, false);
+  };
+
+  /* La case « p-codes en double » change ce qui sera écrit (le premier, ou les
+     deux) : on relit l'aperçu pour que les compteurs suivent. */
+  const basculerDup = (v) => { setAllowDup(v); analyser(files, mapping, v); };
+
+  const valider = async () => {
+    if(!apercu) return;
+    const o = apercu.orphelins?.orphelins || 0;
+    if(!confirm("Basculer le référentiel courant sur ce découpage ?"
+      + (o ? `\n\n${o} site(s) deviendront orphelins : leur ancien p-code n'existe pas dans ce `
+           + "découpage. Le rattachement ne sera PAS refait automatiquement." : "")))
+      return;
+    setBusy(true);
+    try{
+      const r = await api.shapefileCommit(files, mapping, label, "shapefile", allowDup);
+      setStat({ kind: r.orphelins.orphelins ? "warn" : "ok", text: r.message });
+      notify(`Découpage importé : ${fmt(r.imported)} unités, ${fmt(r.geom.écrites)} contours`,
+        r.orphelins.orphelins ? "warn" : "ok");
+      setApercu(null); setFiles([]);
+      if(onCommitted) await onCommitted();
+    }catch(e){
+      /* La garde de consentement sur les doublons revient en 422 avec la liste :
+         on la montre plutôt que de la masquer, l'utilisateur coche puis revalide. */
+      setStat({ kind:"err", text: e.message });
+    }
+    setBusy(false);
+  };
+
+  const R = apercu?.resume;
+  const nbCol = apercu?.collisionsTotal || 0;
+  return (
+    <Card title="Téléverser un shapefile — les vraies communes"
+      subtitle="Lu par le serveur. Déposez le .zip, ou le .shp avec son .dbf (et son .prj).">
+      {!can("admin") && <Note tone="warn">Le téléversement du découpage est réservé aux administrateurs.</Note>}
+      <div className="grid grid-cols-2 gap-x-4">
+        <Field label="Shapefile (.zip, ou .shp + .dbf + .prj)">
+          <input type="file" multiple accept=".zip,.shp,.dbf,.prj" disabled={!can("admin") || busy}
+            onChange={e=>e.target.files.length && onFiles(e.target.files)}
+            className="w-full f125 border border-dashed border-slate-300 rounded p-2 bg-slate-50 cursor-pointer" /></Field>
+        <div className="self-center">{stat && <Note tone={stat.kind}>{stat.text}</Note>}</div>
+      </div>
+
+      {apercu && (<>
+        <StatRow>
+          <Stat label="Enregistrements" value={fmt(R.records)}
+            sub={`type ${R.typeShp} · ${fmt(R.avecGeometrie)} avec contour`} />
+          <Stat label="Communes" value={fmt(apercu.arbre.counts.adm3 || 0)}
+            sub={`${fmt(apercu.arbre.total)} unités au total`} />
+          <Stat label="P-codes en double" value={fmt(nbCol)} tone={nbCol ? "warn" : undefined}
+            sub="mêmes codes, chemins différents" />
+          <Stat label="Sites orphelins" value={fmt(apercu.orphelins.orphelins)}
+            tone={apercu.orphelins.orphelins ? "bad" : "ok"}
+            sub={`sur ${fmt(apercu.orphelins.sitesRattaches)} rattachés aujourd'hui`} />
+        </StatRow>
+
+        <Note>Chaque colonne du fichier se met en face d'une variable MEMS. La proposition ci-dessous
+          vient des intitulés reconnus ; ajustez-la, puis relisez l'aperçu.</Note>
+        <div className="grid grid-cols-3 gap-x-3">
+          {apercu.cibles.map(c=>(
+            <Field key={c.cle} label={c.label}>
+              <Select value={mapping[c.cle]||""} onChange={e=>setMapping(m=>({...m,[c.cle]:e.target.value}))}
+                empty="— aucune —" options={apercu.colonnes.map(x=>x.nom)} className="mi-py1" /></Field>))}
+        </div>
+        <div className="flex items-center gap-3 mb-4">
+          <Btn kind="sec" icon={RefreshCw} disabled={busy} onClick={()=>analyser(files, mapping, allowDup)}>
+            Relire l'aperçu</Btn>
+          <span className="f115 text-slate-500">La correspondance choisie alimente l'arbre et le rattachement des contours.</span>
+        </div>
+
+        {!!apercu.echantillon?.length && (
+          <TableWrap max="mh200">
+            <thead><tr><Th>Commune (échantillon)</Th><Th>P-code</Th></tr></thead>
+            <tbody>{apercu.echantillon.map(u=>(
+              <tr key={u.pcode}><Td>{u.name}</Td><Td className="f115 text-slate-500">{u.pcode}</Td></tr>))}</tbody>
+          </TableWrap>)}
+
+        {!!apercu.orphelins.orphelins && (
+          <Note tone="warn"><b>{fmt(apercu.orphelins.orphelins)} site(s) deviendront orphelins.</b>{" "}
+            Leur p-code actuel est absent de ce découpage — par exemple{" "}
+            {apercu.orphelins.echantillon.slice(0,4).map(s=>s.geo_pcode).join(", ")}. Le rattachement est
+            une décision : il ne sera pas refait automatiquement.</Note>)}
+
+        {/* ── P-codes en double : présentés, jamais bloquants ──────────────
+            L'identité d'une unité est son chemin. Un même code sur deux chemins
+            peut être une vraie donnée ; on le montre, l'utilisateur corrige la
+            source ou accepte l'ambiguïté. */}
+        {nbCol > 0 && (<>
+          <Note tone="warn"><b>{fmt(nbCol)} p-code(s) en double</b> — un même code porté par
+            plusieurs chemins de noms. Corrigez la source, ou autorisez-les ci-dessous : le rattachement
+            <b> par nom reste sûr</b> ; <b>par p-code, le premier trouvé l'emporte.</b></Note>
+          <TableWrap max="mh200">
+            <thead><tr><Th>P-code</Th><Th>Chemins en conflit</Th></tr></thead>
+            <tbody>{apercu.collisions.map(c=>(
+              <tr key={c.pcode}><Td className="f115">{c.pcode}</Td>
+                <Td className="whitespace-normal f115 text-slate-600">{c.chemins.join("  ≠  ")}</Td></tr>))}</tbody>
+          </TableWrap>
+          <div className="max-w-xl">
+            <Sw label="Autoriser les p-codes en double"
+              hint="Les deux chemins entrent, le chemin faisant foi. Sinon, le premier l'emporte et le commit demande cette confirmation."
+              on={allowDup} disabled={busy} onChange={basculerDup} />
+          </div>
+        </>)}
+
+        {!!apercu.rejets?.length && (
+          <Note tone="warn">{fmt(apercu.rejets.length)} ligne(s) écartée(s) à la construction de l'arbre
+            {apercu.rejets[0]?.reason ? ` (par exemple : ${apercu.rejets[0].reason})` : ""}.</Note>)}
+
+        <div className="grid grid-cols-2 gap-x-4 mt-3">
+          <Field label="Nom du millésime" hint="Il identifie ce chargement dans l'historique">
+            <Input value={label} onChange={e=>setLabel(e.target.value)} placeholder="COD-AB communes 2025" /></Field>
+        </div>
+        <Btn icon={Upload} disabled={busy || !can("admin") || !apercu.arbre.total} onClick={valider}>
+          {busy ? "Validation…" : "Valider et basculer le millésime"}</Btn>
+      </>)}
+    </Card>
+  );
+}
+
 /* ── Localités : référentiel administratif versionné ──
    Le découpage n'est plus une liste plate éditable ligne à ligne : c'est un arbre
    (région → district → commune → fokontany) chargé par millésime. Sites, population
@@ -1351,15 +1506,15 @@ function SetLocations({ db, notify, can, reload }){
   const pages = Math.ceil(dir.total / PER);
   return (
     <>
-      <Note>Importez le découpage administratif du niveau 0 au niveau 4 depuis une archive <b>.zip</b> contenant
-        un shapefile, ou un fichier <b>.shp</b>, <b>.dbf</b> ou <b>.geojson</b>. La lecture se fait entièrement dans
-        le navigateur, aucun fichier n'est transmis à un serveur. Lorsque la table attributaire porte déjà des
-        colonnes de centroïdes — <code className="bg-white px-1 rounded">X</code> et
-        <code className="bg-white px-1 rounded mx-1">Y</code>, ou latitude et longitude — la géométrie n'est pas
-        ouverte du tout. Les coordonnées doivent être en WGS 84.
+      <Note>Le moyen recommandé est le <b>téléversement du shapefile</b> ci-dessous : le fichier
+        (un <b>.zip</b>, ou le <b>.shp</b> avec son <b>.dbf</b> et son <b>.prj</b>) est lu <b>par le serveur</b>,
+        qui reconstruit le découpage ET ses contours en un seul geste, après que vous ayez mis chaque colonne
+        en face d'une variable MEMS. Les coordonnées doivent être en WGS 84.
         <br /><br />
-        Pour le référentiel complet de Madagascar — environ 18 000 fokontany — préférez la ligne de commande,
-        qui lit le fichier sans le charger en mémoire :
+        Les deux cartes suivantes — import du découpage seul, puis des contours — sont l'ancienne voie, lue
+        dans le navigateur ; elles restent disponibles, notamment pour un <b>.geojson</b> déjà projeté.
+        Pour le référentiel complet de Madagascar — environ 18 000 fokontany — la ligne de commande lit le
+        fichier sans le charger en mémoire :
         <code className="bg-white px-1 rounded mx-1">node src/import-geo.js fichier.csv --label "COD-AB v2023.1"</code>
       </Note>
 
@@ -1376,6 +1531,12 @@ function SetLocations({ db, notify, can, reload }){
         <Note tone="warn"><b>Aucun référentiel chargé.</b> Les listes administratives resteront vides
           tant qu'un découpage n'aura pas été importé.</Note>
       )}
+
+      {/* Le téléversement lu par le serveur : le shapefile en entier (découpage ET
+          contours), en un seul geste, avec sa correspondance de colonnes. */}
+      <SetShapefileServer db={db} notify={notify} can={can} onCommitted={async ()=>{
+        resetGeoCache(); setSel({ adm1:"", adm2:"", adm3:"" }); setPage(0); setRefresh(x=>x+1);
+        await loadVersions(); if(reload) await reload(); }} />
 
       {/* ── Contours administratifs ──────────────────────────────────────
           Le référentiel ne portait que des points, et la carte projetait des cercles

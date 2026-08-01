@@ -160,6 +160,10 @@ export const schemas = {
   geoBulk: z.object({
     label:  z.string().min(1).max(160).optional(),
     source: z.string().max(300).optional(),
+    /* Accepter les p-codes en double : le chemin fait alors foi comme identité, et
+       le doublon reçoit un code dérivé. Sinon, le premier trouvé l'emporte. Dans
+       les deux cas, l'import n'échoue jamais — les collisions sont signalées. */
+    allowDuplicates: z.coerce.boolean().optional().default(false),
     rows: z.array(z.object({
       adm0: nullableStr(120), adm1: nullableStr(120), adm2: nullableStr(120),
       adm3: nullableStr(120), adm4: nullableStr(120),

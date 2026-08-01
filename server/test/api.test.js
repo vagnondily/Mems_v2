@@ -6725,3 +6725,357 @@ test("restauration : confirmation exigée, filet automatique, et retour exact", 
   assert.equal((await auSuper(request(app).get("/api/state"))).status, 200,
     "l'application fonctionne normalement après la restauration");
 });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Téléversement d'un shapefile.
+
+   Le découpage de démonstration porte des p-codes synthétiques ; charger les
+   vraies communes se fait en déposant le shapefile, que le SERVEUR lit — pas le
+   navigateur. Ces tests forgent un shapefile minuscule OCTET PAR OCTET (c'est le
+   format qu'on parse) plutôt que d'embarquer le vrai fichier de 23 Mo : deux ou
+   trois polygones suffisent à éprouver le comportement.
+
+   Ce qu'ils verrouillent : la lecture du type et des coordonnées, l'appariement
+   .shp ↔ .dbf PAR ORDRE, le refus d'un type non polygone, la correspondance des
+   colonnes comme vrai levier, le comptage des sites orphelins, et un commit qui
+   crée un millésime courant avec ses contours. */
+
+/* Une table attributaire .dbf : en-tête de 32 o + 32 o par champ, terminateur
+   0x0D, puis une ligne par enregistrement préfixée d'un octet de suppression. */
+function forgeDbf(champs, lignes){
+  const rlen = 1 + champs.reduce((s, c) => s + c.len, 0);
+  const hlen = 32 + 32 * champs.length + 1;
+  const buf = Buffer.alloc(hlen + lignes.length * rlen + 1);
+  buf[0] = 0x03;
+  buf.writeUInt32LE(lignes.length, 4);
+  buf.writeUInt16LE(hlen, 8);
+  buf.writeUInt16LE(rlen, 10);
+  let p = 32;
+  for(const c of champs){
+    buf.write(c.nom, p, "latin1");
+    buf[p + 11] = (c.type || "C").charCodeAt(0);
+    buf[p + 16] = c.len;
+    p += 32;
+  }
+  buf[p] = 0x0D; p += 1;
+  for(const row of lignes){
+    buf[p] = 0x20; let c = p + 1;
+    for(const f of champs){
+      buf.fill(0x20, c, c + f.len);
+      buf.write(String(row[f.nom] ?? "").slice(0, f.len), c, "utf8");
+      c += f.len;
+    }
+    p += rlen;
+  }
+  buf[p] = 0x1A;
+  return buf;
+}
+
+/* Un .shp : en-tête de 100 o (code fichier et longueur en gros-boutiste, type et
+   emprise en petit-boutiste), puis un enregistrement polygone par forme. Chaque
+   forme est une liste d'anneaux, chaque anneau une liste de [lon, lat]. */
+function forgeShp(formes, { typeEntete = 5 } = {}){
+  const recs = formes.map((anneaux, i) => {
+    const numParts = anneaux.length;
+    const numPoints = anneaux.reduce((s, r) => s + r.length, 0);
+    const contenu = 4 + 32 + 4 + 4 + 4 * numParts + 16 * numPoints;
+    const rec = Buffer.alloc(8 + contenu);
+    rec.writeInt32BE(i + 1, 0);
+    rec.writeInt32BE(contenu / 2, 4);
+    const s = 8;
+    rec.writeInt32LE(5, s);
+    let xmin = Infinity, ymin = Infinity, xmax = -Infinity, ymax = -Infinity;
+    for(const r of anneaux) for(const [x, y] of r){
+      if(x < xmin) xmin = x; if(x > xmax) xmax = x; if(y < ymin) ymin = y; if(y > ymax) ymax = y; }
+    rec.writeDoubleLE(xmin, s + 4); rec.writeDoubleLE(ymin, s + 12);
+    rec.writeDoubleLE(xmax, s + 20); rec.writeDoubleLE(ymax, s + 28);
+    rec.writeInt32LE(numParts, s + 36);
+    rec.writeInt32LE(numPoints, s + 40);
+    let off = s + 44, acc = 0;
+    for(const r of anneaux){ rec.writeInt32LE(acc, off); off += 4; acc += r.length; }
+    for(const r of anneaux) for(const [x, y] of r){
+      rec.writeDoubleLE(x, off); rec.writeDoubleLE(y, off + 8); off += 16; }
+    return rec;
+  });
+  const corps = Buffer.concat(recs);
+  const h = Buffer.alloc(100);
+  h.writeInt32BE(9994, 0);
+  h.writeInt32BE((100 + corps.length) / 2, 24);
+  h.writeInt32LE(1000, 28);
+  h.writeInt32LE(typeEntete, 32);
+  let xmin = Infinity, ymin = Infinity, xmax = -Infinity, ymax = -Infinity;
+  for(const anneaux of formes) for(const r of anneaux) for(const [x, y] of r){
+    if(x < xmin) xmin = x; if(x > xmax) xmax = x; if(y < ymin) ymin = y; if(y > ymax) ymax = y; }
+  if(Number.isFinite(xmin)){
+    h.writeDoubleLE(xmin, 36); h.writeDoubleLE(ymin, 44);
+    h.writeDoubleLE(xmax, 52); h.writeDoubleLE(ymax, 60); }
+  return Buffer.concat([h, corps]);
+}
+
+/* Un carré fermé, de côté 0,5°, à l'emplacement donné : de quoi distinguer trois
+   communes par leur seule position. */
+const carreSh = (lon, lat) => [[[lon, lat], [lon + 0.5, lat], [lon + 0.5, lat + 0.5],
+  [lon, lat + 0.5], [lon, lat]]];
+
+/* Trois communes COD-AB, dans l'ordre : Alpha en (46,-25), Beta en (47,-24),
+   Gamma en (48,-23). L'ordre du .shp et celui du .dbf se correspondent. */
+const CHAMPS_MDG = [
+  { nom: "ADM1_PCODE", len: 10 }, { nom: "ADM1_EN", len: 12 },
+  { nom: "ADM2_PCODE", len: 10 }, { nom: "ADM2_EN", len: 12 },
+  { nom: "ADM3_PCODE", len: 10 }, { nom: "ADM3_EN", len: 12 },
+];
+const LIGNES_MDG = [
+  { ADM1_PCODE:"MG53", ADM1_EN:"Anosy", ADM2_PCODE:"MG53519", ADM2_EN:"Amboasary", ADM3_PCODE:"MG0001", ADM3_EN:"Alpha" },
+  { ADM1_PCODE:"MG53", ADM1_EN:"Anosy", ADM2_PCODE:"MG53519", ADM2_EN:"Amboasary", ADM3_PCODE:"MG0002", ADM3_EN:"Beta" },
+  { ADM1_PCODE:"MG53", ADM1_EN:"Anosy", ADM2_PCODE:"MG53519", ADM2_EN:"Amboasary", ADM3_PCODE:"MG0003", ADM3_EN:"Gamma" },
+];
+const shpMdg = () => forgeShp([carreSh(46, -25), carreSh(47, -24), carreSh(48, -23)]);
+const dbfMdg = () => forgeDbf(CHAMPS_MDG, LIGNES_MDG);
+
+const apercuShp = (token, { shp, dbf, zip, mapping } = {}) => {
+  let req = request(app).post("/api/geo/shapefile/apercu").set("Authorization", `Bearer ${token}`);
+  if(zip) req = req.attach("fichier", zip, "decoupage.zip");
+  else { if(shp !== null) req = req.attach("fichier", shp ?? shpMdg(), "d.shp");
+    req = req.attach("fichier", dbf ?? dbfMdg(), "d.dbf"); }
+  if(mapping) req = req.field("mapping", JSON.stringify(mapping));
+  return req;
+};
+const commitShp = (token, { shp, dbf, mapping, label } = {}) => {
+  let req = request(app).post("/api/geo/shapefile/commit").set("Authorization", `Bearer ${token}`)
+    .attach("fichier", shp ?? shpMdg(), "d.shp")
+    .attach("fichier", dbf ?? dbfMdg(), "d.dbf");
+  if(mapping) req = req.field("mapping", JSON.stringify(mapping));
+  if(label) req = req.field("label", label);
+  return req;
+};
+
+test("shapefile : l'aperçu lit le type, apparie .shp/.dbf par ordre, et ne rien écrit", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const avant = db.prepare("SELECT COUNT(*) c FROM geo_version").get().c;
+
+  const r = await apercuShp(t);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.resume.typeShp, 5);
+  assert.equal(r.body.resume.records, 3);
+  assert.equal(r.body.resume.apparies, 3);
+  assert.equal(r.body.resume.avecGeometrie, 3);
+  assert.equal(r.body.resume.sansGeometrie, 0);
+
+  /* La correspondance est proposée seule, à partir des intitulés COD-AB. */
+  assert.equal(r.body.mapping.adm3, "ADM3_EN");
+  assert.equal(r.body.mapping.pcode3, "ADM3_PCODE");
+  /* Les colonnes sont listées avec un échantillon, pour le volet de mapping. */
+  assert.ok(r.body.colonnes.find(c => c.nom === "ADM3_EN")?.exemples.includes("Alpha"));
+
+  /* L'arbre est reconstruit sans rien écrire : 1 région, 1 district, 3 communes. */
+  assert.equal(r.body.arbre.counts.adm1, 1);
+  assert.equal(r.body.arbre.counts.adm2, 1);
+  assert.equal(r.body.arbre.counts.adm3, 3);
+  assert.equal(r.body.arbre.total, 5);
+  assert.equal(r.body.echantillon.length, 3);
+
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM geo_version").get().c, avant,
+    "l'aperçu n'a créé aucun millésime");
+});
+
+test("shapefile : un type non polygone est refusé avec son motif", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  /* En-tête déclarant le type 1 (points) : le fichier ne décrit pas un découpage. */
+  const shpPoints = forgeShp([], { typeEntete: 1 });
+  const r = await apercuShp(t, { shp: shpPoints });
+  assert.equal(r.status, 422);
+  assert.ok(/polygone|type/.test(r.body.error), r.body.error);
+});
+
+test("shapefile : la correspondance des colonnes est un vrai levier", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  /* Des intitulés opaques que rien ne reconnaît : sans correspondance, l'arbre
+     reste vide ; avec, il se construit. C'est ce qui prouve que le mapping décide. */
+  const champs = [{ nom:"N1", len:12 }, { nom:"N2", len:12 }, { nom:"N3", len:12 }, { nom:"C3", len:10 }];
+  const lignes = [
+    { N1:"Anosy", N2:"Amboasary", N3:"Alpha", C3:"MG0001" },
+    { N1:"Anosy", N2:"Amboasary", N3:"Beta",  C3:"MG0002" },
+    { N1:"Anosy", N2:"Amboasary", N3:"Gamma", C3:"MG0003" },
+  ];
+  const dbf = forgeDbf(champs, lignes);
+
+  const sans = await apercuShp(t, { dbf });
+  assert.equal(sans.status, 200);
+  assert.equal(sans.body.arbre.total, 0, "sans correspondance, aucune unité n'est construite");
+
+  const avec = await apercuShp(t, { dbf,
+    mapping: { adm1:"N1", adm2:"N2", adm3:"N3", pcode3:"C3" } });
+  assert.equal(avec.body.arbre.total, 5, "avec correspondance, l'arbre se construit");
+  assert.equal(avec.body.arbre.counts.adm3, 3);
+});
+
+test("shapefile : l'aperçu chiffre les sites qui deviendront orphelins", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  /* Un site rattaché à un p-code que le nouveau découpage ne portera pas. */
+  db.prepare("UPDATE sites SET geo_pcode=? WHERE id=(SELECT id FROM sites LIMIT 1)")
+    .run("XORPHELINTEST");
+
+  const r = await apercuShp(t);
+  assert.equal(r.status, 200);
+  assert.ok(r.body.orphelins.orphelins >= 1, "au moins le site témoin devient orphelin");
+  assert.ok(r.body.orphelins.sitesRattaches >= r.body.orphelins.orphelins);
+  /* Aucun p-code du nouveau découpage ne figure parmi les orphelins : ce sont
+     bien des sites que le basculement DÉTACHE, pas des faux positifs. */
+  assert.ok(r.body.orphelins.echantillon.every(s => !/^MG000/.test(s.geo_pcode)));
+});
+
+test("shapefile : le commit crée un millésime courant avec ses contours, et lit les coordonnées", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const r = await commitShp(t, { label:"Communes forgées" });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.imported, 5, "1 région + 1 district + 3 communes");
+  assert.equal(r.body.geom.écrites, 3, "trois contours rattachés");
+
+  /* Le millésime est courant et porte ses contours. */
+  const v = await request(app).get("/api/geo/versions").set("Authorization", `Bearer ${t}`);
+  const courant = v.body.rows.find(x => x.current);
+  assert.equal(courant.label, "Communes forgées");
+  assert.equal(courant.geom.units, 3);
+
+  /* Appariement PAR ORDRE : la commune de l'enregistrement i porte le contour de
+     la forme i. Alpha (rec 0) est en lon≈46, Beta (rec 1) en 47, Gamma (rec 2) en 48.
+     Un appariement inversé placerait Alpha en 48 — c'est ce que l'on vérifie. */
+  const lu = await request(app).get("/api/geo/geometry?level=adm3&detail=true")
+    .set("Authorization", `Bearer ${t}`);
+  const bbox = Object.fromEntries(lu.body.features.map(f => [f.properties.pcode, f.properties.bbox]));
+  assert.ok(bbox["MG0001"][0] >= 46 && bbox["MG0001"][2] <= 46.6, JSON.stringify(bbox["MG0001"]));
+  assert.ok(bbox["MG0002"][0] >= 47 && bbox["MG0002"][2] <= 47.6, JSON.stringify(bbox["MG0002"]));
+  assert.ok(bbox["MG0003"][0] >= 48 && bbox["MG0003"][2] <= 48.6, JSON.stringify(bbox["MG0003"]));
+});
+
+test("shapefile : le commit relève les sites devenus orphelins", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  db.prepare("UPDATE sites SET geo_pcode=? WHERE id=(SELECT id FROM sites LIMIT 1)")
+    .run("XENCOREORPHELIN");
+  const r = await commitShp(t);
+  assert.equal(r.status, 200);
+  assert.ok(r.body.orphelins.orphelins >= 1);
+  assert.ok(/orphelin/.test(r.body.message));
+  /* Le journal garde trace de l'import et du coût, rattachée à CE millésime. */
+  const trace = db.prepare(
+    "SELECT text FROM audit WHERE entity='geo_version' AND action='import' AND entity_id=?")
+    .get(r.body.versionId);
+  assert.ok(trace && /orphelin/.test(trace.text), trace?.text);
+});
+
+test("shapefile : dépôt en une archive .zip, même résultat que les fichiers séparés", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const { default: JSZip } = await import("jszip");
+  const zip = new JSZip();
+  zip.file("mdg.shp", shpMdg());
+  zip.file("mdg.dbf", dbfMdg());
+  zip.file("mdg.prj", "GEOGCS[\"GCS_WGS_1984\"]");
+  const buf = await zip.generateAsync({ type: "nodebuffer" });
+
+  const r = await apercuShp(t, { zip: buf });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.arbre.total, 5);
+  assert.equal(r.body.arbre.counts.adm3, 3);
+  assert.equal(r.body.resume.avecGeometrie, 3);
+});
+
+test("shapefile : idempotence — un second commit rebâtit le millésime courant sans erreur", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const un = await commitShp(t, { label:"Rejeu 1" });
+  const deux = await commitShp(t, { label:"Rejeu 2" });
+  assert.equal(un.status, 200);
+  assert.equal(deux.status, 200);
+  assert.equal(deux.body.imported, 5);
+  assert.equal(deux.body.geom.écrites, 3);
+  const v = await request(app).get("/api/geo/versions").set("Authorization", `Bearer ${t}`);
+  const courants = v.body.rows.filter(x => x.current);
+  assert.equal(courants.length, 1, "un seul millésime courant");
+  assert.equal(courants[0].label, "Rejeu 2");
+});
+
+test("shapefile : téléversement réservé aux administrateurs", async () => {
+  const te = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  assert.equal((await apercuShp(te)).status, 403);
+  assert.equal((await commitShp(te)).status, 403);
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   P-codes en double : présentés, jamais fatals.
+
+   L'identité d'une unité est son CHEMIN, pas son p-code. Un même code profond
+   peut désigner deux unités légitimes portées par deux chemins différents — le
+   cas réel « Berano Ville » (MG53519050003) rattaché à deux communes voisines.
+   L'import ne refuse donc jamais le fichier : il signale les doublons, et une
+   option décide de ce qu'on écrit — le premier trouvé, ou les deux. */
+
+const ROWS_BERANO = [
+  { adm1:"Anosy", adm2:"Amboasary Atsimo", adm3:"Tanandava Sud", adm4:"Berano Ville",
+    pcode1:"MG53", pcode2:"MG53519", pcode4:"MG53519050003" },
+  { adm1:"Anosy", adm2:"Amboasary Atsimo", adm3:"Berano", adm4:"Berano Ville",
+    pcode1:"MG53", pcode2:"MG53519", pcode4:"MG53519050003" },
+];
+
+test("bulk : un p-code en double ne fait pas échouer l'import — premier trouvé par défaut", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const r = await request(app).post("/api/geo/bulk").set("Authorization", `Bearer ${t}`)
+    .send({ label:"Berano premier gagne", rows: ROWS_BERANO });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  /* Deux communes distinctes (chemins différents), mais un seul fokontany stocké :
+     le premier l'emporte, l'autre est signalé, rien n'est refusé. */
+  assert.equal(r.body.counts.adm3, 2);
+  assert.equal(r.body.counts.adm4, 1);
+  assert.equal(r.body.collisions, 1);
+  assert.equal(r.body.collisionsSample[0].pcode, "MG53519050003");
+  assert.equal(r.body.collisionsSample[0].chemins.length, 2);
+});
+
+test("bulk : avec l'option, les deux chemins entrent (chemin faisant foi)", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const r = await request(app).post("/api/geo/bulk").set("Authorization", `Bearer ${t}`)
+    .send({ label:"Berano les deux", rows: ROWS_BERANO, allowDuplicates: true });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  /* Les deux fokontany existent : le doublon a reçu un code dérivé de son chemin. */
+  assert.equal(r.body.counts.adm4, 2);
+  assert.equal(r.body.collisions, 1, "le doublon reste signalé même quand il est accepté");
+});
+
+test("shapefile : les p-codes en double sont présentés à l'aperçu, et le commit exige un consentement", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const champs = [
+    { nom:"ADM1_EN", len:12 }, { nom:"ADM2_EN", len:16 }, { nom:"ADM3_EN", len:16 },
+    { nom:"ADM4_EN", len:16 }, { nom:"ADM1_PCODE", len:10 }, { nom:"ADM2_PCODE", len:10 },
+    { nom:"ADM4_PCODE", len:14 },
+  ];
+  const lignes = [
+    { ADM1_EN:"Anosy", ADM2_EN:"Amboasary Atsimo", ADM3_EN:"Tanandava Sud", ADM4_EN:"Berano Ville",
+      ADM1_PCODE:"MG53", ADM2_PCODE:"MG53519", ADM4_PCODE:"MG53519050003" },
+    { ADM1_EN:"Anosy", ADM2_EN:"Amboasary Atsimo", ADM3_EN:"Berano", ADM4_EN:"Berano Ville",
+      ADM1_PCODE:"MG53", ADM2_PCODE:"MG53519", ADM4_PCODE:"MG53519050003" },
+  ];
+  const dbf = forgeDbf(champs, lignes);
+  const shp = forgeShp([carreSh(46, -25), carreSh(47, -24)]);
+
+  /* Aperçu : les doublons sont montrés, avec leurs chemins. Rien n'est refusé. */
+  const ap = await request(app).post("/api/geo/shapefile/apercu").set("Authorization", `Bearer ${t}`)
+    .attach("fichier", shp, "b.shp").attach("fichier", dbf, "b.dbf");
+  assert.equal(ap.status, 200, JSON.stringify(ap.body));
+  assert.equal(ap.body.collisionsTotal, 1);
+  assert.equal(ap.body.collisions[0].pcode, "MG53519050003");
+  assert.equal(ap.body.collisions[0].chemins.length, 2);
+
+  /* Commit sans consentement : garde NON fatale (422), qui explique et liste — pas
+     un 409 aveugle. Le fichier n'est pas perdu, il repart dès la case cochée. */
+  const bloque = await request(app).post("/api/geo/shapefile/commit").set("Authorization", `Bearer ${t}`)
+    .attach("fichier", shp, "b.shp").attach("fichier", dbf, "b.dbf");
+  assert.equal(bloque.status, 422);
+  assert.ok(/double/.test(bloque.body.error), bloque.body.error);
+  assert.equal(bloque.body.collisions[0].pcode, "MG53519050003");
+
+  /* Avec l'option, les deux chemins entrent, et le millésime bascule. */
+  const ok = await request(app).post("/api/geo/shapefile/commit").set("Authorization", `Bearer ${t}`)
+    .attach("fichier", shp, "b.shp").attach("fichier", dbf, "b.dbf")
+    .field("allowDuplicates", "true").field("label", "Berano accepté");
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.counts.adm4, 2, "les deux fokontany sont importés");
+  assert.equal(ok.body.collisions, 1, "le doublon reste signalé");
+});

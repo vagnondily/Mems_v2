@@ -1190,6 +1190,48 @@ le XLOOKUP, jours recopiés en 31, 32, 33… au lieu de 30, tonnages saisis à l
 recollent pas avec ration × jours). C'est l'argument le plus concret en faveur du calcul
 par MEMS : la formule vit à UN endroit, testée, au lieu de 3 911 cellules.
 
+## Trois gabarits du plan de suivi (reçus le 01/08/2026) — ancrent le chantier L et le suivi fondé sur le risque
+
+Le propriétaire a déposé les fichiers réels du plan de suivi. Ils donnent le modèle exact de
+ce qu'il avait décrit (tableau adm1-adm3 avec les sites configurés, planification par
+commune/district, « déjà suivi »), et surtout la MÉTHODE de couverture fondée sur le risque.
+
+- **`List Sites per Tag.xlsx`** — le répertoire des sites croisés aux activités. Feuille
+  « Sites » : 2 874 sites × 26 colonnes (`ID, Field_office(+code, +code ancien), Adm1..Adm4
+  Name/Code (+ codes anciens)`) ; feuille reliant `POIName / POI_code / Activity_tag`. C'est
+  la source du tableau du plan, et elle confirme deux besoins déjà notés : les **codes
+  administratifs anciens** (une colonne `_ancien` par niveau — la bascule de millésime que le
+  chantier shapefile doit outiller) et le rattachement site→activité par tag.
+
+- **`Plan de suivi 2026 - Copy.xlsx`** — un plan réellement rempli : feuille « Mapping plan de
+  suivi » (3 008 lignes × 55 colonnes), « Update_location » (3 373 × 47), et le shapefile adm3
+  embarqué (`mdg_bnd_adm3_com_pam2`, mêmes colonnes que le .dbf déjà analysé). Preuve que le
+  plan, le découpage et les sites vivent aujourd'hui dans un seul classeur — ce que MEMS doit
+  réunir proprement.
+
+- **`Plan de suivi revue.xlsm`** — le plus important : l'outil « Monitoring Plan » du PAM, la
+  MÉTHODE. Il porte, prêts à modéliser :
+  - **Les paramètres du suivi fondé sur le risque** (feuille « Overarching parameters ») :
+    `Minimum required interval`, `Minimum required frequency`, `Targeted number of sites`,
+    `Feasible number of sites`, `CO adjusted required frequency/interval`, `Operation duration`,
+    `Number of sites`, par CSP Activity et par bureau. C'est le cœur du moteur de priorisation
+    et de couverture — les colonnes existent, il n'y a pas à les inventer.
+  - **Le plan de couverture mensuel** (feuille « Monitoring Coverage Plan ») :
+    `CSP Activity | Activity category | Site visits | Janvier…Décembre | Cumulative`.
+  - **Les plans par bureau** (Manakara, Toliara, Ambovombe, Ampanihy, Antananarivo, 134
+    colonnes) : `# | Sous-bureau | Antenne | Site | Région | District | Commune | Fokontany |
+    ID | GPS lat/long | Activity Category | Programme Area | Activity Tags | Security situation
+    | Programme synergies`, avec les colonnes mensuelles de couverture.
+  - La **taxonomie d'activités** (feuilles « dropdown », « Sheet6 ») : Unconditional resource
+    transfer, Asset creation and livelihoods (FFA), Action to protect against…, School based
+    programme (SMP), Malnutrition treatment, Malnutrition prevention, Smallholder agriculture…
+    — le référentiel d'activités CSP réel, à croiser avec les tags MEMS.
+
+Conséquence pour le chantier L : le tableau du plan de suivi (adm1-adm3 × sites × mois), les
+symboles à expliquer par infobulle, et le « déjà suivi » depuis ODK ont désormais leur
+gabarit exact. Et le suivi fondé sur le risque cesse d'être une intention : ses paramètres
+(intervalle/fréquence requis, sites ciblés vs faisables, ajustement CO) sont donnés.
+
 # Documents de référence reçus le 31/07/2026
 
 Dix documents ont été fournis. Ils **ferment ou réduisent 8 des 23 questions bloquantes** et

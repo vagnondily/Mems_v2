@@ -30,9 +30,28 @@ export function derivePcode(level, normPath){
 
    Retourne la liste des unités, dédoublonnée : une commune présente sur
    quarante lignes de fokontany ne produit qu'une seule unité. */
-export function buildUnits(rows){
+export function buildUnits(rows, { allowDuplicates = false } = {}){
   const byKey = new Map();          /* chemin normalisé -> unité */
   const rejected = [];
+
+  /* L'IDENTITÉ d'une unité est son CHEMIN complet, pas son p-code. Dans une base
+     réelle, un même p-code profond peut désigner deux unités légitimes portées par
+     des chemins différents — le fokontany « Berano Ville » rattaché à deux communes
+     voisines. On ne refuse donc jamais le fichier, et on ne devine jamais lequel
+     est le bon :
+
+       — on SIGNALE toujours ces p-codes en double (collisions), pour que la source
+         puisse être corrigée ou l'ambiguïté acceptée en connaissance de cause ;
+       — `allowDuplicates` tranche ce qu'on ÉCRIT. Faux (défaut) : le premier trouvé
+         l'emporte, les suivants ne créent pas de ligne — un rattachement par p-code
+         reste alors sans ambiguïté. Vrai : les deux entrent, et le doublon reçoit un
+         code dérivé de son chemin pour ne pas heurter la clé primaire (pcode,
+         version) — les deux unités existent, le chemin faisant foi.
+
+     Conséquence, dans les deux cas : le rattachement PAR NOM reste sûr ; PAR P-CODE,
+     le premier trouvé l'emporte. C'est un fait de la donnée, pas un défaut du code. */
+  const vus = new Map();            /* p-code candidat -> premier chemin qui l'a pris */
+  const collMap = new Map();        /* p-code candidat -> ensemble des chemins concernés */
 
   rows.forEach((row, i) => {
     const names = LEVELS.map(l => String(row[l] ?? "").trim());
@@ -63,13 +82,29 @@ export function buildUnits(rows){
            lorsqu'on est au niveau le plus profond, sinon dérivé du chemin. */
         const explicit = String(row[`pcode${k}`] ?? "").trim()
           || (k === deepest ? String(row.pcode ?? "").trim() : "");
-        const pcode = explicit || derivePcode(level, normPath);
+        const candidat = explicit || derivePcode(level, normPath);
+
+        /* Le candidat est-il déjà pris par un AUTRE chemin ? Alors c'est une
+           collision : on la mémorise, et on décide de ce qu'on en fait. */
+        let pcode = candidat, doublon = false;
+        if(vus.has(candidat) && vus.get(candidat) !== normPath){
+          doublon = true;
+          if(!collMap.has(candidat)) collMap.set(candidat, new Set([vus.get(candidat)]));
+          collMap.get(candidat).add(normPath);
+          /* Accepté : le doublon reçoit un code dérivé de son chemin, unique par
+             construction, pour que les deux unités coexistent. */
+          if(allowDuplicates) pcode = derivePcode(level, normPath);
+        }
+        if(!vus.has(candidat)) vus.set(candidat, normPath);
+
         /* La profondeur dans le chemin se compte depuis le premier niveau
            renseigné, pas depuis adm0 qui peut être absent. */
         pathCodes = [...pathCodes.slice(0, k - first), pcode];
         unit = { pcode, parent_pcode:parentPcode, level, name:names[k],
                  name_norm:normalizeName(names[k]), path:pathCodes.join("/"),
-                 lat:null, lon:null, _norm:normPath };
+                 lat:null, lon:null, _norm:normPath,
+                 /* Doublon non dédoublonné : à écarter à l'écriture (premier gagne). */
+                 _doublon: doublon && !allowDuplicates };
         byKey.set(normPath, unit);
       } else {
         pathCodes = unit.path.split("/");
@@ -86,14 +121,11 @@ export function buildUnits(rows){
     }
   });
 
-  const units = [...byKey.values()];
-  /* Un même pcode sur deux chemins différents casserait la clé primaire :
-     on le signale plutôt que de laisser la base refuser l'import en bloc. */
-  const seen = new Map(); const collisions = [];
-  for(const u of units){
-    if(seen.has(u.pcode)) collisions.push({ pcode:u.pcode, a:seen.get(u.pcode), b:u._norm });
-    else seen.set(u.pcode, u._norm);
-  }
+  const collisions = [...collMap].map(([pcode, chemins]) => ({ pcode, chemins:[...chemins] }));
+  /* Sans acceptation des doublons, le premier trouvé l'emporte : les unités en
+     doublon ne créent pas de ligne. Avec, elles sont là (code dérivé). Dans les
+     deux cas, les p-codes de `units` sont uniques — la clé primaire est sauve. */
+  const units = [...byKey.values()].filter(u => !u._doublon);
   return { units, rejected, collisions,
     counts: Object.fromEntries(LEVELS.map(l => [l, units.filter(u=>u.level===l).length])) };
 }

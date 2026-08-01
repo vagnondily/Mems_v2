@@ -1,12 +1,16 @@
 import { Router } from "express";
+import multer from "multer";
 import { z } from "zod";
-import { db } from "../db.js";
+import { db, tx } from "../db.js";
+import { config } from "../config.js";
 import { newId } from "../lib/crypto.js";
 import { requireCap } from "../lib/auth.js";
 import { validate, schemas } from "../lib/validate.js";
 import { buildUnits, writeVersion, currentVersion, LEVELS } from "../lib/geo.js";
 import { scopeOf, declaredFor, unitsIn, outsideDeclared } from "../lib/scope.js";
 import { extent, geomSummary, readGeometries, writeGeometries } from "../lib/geom.js";
+import { construire, lireTable, attributsContour, parcourirGeometriesShp,
+         extraireArchiveGeo } from "../lib/shapefile.js";
 
 const r = Router();
 
@@ -204,13 +208,15 @@ r.put("/versions/:id/current", requireCap("admin"), (req, res) => {
 
 /* ── Import ────────────────────────────────────────────────────────── */
 r.post("/bulk", requireCap("admin"), validate(schemas.geoBulk), (req, res) => {
-  const { rows, label, source } = req.body;
-  const { units, rejected, collisions, counts } = buildUnits(rows);
-  if(collisions.length) return res.status(409).json({
-    error:"collision de code : un même p-code désigne deux unités différentes",
-    details: collisions.slice(0,10).map(c => ({ pcode:c.pcode, chemins:[c.a, c.b] })) });
+  const { rows, label, source, allowDuplicates } = req.body;
+  const { units, rejected, collisions, counts } = buildUnits(rows, { allowDuplicates });
+  /* Une collision n'est plus fatale : les unités en conflit sont écartées comme
+     des lignes rejetées, le reste s'importe, et le détail est rendu pour que la
+     source soit corrigée. Refuser tout le fichier pour une ambiguïté sur un
+     fokontany n'était pas tenable sur des données réelles. */
   if(!units.length) return res.status(422).json({
-    error:"aucune unité exploitable : vérifiez la correspondance des colonnes" });
+    error:"aucune unité exploitable : vérifiez la correspondance des colonnes",
+    collisions: collisions.slice(0,10) });
 
   const id = writeVersion({
     label: label || `Import du ${new Date().toISOString().slice(0,10)}`,
@@ -219,10 +225,230 @@ r.post("/bulk", requireCap("admin"), validate(schemas.geoBulk), (req, res) => {
   db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'plan','geo_version',?,'import',?)`)
     .run(newId("aud"), req.user.id, req.user.first_name, id,
-         `Référentiel importé : ${units.length} unités (${counts.adm3||0} communes, ${counts.adm4||0} fokontany)`);
+         `Référentiel importé : ${units.length} unités (${counts.adm3||0} communes, ${counts.adm4||0} fokontany)`
+         + (collisions.length ? ` · ${collisions.length} collision(s) écartée(s)` : ""));
 
   res.json({ versionId:id, imported:units.length, counts,
-    rejected: rejected.length, rejectedSample: rejected.slice(0,10) });
+    rejected: rejected.length, rejectedSample: rejected.slice(0,10),
+    collisions: collisions.length, collisionsSample: collisions.slice(0,10) });
+});
+
+/* ── Téléversement d'un shapefile ────────────────────────────────────
+   Le découpage de démonstration porte des p-codes synthétiques ; charger les
+   vraies communes se fait ici, en déposant le shapefile. La lecture est faite
+   PAR LE SERVEUR (comme POST /api/xlsform/parse), pas par le navigateur : un
+   parseur de shapefile embarqué dans chaque navigateur, pour une fenêtre que
+   seuls les administrateurs ouvrent, est exactement ce que MEMS a évité en
+   retirant `xlsx` du frontend.
+
+   Deux formes de dépôt, l'une comme l'autre : un .zip contenant .shp + .dbf
+   (+ .prj), ou ces fichiers déposés séparément. Le .zip reste le plus commode —
+   il passe sous le plafond du corps de requête — mais les deux marchent.
+
+   Le corps est plafonné plus haut que le corps JSON global (config.maxBodyMb,
+   25 Mo) : un .shp de 23,5 Mo ne passerait pas. La limite est relevée ICI, pour
+   cette seule route (multer), jamais globalement. */
+const televerseShapefile = multer({
+  /* Rien n'est écrit sur le disque du serveur : le fichier vit en mémoire le
+     temps de la lecture, puis le tampon est libéré — rien à nettoyer, aucune
+     trace en cas d'incident, même choix que l'import Excel et le XLSForm. */
+  storage: multer.memoryStorage(),
+  limits: { fileSize: config.maxShapefileMb * 1024 * 1024, files: 4 },
+  fileFilter: (req, file, cb) => {
+    const ok = /\.(shp|dbf|prj|shx|zip)$/i.test(file.originalname);
+    cb(ok ? null : new Error("Fichiers attendus : .shp, .dbf, .prj, ou une archive .zip"), ok);
+  },
+});
+
+/* Ramène le dépôt — archive ou fichiers séparés — à un même triplet de tampons.
+   Une archive présente l'emporte : c'est le cas le plus courant, et mêler les
+   deux dépôts sur un même envoi n'a pas de sens. */
+async function fichiersDuDepot(files){
+  const parExt = {};
+  for(const f of files || []){
+    const ext = f.originalname.toLowerCase().match(/\.(shp|dbf|prj|zip)$/)?.[1];
+    if(ext) parExt[ext] = f.buffer;
+  }
+  if(parExt.zip) return extraireArchiveGeo(parExt.zip);
+  return { shp: parExt.shp || null, dbf: parExt.dbf || null, prj: parExt.prj || null };
+}
+
+/* Le mapping voyage en champ texte du multipart : un objet { cible: colonne }
+   sérialisé en JSON. Illisible, il est ignoré — la détection par défaut prend
+   alors le relais, ce qui est le comportement voulu au tout premier dépôt. */
+function lireMapping(brut){
+  if(!brut) return null;
+  try{ const o = JSON.parse(brut); return o && typeof o === "object" ? o : null; }
+  catch(e){ return null; }
+}
+
+/* Le changement de millésime est DESTRUCTIF pour les rattachements existants :
+   les sites pointent leur unité par `site.geo_pcode`, sans le millésime. Basculer
+   d'un découpage à p-codes synthétiques (X…) vers les vrais (MG…) orpheline ces
+   sites. Ce coût est chiffré et montré — à l'aperçu comme au commit — jamais
+   masqué, et l'on ne tente PAS de re-rattacher par magie : c'est une décision. */
+function bilanOrphelins(pcodesNouveaux){
+  const connus = pcodesNouveaux instanceof Set ? pcodesNouveaux : new Set(pcodesNouveaux);
+  const rattaches = db.prepare(
+    "SELECT id, code, name, geo_pcode FROM sites WHERE geo_pcode IS NOT NULL").all();
+  const perdus = rattaches.filter(s => !connus.has(s.geo_pcode));
+  return {
+    sitesRattaches: rattaches.length,
+    orphelins: perdus.length,
+    echantillon: perdus.slice(0, 8).map(s => ({ code: s.code, name: s.name, geo_pcode: s.geo_pcode })),
+  };
+}
+
+const echantillonUnites = (units, level, n = 8) =>
+  units.filter(u => u.level === level).slice(0, n).map(u => ({ pcode: u.pcode, name: u.name }));
+
+const veutDoublons = (req) => /^(1|true|on|yes|oui)$/i.test(String(req.body?.allowDuplicates || ""));
+
+/* ① Aperçu : lecture, correspondance, comptages — RIEN n'est écrit.
+   Sans mapping, la réponse porte les colonnes détectées et la correspondance
+   proposée : l'écran remplit son volet, l'utilisateur ajuste, et rappelle cette
+   même route pour revoir l'aperçu. C'est le patron « téléversement → aperçu » de
+   l'import Excel, transposé au shapefile.
+
+   Les géométries ne sont PAS retenues ici (`withFeatures:false`) : sur un fichier
+   de 17 500 fokontany, un aperçu qui renverrait tous les contours étoufferait le
+   navigateur. On ne rend que des compteurs et un échantillon. */
+r.post("/shapefile/apercu", requireCap("admin"), (req, res, next) => {
+  televerseShapefile.any()(req, res, async (err) => {
+    if(err) return res.status(422).json({ error: err.message });
+    try{
+      const { shp, dbf, prj } = await fichiersDuDepot(req.files);
+      if(!dbf) return res.status(422).json({
+        error: "table attributaire .dbf absente : déposez le .zip complet, ou le .shp ET le .dbf" });
+
+      const allowDuplicates = veutDoublons(req);
+      const données = construire({ shp, dbf, prj, mapping: lireMapping(req.body?.mapping) },
+        { withFeatures: false });
+      const { units, rejected, collisions, counts } = buildUnits(données.lignes, { allowDuplicates });
+      const orphelins = bilanOrphelins(new Set(units.map(u => u.pcode)));
+
+      res.json({
+        colonnes: données.colonnes,
+        cibles: données.cibles,
+        mapping: données.mapping,
+        mappingParDefaut: données.mappingParDefaut,
+        resume: données.resume,
+        /* L'arbre reconstruit, sans rien écrire : combien d'unités par niveau. */
+        arbre: { total: units.length, counts },
+        /* Les p-codes en double sont PRÉSENTÉS, jamais fatals : chaque cas liste ses
+           chemins, pour que l'utilisateur corrige la source ou accepte l'ambiguïté.
+           L'option (case « autoriser les p-codes en double ») décide de ce qui sera
+           écrit — voir le commit. */
+        collisions: collisions.slice(0, 20),
+        collisionsTotal: collisions.length,
+        allowDuplicates,
+        rejets: rejected.slice(0, 10),
+        orphelins,
+        echantillon: echantillonUnites(units, "adm3"),
+        message: "Rien n'a été enregistré. Vérifiez la correspondance, les p-codes en double "
+          + "et les orphelins avant de valider.",
+      });
+    }catch(e){
+      if(e.code === "SHAPEFILE") return res.status(422).json({ error: e.message });
+      next(e);
+    }
+  });
+});
+
+/* ② Commit : writeVersion + writeGeometries + millésime courant, EN UNE
+   transaction, puis trace.
+
+   MÉMOIRE. Le fichier est relu ici plutôt que gardé entre deux requêtes ; et les
+   contours sont ÉCRITS EN BASE PAR LOTS, streamés depuis le .shp, jamais tous
+   tenus en RAM à la fois. C'est ce qui permet de basculer un découpage de 17 500
+   fokontany — dont le GeoJSON complet pèse des centaines de mégaoctets — sans
+   faire enfler le processus. buildUnits construit l'arbre (des objets légers) ;
+   le second passage streame les géométries et les libère au fil de l'écriture. */
+r.post("/shapefile/commit", requireCap("admin"), (req, res, next) => {
+  televerseShapefile.any()(req, res, async (err) => {
+    if(err) return res.status(422).json({ error: err.message });
+    try{
+      const { shp, dbf } = await fichiersDuDepot(req.files);
+      if(!dbf) return res.status(422).json({
+        error: "table attributaire .dbf absente : déposez le .zip complet, ou le .shp ET le .dbf" });
+
+      const label = String(req.body?.label || "").trim()
+        || `Shapefile du ${new Date().toISOString().slice(0, 10)}`;
+      const source = String(req.body?.source || "").trim() || null;
+      const allowDuplicates = veutDoublons(req);
+
+      const table = lireTable({ dbf, mapping: lireMapping(req.body?.mapping) });
+      const { units, collisions, counts } = buildUnits(table.lignes, { allowDuplicates });
+      if(!units.length) return res.status(422).json({
+        error: "aucune unité exploitable : vérifiez la correspondance des colonnes",
+        collisions: collisions.slice(0, 20) });
+      /* Garde de consentement, PAS un refus pour une coquille : si des p-codes en
+         double subsistent, on ne devine pas — l'utilisateur coche « autoriser les
+         p-codes en double » (les deux entrent, chemin faisant foi) ou corrige la
+         source. Le reste du fichier n'est pas perdu : il repart dès la case cochée. */
+      if(collisions.length && !allowDuplicates) return res.status(422).json({
+        error: `${collisions.length} p-code(s) en double : cochez « autoriser les p-codes en double » `
+          + "pour importer les deux chemins (le rattachement par nom reste sûr ; par p-code, le premier "
+          + "l'emporte), ou corrigez la source.",
+        collisions: collisions.slice(0, 20), collisionsTotal: collisions.length });
+
+      /* Les orphelins sont chiffrés AVANT l'écriture, sur l'ancien référentiel :
+         le bilan rendu est celui du basculement qui va avoir lieu. */
+      const orphelins = bilanOrphelins(new Set(units.map(u => u.pcode)));
+
+      let versionId, écrites = 0, rejetesGeom = 0;
+      const rejetsGeom = [];
+      const LOT = 500;   /* un lot de contours reste sous quelques mégaoctets en base */
+      /* writeVersion et writeGeometries ouvrent chacun leur propre transaction ;
+         imbriquées dans celle-ci, better-sqlite3 les traite en points de reprise
+         (SAVEPOINT), si bien que l'ensemble reste tout-ou-rien. */
+      tx(() => {
+        versionId = writeVersion({ label, source, units, userId: req.user.id, makeCurrent: true });
+        if(shp){
+          let lot = [], premier = true;
+          const vider = () => {
+            if(!lot.length) return;
+            const b = writeGeometries({ versionId, features: lot, reset: premier, source });
+            premier = false; écrites += b.écrites; rejetesGeom += b.rejetes || 0;
+            for(const rj of b.rejets || []) if(rejetsGeom.length < 20) rejetsGeom.push(rj);
+            lot = [];               /* le lot part au ramasse-miettes, la RAM ne grimpe pas */
+          };
+          parcourirGeometriesShp(shp, (i, g) => {
+            if(!g) return;
+            const at = attributsContour(table.lignes[i]);
+            if(!at) return;
+            lot.push({ ...at, geometry: g });
+            if(lot.length >= LOT) vider();
+          });
+          vider();
+        }
+        db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+                    VALUES (?,?,?,'plan','geo_version',?,'import',?)`)
+          .run(newId("aud"), req.user.id, req.user.first_name, versionId,
+            `Shapefile importé : ${units.length} unité(s) (${counts.adm3 || 0} communes), `
+            + `${écrites} contour(s) — ${orphelins.orphelins} site(s) orphelin(s)`
+            + (collisions.length ? ` · ${collisions.length} p-code(s) en double conservé(s)` : ""));
+      })();
+
+      res.json({
+        versionId, imported: units.length, counts,
+        geom: { écrites, rejetes: rejetesGeom, rejets: rejetsGeom },
+        collisions: collisions.length, collisionsSample: collisions.slice(0, 10),
+        orphelins,
+        message: (orphelins.orphelins
+          ? `Millésime courant. ${orphelins.orphelins} site(s) sont désormais orphelins : `
+            + "leur ancien p-code n'existe pas dans ce découpage. Le rattachement est une décision, "
+            + "il n'a pas été refait automatiquement."
+          : "Millésime courant. Aucun site orphelin.")
+          + (collisions.length
+            ? ` ${collisions.length} p-code(s) en double conservé(s) : rattachement par p-code au premier trouvé.`
+            : ""),
+      });
+    }catch(e){
+      if(e.code === "SHAPEFILE") return res.status(422).json({ error: e.message });
+      next(e);
+    }
+  });
 });
 
 
