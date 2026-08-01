@@ -1254,6 +1254,25 @@ prend plus de mot de passe en entrée pour ces deux cas) — le brief du prochai
   professionnellement. *(Interprétation à confirmer : « CL » = Cadre Logique / cadre de
   résultats ? ou Caseload ? — je le note comme différé quoi qu'il en soit ; à préciser.)*
 
+### S6 — DÉCISION : un éditeur peut planifier les suivis (01/08/2026)
+
+Tranche la restriction 4 du lot de persistance (PR #13). Le propriétaire : « un éditeur peut
+être attribué à planifier les suivis. » État :
+- **Plan de suivi des sites** (grille sites × mois, « Générer le plan », « Générer par
+  commune ») : DÉJÀ éditeur — `PUT /api/sites/:id/months` = `requireCap("edit")`. Rien à
+  changer.
+- **Paramètres MRE** (`Planning.jsx:392-401` : durée, type de site, fréquence, coefficient par
+  activité) : le lot de persistance les a passés en `can("admin")` parce qu'ils s'enregistrent
+  via `PUT /api/settings` (admin). À CORRIGER : les repasser en `edit`, ET leur donner une
+  **persistance éditeur** — une route/collection dédiée `requireCap("edit")` (pas la route
+  settings admin), pour qu'un éditeur planifie ET que ça tienne. Même traitement pour le
+  calendrier de collecte (`outcomePlan`) : sortir de `settings`, route propre en `edit`.
+
+C'est le pendant « fait proprement » de la restriction 2 (outcomePlan qui ombrait sa table) et
+de la restriction 4 (droit admin). À faire dans un lot « persistance de la planification en
+droit éditeur », distinct de la route settings admin qui, elle, reste réservée à la vraie
+configuration.
+
 ### S4 — La passe de cohérence transversale
 
 Le reste de la discussion « professionnelle vs bricolage » : hiérarchie visuelle, densité,
