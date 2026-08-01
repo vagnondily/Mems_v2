@@ -1087,15 +1087,47 @@ tant qu'aucun rapport validé sur l'évolution des populations bénéficiaires n
   année), et réversible tant qu'un rapport validé ne l'a pas remplacé ;
 - quand un rapport validé arrive, il **remplace** la projection et le dit.
 
-### S3 — Paramètres et listes : regrouper, pas empiler
+### S3 — Paramètres : finaliser la configuration D'ABORD (demande du 01/08/2026, priorité relevée)
 
-Aujourd'hui ~16 onglets à plat. Cible : un **volet gauche de catégories** avec sous-onglets,
-le contenu à droite (maître-détail). Regroupement proposé : Organisation (général, pays,
-bureaux, périmètres) · Référentiels géographiques (localités, contours/shapefile) ·
-Référentiels M&E (indicateurs, calculs, rations, codes d'identification) · Sources de
-données (ODK Central, connecteurs) · Modèles de rapport · Système (API, utilisateurs, à
-propos). Même principe pour la gestion des listes : des sous-catégories au lieu d'un écran
-surchargé.
+Le propriétaire relève cette partie en tête : « travaille sur les paramètres en premier lieu
+pour finaliser cette partie configuration, c'est la base de tout, règle chaque souci, fais que
+tout fonctionne, réorganise les options pour un rendu professionnel ». Passe donc AVANT le
+chantier R. Contrainte : `Settings.jsx` est tenu par le lot shapefile en cours — s'exécute une
+fois ce lot atterri.
+
+**Audit des 16 onglets (état stable, commité), soucis réels à régler :**
+
+1. **Sept réglages se perdent au rechargement** — le plus grave, c'est du « saisir dans le
+   vide ». `scoring`, `roles`, `mmr`, `lists` (partenaires, modalités), `actCategories`,
+   `outcomePlan`, `formulas` sont éditables (Calculs, Indicateurs, listes…) et jamais
+   persistés côté serveur (chantier D). À traiter en bloc : soit les persister (les verser
+   dans une collection synchronisée ou dans `settings`), soit passer l'écran en lecture seule.
+   La bonne réponse ici est de PERSISTER — la configuration est le socle, elle doit tenir.
+2. **Export des Localités tronqué en silence** (chantier I1) : `toCSV(dir.rows,…)` n'exporte
+   que la page affichée (`PER=200`) au lieu du jeu filtré complet — 200 lignes sur 18 000
+   fokontany, sans avertissement. Exporter la totalité, avec BOM UTF-8 et p-codes préservés.
+3. **Sites hors de Paramètres** : demande ancienne du propriétaire, jamais faite — l'onglet
+   « Sites » est de la gestion de données, pas de la configuration. Le retirer d'ici (il vit
+   déjà ailleurs via SitesModule).
+4. **Rations** : l'onglet actuel est l'ancienne matrice `settings.rationTable` ; il sera
+   remplacé par le catalogue du chantier R. Pour cette passe, au minimum garantir qu'il
+   persiste ; la refonte complète est R.
+
+**Réorganisation maître-détail (le « rendu professionnel ») — volet gauche de groupes,
+contenu à droite :**
+
+| Groupe | Sous-onglets |
+|---|---|
+| Organisation | Général · Pays · Bureaux · Périmètre des bureaux |
+| Référentiels géographiques | Localités (+ import shapefile/contours) |
+| Référentiels M&E | Indicateurs · Calculs · Rations · Codes d'identification |
+| Sources de données | ODK Central · Connecteurs |
+| Rapports | Modèles de rapport |
+| Système | API · Utilisateurs · À propos |
+
+Même principe pour la gestion des listes : des sous-catégories plutôt qu'un écran surchargé.
+Chaque onglet est parcouru, testé et corrigé un par un — l'objectif est que TOUT fonctionne,
+pas seulement que ce soit mieux rangé.
 
 ### S4 — La passe de cohérence transversale
 
