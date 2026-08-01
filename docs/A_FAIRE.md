@@ -25,6 +25,12 @@ module s'appuie sur le précédent :
    le reste s'y accroche. Et la **configuration du pays** (découpage géographique importé par
    shapefile/dbf) devient **LA base de référence adm0→adm4 de tout le système** — sites,
    caseload, plan de suivi, carte, dashboards y puisent.
+   **Confirmé le 01/08 :** ce référentiel est la **source unique des cascades de filtre** —
+   région → district → commune → fokontany — partout où une localisation est utilisée : le
+   **filtrage de la carte** ET tout paramètre/écran qui manipule un lieu. Conséquence de
+   conception : les sélecteurs de filtre (carte, sites, ciblage, plan de suivi, TPM…) se
+   construisent depuis le millésime courant du pays, pas depuis des listes séparées qui
+   divergeraient. Un lieu se choisit toujours par la même cascade, alimentée par ce référentiel.
 2. **Suivi-évaluation** : Planification → Suivi → **Dashboard des indicateurs de suivi de
    processus** sur données **Kobo v1 mappées** (chantier T). Jeu de test : `List Sites per
    Tag.xlsx` (le fichier « tag ») pour les sites par activité.
