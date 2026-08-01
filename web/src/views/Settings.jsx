@@ -15,49 +15,99 @@ import { SetCodeReferentiels } from "./Referentiels.jsx";
 import { BLOCKS } from "./Reports.jsx";
 import { PageHead } from "./Shell.jsx";
 
-/* ══════════════════ Paramètres ══════════════════ */
+/* ══════════════════ Paramètres ══════════════════
+   Les dix-huit écrans de configuration ne tiennent pas — et ne DOIVENT pas
+   tenir — sur une seule rangée d'onglets : à l'écran, le dernier débordait
+   déjà (« ODK Cer… »). Ils sont regroupés par SUJET dans un rail à gauche,
+   avec un intitulé de catégorie par groupe et ses écrans dessous. C'est la
+   même forme maître-détail que l'écran des listes typées : on choisit le
+   sujet à gauche, on le configure à droite.
+
+   Le regroupement suit ce qu'on FAIT, pas la table sous-jacente :
+     · Configuration       — les briques fondatrices (pays, découpage, général)
+     · Référentiels         — les listes canoniques réutilisées partout
+     · Organisation & lieux — bureaux, périmètres, répertoire des localités
+     · Collecte & sources   — d'où viennent les données
+     · Calculs & rations    — comment MEMS les transforme
+     · Restitution & accès  — ce qui sort, et qui entre */
+const SETTINGS_GROUPS = (superUser) => [
+  { cle:"config", label:"Configuration", items:[
+    ...(superUser ? [["guided","Configuration guidée"]] : []),
+    ["general","Général"], ["country","Pays & découpage"] ] },
+  { cle:"ref", label:"Référentiels", items:[
+    ["activities","Activités"], ["listes","Listes paramétrables"],
+    ["indicators","Indicateurs"], ["codes","Référentiels de codes"] ] },
+  { cle:"org", label:"Organisation & lieux", items:[
+    ["offices","Bureaux"], ["scope","Périmètre des bureaux"], ["locations","Localités"] ] },
+  { cle:"src", label:"Collecte & sources", items:[
+    ["odk","ODK Central"], ["connectors","Connecteurs"] ] },
+  { cle:"calc", label:"Calculs & rations", items:[
+    ["calc","Calculs"], ["rations","Rations"] ] },
+  { cle:"acces", label:"Restitution & accès", items:[
+    ["templates","Modèles de rapport"], ["api","API"],
+    ["users","Utilisateurs"], ["about","À propos"] ] },
+];
+
 function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
-  /* La fusion de `main` avait repris sa propre liste d'onglets, sans « Bureaux » ni
-     « Périmètre des bureaux » : les deux écrans existaient toujours dans le fichier
-     mais n'étaient plus atteignables, et `reload` ne remontait plus. Les voici
-     rétablis, avec « À propos » qui venait de main. */
-  /* « Sites » a quitté les Paramètres : c'est de la gestion de données, pas de la
-     configuration. Le registre reste monté à l'identique sous Suivi-évaluation →
-     Registre des sites (Merged.jsx) — le composant n'est donc pas retiré, seulement
-     son entrée ici. */
-  /* La configuration guidée (S7) est réservée au super-utilisateur : c'est le
-     parcours fondateur, décidé le 01/08 comme tâche `super`. Les référentiels
-     eux-mêmes restent administrables par un admin, onglet par onglet. */
-  const items = [
-    ...(me?.role === "super" ? [["guided","Configuration guidée"]] : []),
-    ["general","Général"],["country","Pays"],["offices","Bureaux"],
-    ["locations","Localités"],["scope","Périmètre des bureaux"],
-    ["activities","Activités"],["listes","Listes paramétrables"],["indicators","Indicateurs"],
-    ["calc","Calculs"],["rations","Rations"],["odk","ODK Central"],["connectors","Connecteurs"],
-    ["codes","Référentiels de codes"],["templates","Modèles de rapport"],
-    ["api","API"],["users","Utilisateurs"],["about","À propos"]];
+  const superUser = me?.role === "super";
+  const groups = SETTINGS_GROUPS(superUser);
+  const allItems = groups.flatMap(g => g.items);
+  /* Un sujet toujours affiché : si `sub` n'existe pas (défaut, ou onglet retiré
+     pour ce rôle), on retombe sur le premier — jamais un panneau vide. */
+  const active = allItems.some(i => i[0] === sub) ? sub : (allItems[0]?.[0] || "general");
+  const activeLabel = allItems.find(i => i[0] === active)?.[1] || "";
+  const activeGroup = groups.find(g => g.items.some(i => i[0] === active))?.label || "";
   return (
     <div className="space-y-4">
-      <PageHead title="Paramètres" text="Configuration de l'application, référentiels, registre des sites, calculs, sources et accès." />
-      <Tabs items={items} value={sub} onChange={setSub} />
-      {sub==="guided" && me?.role === "super" && <SetGuided db={db} setSub={setSub} />}
-      {sub==="general" && <SetGeneral db={db} set={set} />}
-      {sub==="country" && <SetCountry db={db} notify={notify} can={can} reload={reload} />}
-      {sub==="offices" && <SetOffices db={db} notify={notify} can={can} reload={reload} />}
-      {sub==="about" && <SetAbout db={db} />}
-      {sub==="locations" && <SetLocations db={db} notify={notify} can={can} reload={reload} />}
-      {sub==="scope" && <SetScope db={db} notify={notify} can={can} />}
-      {sub==="activities" && <SetActivities db={db} notify={notify} can={can} reload={reload} />}
-      {sub==="listes" && <SetListes notify={notify} can={can} me={me} />}
-      {sub==="indicators" && <SetIndicators db={db} set={set} notify={notify} can={can} />}
-      {sub==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
-      {sub==="rations" && <SetRations db={db} set={set} notify={notify} can={can} />}
-      {sub==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} reload={reload} />}
-      {sub==="connectors" && <SetConnectors notify={notify} can={can} />}
-      {sub==="codes" && <SetCodeReferentiels notify={notify} can={can} />}
-      {sub==="templates" && <SetTemplates db={db} set={set} notify={notify} can={can} />}
-      {sub==="api" && <SetApi db={db} notify={notify} />}
-      {sub==="users" && <SetUsers db={db} set={set} me={me} notify={notify} />}
+      <PageHead title="Paramètres"
+        text="Configuration de l'application, référentiels, calculs, sources et accès — regroupés par sujet." />
+      <div className="grid gap-4 items-start" style={{ gridTemplateColumns:"244px minmax(0,1fr)" }}>
+        {/* ── Rail des catégories et sous-catégories ── */}
+        <nav className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-auto sticky"
+          style={{ top:"0.75rem", maxHeight:"calc(100vh - 90px)" }}>
+          <div className="py-1.5">
+            {groups.map(g => (
+              <div key={g.cle} className="mb-0.5">
+                <div className="px-4 pt-3 pb-1 f10 font-bold uppercase tracking-wider text-slate-400">{g.label}</div>
+                {g.items.map(([v,l]) => (
+                  <button key={v} onClick={()=>setSub(v)}
+                    className={clsx("w-full text-left px-4 py-2 f125 border-l-2 transition-colors",
+                      active===v
+                        ? "bg-sky-50 bd-brand c-bd font-semibold"
+                        : "border-l-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-900")}>
+                    {l}</button>))}
+              </div>))}
+          </div>
+        </nav>
+
+        {/* ── Panneau du sujet choisi ── */}
+        <div className="min-w-0">
+          {/* Fil d'Ariane : catégorie › sous-catégorie, pour savoir où l'on est. */}
+          <div className="flex items-center gap-2 f11 text-slate-400 mb-3">
+            <span className="uppercase tracking-wide font-semibold">{activeGroup}</span>
+            <span>›</span>
+            <span className="text-slate-700 font-semibold">{activeLabel}</span>
+          </div>
+      {active==="guided" && superUser && <SetGuided db={db} setSub={setSub} />}
+      {active==="general" && <SetGeneral db={db} set={set} />}
+      {active==="country" && <SetCountry db={db} notify={notify} can={can} reload={reload} />}
+      {active==="offices" && <SetOffices db={db} notify={notify} can={can} reload={reload} />}
+      {active==="about" && <SetAbout db={db} />}
+      {active==="locations" && <SetLocations db={db} notify={notify} can={can} reload={reload} />}
+      {active==="scope" && <SetScope db={db} notify={notify} can={can} />}
+      {active==="activities" && <SetActivities db={db} notify={notify} can={can} reload={reload} />}
+      {active==="listes" && <SetListes notify={notify} can={can} me={me} />}
+      {active==="indicators" && <SetIndicators db={db} set={set} notify={notify} can={can} />}
+      {active==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
+      {active==="rations" && <SetRations db={db} set={set} notify={notify} can={can} />}
+      {active==="odk" && <SetOdk db={db} set={set} notify={notify} can={can} reload={reload} />}
+      {active==="connectors" && <SetConnectors notify={notify} can={can} />}
+      {active==="codes" && <SetCodeReferentiels notify={notify} can={can} />}
+      {active==="templates" && <SetTemplates db={db} set={set} notify={notify} can={can} />}
+      {active==="api" && <SetApi db={db} notify={notify} />}
+      {active==="users" && <SetUsers db={db} set={set} me={me} notify={notify} />}
+        </div>
+      </div>
     </div>);
 }
 
@@ -886,36 +936,20 @@ function SetCountry({ db, notify, can, reload }){
         </TableWrap>
       </Card>
 
-      {/* ── Le découpage fait partie de la fiche du pays ──────────────────
-          Le propriétaire l'a demandé : configurer le shapefile À PART du pays
-          « bugge en multi-pays ». On le monte donc ici, rattaché au pays COURANT,
-          et le millésime importé s'attache à lui — la bascule du courant reste
-          cloisonnée par pays (voir lib/geo.js). */}
-      {data.current?.code
-        ? <>
-            <SetShapefileServer db={db} notify={notify} can={can} country={data.current}
-              onCommitted={async ()=>{
-                /* Le découpage importé devient le référentiel courant du pays : on
-                   rafraîchit la fiche (compteur de millésimes), on vide le cache
-                   géographique et on remonte les libellés — sans quoi les écrans
-                   garderaient l'ancien découpage jusqu'au prochain rechargement. */
-                resetGeoCache(); await charger(); if(reload) await reload();
-              }} />
-            {/* Puis les contours maille par maille, sur ce même millésime : c'est
-                ce qui donne à la carte son choix de niveau de breakdown. */}
-            <SetContoursNiveaux db={db} notify={notify} can={can}
-              onCommitted={async ()=>{ resetGeoCache(); if(reload) await reload(); }} />
-          </>
-        : <Note tone="warn">Rendez d'abord un pays courant : le découpage administratif se rattache
-            au pays courant, et il n'y en a pas encore.</Note>}
+      {/* Le découpage — shapefile, dbf et contours — se configure DANS la fiche
+          du pays (« sur l'interface d'insertion des données du pays »), plus dans
+          des cartes séparées sous le tableau : on ouvre le pays, on injecte, on
+          lit le récap par niveau. Le millésime se rattache au pays ouvert. */}
 
       <Modal open={!!edit} wide onClose={()=>setEdit(null)}
         title={edit?._existe ? `Configuration de ${edit.name}` : "Nouveau pays"}
-        subtitle="Identité, devise locale et libellés des cinq niveaux administratifs"
-        footer={<><Btn kind="sec" onClick={()=>setEdit(null)}>Annuler</Btn>
+        subtitle="Identité, découpage administratif et contours — tout ce qui décrit ce pays"
+        footer={<><Btn kind="sec" onClick={()=>setEdit(null)}>Fermer</Btn>
           <Btn icon={Save} disabled={busy || !edit?.name?.trim() || (edit?.code||"").length !== 3}
-            onClick={enregistrer}>{busy ? "Enregistrement…" : "Enregistrer"}</Btn></>}>
+            onClick={enregistrer}>{busy ? "Enregistrement…" : "Enregistrer l'identité"}</Btn></>}>
         {edit && (<>
+          <SectionTitle n="1" title="Identité et vocabulaire"
+            hint="Nom, devise, centre de la carte et libellés des cinq niveaux administratifs." />
           <div className="grid grid-cols-4 gap-x-4">
             <Field label="Nom du pays" className="col-span-2">
               <Input value={edit.name||""} onChange={e=>setEdit(p=>({...p,name:e.target.value}))} /></Field>
@@ -953,9 +987,101 @@ function SetCountry({ db, notify, can, reload }){
           </Field>
           <Sw label="Pays actif" hint="Un pays désactivé ne peut pas être rendu courant"
             on={edit.active !== false} onChange={v=>setEdit(p=>({...p,active:v}))} />
+
+          {/* ── Découpage administratif, DANS la fiche du pays ──────────────
+              « Sur l'interface d'insertion des données du pays, on injecte le
+              shapefile et les dbf, et en bas un récap des nombres par niveau. »
+              Le shapefile se rattache à un pays qui EXISTE et qui est COURANT
+              (un seul l'est à la fois) : les deux gardes ci-dessous le disent
+              plutôt que de laisser un import partir dans le vide. */}
+          <div className="mt-6 -mx-5 px-5 pt-5 border-t border-slate-200 bg-slate-50/70">
+            <SectionTitle n="2" title="Découpage administratif — shapefile et dbf"
+              hint="Le fichier des limites du pays. Il construit l'arbre région → district → commune → fokontany et le fond de carte." />
+            {!edit._existe ? (
+              <Note tone="warn">Enregistrez d'abord l'identité de ce pays (bouton ci-dessous), puis
+                rouvrez sa fiche : le découpage se rattache à un pays qui existe.</Note>
+            ) : !edit.current ? (
+              <Note tone="warn">Ce pays n'est pas le pays courant. Le découpage se configure sur le
+                pays courant — un seul l'est à la fois. Fermez cette fiche, cliquez
+                <b> « Rendre courant »</b> sur la ligne de {edit.name}, puis rouvrez-la.
+                {edit.versions ? ` (${edit.versions} millésime(s) déjà chargé(s) pour ce pays.)` : ""}</Note>
+            ) : (<>
+              <SetShapefileServer db={db} notify={notify} can={can} country={edit} inline
+                onCommitted={async ()=>{
+                  /* Le millésime importé devient le référentiel courant du pays :
+                     on rafraîchit la fiche (compteur de millésimes), on vide le
+                     cache géo et on remonte les libellés, sinon les écrans
+                     garderaient l'ancien découpage jusqu'au prochain F5. */
+                  resetGeoCache(); await charger(); if(reload) await reload();
+                }} />
+              <SetContoursNiveaux db={db} notify={notify} can={can} inline
+                onCommitted={async ()=>{ resetGeoCache(); if(reload) await reload(); }} />
+              {/* ── En bas : le récap des nombres par niveau ── */}
+              <RecapNiveaux db={db} />
+            </>)}
+          </div>
         </>)}
       </Modal>
     </>);
+}
+
+/* Un intitulé de section numéroté, pour découper la fiche du pays en étapes
+   lisibles — identité, découpage, récap — plutôt qu'un long formulaire. */
+function SectionTitle({ n, title, hint }){
+  return (
+    <div className="flex items-start gap-3 mb-3">
+      <span className="w-6 h-6 rounded-full grid place-items-center f11 font-bold shrink-0 bg-sky-100 c-bd">{n}</span>
+      <div className="min-w-0">
+        <div className="f13 font-semibold text-slate-800">{title}</div>
+        {hint && <div className="f115 text-slate-500 leading-snug">{hint}</div>}
+      </div>
+    </div>);
+}
+
+/* Le récap demandé : ce que le millésime courant porte, NIVEAU PAR NIVEAU —
+   combien d'unités de découpage, combien de contours cartographiques, et si le
+   fond de carte est complet à ce niveau. Lu de l'état (db.geoVersion), il
+   reflète toujours ce qui vient d'être injecté ou dérivé, sans recalcul. */
+function RecapNiveaux({ db }){
+  const gv = db.geoVersion;
+  const NIV = niveaux(db, { from:"adm0", to:"adm4" });
+  const contours = Object.fromEntries((gv?.geom?.parNiveau || []).map(x => [x.level, x.units]));
+  const totUnites = Object.values(gv?.counts || {}).reduce((a,b)=>a+b, 0);
+  const totContours = gv?.geom?.units || 0;
+  return (
+    <div className="pb-5">
+      <div className="f11 font-bold uppercase tracking-wider text-slate-500 mb-2 mt-1">
+        Récapitulatif par niveau</div>
+      {!gv ? (
+        <Note tone="warn">Aucun découpage chargé pour ce pays : injectez un shapefile ci-dessus.</Note>
+      ) : (
+        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <TableWrap max="mh300">
+            <thead><tr><Th>Niveau</Th><Th num>Unités du découpage</Th>
+              <Th num>Contours cartographiques</Th><Th>Fond de carte</Th></tr></thead>
+            <tbody>{NIV.map(([code,label])=>{
+              const u = gv.counts?.[code] || 0;
+              const c = contours[code] || 0;
+              return (
+                <tr key={code} className={clsx(!u && "opacity-50")}>
+                  <Td className="font-medium text-slate-800">{label}
+                    <span className="text-slate-400 f11"> {code}</span></Td>
+                  <Td num className={u ? "font-semibold text-slate-700" : "text-slate-400"}>{u ? fmt(u) : "—"}</Td>
+                  <Td num className={c ? "font-semibold text-slate-700" : "text-slate-400"}>{c ? fmt(c) : "—"}</Td>
+                  <Td>{!u ? <span className="text-slate-400 f11">—</span>
+                    : c >= u ? <Badge tone="g">complet</Badge>
+                    : c ? <Badge tone="y">partiel · {Math.round((c/u)*100)} %</Badge>
+                    : <Badge>aucun contour</Badge>}</Td>
+                </tr>);
+            })}</tbody>
+            <tfoot><tr className="bg-slate-50 border-t-2 border-slate-200">
+              <Td className="font-bold text-slate-800">Total</Td>
+              <Td num className="font-bold text-slate-800">{fmt(totUnites)}</Td>
+              <Td num className="font-bold text-slate-800">{fmt(totContours)}</Td>
+              <Td /></tr></tfoot>
+          </TableWrap>
+        </div>)}
+    </div>);
 }
 
 /* ── Bureaux ──────────────────────────────────────────────────────────
@@ -1269,7 +1395,7 @@ function SetScope({ db, notify, can }){
    l'aperçu, puis valide, ce qui bascule le millésime en une transaction. Le coût
    du basculement (les sites que le nouveau découpage rend orphelins) est chiffré
    AVANT toute écriture, jamais masqué. */
-function SetShapefileServer({ db, notify, can, onCommitted, country }){
+function SetShapefileServer({ db, notify, can, onCommitted, country, inline }){
   const [files,setFiles] = useState([]);
   const [apercu,setApercu] = useState(null);
   const [mapping,setMapping] = useState({});
@@ -1330,9 +1456,17 @@ function SetShapefileServer({ db, notify, can, onCommitted, country }){
   const R = apercu?.resume;
   const nbCol = apercu?.collisionsTotal || 0;
   const sansDbf = !!R?.sansDbf;
+  /* Dans la fiche du pays (`inline`), la section est déjà titrée par le pas « 2 » :
+     on rend le corps sans la chrome d'une carte, pour ne pas empiler deux titres.
+     Ailleurs, la carte autonome est conservée à l'identique. */
+  const Wrap = inline
+    ? ({ children }) => <div className="mb-4">
+        <p className="f115 text-slate-500 mb-3">Lu par le serveur, rattaché à <b>{country?.name || "ce pays"}</b>.
+          Déposez le .zip, ou le .shp avec son .dbf (et son .prj).</p>{children}</div>
+    : ({ children }) => <Card title="Découpage administratif — téléverser le shapefile"
+        subtitle={`Lu par le serveur, rattaché à ${country?.name || "ce pays"}. Déposez le .zip, ou le .shp avec son .dbf (et son .prj).`}>{children}</Card>;
   return (
-    <Card title="Découpage administratif — téléverser le shapefile"
-      subtitle={`Lu par le serveur, rattaché à ${country?.name || "ce pays"}. Déposez le .zip, ou le .shp avec son .dbf (et son .prj).`}>
+    <Wrap>
       {!can("admin") && <Note tone="warn">Le téléversement du découpage est réservé aux administrateurs.</Note>}
 
       <Note>Ce découpage devient la <b>référence adm0→adm4 de MEMS</b> pour {country?.name || "le pays courant"} :
@@ -1434,7 +1568,7 @@ function SetShapefileServer({ db, notify, can, onCommitted, country }){
         <Btn icon={Upload} disabled={busy || !can("admin") || !apercu.arbre.total} onClick={valider}>
           {busy ? "Validation…" : "Valider et basculer le millésime"}</Btn>
       </>)}
-    </Card>
+    </Wrap>
   );
 }
 
@@ -1446,7 +1580,7 @@ function SetShapefileServer({ db, notify, can, onCommitted, country }){
    fichier déposé, à la maille qu'il porte. Ici on AJOUTE une maille : un fichier
    par niveau, rattaché au même millésime, sans reconstruire l'arbre. Chaque
    niveau dit ce qu'il porte, se remplace, et se retire seul. */
-function SetContoursNiveaux({ db, notify, can, onCommitted }){
+function SetContoursNiveaux({ db, notify, can, onCommitted, inline }){
   const [busy,setBusy]   = useState("");
   const [bilan,setBilan] = useState(null);
   const gv = db.geoVersion;
@@ -1493,9 +1627,15 @@ function SetContoursNiveaux({ db, notify, can, onCommitted }){
   };
 
   if(!gv) return null;
+  const Wrap = inline
+    ? ({ children }) => <div className="mt-5 pt-4 border-t border-slate-200">
+        <div className="f13 font-semibold text-slate-800 mb-1">Contours par niveau (breakdown de la carte)</div>
+        <p className="f115 text-slate-500 mb-3">Millésime : <b>{gv.label}</b> · {fmt(gv.geom?.units || 0)} contour(s) au total.</p>
+        {children}</div>
+    : ({ children }) => <Card title="Contours par niveau — le breakdown de la carte"
+        subtitle={`Millésime courant : ${gv.label} · ${fmt(gv.geom?.units || 0)} contour(s) au total`}>{children}</Card>;
   return (
-    <Card title="Contours par niveau — le breakdown de la carte"
-      subtitle={`Millésime courant : ${gv.label} · ${fmt(gv.geom?.units || 0)} contour(s) au total`}>
+    <Wrap>
       <Note>La carte dessine les limites <b>au niveau de breakdown choisi</b> : elle ne peut le faire
         que pour les niveaux dont elle a les contours. Déposez <b>un shapefile par maille</b> —
         {" "}{NIVEAUX.map(([,l])=>l).join(", ")} — rattaché à ce même millésime ; l'arbre
@@ -1589,7 +1729,7 @@ function SetContoursNiveaux({ db, notify, can, onCommitted }){
             </TableWrap>)}
         </div>)}
       {bilan?.erreur && <Note tone="err">{bilan.erreur}</Note>}
-    </Card>
+    </Wrap>
   );
 }
 
