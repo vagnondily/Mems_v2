@@ -717,6 +717,19 @@ figurent pas et ne peuvent pas y être ajoutés.
 `reportTemplates` ; alimenter la liste des choix depuis les formules existantes ; ajouter le
 sélecteur de rendu (recharts est déjà là).
 
+**Précisé le 01/08/2026 — un vrai constructeur de rapport infographique, fondé sur les
+indicateurs.** Un modèle se configure *par type de rapport*. On y dépose les indicateurs
+voulus, tirés du **référentiel d'indicateurs** (Master List du PAM et/ou XLSForms mappés — les
+mêmes qui alimentent les dashboards, chantier T). Pour CHAQUE indicateur retenu, on choisit sa
+**représentation** : graphique (type — barres, ligne, secteurs… —, **couleurs**, forme), tableau,
+ou autre. Cible visuelle : un rapport **infographique**, inspiré de `docs/dashboard_suivi_
+processus_WFP.html` (couleurs, cartes de synthèse, bandes de classes), sans le cloner —
+présentation adaptée à l'audience. C'est le pendant « sortie figée » des dashboards « sortie
+vivante » : les deux lisent le même référentiel d'indicateurs, l'un pour l'écran, l'autre pour
+le document exporté (PDF/Word/HTML). Dépend donc du référentiel d'indicateurs (chantier T) et
+du référentiel d'activités (S3). Vient dans le module **Accueil+Analyses+Rapports** de la
+feuille de route.
+
 → Voir **Q11** (quelles formules exactement).
 
 ### K2 — Sauvegarde sélective et restauration  · **XL**
@@ -1168,8 +1181,20 @@ fois ce lot atterri.
    complète (rattachement adm0→4). Voir d'abord les polygones, mapper ensuite. Touche
    `lib/shapefile.js` + `routes/geo.js` (serveur, non conflictuel) et `SetShapefileServer`
    dans `Settings.jsx` (UI). À faire juste après le lot de persistance en cours.
-9. **Échelle adm4** : si le zip adm4 dépasse la limite d'envoi (`maxShapefileMb` = 64, plus
-   d'éventuels plafonds du proxy Codespace), le relever pour cette route et le dire à l'écran.
+9. **Échelle adm4 — limite d'envoi à 150 Mo (demande du 01/08).** Le propriétaire demande que
+   MEMS accepte un fichier de configuration jusqu'à **150 Mo** (il a d'abord écrit « 150 »,
+   puis « 15 » — mais son zip adm3 fait déjà 16 Mo, donc 15 est trop petit ; on retient 150,
+   à confirmer). Relever `config.maxShapefileMb` à 150 pour cette route (multer), et signaler
+   à l'écran un éventuel plafond du proxy Codespace si l'envoi échoue quand même.
+10. **INTÉGRER le découpage DANS la création du pays (demande du 01/08, importante pour le
+    multi-pays).** Le shapefile ne doit PAS être une carte flottante : un découpage appartient
+    à SON pays. `geo_version` porte déjà une colonne `country` et `is_current` est cloisonné
+    par pays (`lib/geo.js:125,143`), mais l'UI doit lier l'upload à la configuration du pays
+    (composant `SetCountry`), pas à un onglet séparé. Sinon, en multi-pays, on bascule un
+    découpage sans savoir de quel pays il relève — bug garanti. Donc : l'import shapefile
+    devient une étape de la fiche pays, le millésime créé est rattaché au pays courant, et la
+    bascule ne touche que le découpage de CE pays. C'est l'aboutissement de l'unification
+    (points 7-8) : une seule entrée, dans le pays.
 
 **Réorganisation maître-détail (le « rendu professionnel ») — volet gauche de groupes,
 contenu à droite :**
