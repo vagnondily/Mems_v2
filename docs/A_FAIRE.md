@@ -74,7 +74,8 @@ aucun avis grave, ni serveur ni web.**
 | `cb76519` | **Indicateurs scindés en CRF et XLSForm** (migration 022) : `indicators` porte `kind`/`level`/`activity`, l'écran Paramètres → Indicateurs présente deux sous-onglets (résultats / processus) avec colonnes, fiche et CSV propres à chaque nature ; toute ligne existante devient CRF. Test d'aller-retour des deux natures ajouté (221 serveur). | Livre la **scission structurelle du chantier P** demandée le 01/08. Prépare la colonne « indicateur » de l'étoile polaire S4 et l'étape indicateurs du parcours fondateur S7. |
 | `a475818` | **Compte en self-service + mots de passe provisoires générés** (migration 023) : « Mon compte » dans le menu de l'en-tête (infos, changement de mot de passe, **identifiant de connexion** `username` unique — connexion par courriel OU identifiant) ; la **création et la réinitialisation admin GÉNÈRENT** un provisoire affiché une seule fois (`POST /api/users/:id/reset-password`), posent `must_change_pw` et ferment les sessions. Tests : identifiant + connexion par identifiant, provisoire non rejoué, reset qui révoque (224 serveur, 45 web). | Répond à « un user devrait pouvoir regarder ses infos, changer son mot de passe, créer un username » et « l'admin ne connaît pas le mot de passe, il réinitialise et le provisoire s'affiche que lui ». Ferme la partie compte de la réorganisation S. |
 | `912c717` | **Un éditeur peut planifier les suivis** (S6) : route `PUT /api/planning-config` en droit éditeur pour les **paramètres MRE** et le **calendrier de collecte**, ce dernier écrit dans sa **table `outcome_plan`** (migration 024 reprend puis purge l'ancien reflet dans `settings`). L'édition MRE + calendrier passe de `admin` à `edit` ; `mmr`/`outcomePlan` quittent le transport `settings` pour le leur. Tests : éditeur autorisé, lecteur refusé, décochage qui efface, reflet purgé (225 serveur). | Ferme S6 et la « restriction 2 » (le blob ombrait la table). L'opérationnel — planifier, saisir — est bien délégué à l'éditeur ; l'admin garde la vraie configuration. |
-| *(ce commit)* | **Référentiel des activités éditable** (migration 025, `routes/activities.js`) : `activity_categories` — la liste canonique référencée par les sites et la couverture — devient administrable (CRUD admin, verrou optimiste `rev`, suppression refusée si référencée), exposée en `db.activities`, avec l'onglet Paramètres → **Activités**. L'indicateur de processus (XLSForm) se rattache à cette source canonique, plus aux reflets épars. Tests : lecture/création/révision/refus de suppression, éditeur en lecture seule (226 serveur). | Livre la **colonne « activité » de l'étoile polaire S4** (« configurée une fois, réutilisée partout ») et la brique Activités du parcours fondateur S7. Gating **admin** conformément à la décision du 01/08 (l'assistant fondateur sera `super`, les référentiels restent `admin`). |
+| `d546f49` | **Référentiel des activités éditable** (migration 025, `routes/activities.js`) : `activity_categories` — la liste canonique référencée par les sites et la couverture — devient administrable (CRUD admin, verrou optimiste `rev`, suppression refusée si référencée), exposée en `db.activities`, avec l'onglet Paramètres → **Activités**. L'indicateur de processus (XLSForm) se rattache à cette source canonique, plus aux reflets épars. Tests : lecture/création/révision/refus de suppression, éditeur en lecture seule (226 serveur). | Livre la **colonne « activité » de l'étoile polaire S4** (« configurée une fois, réutilisée partout ») et la brique Activités du parcours fondateur S7. Gating **admin** conformément à la décision du 01/08 (l'assistant fondateur sera `super`, les référentiels restent `admin`). |
+| *(ce commit)* | **Parcours de configuration guidée** (S7, `SetGuided`) : onglet Paramètres → Configuration guidée réservé au super, cinq briques fondatrices (pays → découpage → activités → indicateurs → sources) sur une page, état lu de la base, progression « X / 5 prêtes », bouton vers chaque onglet. e2e : le super voit l'onglet, il s'ouvre, le décompte s'affiche (45 web). | Livre l'exigence S7 « la config en une fois, par le super user, avec mise à jour » : un assistant-orchestrateur qui enchaîne les référentiels sans les dupliquer, gaté super conformément à la décision du 01/08. |
 
 ### La visite à la main : ce qui change, et pourquoi
 
@@ -1313,11 +1314,14 @@ configuration.
 Le propriétaire : « la config est à faire en une fois et stockée dans la base de données (à
 faire par le super user), avec possibilité de mise à jour. » Quatre exigences :
 
-1. **EN UNE FOIS** — un **parcours guidé** de configuration fondatrice (pays → découpage
-   adm0→4 → activités → indicateurs CRF/XLSForm → sources), pas des réglages éparpillés dans
-   seize onglets. C'est la forme « assistant » de l'étoile polaire (S4) : chaque étape prépare
-   la suivante, l'ensemble se remplit d'un trait, puis reste consultable/modifiable onglet par
-   onglet.
+1. **EN UNE FOIS** — **✅ LIVRÉ (01/08/2026).** Onglet **Paramètres → Configuration guidée**
+   (`SetGuided`), réservé au super (`me.role === "super"`), placé en tête : les cinq briques
+   fondatrices (pays → découpage → activités → indicateurs → sources) sur une page, chacune avec
+   son état LU de la base, une barre de progression « X / 5 prêtes », et un bouton qui mène à
+   l'onglet de configuration. C'est l'assistant-orchestrateur : il ne duplique pas les écrans, il
+   les enchaîne — chaque référentiel garde sa source unique. **Reste** : l'enrichir en vrai
+   assistant pas-à-pas embarqué (facultatif) si l'on veut la saisie in-situ plutôt que le renvoi
+   vers l'onglet.
 2. **STOCKÉE EN BASE** — rien côté client volatil. C'est déjà la direction (persistance des
    réglages via `settings`, `geo_version`, référentiels en tables) ; la généraliser à TOUTE la
    config fondatrice.

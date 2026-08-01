@@ -530,6 +530,14 @@ test("paramètres : « Sites » a quitté la configuration, mais le registre res
   assert.ok(document.body.textContent.includes("Activités du programme"),
     "le référentiel des activités s'affiche");
 
+  /* Le parcours de configuration guidée (S7) est proposé au super et s'ouvre. */
+  assert.ok(sousOnglet("Configuration guidée"),
+    "l'onglet Configuration guidée est proposé au super-utilisateur");
+  await click(sousOnglet("Configuration guidée"), "Configuration guidée"); await flush();
+  assert.ok(document.body.textContent.includes("parcours fondateur"),
+    "le parcours de configuration guidée s'affiche");
+  assert.ok(document.body.textContent.includes("prêtes"), "le décompte des étapes prêtes s'affiche");
+
   await click(nav("Suivi-évaluation"), "Suivi-évaluation"); await flush();
   await click(sousOnglet("Registre des sites"), "sous-onglet Registre des sites");
   await flush(); await flush();

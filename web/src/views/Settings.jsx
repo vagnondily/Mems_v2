@@ -24,7 +24,12 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
      configuration. Le registre reste monté à l'identique sous Suivi-évaluation →
      Registre des sites (Merged.jsx) — le composant n'est donc pas retiré, seulement
      son entrée ici. */
-  const items = [["general","Général"],["country","Pays"],["offices","Bureaux"],
+  /* La configuration guidée (S7) est réservée au super-utilisateur : c'est le
+     parcours fondateur, décidé le 01/08 comme tâche `super`. Les référentiels
+     eux-mêmes restent administrables par un admin, onglet par onglet. */
+  const items = [
+    ...(me?.role === "super" ? [["guided","Configuration guidée"]] : []),
+    ["general","Général"],["country","Pays"],["offices","Bureaux"],
     ["locations","Localités"],["scope","Périmètre des bureaux"],
     ["activities","Activités"],["indicators","Indicateurs"],
     ["calc","Calculs"],["rations","Rations"],["odk","ODK Central"],["connectors","Connecteurs"],
@@ -34,6 +39,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
     <div className="space-y-4">
       <PageHead title="Paramètres" text="Configuration de l'application, référentiels, registre des sites, calculs, sources et accès." />
       <Tabs items={items} value={sub} onChange={setSub} />
+      {sub==="guided" && me?.role === "super" && <SetGuided db={db} setSub={setSub} />}
       {sub==="general" && <SetGeneral db={db} set={set} />}
       {sub==="country" && <SetCountry db={db} notify={notify} can={can} reload={reload} />}
       {sub==="offices" && <SetOffices db={db} notify={notify} can={can} reload={reload} />}
@@ -50,6 +56,80 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
       {sub==="templates" && <SetTemplates db={db} set={set} notify={notify} can={can} />}
       {sub==="api" && <SetApi db={db} notify={notify} />}
       {sub==="users" && <SetUsers db={db} set={set} me={me} notify={notify} />}
+    </div>);
+}
+
+/* ══════════════════ Configuration guidée (parcours fondateur S7) ══════════════════
+   « La config est à faire en une fois et stockée dans la base de données (à faire
+   par le super user), avec possibilité de mise à jour. » Un parcours qui rassemble
+   en une page les cinq briques fondatrices — pays, découpage, activités,
+   indicateurs, sources —, dit ce qui est prêt et ce qui reste, et mène à chaque
+   étape. L'état est LU de la base (données réelles), donc toujours à jour ; chaque
+   brique se rouvre et se révise à tout moment (mise à jour possible). Réservé au
+   super-utilisateur. */
+function SetGuided({ db, setSub }){
+  const crf = (db.indicators || []).filter(i => (i.kind || "crf") === "crf").length;
+  const xls = (db.indicators || []).filter(i => i.kind === "xlsform").length;
+  const geoUnits = db.geoVersion?.units || 0;
+  const etapes = [
+    { cle:"country", icon:MapPin, titre:"Pays",
+      desc:"Le pays courant et le vocabulaire de son découpage (régions, districts, communes…).",
+      pret: !!db.country?.code, tab:"country",
+      etat: db.country?.code ? `${db.country.name} (${db.country.code})` : "Aucun pays courant" },
+    { cle:"decoupage", icon:Layers, titre:"Découpage administratif",
+      desc:"Le shapefile du pays : l'arbre adm0→adm4 et ses contours, importés depuis la fiche du pays.",
+      pret: geoUnits > 0, tab:"country",
+      etat: geoUnits > 0 ? `${fmt(geoUnits)} unités · ${db.geoVersion?.geom?.units ? fmt(db.geoVersion.geom.units)+" contours" : "sans contours"}` : "Aucun découpage chargé" },
+    { cle:"activities", icon:Activity, titre:"Activités",
+      desc:"Le référentiel des activités du programme — la source unique réutilisée partout.",
+      pret: (db.activities || []).length > 0, tab:"activities",
+      etat: (db.activities || []).length ? `${fmt(db.activities.length)} activité(s)` : "Aucune activité" },
+    { cle:"indicators", icon:Target, titre:"Indicateurs",
+      desc:"La bibliothèque CRF (résultats) et XLSForm (processus) qui alimente tableaux de bord et rapports.",
+      pret: (db.indicators || []).length > 0, tab:"indicators",
+      etat: (db.indicators || []).length ? `${fmt(crf)} CRF · ${fmt(xls)} processus` : "Aucun indicateur" },
+    { cle:"sources", icon:Link2, titre:"Sources de données",
+      desc:"Les formulaires ODK Central et les connecteurs qui alimentent la collecte.",
+      pret: (db.odkForms || []).length > 0, tab:"odk",
+      etat: (db.odkForms || []).length ? `${fmt(db.odkForms.length)} formulaire(s) ODK` : "Aucune source configurée" },
+  ];
+  const prets = etapes.filter(e => e.pret).length;
+  return (
+    <div className="space-y-4">
+      <Card title="Configuration guidée"
+        subtitle="Le parcours fondateur — pays, découpage, activités, indicateurs, sources. Réservé au super-utilisateur.">
+        <Note>Chaque brique se configure ici, puis reste consultable et modifiable à tout moment ;
+          l'état ci-dessous est <b>lu de la base</b>, il reflète la configuration réelle. Menez les
+          étapes dans l'ordre : chacune prépare la suivante.</Note>
+        <div className="flex items-center gap-3 mt-3">
+          <div className="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden">
+            <div className="h-full rounded-full transition-all" style={{ width:`${(prets/etapes.length)*100}%`, background:C.aqua }} /></div>
+          <span className="f13 font-semibold text-slate-700 tabular-nums">{prets} / {etapes.length} prêtes</span>
+        </div>
+      </Card>
+      <div className="space-y-3">
+        {etapes.map((e,i)=>(
+          <Card key={e.cle}>
+            <div className="flex items-start gap-4">
+              <div className={clsx("w-10 h-10 rounded-full grid place-items-center shrink-0 font-bold",
+                e.pret ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-400")}>
+                {e.pret ? <Check size={20}/> : (i+1)}</div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <e.icon size={15} className="text-slate-400" />
+                  <span className="f15 font-semibold text-slate-800">{e.titre}</span>
+                  {e.pret ? <Badge tone="g">Prêt</Badge> : <Badge tone="n">À configurer</Badge>}
+                </div>
+                <p className="f125 text-slate-500 mt-0.5 leading-relaxed">{e.desc}</p>
+                <p className="f12 text-slate-600 mt-1"><b className="text-slate-400 uppercase tracking-wide f10">État&nbsp;:</b> {e.etat}</p>
+              </div>
+              <Btn size="sm" kind={e.pret?"sec":"primary"} onClick={()=>setSub(e.tab)}>
+                {e.pret ? "Revoir" : "Configurer"}</Btn>
+            </div>
+          </Card>))}
+      </div>
+      {prets === etapes.length && <Note tone="ok">Toutes les briques fondatrices sont en place.
+        La configuration reste modifiable étape par étape à tout moment.</Note>}
     </div>);
 }
 
