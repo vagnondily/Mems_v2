@@ -6,6 +6,8 @@ import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import { db, tx } from "../db.js";
 import { newId } from "./crypto.js";
+import { ecrireEntrees } from "./codes.js";
+import { MOTIF_SOURCE_RESERVEE, estSourceReservee } from "./alias.js";
 import { currentVersion, resolveUnit, labelsFor } from "./geo.js";
 import { scopeOf, unitsIn } from "./scope.js";
 
@@ -19,6 +21,20 @@ import { scopeOf, unitsIn } from "./scope.js";
 
    Le modèle est pré-rempli avec les lignes du périmètre de l'utilisateur, et la
    colonne de clé est verrouillée : il remplit des cases, il ne saisit pas de clé.
+
+   ── La portée : ce que le cadre supposait sans le dire ───────────────
+   Le cadre a été écrit pour deux types dont la clé est un p-code géographique,
+   et trois hypothèses en avaient découlé, câblées : une ligne sans p-code connu
+   du millésime est rejetée, une ligne hors du périmètre du bureau aussi, et il
+   faut un millésime courant plus une unité dans le périmètre pour seulement
+   produire un modèle. Elles sont justes pour `caseload` et `pdd` ; elles n'ont
+   aucun sens pour un référentiel de codes école, dont les entrées ne portent
+   souvent AUCUNE géographie — c'est même la raison d'être de ce référentiel.
+
+   D'où `portee`, déclarée EXPLICITEMENT sur chacun des trois types plutôt que
+   déduite d'une absence : c'est une décision de cloisonnement, elle se lit, elle
+   ne se devine pas. « geo » conserve les cinq gardes ; « national » les
+   débranche, et l'écriture est alors réservée à `admin` (voir le type `codes`).
    ═══════════════════════════════════════════════════════════════════════ */
 
 const NUM = (max = 1e9) => z.preprocess(
@@ -32,6 +48,7 @@ const STR = (max = 200) => z.preprocess(
 const caseload = {
   label: "Population et ciblage",
   cap: "edit",
+  portee: "geo",
   /* La clé métier : une unité, une période, une activité. */
   key: (r) => `${r.geo_pcode}|${r.year}|${r.month ?? ""}|${r.activity_tag}`,
   columns: [
@@ -129,6 +146,7 @@ const caseload = {
 const pdd = {
   label: "Plan de distribution",
   cap: "edit",
+  portee: "geo",
   key: (r) => `${r.geo_pcode}|${r.year}|${r.month}|${r.act_type}|${r.modality}`,
   columns: [
     { header:"P-code",       field:"geo_pcode", width:18, locked:true, key:true,
@@ -244,7 +262,114 @@ const pdd = {
   },
 };
 
-export const KINDS = { caseload, pdd };
+/* ── Type « référentiel de codes d'identification » ────────────────────
+   Le troisième occupant du cadre, et le premier de portée nationale. Il charge
+   les listes de codes que les formulaires emploient pour désigner un site sans
+   passer par le référentiel p-code : les 1 251 codes école de SMP d'abord, les
+   247 codes ZAP ensuite, les suivants sans nouvelle ligne de code.
+
+   Le droit exigé est `admin`, plus élevé que les deux autres types. La raison
+   n'est pas la difficulté du geste mais sa portée : un référentiel national
+   chargé de travers empoisonne le rattachement de TOUS les bureaux, pas
+   seulement de celui qui l'a chargé. Même arbitrage que POST /api/geo/bulk. */
+const codes = {
+  label: "Référentiel de codes d'identification",
+  cap: "admin",
+  portee: "national",
+  key: (r) => `${r.referentiel}|${r.code}`,
+  /* « Code » EN PREMIER, et ce n'est pas un détail de présentation : le garde de
+     ligne blanche sonde la PREMIÈRE colonne `key:true` du tableau. Avec
+     « Référentiel » en tête — colonne pré-remplie —, toute ligne dont le code est
+     resté vide serait analysée puis rejetée, et le compte de rejets mentirait. */
+  columns: [
+    { header:"Code",        field:"code",        width:16, key:true,
+      hint:"Le code tel que la source l'écrit — c'est lui la clé" },
+    { header:"Référentiel", field:"referentiel", width:18, locked:true, key:true,
+      hint:"rempli, ne pas modifier" },
+    { header:"Libellé",     field:"libelle",     width:36,
+      hint:"Le nom de l'école, du point, de la zone…" },
+    { header:"P-code",      field:"geo_pcode",   width:18,
+      hint:"Facultatif : beaucoup de ces codes n'ont aucune géographie connue" },
+    { header:"Région",      field:"adm1",        width:18, info:true },
+    { header:"District",    field:"adm2",        width:18, info:true },
+    { header:"Commune",     field:"adm3",        width:18, info:true },
+    { header:"Fokontany",   field:"adm4",        width:18, info:true },
+    { header:"Code du site MEMS", field:"site_code", width:18,
+      hint:"À ne remplir que pour FORCER le rattachement à un site précis" },
+    { header:"Source",      field:"source",      width:24,
+      hint:"D'où vient cette liste : fichier du bureau, note officielle…" },
+    { header:"Note",        field:"note",        width:30 },
+  ],
+  schema: z.object({
+    /* Les codes SMP sont des ENTIERS dans les fichiers du bureau (603140007) et
+       un tableur les livre en nombre. Les refuser obligerait l'opérateur à
+       reformater sa colonne, donc à se tromper une fois. */
+    code: z.preprocess(v => (v == null ? "" : String(v).trim()),
+      z.string().min(1).max(80)),
+    referentiel: z.preprocess(v => (v == null ? "" : String(v).trim()),
+      z.string()
+        .min(1, "référentiel absent de la ligne et de la feuille d'identification du "
+              + "fichier : téléchargez le modèle plutôt que de recréer le fichier")
+        .max(60)
+        .refine(v => !estSourceReservee(v), MOTIF_SOURCE_RESERVEE)),
+    libelle: STR(200), geo_pcode: STR(64),
+    adm1: STR(120), adm2: STR(120), adm3: STR(120), adm4: STR(120),
+    site_code: STR(40), source: STR(120), note: STR(300),
+  }),
+  /* Le seul contrôle métier possible ici : une géographie DÉCLARÉE doit exister.
+     Une géographie absente n'est pas une erreur — c'est le cas SMP, et la raison
+     pour laquelle ce référentiel existe. Sans millésime courant, il n'y a rien
+     contre quoi vérifier : ne pas rejeter, sous peine de faire rentrer par la
+     fenêtre la dépendance géographique que la portée nationale vient d'ôter. */
+  check: (r) => {
+    if(!r.geo_pcode) return null;
+    const v = currentVersion();
+    if(!v) return null;
+    const connu = db.prepare("SELECT 1 FROM geo_unit WHERE version_id=? AND pcode=?")
+      .get(v.id, r.geo_pcode);
+    return connu ? null : { field:"P-code",
+      message:`« ${r.geo_pcode} » est absent du millésime courant du référentiel géographique — `
+        + "laissez la colonne vide si vous ne connaissez pas l'unité" };
+  },
+  /* Indexé par la clé métier, tous référentiels confondus : la clé les distingue
+     déjà, et deux référentiels ne peuvent pas se marcher dessus. */
+  current: () => {
+    const out = {};
+    for(const e of db.prepare("SELECT * FROM code_referentiel").all())
+      out[`${e.referentiel}|${e.code}`] = e;
+    return out;
+  },
+  compare: ["libelle","geo_pcode","adm1","adm2","adm3","adm4","site_code","source","note"],
+  /* Pas de `blank` : une entrée sans libellé reste une entrée. Un code seul, sans
+     rien d'autre, est déjà une information — c'est le code que la source emploie,
+     et le rapprochement saura peut-être le rattacher par son seul préfixe. */
+  apply: (rows, ctx) => ecrireEntrees(rows, ctx),
+  /* Les entrées DÉJÀ chargées pour ce référentiel : le modèle sert donc aussi à
+     corriger une liste existante. Au tout premier chargement il rend zéro ligne,
+     et c'est pour ce cas que `completer` existe — sans lui, aucune ligne collée
+     par l'opérateur ne porterait le nom du référentiel. */
+  seed: ({ referentiel }) => db.prepare(
+    `SELECT code, referentiel, libelle, geo_pcode, adm1, adm2, adm3, adm4,
+            site_code, source, note
+     FROM code_referentiel WHERE referentiel=? ORDER BY code`).all(referentiel || ""),
+  /* ── Les deux crochets facultatifs du cadre ──────────────────────────
+     `completer` fait hériter la ligne d'une constante du lot, lue dans la
+     feuille d'identification. Le cas normal est un opérateur qui colle 1 251
+     lignes portant code et libellé : lui demander de recopier le nom du
+     référentiel sur chacune serait inventer une corvée. Une valeur écrite sur la
+     ligne l'emporte toujours — un fichier peut légitimement en mêler deux. */
+  completer: (values, ctx) => {
+    const ecrit = String(values.referentiel ?? "").trim();
+    if(ecrit || !ctx?.referentiel) return values;
+    return { ...values, referentiel: ctx.referentiel };
+  },
+  /* Ce qui identifie une ligne dans l'aperçu des rejets. Sans lui, la colonne
+     « Unité » resterait vide pour tout type non géographique, et l'opérateur
+     lirait vingt motifs sans savoir de quelles lignes ils parlent. */
+  designation: (p) => [p?.code, p?.libelle].filter(Boolean).join(" — "),
+};
+
+export const KINDS = { caseload, pdd, codes };
 
 /* ── Modèle Excel ────────────────────────────────────────────────────
    Pré-rempli, colonnes de clé verrouillées, listes déroulantes sur les
@@ -260,13 +385,26 @@ export async function buildTemplate(kind, ctx){
     pageSetup: { orientation:"landscape", fitToPage:true },
   });
 
-  /* Ligne 1 : intitulés. Ligne 2 : aide de saisie. */
-  ws.columns = def.columns.map(c => ({ key:c.field, width:c.width || 14 }));
+  /* Ligne 1 : intitulés. Ligne 2 : aide de saisie.
+
+     Le verrou est porté par la COLONNE et non par les seules cellules
+     pré-remplies. Sans cela, un modèle dont `seed()` ne rend aucune ligne — le
+     premier chargement d'un référentiel de codes, exactement le cas pour lequel
+     il existe — sortait entièrement verrouillé : la boucle `rows.forEach`
+     ci-dessous ne s'exécutant pas, aucune cellule ne recevait `locked:false`, et
+     le tableur refusait la frappe comme le collage sur toute la zone de saisie.
+     Un style de colonne, lui, s'applique aux cellules encore vides. */
+  ws.columns = def.columns.map(c => ({ key:c.field, width:c.width || 14,
+    style: { protection: { locked: !!c.locked } } }));
   const head = ws.getRow(1);
   const hint = ws.getRow(2);
   def.columns.forEach((c, i) => {
     const cell = head.getCell(i+1);
     cell.value = c.header;
+    /* Les deux lignes d'en-tête restent verrouillées quoi qu'il arrive : elles
+       ne sont pas de la saisie, et `readUpload` reconnaît les colonnes par leur
+       intitulé — un intitulé réécrit fait échouer l'import entier. */
+    cell.protection = { locked:true };
     cell.font = { bold:true, color:{ argb:"FFFFFFFF" }, size:10 };
     cell.fill = { type:"pattern", pattern:"solid",
       fgColor:{ argb: c.locked ? "FF5A6872" : "FF085387" } };
@@ -275,6 +413,7 @@ export async function buildTemplate(kind, ctx){
 
     const h = hint.getCell(i+1);
     h.value = c.hint || (c.locked ? "rempli, ne pas modifier" : c.enum ? c.enum.join(" / ") : "");
+    h.protection = { locked:true };
     h.font = { italic:true, size:8, color:{ argb:"FF8C9BA5" } };
     h.alignment = { vertical:"top", wrapText:true };
   });
@@ -314,7 +453,10 @@ export async function buildTemplate(kind, ctx){
   const meta = wb.addWorksheet("_mems");
   meta.addRow(["kind", kind]);
   meta.addRow(["geoVersion", ctx.versionId || ""]);
-  meta.addRow(["year", ctx.year]);
+  meta.addRow(["year", ctx.year ?? ""]);
+  /* La constante de lot d'un type national : c'est elle dont `completer` fait
+     hériter les lignes que l'opérateur colle sans recopier le nom du référentiel. */
+  meta.addRow(["referentiel", ctx.referentiel || ""]);
   meta.addRow(["generatedAt", new Date().toISOString()]);
   meta.addRow(["office", ctx.officeLabel || "tous les bureaux"]);
   meta.state = "veryHidden";
@@ -408,6 +550,14 @@ export async function readUpload(kind, buffer){
     throw new Error(`Colonnes de clé absentes : ${manquantes.map(c=>c.header).join(", ")}. `
       + "Téléchargez le modèle plutôt que de recréer le fichier.");
 
+  /* Les colonnes que le fichier NE PORTE PAS. `cellVal` rend "" pour chacune, ce
+     qui est indiscernable d'une case vidée à la main : un opérateur qui
+     reconstruit sa feuille depuis son propre système en n'en gardant que trois
+     colonnes effaçait ainsi toutes les autres sur chaque ligne réimportée. Un
+     fichier qui ne parle pas d'une colonne ne dit rien d'elle — même règle que
+     pour un PUT partiel sur une fiche de site. */
+  const absentes = def.columns.filter(c => byHeader[c.field] === undefined).map(c => c.field);
+
   const cellVal = (row, field) => {
     const col = byHeader[field]; if(!col) return "";
     const v = row.getCell(col).value;
@@ -430,23 +580,36 @@ export async function readUpload(kind, buffer){
     if(!String(o[def.columns.find(c=>c.key).field] ?? "").trim()) return;
     raw.push({ line:n, values:o });
   });
-  return { meta, rows:raw, sheet:ws.name };
+  return { meta, rows:raw, sheet:ws.name, absentes };
 }
 
 /* ── Analyse : valider, comparer, sans rien écrire ─────────────────── */
 export function analyse(kind, raw, ctx){
   const def = KINDS[kind];
-  const v = currentVersion();
+  /* Un type national n'a ni p-code obligatoire ni bureau propriétaire : ses deux
+     gardes géographiques sont débranchées, et le millésime n'est même pas lu —
+     sur une installation sans référentiel chargé, `known` serait vide et tout
+     serait rejeté au premier oubli de cette condition. */
+  const geo = def.portee === "geo";
+  const v = geo ? currentVersion() : null;
   const known = v
     ? new Set(db.prepare("SELECT pcode FROM geo_unit WHERE version_id=?").all(v.id).map(x=>x.pcode))
     : new Set();
   const courant = def.current(ctx.scope);
+  const enTete = def.columns.find(c => c.key)?.header || "clé";
+  /* Une colonne absente du fichier ne peut pas être une modification : la
+     comparer reviendrait à lire un silence comme un effacement. */
+  const absentes = new Set(ctx.absentes || []);
+  const comparees = def.compare.filter(f => !absentes.has(f));
 
   const result = [];
   const vus = new Set();
   let vides = 0;
 
-  for(const { line, values } of raw){
+  for(const { line, values: brut } of raw){
+    /* Une ligne peut hériter d'une constante du lot avant d'être validée : c'est
+       ainsi que le nom du référentiel se pose sur des lignes simplement collées. */
+    const values = def.completer ? def.completer(brut, ctx) : brut;
     const parsed = def.schema.safeParse(values);
     if(!parsed.success){
       const i0 = parsed.error.issues[0];
@@ -457,22 +620,24 @@ export function analyse(kind, raw, ctx){
     }
     const r = parsed.data;
 
-    if(!known.has(r.geo_pcode)){
+    if(geo && !known.has(r.geo_pcode)){
       result.push({ line, action:"reject", field:"P-code",
         message:"absent du référentiel courant", payload:r });
       continue;
     }
     /* Portée : un fichier contenant d'autres bureaux est refusé ligne à ligne,
        quoi qu'il contienne. C'est une entrée utilisateur comme une autre. */
-    if(ctx.scope && !ctx.scope.has(r.geo_pcode)){
+    if(geo && ctx.scope && !ctx.scope.has(r.geo_pcode)){
       result.push({ line, action:"reject", field:"P-code",
         message:"hors du périmètre de votre bureau", payload:r });
       continue;
     }
     const k = def.key(r);
     if(vus.has(k)){
-      result.push({ line, action:"reject", field:"P-code",
-        message:"ligne en doublon dans le fichier — même unité, même période, même activité",
+      result.push({ line, action:"reject", field: enTete,
+        message: geo
+          ? "ligne en doublon dans le fichier — même unité, même période, même activité"
+          : "ligne en doublon dans le fichier — cette clé y figure déjà",
         payload:r });
       continue;
     }
@@ -488,7 +653,7 @@ export function analyse(kind, raw, ctx){
     const avant = courant[k];
     if(!avant){ result.push({ line, action:"create", payload:r }); continue; }
 
-    const change = def.compare.filter(f => {
+    const change = comparees.filter(f => {
       const a = avant[f] ?? "", b = r[f] ?? "";
       return typeof a === "number" || typeof b === "number"
         ? Number(a) !== Number(b) : String(a) !== String(b);
@@ -505,13 +670,17 @@ export function analyse(kind, raw, ctx){
 }
 
 /* ── Enregistrement du lot ─────────────────────────────────────────── */
-export function saveBatch({ kind, user, filename, rows }){
+export function saveBatch({ kind, user, filename, rows, absentes = [] }){
   const id = newId("imp");
   const summary = {
     crees:     rows.filter(r => r.action === "create").length,
     modifies:  rows.filter(r => r.action === "update").length,
     inchanges: rows.filter(r => r.action === "unchanged").length,
     rejetes:   rows.filter(r => r.action === "reject").length,
+    /* Voyage avec le lot, et non à côté : l'aperçu et la confirmation sont deux
+       requêtes distinctes, et ce que l'écriture doit ignorer se décide à la
+       lecture du fichier. */
+    absentes,
   };
   tx(() => {
     db.prepare(`INSERT INTO import_batch (id,kind,user_id,user_label,office_id,filename,summary)
@@ -549,7 +718,12 @@ export function commitBatch(id, user){
 
   let res = { crees:0, modifies:0 };
   tx(() => {
-    if(aEcrire.length) res = def.apply(aEcrire, { officeId: user.office_id || b.office_id });
+    /* L'identifiant du lot entre dans le contexte : un type qui garde la trace de
+       sa provenance (le référentiel de codes) peut la porter ligne à ligne, et
+       « d'où vient cette entrée » se répond alors sans enquête. */
+    if(aEcrire.length) res = def.apply(aEcrire,
+      { officeId: user.office_id || b.office_id, batchId: id,
+        absentes: b.summary.absentes || [] });
     db.prepare(`UPDATE import_batch SET status='committed', committed_at=datetime('now') WHERE id=?`)
       .run(id);
     db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)

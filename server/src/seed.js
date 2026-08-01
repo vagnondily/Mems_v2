@@ -189,8 +189,15 @@ if(info){
        @new_partner,@exp_partner,@issue_ipm,@issue_report,@issue_cfm,@fraud)`);
     const insMonth = db.prepare(`INSERT INTO site_months
       (site_id,year,month,active,planned,done,cp_name,monitor) VALUES (?,?,?,?,?,?,?,?)`);
+    /* Les visites de démonstration sont manuelles avec le motif de reprise, et non
+       'odk' : aucune ligne de `submissions` ne soutiendrait cette provenance, et
+       les marquer ainsi rendrait tout le jeu indécochable — l'écran de
+       planification perdrait son geste normal. Le motif est celui de l'inconnu
+       plutôt qu'un motif plausible : ce jeu est fabriqué sans raison réelle, lui
+       en prêter une enseignerait l'habitude que la règle combat. */
     const insVisit = db.prepare(`INSERT INTO visits
-      (id,site_id,office_id,visit_date,activity_tag,monitor,form_id,status) VALUES (?,?,?,?,?,?,?,?)`);
+      (id,site_id,office_id,visit_date,activity_tag,monitor,form_id,status,origin,manual_reason)
+      VALUES (?,?,?,?,?,?,?,?,'manuelle','inconnu_anterieur')`);
     const insParam = db.prepare(`INSERT INTO coverage_params
       (id,csp,office_id,category_id,activity_tag,duration,risk_level,feasible_per_month)
       VALUES (?,?,?,?,?,?,?,?)`);

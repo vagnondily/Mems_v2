@@ -317,6 +317,66 @@ test("plan MRE : la destination s'ouvre, le budget est calculé, la bascule fonc
   assert.equal(ctx.errors.length, 0, "aucune erreur sur le plan MRE");
 });
 
+test("plan de suivi : rouvrir un mois saisi AVANT la règle enregistre, au lieu de refuser « données invalides »", async () => {
+  /* Le défaut que ce test ferme : la migration 019 a écrit le motif de reprise
+     `inconnu_anterieur` sur toutes les visites préexistantes — le seed en pose une
+     par mois réalisé. La fiche du mois le préremplissait puis le renvoyait, alors
+     que zod ne l'accepte pas : sur CHAQUE cellule déjà cochée d'une installation
+     existante, corriger le missionnaire, le rapport ou décocher répondait 422
+     « données invalides », sans dire quel champ, et la saisie était perdue. */
+  const nav = (l) => all("header nav button").find(b => b.textContent.trim().startsWith(l));
+  const etat = await (await fetch(`${BASE}/state`)).json();
+  const reprise = etat.visits.find(v => v.motif === "inconnu_anterieur" && v.origin === "manuelle");
+  assert.ok(reprise, "le jeu de démonstration porte bien des visites antérieures à la règle");
+  const site = etat.sites.find(s => s.id === reprise.siteId);
+  const mi = Number(String(reprise.date).slice(5, 7)) - 1;
+  assert.equal(site.plan[mi].done, true, "le mois correspondant est bien coché");
+
+  await click(nav("Suivi-évaluation"), "Suivi-évaluation"); await flush();
+  const sousOnglet = (l) => all("main button").filter(b => b.className.includes("-mb-px"))
+    .find(b => b.textContent.trim() === l);
+  await click(sousOnglet("Suivi des sites"), "sous-onglet Suivi des sites");
+  await flush(); await flush();
+  assert.ok(byText("h3", "Plan mensuel des visites"), "le plan mensuel est affiché");
+
+  const ligne = all("main tbody tr").find(tr => (tr.textContent || "").includes(site.id));
+  assert.ok(ligne, `la ligne du site ${site.id} est dans la grille`);
+  await click(ligne.querySelectorAll("button.m-cell")[mi], "cellule du mois déjà réalisé");
+  await flush();
+  assert.ok(byText(".z60 h3", site.poi), "la fiche du mois s'ouvre");
+
+  /* Le bouton n'est pas verrouillé : le mois porte déjà sa visite, le serveur
+     n'exige un motif que là où cocher va en CRÉER une. */
+  const enregistrer = all(".z60 footer button").find(b => b.textContent.trim() === "Enregistrer");
+  assert.ok(enregistrer && !enregistrer.disabled, "le bouton Enregistrer est ouvert");
+  /* Et la liste déroulante n'affiche pas un motif que le serveur refuserait :
+     elle est vide, l'encart dit pourquoi. */
+  assert.ok(document.body.textContent.includes("antérieure à la règle"),
+    "l'écran explique que le motif de cette visite n'a jamais été demandé");
+
+  const missionnaire = all(".z60 input").find(i =>
+    (i.closest("label")?.textContent || "").includes("Missionnaire"));
+  await type(missionnaire, "Missionnaire corrigé");
+  await click(enregistrer, "enregistrer la fiche du mois");
+  await flush(); await flush();
+
+  assert.ok(!all(".z60 h3").length, "la fiche s'est refermée : l'enregistrement est passé");
+  assert.ok(!document.body.textContent.includes("données invalides"),
+    "aucun refus de validation n'est affiché");
+
+  /* `save()` attend la réponse du serveur avant de refermer la fiche : ce qui suit
+     relit donc un état déjà écrit, sans délai choisi au doigt mouillé. */
+  const apres = await (await fetch(`${BASE}/state`)).json();
+  const siteApres = apres.sites.find(s => s.id === site.id);
+  assert.equal(siteApres.plan[mi].monitor, "Missionnaire corrigé",
+    "le serveur a bien enregistré la correction");
+  const visite = apres.visits.find(v => v.id === reprise.id);
+  assert.ok(visite, "la visite est toujours là");
+  assert.equal(visite.motif, "inconnu_anterieur",
+    "et son motif de reprise est conservé tel quel : il n'a pas été réécrit en douce");
+  assert.equal(ctx.errors.length, 0, "aucune erreur sur la fiche du mois");
+});
+
 test("bureaux : l'écran de configuration liste les bureaux et leur périmètre", async () => {
   /* Ce que la liste de noms non persistée ne faisait pas : montrer la
      configuration réelle, y compris le bureau à périmètre national. */
@@ -369,6 +429,31 @@ test("connecteurs : la table de correspondance est bâtie sur le registre servi 
   assert.ok(transformations.includes("P-code normalisé"),
     "le jeu fermé des transformations vient du serveur, pas d'une copie locale");
   assert.equal(ctx.errors.length, 0, "aucune erreur sur l'écran des connecteurs");
+});
+
+test("référentiels de codes : l'écran s'ouvre sur ses compteurs, même sans aucun référentiel chargé", async () => {
+  /* Le seed n'en charge aucun — c'est le premier état que verra l'utilisateur, et
+     celui qu'un écran chiffré rate le plus facilement : il doit afficher des zéros
+     et dire quoi faire, pas un tableau vide ni un bandeau de tirets. */
+  const onglet = all("main button").filter(b => b.className.includes("-mb-px"))
+    .find(b => b.textContent.trim() === "Référentiels de codes");
+  await click(onglet, "sous-onglet Référentiels de codes");
+  await flush(); await flush();
+
+  const texte = document.body.textContent;
+  assert.ok(texte.includes("Codes chargés"), "le bandeau chiffré est là");
+  assert.ok(texte.includes("Rattachés à un site"), "le compteur qui répond à la demande y figure");
+  assert.ok(texte.includes("À confirmer") && texte.includes("Sans site"),
+    "les deux formes d'échec sont montrées au même rang que les succès");
+  assert.ok(texte.includes("aucun référentiel chargé"), "l'état vide est nommé, pas deviné");
+  assert.ok(byText("h4", "Aucun référentiel chargé"), "l'écran dit quoi faire pour en charger un");
+
+  /* Les deux gestes sont proposés, et le second explique ce qu'il refuse de faire. */
+  assert.ok(byText("main button", "Modèle Excel"), "le modèle Excel se télécharge d'ici");
+  assert.ok(byText("main button", "Rapprocher les codes des sites"), "le rapprochement est offert");
+  assert.ok(texte.includes("Sous le seuil de preuve, il ne pose rien"),
+    "l'écran énonce ce que le rapprochement refuse de faire");
+  assert.equal(ctx.errors.length, 0, "aucune erreur sur l'écran des référentiels de codes");
 });
 
 test("soumissions ODK : l'écran part du vide, puis montre la file de travail et ses motifs", async () => {

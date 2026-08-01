@@ -219,8 +219,14 @@ const nommer = (ids, index) => ids
 
    `motif` n'est JAMAIS vide, y compris en cas de succès : une ligne rattachée
    sans dire comment est une ligne qu'on ne peut plus contester six mois plus
-   tard, quand la personne qui a lancé l'ingestion n'est plus là. */
-export function resoudre(entree, index){
+   tard, quand la personne qui a lancé l'ingestion n'est plus là.
+
+   `sujet` nomme ce qui est rapproché. Le résolveur sert aussi le rapprochement
+   d'un référentiel de codes (lib/codes.js), où l'opérateur regarde les lignes de
+   son tableur : lui écrire « la soumission ne porte aucun nom de site » le
+   renvoie à un objet qu'il n'a jamais manipulé. Un mot paramétré vaut mieux
+   qu'une seconde rédaction des motifs, qui divergerait au premier ajout. */
+export function resoudre(entree, index, { sujet = "la soumission" } = {}){
   const idx = index || construireIndex();
   const code = normaliserCode(entree?.site_code_raw);
   const nom  = normaliserNom(entree?.site_name_raw);
@@ -238,7 +244,7 @@ export function resoudre(entree, index){
      simplement des voisins. */
   const candidatsCode = code ? (idx.parCode.get(code) || []) : [];
   let restreint = null;
-  if(!code) notes.push("la soumission ne porte aucun code de site");
+  if(!code) notes.push(`${sujet} ne porte aucun code de site`);
   else if(candidatsCode.length === 1){
     /* Par QUEL code le site a été reconnu : la colonne de sa fiche, son code
        MEMS, ou l'un de ses alias — et pour quelle source dans ce dernier cas.
@@ -269,15 +275,15 @@ export function resoudre(entree, index){
     notes.push(code
       ? `aucun préfixe du code « ${code} » (au moins ${PREFIXE_MIN} caractères) ne correspond `
         + "au p-code d'un site connu"
-      : "aucun p-code exploitable dans la soumission");
+      : `aucun p-code exploitable dans ${sujet}`);
   else if(candidatsPcode.length === 1)
     return conclure(candidatsPcode[0], "pcode_adm4",
-      `p-code « ${pre.pcode} »${pre.declare ? " déclaré dans la soumission" : " tiré du préfixe du code de site"}`
+      `p-code « ${pre.pcode} »${pre.declare ? ` déclaré dans ${sujet}` : " tiré du préfixe du code de site"}`
       + `, seul site rattaché à cette unité : ${nommer(candidatsPcode, idx)}`);
   else if(candidatsPcode.length === 0)
     notes.push(`le p-code « ${pre.pcode} » ne recoupe aucun des sites encore en lice`);
   else
-    notes.push(`le p-code « ${pre.pcode} » porte ${candidatsPcode.length} sites : il situe la soumission `
+    notes.push(`le p-code « ${pre.pcode} » porte ${candidatsPcode.length} sites : il situe ${sujet} `
       + "sans l'identifier");
 
   /* ── (c) Nom de site croisé avec l'activité ─────────────────────────
@@ -320,14 +326,14 @@ export function resoudre(entree, index){
     const seuls = dansRestreint(idx.parNom.get(nom) || []);
     if(seuls.length === 1)
       return conclure(seuls[0], "nom_seul",
-        `nom de site « ${entree.site_name_raw} » rapproché sans croisement : la soumission ne porte `
+        `nom de site « ${entree.site_name_raw} » rapproché sans croisement : ${sujet} ne porte `
         + `aucune activité. Un seul site correspond, ${nommer(seuls, idx)} — à vérifier`);
     notes.push(seuls.length
-      ? `${seuls.length} sites portent le nom « ${entree.site_name_raw} » et la soumission ne porte `
+      ? `${seuls.length} sites portent le nom « ${entree.site_name_raw} » et ${sujet} ne porte `
         + "aucune activité pour les départager"
       : `aucun site ne porte le nom « ${entree.site_name_raw} »`);
   } else {
-    notes.push("la soumission ne porte aucun nom de site");
+    notes.push(`${sujet} ne porte aucun nom de site`);
   }
 
   /* ── (d) Non résolu ─────────────────────────────────────────────── */

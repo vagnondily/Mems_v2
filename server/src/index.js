@@ -29,6 +29,7 @@ import xlsformRoutes from "./routes/xlsform.js";
 import odkRoutes from "./routes/odk.js";
 import submissionRoutes from "./routes/submissions.js";
 import aliasRoutes from "./routes/aliases.js";
+import codeRoutes from "./routes/codes.js";
 import connectorRoutes from "./routes/connectors.js";
 import scriptRoutes from "./routes/scripts.js";
 import adminRoutes from "./routes/admin.js";
@@ -135,6 +136,11 @@ app.use("/api", authenticate, submissionRoutes);
    parce qu'il sert « /sites/:id/aliases » — deux segments, que `/:id` du routeur
    des sites ne capte pas, et qui lui reviennent donc naturellement. */
 app.use("/api", authenticate, aliasRoutes);
+/* Les référentiels de codes d'identification — les listes que le bureau tient à
+   part et sans lesquelles SMP ne se rattache à rien. Données de référence
+   NATIONALES, sans bureau propriétaire : lecture ouverte, écriture sous
+   « admin », cloisonnement au seul endroit où des sites sont touchés. */
+app.use("/api/code-referentiels", authenticate, codeRoutes);
 app.use("/api", authenticate, xlsformRoutes);
 /* Connecteurs et correspondance des variables : monté sous /api comme les deux
    précédents, dont il prolonge le travail — le XLSForm dit ce que la source

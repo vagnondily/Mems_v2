@@ -7,6 +7,7 @@ import { officeBound as scopeOf } from "../lib/scope.js";
 import { validate, schemas } from "../lib/validate.js";
 import { combinerDerniereVisite, derniereVisiteOdk } from "../lib/soumissions.js";
 import { listerAlias, synchroniserCodeParDefaut } from "../lib/alias.js";
+import { cleMois, estProtegee, libelleMotif, visitesDuMois } from "../lib/visites.js";
 import { z } from "zod";
 
 const r = Router();
@@ -168,12 +169,74 @@ r.delete("/:id", requireCap("del"), (req, res) => {
   res.json({ ok:true });
 });
 
-/* Grille mensuelle : une écriture par cellule, avec création de la visite associée. */
+/* Grille mensuelle : une écriture par cellule.
+ *
+ * « Visite ne devrais pas etre saisie que dans le cas echeant ou il y a eu une
+ * visite mais qu un formulaire n a pas ete remplie et meme si c est le cas il
+ * faudrait expliquer pourquoi. » La voie normale d'une visite est le formulaire
+ * ODK ; cocher ici est un rattrapage, et un rattrapage se justifie. D'où quatre
+ * cas distincts, et non plus un simple « crée ou supprime ».
+ *
+ * Le cas (a) répare une perte de données : jusqu'ici décocher la case faisait un
+ * DELETE sur « une » visite du mois, prise sans ORDER BY et sans regarder d'où
+ * elle venait. Une visite issue d'ODK, portant son `submission_id` et sa date
+ * déclarée de collecte, s'effaçait donc d'un clic depuis un écran de
+ * planification — y compris par accident, un client dont l'état est antérieur au
+ * dernier tirage envoyant `done=false` en croyant ne changer que le missionnaire.
+ * La garde est double, et pour deux raisons différentes : le contrôle préalable
+ * pour pouvoir DIRE pourquoi c'est refusé, la clause WHERE du DELETE pour le
+ * GARANTIR — une protection qui ne tient qu'à un SELECT préalable se perd à la
+ * première exécution concurrente (migration 017, ligne 122). */
 r.put("/:id/months", requireCap("edit"), validate(schemas.siteMonth), (req, res) => {
   const site = db.prepare("SELECT * FROM sites WHERE id=?").get(req.params.id);
   if(!site) return res.status(404).json({ error:"site introuvable" });
   assertScope(req, site);
   const m = req.body;
+  const mois = cleMois(m.year, m.month);
+  const visites = visitesDuMois(site.id, m.year, m.month);
+  const protegees = visites.filter(estProtegee);
+  const manuelles = visites.filter(v => !estProtegee(v));
+
+  /* (a) Décocher un mois documenté par une soumission. Refus AVANT toute
+     écriture, `site_months` compris : accepter en gardant done=1 contredirait le
+     geste sans le dire, et accepter en posant done=0 laisserait une grille qui
+     affirme « pas de visite » en face d'une visite réelle. Le message nomme le
+     geste de rechange, et demande de recharger : la détection côté client se fait
+     sur une projection plafonnée et filtrée par bureau, elle peut donc être en
+     retard sur ce que le serveur voit. */
+  if(!m.done && protegees.length){
+    const s = protegees.find(v => v.submission_id);
+    return res.status(409).json({
+      error: `${mois} — ce mois porte une visite issue d'un formulaire ODK`
+        + (s ? ` (soumission ${s.submission_id})` : "")
+        + " : elle ne se retire pas depuis le plan. "
+        /* Le geste de rechange est nommé là où il se trouve VRAIMENT — et il
+           retire désormais la visite avec la soumission, sans quoi ce refus
+           renverrait à un remède qui ne remédie à rien. Quand la soumission a
+           disparu, la visite reste sans porte de sortie : le dire vaut mieux
+           que prescrire un détachement impossible. */
+        + (s ? "Si elle est erronée, détachez ou corrigez la soumission dans "
+             + "Programme → Soumissions ODK — le détachement retire aussi cette visite —, "
+             + "puis rechargez le plan."
+             : "Elle ne porte plus d'identifiant de soumission : la soumission qui l'a "
+             + "produite a été supprimée, et la visite ne peut plus être retirée depuis "
+             + "aucun écran."),
+      mois, visitesProtegees: protegees.length });
+  }
+
+  /* (c) Cocher un mois vierge sans dire pourquoi. Le détail suit la forme de
+     validate() pour que l'interface le lise sans cas particulier. */
+  if(m.done && !protegees.length && !manuelles.length && !m.manual_reason){
+    return res.status(422).json({
+      error: "la voie normale d'une visite est le formulaire ODK. Si la visite a bien eu lieu "
+        + "sans formulaire, choisissez le motif qui l'explique avant d'enregistrer.",
+      details: [{ champ:"manual_reason", message:"motif de la saisie à la main attendu" }] });
+  }
+
+  /* (b) Une soumission documente déjà ce mois : rien à créer, et aucun motif à
+     exiger — ce n'est pas une exception, c'est le cas normal. */
+  const couvertParOdk = m.done && protegees.length > 0;
+  let visite = "aucune";
   tx(() => {
     db.prepare(`INSERT INTO site_months (site_id,year,month,active,planned,done,cp_name,monitor,report,moda)
                 VALUES (@site_id,@year,@month,@active,@planned,@done,@cp_name,@monitor,@report,@moda)
@@ -183,20 +246,87 @@ r.put("/:id/months", requireCap("edit"), validate(schemas.siteMonth), (req, res)
       .run({ site_id:site.id, year:m.year, month:m.month,
              active:m.active?1:0, planned:m.planned?1:0, done:m.done?1:0,
              cp_name:m.cp_name, monitor:m.monitor, report:m.report, moda:m.moda });
-    const date = `${m.year}-${String(m.month+1).padStart(2,"0")}-15`;
-    const existing = db.prepare(
-      "SELECT id FROM visits WHERE site_id=? AND visit_date LIKE ?").get(site.id, `${m.year}-${String(m.month+1).padStart(2,"0")}%`);
-    if(m.done && !existing){
-      db.prepare(`INSERT INTO visits (id,site_id,office_id,visit_date,activity_tag,monitor,form_id,status)
-                  VALUES (?,?,?,?,?,?,'saisie','À valider')`)
-        .run(newId("visit"), site.id, site.office_id, date, site.activity_tag, m.monitor);
+    if(couvertParOdk){ /* (b) : la soumission fait foi, la grille se contente de la refléter */ }
+    /* (d) Une saisie existe déjà : pas de doublon. Mais un motif envoyé REMPLACE
+       celui de la ligne — sans quoi corriger un motif choisi par erreur
+       supposerait de supprimer la visite, c'est-à-dire de faire disparaître la
+       donnée pour réparer son étiquette. */
+    else if(m.done && manuelles.length){
+      /* La note n'est réécrite que si la requête la PORTE. Absente, elle est
+         conservée : corriger un motif ne doit pas effacer la précision écrite
+         six mois plus tôt, que l'appelant n'avait aucune raison de recopier — et
+         qu'il ne connaît pas toujours, la projection des visites étant plafonnée
+         et filtrée par bureau. Envoyer `manual_note:null` reste le geste
+         explicite pour l'effacer. */
+      const noteRecue = Object.hasOwn(m, "manual_note");
+      const note = noteRecue ? (m.manual_note ?? null) : null;
+      /* Rien n'a bougé : le journal n'a pas à annoncer une correction. Il n'est
+         rendu qu'à ses soixante dernières lignes, et trois agents complétant
+         leurs fiches de mission en évacueraient tout le reste en une séance. */
+      const change = manuelles.some(v => v.manual_reason !== m.manual_reason
+        || (noteRecue && (v.manual_note || null) !== note));
+      if(m.manual_reason && change){
+        /* Même clause de garde que le DELETE, et pour la même raison : ce que
+           cette route peut réécrire est exactement ce qu'elle a pu créer. Une
+           ligne issue d'un formulaire ne se voit pas attribuer un motif de
+           rattrapage, fût-ce par une transaction concurrente. */
+        db.prepare(`UPDATE visits SET manual_reason=?${noteRecue ? ", manual_note=?" : ""}
+                    WHERE site_id=? AND visit_date LIKE ?
+                      AND origin='manuelle' AND submission_id IS NULL`)
+          .run(m.manual_reason, ...(noteRecue ? [note] : []), site.id, `${mois}%`);
+        visite = "corrigee";
+      } else visite = "conservee";
+    }
+    else if(m.done){
+      /* Le 15 du mois est une convention : la saisie ne sait pas quel jour. La
+         visite issue d'ODK, elle, porte la date déclarée de collecte. */
+      const date = `${mois}-15`;
+      db.prepare(`INSERT INTO visits (id,site_id,office_id,visit_date,activity_tag,monitor,
+                                      form_id,status,origin,manual_reason,manual_note,created_by)
+                  VALUES (?,?,?,?,?,?,'saisie','À valider','manuelle',?,?,?)`)
+        .run(newId("visit"), site.id, site.office_id, date, site.activity_tag, m.monitor,
+             m.manual_reason, m.manual_note ?? null, req.user.id);
       db.prepare("UPDATE sites SET last_visit=? WHERE id=? AND (last_visit IS NULL OR last_visit < ?)")
         .run(date, site.id, date);
+      visite = "creee";
     }
-    if(!m.done && existing) db.prepare("DELETE FROM visits WHERE id=?").run(existing.id);
+    /* La garantie est portée par la clause WHERE, pas par le contrôle préalable,
+       et elle vaut au pluriel : sur une base ayant accumulé deux saisies le même
+       mois, décocher les retire toutes — ce que l'ancien `.get()` sans ORDER BY
+       ne faisait qu'au hasard, en en laissant une derrière lui. */
+    else if(db.prepare(`DELETE FROM visits WHERE site_id=? AND visit_date LIKE ?
+                        AND origin='manuelle' AND submission_id IS NULL`)
+      .run(site.id, `${mois}%`).changes){
+      visite = "supprimee";
+      /* La date de dernière visite saisie ne survit pas à la visite qui l'a
+         posée : sans cela le site continuait d'annoncer le 15 d'un mois vide, et
+         le score de risque, l'ancienneté et la priorité se calculaient sur une
+         visite fantôme. On ne touche QUE la valeur que cette route avait écrite
+         — la convention du 15 du mois — et on la remplace par la dernière saisie
+         restante, jamais par une date ODK, qui est servie à côté et non à la
+         place (voir `combinerDerniereVisite`). */
+      db.prepare(`UPDATE sites SET last_visit=
+                    (SELECT MAX(visit_date) FROM visits WHERE site_id=? AND origin='manuelle')
+                  WHERE id=? AND last_visit=?`).run(site.id, site.id, `${mois}-15`);
+    }
   })();
+
   audit(req, "plan", site.id, `Fiche mensuelle mise à jour — ${site.name}`);
-  res.json({ ok:true });
+  /* Une ligne dédiée par saisie à la main, portant le motif en clair : le
+     journal doit permettre de relire six mois plus tard pourquoi une visite ne
+     vient d'aucun formulaire, sans avoir à rouvrir la fiche. */
+  if(visite === "creee" || visite === "corrigee")
+    audit(req, "plan", site.id, `${mois} — visite saisie à la main `
+      + `${visite === "creee" ? "" : "(motif corrigé) "}: ${libelleMotif(m.manual_reason)}`
+      + `${m.manual_note ? ` — ${m.manual_note}` : ""} — ${site.name}`);
+  if(visite === "supprimee")
+    audit(req, "plan", site.id, `${mois} — visite saisie à la main retirée — ${site.name}`);
+
+  const message = couvertParOdk
+    ? `${mois} — une soumission ODK documente déjà ce mois : le suivi est enregistré, `
+      + "aucune visite saisie à la main n'a été créée."
+    : "";
+  res.json({ ok:true, visite, couvertParOdk, message });
 });
 
 /* Modification groupée : un seul champ, une liste d'identifiants, une transaction. */

@@ -4,6 +4,7 @@ import { currentVersion } from "../lib/geo.js";
 import { officeBound } from "../lib/scope.js";
 import { currentCountry } from "../lib/country.js";
 import { dernieresVisitesOdk } from "../lib/soumissions.js";
+import { MOTIFS_MANUELS } from "../lib/visites.js";
 
 const r = Router();
 const J = (v, d) => { try{ return JSON.parse(v); }catch(e){ return d; } };
@@ -78,7 +79,14 @@ r.get("/state", (req, res) => {
     : db.prepare("SELECT * FROM visits ORDER BY visit_date DESC LIMIT 5000").all()
   ).map(v => ({
     id:v.id, siteId:v.site_id, date:v.visit_date, office: officeName[v.office_id]||"",
-    tag:v.activity_tag||"", monitor:v.monitor||"", form:v.form_id||"", status:v.status }));
+    tag:v.activity_tag||"", monitor:v.monitor||"", form:v.form_id||"", status:v.status,
+    /* D'où vient la visite, et pourquoi si personne n'a rempli de formulaire.
+       Sans ces quatre champs aucun écran ne peut distinguer une preuve de terrain
+       d'un rattrapage, ni la grille mensuelle savoir qu'un mois est déjà couvert.
+       `created_by` n'est délibérément pas projeté : le journal d'audit dit déjà
+       qui, avec un libellé lisible plutôt qu'un identifiant. */
+    origin:v.origin, motif:v.manual_reason||"", motifNote:v.manual_note||"",
+    submissionId:v.submission_id||"" }));
 
   const indicators = db.prepare("SELECT * FROM indicators ORDER BY code").all().map(i => ({
     id:i.code, key:i.id, rev:i.rev, name:i.name, basket:i.basket||"", unit:i.unit,
@@ -157,6 +165,12 @@ r.get("/state", (req, res) => {
     year, me: { id:u.id, role:u.role, office_id:u.office_id },
     offices, partners, categories: cats, sites, params, visits, indicators, outcomes,
     outputs, population, pdd, geoVersion, country, odkForms, settings,
+    /* La liste fermée des motifs de saisie à la main, servie telle qu'elle est
+       déclarée dans lib/visites.js. Elle part avec l'état initial pour la même
+       raison que `country` et `settings` : la grille mensuelle en a besoin dès
+       qu'on ouvre une cellule, et un aller-retour dédié pour six objets se
+       paierait avant le premier affichage. Le client n'en garde aucune copie. */
+    motifsVisiteManuelle: MOTIFS_MANUELS,
     outcomePlan: Object.fromEntries(
       Object.entries(db.prepare("SELECT * FROM outcome_plan WHERE year=?").all(year)
         .reduce((acc,r2) => { const code = indByKey[r2.indicator_id]; if(!code) return acc;
@@ -171,11 +185,21 @@ r.get("/state", (req, res) => {
       id:t.id, rev:t.rev, name:t.name, blocks:J(t.blocks,[]), intro:t.intro||"" })),
     dashboards: db.prepare("SELECT * FROM dashboards").all().map(d => ({
       id:d.id, rev:d.rev, name:d.name, widgets:J(d.widgets,[]) })),
-    /* Le journal révèle qui fait quoi : il suit le même cloisonnement que les données. */
+    /* Le journal révèle qui fait quoi : il suit le même cloisonnement que les données.
+
+       `rowid DESC` en second critère, et ce n'est pas un ornement : `at` est un
+       `datetime('now')`, donc à la SECONDE. Une minute chargée y écrit soixante
+       lignes portant le même horodatage, et l'index `idx_audit_at` les rend alors
+       dans l'ordre d'insertion CROISSANT — c'est-à-dire que « les 60 plus
+       récentes » retenait, à l'intérieur de la seconde la plus récente, les plus
+       ANCIENNES, et coupait les dernières écrites. Exactement l'inverse de ce que
+       la requête annonce. Le journal de la console d'administration
+       (routes/admin.js) départage déjà ses égalités ; celui-ci ne le faisait pas. */
     audit: (officeFilter
       ? db.prepare(`SELECT * FROM audit WHERE kind<>'securite' AND office=?
-                    ORDER BY at DESC LIMIT 60`).all(officeName[officeFilter] || "")
-      : db.prepare("SELECT * FROM audit WHERE kind<>'securite' ORDER BY at DESC LIMIT 60").all()
+                    ORDER BY at DESC, rowid DESC LIMIT 60`).all(officeName[officeFilter] || "")
+      : db.prepare(`SELECT * FROM audit WHERE kind<>'securite'
+                    ORDER BY at DESC, rowid DESC LIMIT 60`).all()
     ).map(a => ({ id:a.id, at:a.at, user:a.user_label||"", office:a.office||"", kind:a.kind, text:a.text })),
     users: (u.role==="super" || u.role==="admin")
       ? db.prepare("SELECT id,email,first_name,last_name,title,office_id,tpm_id,role,tabs,active FROM users ORDER BY first_name").all()

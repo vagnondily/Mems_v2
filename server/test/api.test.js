@@ -171,19 +171,31 @@ test("sites : un PUT partiel n'efface pas les champs qu'il n'envoie pas", async 
   await request(app).delete(`/api/sites/${id}`).set("Authorization", `Bearer ${adminToken}`);
 });
 
-test("grille mensuelle : cocher « réalisé » crée la visite et met à jour la dernière visite", async () => {
+test("grille mensuelle : cocher « réalisé » crée la visite manuelle, motivée et signée", async () => {
   const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
   const site = st.body.sites.find(s => s.status === "Active");
   const year = st.body.year;
   const before = db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id).c;
   const r = await request(app).put(`/api/sites/${site.id}/months`)
     .set("Authorization", `Bearer ${adminToken}`)
-    .send({ month:11, year, active:true, planned:true, done:true, monitor:"Testeur" });
-  assert.equal(r.status, 200);
+    .send({ month:11, year, active:true, planned:true, done:true, monitor:"Testeur",
+            manual_reason:"formulaire_non_rempli" });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.visite, "creee");
   const after = db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id).c;
   assert.equal(after, before + 1);
   const s = db.prepare("SELECT last_visit FROM sites WHERE id=?").get(site.id);
   assert.ok(s.last_visit.startsWith(`${year}-12`));
+
+  /* Ce qui distingue désormais un rattrapage d'une preuve de terrain : l'origine,
+     le motif, et qui l'a saisi. Sans les trois, la ligne serait indiscernable
+     d'une visite issue d'un formulaire. */
+  const v = db.prepare(`SELECT * FROM visits WHERE site_id=? AND visit_date LIKE ?`)
+    .get(site.id, `${year}-12%`);
+  assert.equal(v.origin, "manuelle");
+  assert.equal(v.manual_reason, "formulaire_non_rempli");
+  assert.equal(v.submission_id, null);
+  assert.ok(v.created_by, "la visite dit qui l'a saisie");
 });
 
 test("modification groupée : seuls les champs autorisés passent", async () => {
@@ -3329,6 +3341,319 @@ test("soumissions : « déjà suivi » marque le mois et crée une visite, sans 
   assert.equal(libre.body.periode.mois, null);
 });
 
+/* ═══════════════════════════════════════════════════════════════════════
+   La visite saisie à la main est une exception justifiée  (lot A)
+
+   Ces trois tests dépendent de la fixture posée juste au-dessus : le mois de
+   mai 2026 du site `siteLotC.csb` porte désormais UNE visite issue d'ODK, avec
+   son `submission_id`. C'est le seul endroit du dépôt où une telle visite
+   existe, d'où leur emplacement — placés plus haut, ils passeraient sans la
+   correction et ne prouveraient rien.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+test("grille mensuelle : décocher ne supprime jamais une visite issue d'ODK", async () => {
+  const avant = db.prepare(
+    "SELECT * FROM visits WHERE site_id=? AND visit_date LIKE '2026-05%'").all(siteLotC.csb.id);
+  assert.equal(avant.length, 1);
+  assert.ok(avant[0].submission_id, "la fixture porte bien une visite issue d'une soumission");
+
+  /* Le geste exact qui détruisait la donnée : décocher la case du mois depuis le
+     plan. Un client dont l'état est antérieur au dernier tirage ODK l'envoie sans
+     même vouloir toucher à la visite — il croit ne changer que le missionnaire. */
+  const r = await request(app).put(`/api/sites/${siteLotC.csb.id}/months`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:2026, month:4, active:true, planned:true, done:false, monitor:"Testeur" });
+  assert.equal(r.status, 409, JSON.stringify(r.body));
+  assert.match(r.body.error, /formulaire ODK/);
+  assert.match(r.body.error, /rechargez/, "le refus dit quoi faire, pas seulement que c'est refusé");
+
+  const apres = db.prepare(
+    "SELECT * FROM visits WHERE site_id=? AND visit_date LIKE '2026-05%'").all(siteLotC.csb.id);
+  assert.equal(apres.length, 1, "la preuve de terrain survit au décochage");
+  assert.equal(apres[0].id, avant[0].id);
+  assert.equal(apres[0].submission_id, avant[0].submission_id);
+  assert.equal(apres[0].origin, "odk");
+  /* Rien n'a été écrit du tout : une grille qui afficherait « pas de visite » en
+     face d'une visite réelle serait un second mensonge. */
+  assert.equal(db.prepare("SELECT done FROM site_months WHERE site_id=? AND year=2026 AND month=4")
+    .get(siteLotC.csb.id).done, 1);
+});
+
+test("grille mensuelle : cocher sans motif est refusé, et le refus dit quoi faire", async () => {
+  const site = await creerSiteLotC({ code:"LOTA-MOTIF", name:"EPP Motif", activity_tag:"SMP" });
+  const envoyer = (corps) => request(app).put(`/api/sites/${site.id}/months`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:2026, month:6, active:true, planned:true, done:true, ...corps });
+
+  const sansMotif = await envoyer({});
+  assert.equal(sansMotif.status, 422, JSON.stringify(sansMotif.body));
+  assert.match(sansMotif.body.error, /formulaire ODK/, "le refus rappelle quelle est la voie normale");
+  assert.match(sansMotif.body.error, /choisissez le motif/);
+  assert.equal(sansMotif.body.details[0].champ, "manual_reason");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id).c, 0);
+
+  /* Liste fermée : un motif inventé par le client n'entre pas en base. */
+  const horsListe = await envoyer({ manual_reason:"parce_que" });
+  assert.equal(horsListe.status, 422);
+
+  /* `inconnu_anterieur` existe, mais la migration seule l'écrit : il documente le
+     passé, il n'ouvre pas une case fourre-tout pour les saisies à venir. */
+  const reprise = await envoyer({ manual_reason:"inconnu_anterieur" });
+  assert.equal(reprise.status, 422, "le motif de reprise n'est pas saisissable");
+
+  const autreSansNote = await envoyer({ manual_reason:"autre" });
+  assert.equal(autreSansNote.status, 422);
+  assert.equal(autreSansNote.body.details[0].champ, "manual_note");
+  assert.match(autreSansNote.body.details[0].message, /précisez/);
+
+  const ok = await envoyer({ manual_reason:"appareil_indisponible", manual_note:"batterie à plat" });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.visite, "creee");
+  const v = db.prepare("SELECT * FROM visits WHERE site_id=?").get(site.id);
+  assert.equal(v.origin, "manuelle");
+  assert.equal(v.manual_reason, "appareil_indisponible");
+  assert.equal(v.manual_note, "batterie à plat");
+
+  /* L'interface ne peut rien afficher que /api/state ne porte pas — et la liste
+     des motifs n'existe qu'ici, elle n'est recopiée nulle part côté client. */
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  const vue = st.body.visits.find(x => x.id === v.id);
+  assert.equal(vue.origin, "manuelle");
+  assert.equal(vue.motif, "appareil_indisponible");
+  assert.equal(vue.motifNote, "batterie à plat");
+  assert.equal(vue.submissionId, "");
+  const motif = st.body.motifsVisiteManuelle.find(x => x.id === "appareil_indisponible");
+  assert.equal(motif.libelle, "Appareil indisponible (panne, batterie)");
+  assert.equal(st.body.motifsVisiteManuelle.find(x => x.id === "autre").noteObligatoire, true);
+  assert.equal(st.body.motifsVisiteManuelle.find(x => x.id === "inconnu_anterieur").saisissable, false);
+
+  /* La trace d'audit porte le motif en clair : relire six mois plus tard pourquoi
+     une visite ne vient d'aucun formulaire ne doit pas supposer d'ouvrir la fiche. */
+  assert.ok(st.body.audit.some(a => a.text.includes("Appareil indisponible (panne, batterie)")
+    && a.text.includes("batterie à plat")), "le journal porte le motif de la saisie");
+
+  /* Un motif choisi par erreur se corrige. Sans cela, la seule façon de réparer
+     l'étiquette serait de supprimer la donnée. */
+  const corrige = await envoyer({ manual_reason:"soumission_perdue" });
+  assert.equal(corrige.status, 200);
+  assert.equal(corrige.body.visite, "corrigee");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id).c, 1,
+    "corriger le motif ne crée pas un doublon");
+  assert.equal(db.prepare("SELECT manual_reason FROM visits WHERE id=?").get(v.id).manual_reason,
+    "soumission_perdue");
+
+  /* Décocher retire bien la saisie à la main : le lot borne la saisie, il ne la
+     supprime pas — et ce qu'elle a créé, elle peut le reprendre. */
+  const retrait = await request(app).put(`/api/sites/${site.id}/months`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:2026, month:6, active:true, planned:true, done:false });
+  assert.equal(retrait.status, 200);
+  assert.equal(retrait.body.visite, "supprimee");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id).c, 0);
+});
+
+test("grille mensuelle : un mois déjà couvert par ODK ne se saisit pas deux fois", async () => {
+  const avant = db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=? AND visit_date LIKE '2026-05%'")
+    .get(siteLotC.csb.id).c;
+  const r = await request(app).put(`/api/sites/${siteLotC.csb.id}/months`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:2026, month:4, active:true, planned:true, done:true, monitor:"Testeur" });
+  /* Aucun motif envoyé, et pourtant accepté : exiger une justification ici
+     reviendrait à faire inventer une explication à une visite qui n'a rien d'une
+     exception — la soumission la documente déjà. */
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.couvertParOdk, true);
+  assert.equal(r.body.visite, "aucune");
+  assert.match(r.body.message, /soumission ODK documente déjà ce mois/);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=? AND visit_date LIKE '2026-05%'")
+    .get(siteLotC.csb.id).c, avant, "le mois n'est pas doublé en silence");
+});
+
+test("grille mensuelle : le remède que le refus prescrit en est un — détacher la soumission retire sa visite", async () => {
+  const site = await creerSiteLotC({ code:"LOTA-DETACH", name:"EPP Détachement", activity_tag:"SMP" });
+  const v = await verser({ form_id:"SMP_2025", enregistrements: [
+    { instance_id:"lota-detach-1", SvyDate:"2026-09-08",
+      site_name:"EPP Détachement", activity_tag:"SMP" }]});
+  assert.equal(v.body.resolues, 1, JSON.stringify(v.body));
+  const sub = soumission("lota-detach-1");
+  assert.equal(sub.site_id, site.id);
+
+  const suivi = await request(app).post("/api/submissions/suivi")
+    .set("Authorization", `Bearer ${adminToken}`).send({ year:2026, month:8, site_id:site.id });
+  assert.equal(suivi.status, 200, JSON.stringify(suivi.body));
+  assert.equal(suivi.body.visitesCreees, 1);
+
+  /* Le refus reste entier : une visite issue d'un formulaire ne se retire pas du
+     plan. Mais il nomme un geste qui existe, à l'endroit où il se trouve — la
+     destination « Actual Data » n'est plus montée nulle part, et aucun onglet ne
+     s'appelle « Suivi de processus ». */
+  const refus = await request(app).put(`/api/sites/${site.id}/months`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:2026, month:8, active:true, planned:true, done:false });
+  assert.equal(refus.status, 409, JSON.stringify(refus.body));
+  assert.match(refus.body.error, /Programme → Soumissions ODK/);
+  assert.ok(!/Actual Data/.test(refus.body.error), "le refus ne renvoie pas vers un écran inexistant");
+
+  /* Et le geste prescrit fait ce qu'il annonce. Jusqu'ici il ne touchait que
+     `submissions.site_id` : la visite restait, le même 409 revenait mot pour mot,
+     et un suivi appliqué au mauvais site gonflait ses indicateurs pour toujours —
+     aucune route du dépôt ne supprime une visite. */
+  const det = await request(app).post(`/api/submissions/${sub.id}/detacher`)
+    .set("Authorization", `Bearer ${adminToken}`).send({});
+  assert.equal(det.status, 200, JSON.stringify(det.body));
+  assert.equal(det.body.visitesRetirees, 1);
+  assert.deepEqual(det.body.moisDemarques, [{ site_id:site.id, mois:"2026-09" }]);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id).c, 0);
+  assert.equal(db.prepare("SELECT done FROM site_months WHERE site_id=? AND year=2026 AND month=8")
+    .get(site.id).done, 0, "le mois retombe à « non réalisé » : plus rien ne le documente");
+  /* La soumission, elle, survit : détacher rend la question au résolveur. */
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM submissions WHERE id=?").get(sub.id).c, 1);
+  assert.ok(db.prepare(`SELECT text FROM audit WHERE entity_id=? AND action='detacher'`).get(sub.id)
+    .text.includes("visite(s) issue(s) de cette soumission retirée(s)"),
+    "le journal dit que la visite est partie avec le détachement");
+
+  const apres = await request(app).put(`/api/sites/${site.id}/months`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:2026, month:8, active:true, planned:true, done:false });
+  assert.equal(apres.status, 200, "le décochage passe une fois la soumission détachée");
+});
+
+test("grille mensuelle : re-rattacher une soumission ne laisse pas de visite fantôme sur l'ancien site", async () => {
+  /* Le cas de terrain : la passe `nom_seul` a rattaché la soumission au mauvais
+     site, quelqu'un la déplace. Sans retrait, l'ancien site gardait une visite
+     et un mois « réalisé » indélébiles — ils gonflaient sa couverture et son
+     Visit Count pour toujours, puisque aucune route ne supprime une visite. */
+  const faux = await creerSiteLotC({ code:"LOTA-FANTOME-A", name:"EPP Fantôme A", activity_tag:"SMP" });
+  const vrai = await creerSiteLotC({ code:"LOTA-FANTOME-B", name:"EPP Fantôme B", activity_tag:"SMP" });
+  await verser({ form_id:"SMP_2025", enregistrements: [
+    { instance_id:"lota-fantome-1", SvyDate:"2026-11-12",
+      site_name:"EPP Fantôme A", activity_tag:"SMP" }]});
+  const sub = soumission("lota-fantome-1");
+  assert.equal(sub.site_id, faux.id);
+  await request(app).post("/api/submissions/suivi")
+    .set("Authorization", `Bearer ${adminToken}`).send({ year:2026, month:10, site_id:faux.id });
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(faux.id).c, 1);
+
+  const r = await request(app).post(`/api/submissions/${sub.id}/rattacher-a`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ site_id: vrai.id });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.visitesRetirees, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(faux.id).c, 0);
+  assert.equal(db.prepare("SELECT done FROM site_months WHERE site_id=? AND year=2026 AND month=10")
+    .get(faux.id).done, 0);
+  /* Le bon site ne reçoit pas la visite d'office : marquer le suivi reste un
+     geste explicite, et c'est lui qui date la visite sur la période choisie. */
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(vrai.id).c, 0);
+  const suivi = await request(app).post("/api/submissions/suivi")
+    .set("Authorization", `Bearer ${adminToken}`).send({ year:2026, month:10, site_id:vrai.id });
+  assert.equal(suivi.body.visitesCreees, 1);
+});
+
+test("grille mensuelle : une soumission arrivée APRÈS la saisie à la main relie la ligne au lieu de la laisser orpheline", async () => {
+  /* La protection du lot dépendait de l'ORDRE d'arrivée : soumission d'abord, la
+     visite était protégée ; saisie d'abord, la ligne restait manuelle et un
+     décochage effaçait la seule trace d'un mois pourtant documenté. */
+  const site = await creerSiteLotC({ code:"LOTA-ORDRE", name:"EPP Ordre", activity_tag:"SMP" });
+  const saisie = await request(app).put(`/api/sites/${site.id}/months`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:2026, month:9, active:true, planned:true, done:true,
+            manual_reason:"appareil_indisponible", manual_note:"batterie à plat" });
+  assert.equal(saisie.body.visite, "creee");
+  const v0 = db.prepare("SELECT * FROM visits WHERE site_id=?").get(site.id);
+  assert.equal(v0.origin, "manuelle");
+
+  const v = await verser({ form_id:"SMP_2025", enregistrements: [
+    { instance_id:"lota-ordre-1", SvyDate:"2026-10-20", site_name:"EPP Ordre", activity_tag:"SMP" }]});
+  assert.equal(v.body.resolues, 1, JSON.stringify(v.body));
+  const suivi = await request(app).post("/api/submissions/suivi")
+    .set("Authorization", `Bearer ${adminToken}`).send({ year:2026, month:9, site_id:site.id });
+  assert.equal(suivi.status, 200, JSON.stringify(suivi.body));
+  assert.equal(suivi.body.visitesCreees, 0, "aucun doublon : le mois n'a qu'une visite");
+  assert.equal(suivi.body.visitesPromues, 1);
+
+  const v1 = db.prepare("SELECT * FROM visits WHERE site_id=?").all(site.id);
+  assert.equal(v1.length, 1);
+  assert.equal(v1[0].id, v0.id, "c'est la MÊME ligne : la couverture ne compte pas deux fois");
+  assert.equal(v1[0].submission_id, soumission("lota-ordre-1").id);
+  assert.equal(v1[0].origin, "odk");
+  assert.equal(v1[0].visit_date, "2026-10-20", "la date observée remplace la convention du 15");
+  assert.equal(v1[0].manual_reason, null, "le motif de rattrapage tombe : le formulaire existe");
+
+  const refus = await request(app).put(`/api/sites/${site.id}/months`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:2026, month:9, active:true, planned:true, done:false });
+  assert.equal(refus.status, 409, "le mois est désormais documenté, il ne se décoche plus");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id).c, 1);
+});
+
+test("grille mensuelle : décocher rend la date de dernière visite à ce qui reste", async () => {
+  const site = await creerSiteLotC({ code:"LOTA-DERNIERE", name:"EPP Dernière", activity_tag:"SMP" });
+  assert.equal(db.prepare("SELECT last_visit FROM sites WHERE id=?").get(site.id).last_visit, null);
+  const cocher = (month, corps) => request(app).put(`/api/sites/${site.id}/months`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:2026, month, active:true, planned:true, done:true, ...corps });
+
+  await cocher(2, { manual_reason:"soumission_perdue" });
+  await cocher(6, { manual_reason:"soumission_perdue" });
+  assert.equal(db.prepare("SELECT last_visit FROM sites WHERE id=?").get(site.id).last_visit,
+    "2026-07-15");
+
+  /* Le site annonçait la date d'une visite qui n'existe plus : monthsSince, la
+     priorité et le score de risque se calculaient sur une visite fantôme. */
+  const retrait = await request(app).put(`/api/sites/${site.id}/months`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:2026, month:6, active:true, planned:true, done:false });
+  assert.equal(retrait.body.visite, "supprimee");
+  assert.equal(db.prepare("SELECT last_visit FROM sites WHERE id=?").get(site.id).last_visit,
+    "2026-03-15", "elle retombe sur la saisie précédente, pas sur le vide");
+
+  const dernier = await request(app).put(`/api/sites/${site.id}/months`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:2026, month:2, active:true, planned:true, done:false });
+  assert.equal(dernier.body.visite, "supprimee");
+  assert.equal(db.prepare("SELECT last_visit FROM sites WHERE id=?").get(site.id).last_visit, null);
+});
+
+test("grille mensuelle : corriger un motif ne perd pas la précision écrite, et le journal ne signale que les vraies corrections", async () => {
+  const site = await creerSiteLotC({ code:"LOTA-NOTE", name:"EPP Note", activity_tag:"SMP" });
+  const envoyer = (corps) => request(app).put(`/api/sites/${site.id}/months`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ year:2026, month:3, active:true, planned:true, done:true, ...corps });
+  const ligne = () => db.prepare("SELECT manual_reason, manual_note FROM visits WHERE site_id=?")
+    .get(site.id);
+  const corrections = () => db.prepare("SELECT COUNT(*) c FROM audit WHERE entity_id=? AND text LIKE ?")
+    .get(site.id, "%(motif corrigé)%").c;
+
+  await envoyer({ manual_reason:"formulaire_non_rempli", manual_note:"pluie battante, piste coupée" });
+  assert.deepEqual(ligne(), { manual_reason:"formulaire_non_rempli",
+    manual_note:"pluie battante, piste coupée" });
+
+  /* Un appel qui ne corrige QUE le motif ne parle pas de la note : l'effacer
+     ferait disparaître sans trace une explication écrite six mois plus tôt — et
+     l'interface elle-même ne connaît pas toujours la note, la projection des
+     visites étant plafonnée et filtrée par bureau. */
+  const corr = await envoyer({ manual_reason:"soumission_perdue" });
+  assert.equal(corr.body.visite, "corrigee");
+  assert.deepEqual(ligne(), { manual_reason:"soumission_perdue",
+    manual_note:"pluie battante, piste coupée" });
+  assert.equal(corrections(), 1);
+
+  /* Ré-enregistrer la fiche sans rien changer au motif n'est pas une correction :
+     le journal n'est rendu qu'à ses soixante dernières lignes, et trois agents
+     qui complètent leurs fiches en évacueraient tout le reste. */
+  const rien = await envoyer({ manual_reason:"soumission_perdue", report:"MR-2026-04" });
+  assert.equal(rien.body.visite, "conservee");
+  assert.equal(corrections(), 1, "aucune ligne « motif corrigé » pour une correction qui n'a pas eu lieu");
+  assert.equal(db.prepare("SELECT report FROM site_months WHERE site_id=? AND year=2026 AND month=3")
+    .get(site.id).report, "MR-2026-04", "le reste de la fiche est bien enregistré");
+
+  /* Effacer la note reste possible, mais explicitement. */
+  const vide = await envoyer({ manual_reason:"soumission_perdue", manual_note:null });
+  assert.equal(vide.body.visite, "corrigee");
+  assert.equal(ligne().manual_note, null);
+  assert.equal(corrections(), 2);
+});
+
 test("soumissions : un connecteur porteur de correspondances passe par appliquer(), pas par la détection", async () => {
   const c = (await creerConnecteur({ name:"ODK — NutritionAIM", kind:"odk",
     base_url:"https://odk.exemple.org", config:{ project:"1", formId:"NutritionAIM" } })).body.connector;
@@ -3647,6 +3972,571 @@ test("soumissions : le rattachement manuel est tracé, il apprend, et rien ne l'
   const encore = await request(app).post(`/api/submissions/${brute.id}/detacher`)
     .set("Authorization", `Bearer ${adminToken}`).send({});
   assert.equal(encore.status, 409, "détacher ce qui ne l'est pas est refusé, pas ignoré");
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Référentiel de codes d'identification, chargé depuis Excel (lot B).
+
+   La migration 018 avait livré le MÉCANISME — un site porte plusieurs codes —
+   mais pas la LISTE. Ce lot ouvre le canal : un troisième type d'import, de
+   portée NATIONALE, et un rapprochement séparé qui pose les alias.
+
+   Ce que ces tests éprouvent, dans l'ordre :
+     — que la portée nationale débranche réellement les gardes géographiques du
+       cadre, SANS les débrancher pour les deux types qui les exigent ;
+     — que l'import reste ce qu'il est : aperçu qui n'écrit rien, écriture
+       idempotente par clé métier, ligne fautive rejetée avec un motif utile ;
+     — que le rapprochement pose des alias, DIT ce qu'il n'a pas su rattacher
+       des deux côtés, et refuse de conclure sur une preuve faible ;
+     — que le droit exigé est bien « admin », et non « edit ».
+
+   La section est placée après celle des codes externes parce qu'elle s'appuie
+   sur son registre de sites — homonymes compris, qui sont ici le cas d'échec.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const REF_CODES = "SMP_TEST_2026";
+const siteLotB = {};
+
+async function modeleCodes(token, referentiel = REF_CODES){
+  const r = await request(app)
+    .get(`/api/import/codes/template?referentiel=${encodeURIComponent(referentiel)}`)
+    .set("Authorization", `Bearer ${token}`).buffer(true)
+    .parse((res, cb) => { const d = []; res.on("data", c => d.push(c));
+                          res.on("end", () => cb(null, Buffer.concat(d))); });
+  assert.equal(r.status, 200,
+    `le modèle « ${referentiel} » se télécharge : ${String(r.body).slice(0, 300)}`);
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(r.body);
+  return wb;
+}
+/* Ajoute une entrée au modèle. `Code` d'abord, comme dans le tableau des
+   colonnes : c'est cette colonne que sonde le garde de ligne blanche. */
+const ajouterEntree = (ws, c, code, libelle, extra = {}) => {
+  const row = ws.addRow([]);
+  row.getCell(c["Code"]).value = code;
+  row.getCell(c["Référentiel"]).value = REF_CODES;
+  if(libelle !== undefined) row.getCell(c["Libellé"]).value = libelle;
+  for(const [h, v] of Object.entries(extra)) row.getCell(c[h]).value = v;
+  return row;
+};
+const rapprocherCodes = (token = adminToken, ref = REF_CODES) =>
+  request(app).post(`/api/code-referentiels/${encodeURIComponent(ref)}/rapprocher`)
+    .set("Authorization", `Bearer ${token}`).send({});
+const entree = (code) => db.prepare("SELECT * FROM code_referentiel WHERE referentiel=? AND code=?")
+  .get(REF_CODES, code);
+
+test("référentiel de codes : le registre de sites du lot est en place", async () => {
+  /* Trois voies de rapprochement, une par site : la désignation explicite, le
+     p-code, et le nom seul — cette dernière volontairement sous le seuil. */
+  siteLotB.designe  = await creerSiteLotC({ code:"LOTB-1", name:"EPP Lot B Désignée",
+    activity_tag:"SMP" });
+  siteLotB.parPcode = await creerSiteLotC({ code:"LOTB-2", name:"EPP Lot B Fokontany",
+    activity_tag:"SMP", geo_pcode:"MG23288880002" });
+  siteLotB.parNom   = await creerSiteLotC({ code:"LOTB-3", name:"EPP Lot B Nom Unique",
+    activity_tag:"SMP" });
+  assert.ok(siteLotB.designe.id && siteLotB.parPcode.id && siteLotB.parNom.id);
+});
+
+test("référentiel de codes : le modèle se télécharge sans millésime géographique, là où l'import géographique le refuse", async () => {
+  /* On retire le millésime courant : sans lui, `scopeFor` rend un périmètre vide
+     et le cadre refuse de produire un modèle. C'est LA preuve que la portée
+     nationale débranche les deux gardes — et que la portée « geo » les garde. */
+  const courant = db.prepare("SELECT id FROM geo_version WHERE is_current=1").all().map(x => x.id);
+  db.prepare("UPDATE geo_version SET is_current=0").run();
+  try{
+    const geo = await request(app).get("/api/import/caseload/template")
+      .set("Authorization", `Bearer ${adminToken}`);
+    assert.equal(geo.status, 409, "la garde géographique tient toujours pour « caseload »");
+    assert.match(geo.body.error, /référentiel géographique courant/);
+
+    const wb = await modeleCodes(adminToken);
+    const ws = wb.getWorksheet("Saisie");
+    const c = colonnes(ws);
+    assert.equal(Object.keys(c)[0], "Code",
+      "« Code » est la première colonne clé : c'est elle que sonde le garde de ligne blanche");
+    for(const h of ["Code","Référentiel","Libellé","P-code","Code du site MEMS","Source","Note"])
+      assert.ok(c[h], `la colonne « ${h} » est présente`);
+    assert.equal(ws.rowCount, 2,
+      "au premier chargement le modèle n'a que ses deux lignes d'en-tête : rien n'est encore chargé");
+
+    const meta = wb.getWorksheet("_mems");
+    const kv = {}; meta.eachRow(r => { kv[String(r.getCell(1).value)] = String(r.getCell(2).value ?? ""); });
+    assert.equal(kv.kind, "codes");
+    assert.equal(kv.referentiel, REF_CODES,
+      "le nom du référentiel voyage avec le fichier : c'est de lui que les lignes héritent");
+  } finally {
+    for(const id of courant) db.prepare("UPDATE geo_version SET is_current=1 WHERE id=?").run(id);
+  }
+
+  /* Sans nom de référentiel, il n'y a pas de clé métier : le modèle est refusé
+     plutôt que produit sous un nom inventé. */
+  const sansNom = await request(app).get("/api/import/codes/template")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(sansNom.status, 422);
+  assert.match(sansNom.body.error, /précisez le référentiel/);
+});
+
+test("référentiel de codes : la prévisualisation n'écrit rien, la confirmation écrit, rejouer ne change plus rien", async () => {
+  const wb = await modeleCodes(adminToken);
+  const ws = wb.getWorksheet("Saisie"); const c = colonnes(ws);
+
+  /* Un tableur livre les codes SMP en NOMBRE : le premier est donc passé tel quel. */
+  ajouterEntree(ws, c, 603140001, "EPP Lot B Désignée", { "Code du site MEMS":"LOTB-1",
+    "Source":"liste des 1 251 codes école" });
+  ajouterEntree(ws, c, "MG23288880002", "EPP Lot B Fokontany");
+  ajouterEntree(ws, c, "603140003", "EPP Lot B Nom Unique");
+  ajouterEntree(ws, c, "603140004", "EPP Homonyme");
+  ajouterEntree(ws, c, "603140005", "EPP Absente Du Registre");
+
+  const prev = await televerser(adminToken, wb, "codes");
+  assert.equal(prev.status, 200, JSON.stringify(prev.body));
+  assert.equal(prev.body.resume.crees, 5);
+  assert.equal(prev.body.resume.rejetes, 0, JSON.stringify(prev.body.rejets));
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM code_referentiel WHERE referentiel=?")
+    .get(REF_CODES).c, 0, "rien n'est écrit à la prévisualisation");
+
+  const ok = await request(app).post(`/api/import/batches/${prev.body.batch}/commit`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.crees, 5);
+  assert.equal(entree("603140001").libelle, "EPP Lot B Désignée");
+  assert.equal(entree("603140001").site_code, "LOTB-1");
+  assert.ok(entree("603140001").import_batch_id, "l'entrée garde le lot qui l'a écrite");
+
+  /* Rejouer le MÊME fichier : la réconciliation se fait par la clé métier
+     (référentiel, code), donc plus rien ne change. */
+  const encore = await televerser(adminToken, wb, "codes");
+  assert.equal(encore.status, 200, JSON.stringify(encore.body));
+  assert.equal(encore.body.resume.crees, 0);
+  assert.equal(encore.body.resume.modifies, 0);
+  assert.equal(encore.body.resume.inchanges, 5);
+
+  /* Une correction de libellé, elle, se voit — et l'aperçu la nomme avant écriture. */
+  const corr = await modeleCodes(adminToken);
+  const wsc = corr.getWorksheet("Saisie"); const cc = colonnes(wsc);
+  assert.equal(wsc.rowCount, 7, "le modèle revient rempli des cinq entrées déjà chargées");
+  for(let n = 3; n <= wsc.rowCount; n++){
+    if(String(wsc.getRow(n).getCell(cc["Code"]).value) !== "603140005") continue;
+    wsc.getRow(n).getCell(cc["Libellé"]).value = "EPP Absente Du Registre (corrigée)";
+  }
+  const diff = await televerser(adminToken, corr, "codes");
+  assert.equal(diff.body.resume.modifies, 1, JSON.stringify(diff.body.resume));
+  assert.match(diff.body.apercu.modifies[0].message, /corrigée/);
+  assert.match(diff.body.apercu.modifies[0].unite, /603140005/,
+    "l'aperçu identifie la ligne par son code, pas par une unité administrative qu'elle n'a pas");
+});
+
+test("référentiel de codes : une ligne sans référentiel hérite de celui du fichier, un fichier fabriqué à la main est refusé avec le geste à faire", async () => {
+  const wb = await modeleCodes(adminToken);
+  const ws = wb.getWorksheet("Saisie"); const c = colonnes(ws);
+  /* Le cas normal : l'opérateur colle 1 251 lignes portant code et libellé, sans
+     recopier le nom du référentiel sur chacune. */
+  const row = ws.addRow([]);
+  row.getCell(c["Code"]).value = "603140006";
+  row.getCell(c["Libellé"]).value = "EPP Héritée";
+  const prev = await televerser(adminToken, wb, "codes");
+  assert.equal(prev.status, 200, JSON.stringify(prev.body));
+  assert.equal(prev.body.resume.crees, 1, JSON.stringify(prev.body.rejets));
+  await request(app).post(`/api/import/batches/${prev.body.batch}/commit`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(entree("603140006").referentiel, REF_CODES,
+    "la ligne a hérité du référentiel porté par la feuille d'identification");
+
+  /* Un fichier reconstruit à la main n'a pas cette feuille : il n'y a alors rien
+     à hériter, et le motif doit dire quoi faire plutôt que laisser chercher. */
+  const nu = new ExcelJS.Workbook();
+  const wsn = nu.addWorksheet("Saisie");
+  wsn.addRow(["Code","Référentiel","Libellé"]);
+  wsn.addRow(["", "", ""]);
+  wsn.addRow(["603140007", "", "EPP Sans Feuille d'Identification"]);
+  const brut = await televerser(adminToken, nu, "codes");
+  assert.equal(brut.status, 200, JSON.stringify(brut.body));
+  assert.equal(brut.body.resume.rejetes, 1);
+  assert.equal(brut.body.rejets[0].champ, "Référentiel");
+  assert.match(brut.body.rejets[0].message, /téléchargez le modèle/);
+  assert.match(brut.body.rejets[0].unite, /603140007/);
+});
+
+test("référentiel de codes : le rapprochement pose les alias, est idempotent, et refuse de conclure sous le seuil de preuve", async () => {
+  const bilan = await rapprocherCodes();
+  assert.equal(bilan.status, 200, JSON.stringify(bilan.body));
+  const b = bilan.body;
+  assert.equal(b.lues, 6, "les six entrées chargées sont confrontées au registre");
+
+  /* Deux rattachements, sur deux preuves différentes et toutes deux suffisantes :
+     la désignation explicite, et le p-code du fokontany. */
+  assert.equal(b.rattachees, 2, JSON.stringify(b));
+  assert.equal(b.alias, 2);
+  assert.equal(entree("603140001").site_id, siteLotB.designe.id);
+  assert.equal(entree("603140001").rapproche_passe, "designe");
+  assert.equal(entree("MG23288880002").site_id, siteLotB.parPcode.id);
+  assert.equal(entree("MG23288880002").rapproche_passe, "pcode_adm4");
+
+  /* L'alias porte la SOURCE du référentiel : c'est ce qui rend le rattachement
+     relisible six mois plus tard, et ce qui distingue un code importé en masse
+     du code saisi sur la fiche du site. */
+  const alias = db.prepare("SELECT * FROM site_external_code WHERE source=?").all(REF_CODES);
+  assert.equal(alias.length, 2);
+  assert.deepEqual(alias.map(a => a.code).sort(), ["603140001","MG23288880002"]);
+  assert.ok(alias.every(a => /référentiel/.test(a.note || "")), "la note dit d'où vient le code");
+
+  /* ── Le seuil de preuve, et le cliquet qu'il évite ────────────────────
+     « EPP Lot B Nom Unique » ne se rapproche que par son nom : une seule
+     ressemblance, à 0,4. L'entrée retient la piste et son motif, mais NE pose
+     aucun alias — sans quoi le rapprochement suivant retrouverait ce code à
+     confiance 1,0 et une hypothèse serait devenue une certitude sans témoin. */
+  assert.ok(b.aConfirmerTotal >= 1, JSON.stringify(b.aConfirmer));
+  const faible = b.aConfirmer.find(x => x.code === "603140003");
+  assert.ok(faible, JSON.stringify(b.aConfirmer));
+  assert.equal(faible.passe, "nom_seul");
+  assert.ok(faible.confiance < b.seuil, `${faible.confiance} doit rester sous ${b.seuil}`);
+  assert.equal(entree("603140003").site_id, null, "une piste faible ne rattache rien");
+  assert.equal(entree("603140003").rapproche_passe, "nom_seul",
+    "elle est tout de même enregistrée : c'est ce qui permet de la confirmer à la main");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM site_external_code WHERE code=?")
+    .get("603140003").c, 0, "aucun alias n'est posé sous le seuil");
+
+  /* Le journal reprend le bilan ENTIER, échecs compris. */
+  const trace = db.prepare(`SELECT * FROM audit WHERE entity='code_referentiel' AND entity_id=?
+                            ORDER BY rowid DESC`).get(REF_CODES);
+  assert.ok(trace, "le rapprochement entre au journal");
+  assert.match(trace.text, /sans site/);
+  assert.match(trace.text, /à confirmer/);
+
+  /* Rejouer : rien de plus n'est posé. Le second passage est même PLUS FORT que
+     le premier, puisque les alias posés alimentent désormais l'index — d'où la
+     passe « code externe » sur l'entrée que la désignation avait tranchée. */
+  const deux = await rapprocherCodes();
+  assert.equal(deux.status, 200, JSON.stringify(deux.body));
+  assert.equal(deux.body.alias, 0, "aucun alias en double");
+  assert.equal(deux.body.dejaPresents, 2);
+  assert.equal(deux.body.rattachees, 2);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM site_external_code WHERE source=?")
+    .get(REF_CODES).c, 2);
+
+  /* Et la conséquence de tout le lot : une soumission SMP portant ce code
+     entier, qui n'est le p-code de rien, se rattache désormais toute seule. */
+  const v = await verser({ form_id:"SMP_2025", enregistrements: [
+    { instance_id:"lotb-1", Adm4Code_SMP:"603140001", SvyDate:"2026-08-01" }]});
+  assert.equal(v.status, 200, JSON.stringify(v.body));
+  const s = soumission("lotb-1");
+  assert.equal(s.site_id, siteLotB.designe.id,
+    "c'est ce que le lot débloque : SMP devient rattachable");
+  assert.match(s.resolution_motif, new RegExp(REF_CODES));
+});
+
+test("référentiel de codes : le bilan NOMME ce qu'il n'a pas su faire, dans les deux sens", async () => {
+  const r = await rapprocherCodes();
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const b = r.body;
+
+  /* ── Les entrées sans site : comptées ET nommées, avec leur motif ────
+     Un compte seul ne se corrige pas. « EPP Homonyme » existe deux fois dans le
+     registre : le résolveur refuse de trancher, et le bilan le dit. */
+  assert.ok(b.sansSiteTotal >= 2, JSON.stringify(b.sansSite));
+  const homonyme = b.sansSite.find(x => x.code === "603140004");
+  assert.ok(homonyme, JSON.stringify(b.sansSite));
+  assert.match(homonyme.motif, /EPP Homonyme/);
+  const absente = b.sansSite.find(x => x.code === "603140005");
+  assert.ok(absente, "l'entrée dont aucun site ne porte le nom est listée elle aussi");
+  assert.match(absente.motif, /aucun site/);
+
+  /* ── Les sites sans entrée : VENTILÉS PAR ACTIVITÉ, jamais en brut ───
+     Pour une liste d'écoles, les centaines de points de distribution URT sans
+     entrée sont normaux. Un total brut afficherait un chiffre alarmant et faux,
+     et l'écran serait ignoré au bout de deux semaines. */
+  assert.ok(Array.isArray(b.sitesSansEntree));
+  assert.ok(b.sitesSansEntree.length > 1, "plusieurs activités sont distinguées");
+  assert.ok(b.sitesSansEntree.every(x => typeof x.tag === "string" && Number.isInteger(x.sites)));
+  const tousSites = db.prepare("SELECT COUNT(*) c FROM sites").get().c;
+  const couverts = db.prepare(`SELECT COUNT(DISTINCT site_id) c FROM code_referentiel
+                               WHERE referentiel=? AND site_id IS NOT NULL`).get(REF_CODES).c;
+  assert.equal(b.sitesSansEntree.reduce((a, x) => a + x.sites, 0), tousSites - couverts,
+    "la ventilation couvre exactement les sites que le référentiel n'atteint pas");
+  const smp = b.sitesSansEntree.find(x => x.tag === "SMP");
+  assert.ok(smp && smp.sites >= 1, "l'activité qui nous intéresse figure nommément");
+
+  /* L'état se relit sans rien recalculer ni écrire : quatre compteurs qui
+     s'additionnent au total, plus la même ventilation. */
+  const etat = await request(app).get(`/api/code-referentiels/${REF_CODES}/etat`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(etat.status, 200);
+  const e = etat.body;
+  assert.equal(e.entrees, 6);
+  assert.equal(e.rattachees + e.aConfirmer + e.sansSite + e.jamaisRapprochees, e.entrees,
+    "la partition est stricte : rien ne se perd entre les quatre compteurs");
+  assert.equal(e.rattachees, 2);
+  assert.equal(e.seuil, 0.7);
+
+  /* La liste est cherchable sur le code ET sur le libellé. */
+  const liste = await request(app).get(`/api/code-referentiels/${REF_CODES}?q=Homonyme`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(liste.status, 200);
+  assert.equal(liste.body.total, 1);
+  assert.equal(liste.body.rows[0].code, "603140004");
+  assert.ok(liste.body.rows[0].rapproche_motif, "la ligne dit pourquoi elle n'est pas rattachée");
+
+  const rattaches = await request(app).get(`/api/code-referentiels/${REF_CODES}?rattache=oui`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(rattaches.body.total, 2);
+  assert.ok(rattaches.body.rows.every(x => x.siteNom), "le site rattaché est nommé");
+
+  /* Les référentiels chargés, avec leurs compteurs : ce que l'écran lit d'abord. */
+  const tous = await request(app).get("/api/code-referentiels")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(tous.status, 200);
+  const mien = tous.body.rows.find(x => x.referentiel === REF_CODES);
+  assert.ok(mien, JSON.stringify(tous.body.rows));
+  assert.equal(mien.entrees, 6);
+  assert.equal(mien.rattachees, 2);
+});
+
+test("référentiel de codes : un compte « edit » ne charge ni ne rapproche — c'est une donnée nationale", async () => {
+  const te = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+
+  /* Il lit : un code école validé par tous n'est pas un secret de bureau, et le
+     cacher obligerait chaque bureau à tenir sa copie. */
+  const lecture = await request(app).get("/api/code-referentiels")
+    .set("Authorization", `Bearer ${te}`);
+  assert.equal(lecture.status, 200, "la lecture est ouverte à tout compte authentifié");
+
+  /* Il n'écrit pas : une table chargée de travers empoisonne le rattachement de
+     TOUS les bureaux, pas seulement du sien. */
+  const modele = await request(app).get(`/api/import/codes/template?referentiel=${REF_CODES}`)
+    .set("Authorization", `Bearer ${te}`);
+  assert.equal(modele.status, 403);
+  assert.match(modele.body.error, /admin/);
+
+  const wb = await modeleCodes(adminToken);
+  const envoi = await televerser(te, wb, "codes");
+  assert.equal(envoi.status, 403, JSON.stringify(envoi.body));
+
+  const rap = await rapprocherCodes(te);
+  assert.equal(rap.status, 403, JSON.stringify(rap.body));
+
+  /* Un référentiel jamais chargé se distingue d'un référentiel vide : on ne
+     rapproche pas dans le vide en annonçant zéro rattachement. */
+  const inconnu = await rapprocherCodes(adminToken, "REFERENTIEL_INEXISTANT");
+  assert.equal(inconnu.status, 404);
+  assert.match(inconnu.body.error, /importez d'abord le fichier/);
+});
+
+test("référentiel de codes : le modèle du premier chargement se remplit — la zone de saisie n'est pas verrouillée", async () => {
+  /* Le défaut que ce test ferme : la protection de feuille était posée, mais les
+     seules cellules déverrouillées étaient produites par la boucle des lignes
+     pré-remplies. Sur un référentiel neuf, `seed()` n'en rend aucune — le modèle
+     sortait donc entièrement verrouillé, et l'écran promettait pourtant « au
+     premier chargement il est vide, et vous y collez vos lignes ». */
+  const wb = await modeleCodes(adminToken, "SMP_MODELE_NEUF");
+  const ws = wb.getWorksheet("Saisie");
+  assert.equal(ws.rowCount, 2, "aucune ligne pré-remplie : c'est bien le cas du premier chargement");
+  const c = colonnes(ws);
+
+  assert.ok(ws.sheetProtection?.sheet, "la feuille reste protégée : les clés ne se cassent pas");
+  /* Le verrou est porté par la COLONNE, donc il vaut pour les cellules encore
+     vides — celles que l'opérateur va remplir. */
+  assert.equal(ws.getCell(3, c["Code"]).style.protection.locked, false);
+  assert.equal(ws.getCell(3, c["Libellé"]).style.protection.locked, false);
+  assert.equal(ws.getCell(500, c["Code du site MEMS"]).style.protection.locked, false,
+    "coller mille lignes reste possible, pas seulement les premières");
+  assert.notEqual(ws.getCell(3, c["Référentiel"]).style.protection?.locked, false,
+    "la colonne pré-remplie, elle, reste verrouillée");
+});
+
+test("référentiel de codes : corriger une désignation retire l'alias devenu faux au lieu d'en poser un second", async () => {
+  /* Le bureau s'est trompé de site dans son fichier et le corrige. Sans retrait
+     de l'alias d'hier, le code désignait DEUX sites : le résolveur refusait de
+     trancher, et la correction cassait le rattachement qu'elle venait débloquer. */
+  const corr = await modeleCodes(adminToken);
+  const ws = corr.getWorksheet("Saisie"); const c = colonnes(ws);
+  for(let n = 3; n <= ws.rowCount; n++){
+    if(String(ws.getRow(n).getCell(c["Code"]).value) !== "603140001") continue;
+    ws.getRow(n).getCell(c["Code du site MEMS"]).value = "LOTB-3";
+  }
+  const prev = await televerser(adminToken, corr, "codes");
+  assert.equal(prev.body.resume.modifies, 1, JSON.stringify(prev.body.resume));
+  await request(app).post(`/api/import/batches/${prev.body.batch}/commit`)
+    .set("Authorization", `Bearer ${adminToken}`);
+
+  const r = await rapprocherCodes();
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.aliasRetires, 1, "l'alias périmé est retiré, et le bilan le dit");
+  assert.equal(entree("603140001").site_id, siteLotB.parNom.id);
+
+  const alias = db.prepare("SELECT site_id FROM site_external_code WHERE code=? AND source=?")
+    .all("603140001", REF_CODES);
+  assert.equal(alias.length, 1, "un code, une source, un site");
+  assert.equal(alias[0].site_id, siteLotB.parNom.id);
+  assert.ok(!r.body.codesAmbigus.some(x => x.code === "603140001"),
+    "le code n'est plus ambigu : c'est tout l'objet du retrait");
+
+  /* La conséquence, mesurée là où elle compte : la soumission suivante se
+     rattache au site corrigé au lieu de retomber « non résolue ». */
+  const v = await verser({ form_id:"SMP_2025", enregistrements: [
+    { instance_id:"lotb-corrige", Adm4Code_SMP:"603140001", SvyDate:"2026-08-02" }]});
+  assert.equal(v.status, 200, JSON.stringify(v.body));
+  assert.equal(soumission("lotb-corrige").site_id, siteLotB.parNom.id);
+});
+
+test("référentiel de codes : une entrée qui PERD son site est comptée et nommée, pas effacée en silence", async () => {
+  /* Relancer le rapprochement est présenté comme sûr. Il l'est pour les alias ;
+     il ne l'est pas pour les rattachements quand le registre a bougé entre-temps.
+     Le taire, c'est laisser découvrir six mois plus tard un écran qui affiche
+     « 0 rattachée » sans que personne n'ait rien fait. */
+  const site = siteLotB.parNom;
+  const renommer = (code) => request(app).put(`/api/sites/${site.id}`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ code, name:site.name });
+  assert.equal((await renommer("LOTB-3B")).status, 200);
+
+  const r = await rapprocherCodes();
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.detacheesTotal, 1, JSON.stringify(r.body.detachees));
+  assert.equal(r.body.detachees[0].code, "603140001");
+  assert.match(r.body.detachees[0].motif, /ne désigne aucun site/,
+    "le motif dit pourquoi, et donc quoi corriger");
+  assert.match(r.body.detachement, /ont PERDU le site/);
+  assert.equal(entree("603140001").site_id, null);
+
+  const trace = db.prepare(`SELECT * FROM audit WHERE entity='code_referentiel' AND entity_id=?
+                            ORDER BY rowid DESC`).get(REF_CODES);
+  assert.match(trace.text, /1 détachée/);
+
+  /* L'alias posé au passage précédent, lui, survit : il n'est retiré que par une
+     conclusion CONTRAIRE, jamais par une absence de conclusion. C'est ce qui
+     permet de réparer le fichier sans avoir tout perdu entre-temps. */
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM site_external_code WHERE code=? AND source=?")
+    .get("603140001", REF_CODES).c, 1);
+
+  assert.equal((await renommer("LOTB-3")).status, 200);
+  const remis = await rapprocherCodes();
+  assert.equal(remis.body.detacheesTotal, 0);
+  assert.equal(entree("603140001").site_id, site.id, "le fichier corrigé, le rattachement revient");
+});
+
+test("référentiel de codes : le motif ne nomme pas les sites d'un autre bureau", async () => {
+  /* La jointure sur `sites` est bornée au bureau de l'appelant, et l'entrée
+     rattachée ailleurs est signalée sans être nommée. Le motif du résolveur, lui,
+     partait tel quel — et il NOMME les sites, code MEMS compris : il suffisait de
+     lire la colonne « Pourquoi » pour énumérer les sites d'un autre bureau, y
+     compris les homonymes du registre national. */
+  const bureaux = db.prepare("SELECT id FROM offices WHERE kind='field' ORDER BY name").all();
+  const mien = db.prepare("SELECT office_id FROM users WHERE email=?").get("terrain@test.local").office_id;
+  const ailleurs = bureaux.find(o => o.id !== mien).id;
+  const codes = [siteLotB.designe.id, siteLotB.parPcode.id, siteLotB.parNom.id];
+  const avant = codes.map(id => db.prepare("SELECT office_id FROM sites WHERE id=?").get(id).office_id);
+  const poser = (o) => codes.forEach(id =>
+    db.prepare("UPDATE sites SET office_id=? WHERE id=?").run(o, id));
+  poser(ailleurs);
+  try{
+    const te = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+    const l = await request(app).get(`/api/code-referentiels/${REF_CODES}?limit=500`)
+      .set("Authorization", `Bearer ${te}`);
+    assert.equal(l.status, 200, JSON.stringify(l.body));
+    /* Les libellés du référentiel, eux, restent servis : ils viennent du fichier
+       du bureau qui l'a chargé, pas du registre des sites — c'est une donnée
+       nationale, et la masquer obligerait chaque bureau à tenir sa copie. Ce qui
+       ne doit pas sortir, c'est ce que le résolveur a lu DANS le registre. */
+    const motifs = l.body.rows.map(x => x.rapproche_motif || "").join(" ");
+    assert.ok(!/LOTB-/.test(motifs), "aucun code MEMS d'un autre bureau ne sort");
+    assert.ok(!/« EPP Lot B/.test(motifs), "aucun nom de site d'un autre bureau non plus");
+    const rattachee = l.body.rows.find(x => x.site_id);
+    assert.ok(rattachee, JSON.stringify(l.body.rows.map(x => x.code)));
+    assert.equal(rattachee.siteNom, null);
+    assert.equal(rattachee.rattacheHorsBureau, true, "l'existence du rattachement, elle, est dite");
+    assert.match(rattachee.rapproche_motif, /autre bureau/);
+
+    /* Un compte non borné, lui, garde le motif entier : c'est la seule chose qui
+       permette de corriger une entrée. */
+    const admin = await request(app).get(`/api/code-referentiels/${REF_CODES}?limit=500`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    assert.ok(/EPP Lot B/.test(JSON.stringify(admin.body)));
+  } finally {
+    codes.forEach((id, i) =>
+      db.prepare("UPDATE sites SET office_id=? WHERE id=?").run(avant[i], id));
+  }
+});
+
+test("référentiel de codes : les motifs parlent de l'entrée du fichier, jamais d'une soumission", async () => {
+  /* Le résolveur est partagé avec l'ingestion ODK, et ses motifs sont rédigés
+     pour une soumission. Servis tels quels à un opérateur qui vient de charger un
+     tableur, ils expliquent sa ligne en parlant d'un objet qu'il n'a jamais
+     manipulé. Même règle, même code, un mot près. */
+  const motifs = db.prepare("SELECT code, rapproche_motif FROM code_referentiel WHERE referentiel=?")
+    .all(REF_CODES).filter(x => x.rapproche_motif);
+  assert.ok(motifs.length >= 5);
+  const fautif = motifs.find(x => /soumission/.test(x.rapproche_motif));
+  assert.equal(fautif, undefined, `le motif de ${fautif?.code} parle encore d'une soumission`);
+  assert.ok(motifs.some(x => /l'entrée/.test(x.rapproche_motif)),
+    "et il nomme ce que l'opérateur regarde vraiment");
+});
+
+test("référentiel de codes : recharger un fichier amputé d'une colonne ne vide pas cette colonne", async () => {
+  /* Le cas réel : l'opérateur reconstruit sa feuille depuis son propre système en
+     n'y gardant que le code, le référentiel et le libellé. `readUpload` rend ""
+     pour les colonnes absentes, ce qui était indiscernable d'une case vidée à la
+     main : le code du site MEMS et la source repartaient à NULL sur chacune des
+     lignes réimportées. Un fichier qui ne parle pas d'une colonne n'en dit rien —
+     même règle que pour un PUT partiel sur une fiche de site. */
+  const wb = await modeleCodes(adminToken);
+  const ws = wb.getWorksheet("Saisie"); const c = colonnes(ws);
+  ajouterEntree(ws, c, "603140011", "EPP Colonne Absente",
+    { "Code du site MEMS":"LOTB-2", "Source":"fichier du bureau" });
+  const pose = await televerser(adminToken, wb, "codes");
+  await request(app).post(`/api/import/batches/${pose.body.batch}/commit`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(entree("603140011").site_code, "LOTB-2");
+
+  const nu = new ExcelJS.Workbook();
+  const wsn = nu.addWorksheet("Saisie");
+  wsn.addRow(["Code","Référentiel","Libellé"]);
+  wsn.addRow(["", "", ""]);
+  wsn.addRow(["603140011", REF_CODES, "EPP Colonne Absente (corrigée)"]);
+  const prev = await televerser(adminToken, nu, "codes");
+  assert.equal(prev.status, 200, JSON.stringify(prev.body));
+  assert.equal(prev.body.resume.modifies, 1, JSON.stringify(prev.body.resume));
+  assert.match(prev.body.apercu.modifies[0].message, /corrigée/);
+  assert.ok(!/Code du site MEMS/.test(prev.body.apercu.modifies[0].message),
+    "une colonne absente n'est pas présentée comme une modification");
+
+  const ok = await request(app).post(`/api/import/batches/${prev.body.batch}/commit`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  const e = entree("603140011");
+  assert.equal(e.libelle, "EPP Colonne Absente (corrigée)", "ce que le fichier dit est écrit");
+  assert.equal(e.site_code, "LOTB-2", "ce dont il ne parle pas est conservé");
+  assert.equal(e.source, "fichier du bureau");
+});
+
+test("référentiel de codes : le nom réservé au miroir de la fiche de site est refusé", async () => {
+  /* Le nom d'un référentiel devient la `source` de ses alias. Baptisé « fiche du
+     site », il tombe sous le delete-then-insert de `synchroniserCodeParDefaut` :
+     la première correction de code externe sur une fiche efface tous ses codes,
+     pendant que l'écran continue d'afficher un rattachement qui ne rattache plus
+     rien. La réserve posée en tête de lib/alias.js devient donc opposable. */
+  const modele = await request(app).get("/api/import/codes/template?referentiel=fiche%20du%20site")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(modele.status, 422, "le modèle n'est même pas produit");
+  assert.match(modele.body.error, /réservé au code par défaut/);
+
+  const rap = await rapprocherCodes(adminToken, "Fiche Du Site");
+  assert.equal(rap.status, 422, "la casse ne contourne pas la réserve");
+  assert.match(rap.body.error, /réservé au code par défaut/);
+
+  const lecture = await request(app).get("/api/code-referentiels/fiche%20du%20site")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(lecture.status, 422);
+
+  /* Et la ligne collée dans un fichier ne le contourne pas davantage : c'est une
+     entrée utilisateur comme une autre, refusée avec son motif. */
+  const nu = new ExcelJS.Workbook();
+  const wsn = nu.addWorksheet("Saisie");
+  wsn.addRow(["Code","Référentiel","Libellé"]);
+  wsn.addRow(["", "", ""]);
+  wsn.addRow(["603140012", "fiche du site", "EPP Nom Réservé"]);
+  const brut = await televerser(adminToken, nu, "codes");
+  assert.equal(brut.body.resume.rejetes, 1, JSON.stringify(brut.body.resume));
+  assert.equal(brut.body.rejets[0].champ, "Référentiel");
+  assert.match(brut.body.rejets[0].message, /réservé au code par défaut/);
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════

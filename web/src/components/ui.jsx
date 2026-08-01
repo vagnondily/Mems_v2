@@ -186,11 +186,16 @@ const Note = ({ tone="info", children }) => {
     ok:"bg-lime-50 bl3 border-lime-500 text-lime-900", err:"bg-rose-50 bl3 border-rose-500 text-rose-900" }[tone];
   return <div className={clsx("px-4 py-3 rounded f125 leading-relaxed mb-4", t)}>{children}</div>;
 };
-const Sw = ({ label, hint, on, onChange }) => (
+/* `disabled` sert quand le serveur refusera le geste de toute façon — une visite
+   issue d'un formulaire ne se décoche pas depuis le plan. Proposer l'interrupteur
+   pour le voir revenir en 409 apprendrait à l'utilisateur que l'écran ment. */
+const Sw = ({ label, hint, on, onChange, disabled }) => (
   <div className="flex items-center gap-3 py-2.5 border-b border-slate-100 last:border-0">
-    <div className="flex-1"><div className="f13 font-medium text-slate-800">{label}</div>
+    <div className="flex-1"><div className={clsx("f13 font-medium", disabled?"text-slate-400":"text-slate-800")}>{label}</div>
       {hint && <div className="f115 text-slate-500">{hint}</div>}</div>
-    <button onClick={()=>onChange(!on)} className={clsx("relative w-10 h22 rounded-full transition-colors shrink-0", on?"bg-brand":"bg-slate-300")}>
+    <button disabled={disabled} onClick={()=>onChange(!on)}
+      className={clsx("relative w-10 h22 rounded-full transition-colors shrink-0",
+        on?"bg-brand":"bg-slate-300", disabled?"opacity-40 cursor-not-allowed":"")}>
       <span className={clsx("absolute top3 w-4 h-4 bg-white rounded-full transition-all", on?"lf21":"lf3")} /></button>
   </div>);
 const Toast = ({ list }) => (

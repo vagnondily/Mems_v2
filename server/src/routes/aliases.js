@@ -7,36 +7,44 @@
    correspondance — les 1 251 codes école que le bureau tient à part et sans
    lesquels le formulaire SMP ne se rattache à rien.
 
-   ── Pourquoi une route dédiée plutôt qu'un troisième type d'import Excel ──
-   Le pipeline modèle → téléversement → analyse → diff → confirmation
-   (lib/import.js) a été lu avant d'écrire une ligne ici. Il ne convient pas, et
-   pas pour une raison de commodité : il est construit autour d'UNE clé, le
-   p-code géographique, à trois endroits qui ne sont pas paramétrables.
+   ── Cette route reste, mais l'argument qui l'a fondée a cessé d'être vrai ──
+   Ce paragraphe expliquait pourquoi une table de correspondance NE passait PAS
+   par le cadre d'import Excel (lib/import.js). Il s'appuyait sur deux constats :
+   ce cadre était construit autour d'une clé géographique à trois endroits non
+   paramétrables (`analyse()` rejetait toute ligne sans p-code connu ou hors
+   périmètre ; `GET /:kind/template` exigeait un millésime courant et des unités
+   adm3 ; `seed()` pré-remplissait par unité administrative) — et il n'y avait
+   qu'UN occupant à servir, ce qui ne valait pas de conditionner la validation
+   commune à deux types d'import qui marchaient.
 
-     1. `analyse()` rejette toute ligne dont le `geo_pcode` est absent de
-        `geo_unit` ou hors du périmètre de l'utilisateur. Une correspondance ne
-        porte AUCUN p-code : sa clé est un site et un code étranger au
-        référentiel — le cas SMP est précisément un entier « 603140007 » qui
-        n'est un p-code de rien. Les 1 251 lignes seraient rejetées une à une.
-     2. `GET /:kind/template` refuse de produire un modèle sans millésime
-        géographique courant et sans unités adm3 dans le périmètre. Une table de
-        correspondance n'a rien de géographique : exiger un référentiel chargé
-        pour l'importer serait une condition inventée.
-     3. `seed()` pré-remplit le modèle par unité administrative. Ici il faudrait
-        le pré-remplir par site — c'est-à-dire ne rien partager avec l'existant
-        au-delà du nom de la fonction.
+   Le lot B a changé les deux termes. Les trois hypothèses sont devenues une
+   propriété déclarée du type, `portee: "geo" | "national"`, et le cadre accueille
+   désormais un troisième type, `codes`, qui charge des RÉFÉRENTIELS de codes
+   d'identification (migration 020, lib/codes.js) : les 1 251 codes école de SMP,
+   puis les 247 codes ZAP, puis ceux des formulaires suivants. Deux occupants
+   attendus, et un troisième annoncé, ne se traitent plus au cas par cas — c'est
+   la raison même qui a fait naître lib/champs.js et lib/mapping.js.
 
-   Les rendre paramétrables supposerait de conditionner la validation commune à
-   deux types d'import qui marchent, au bénéfice d'un troisième qui n'a rien de
-   géographique. Le gain aurait été la cérémonie d'aperçu avant confirmation —
-   or elle existe pour protéger d'un écrasement : un import de caseload REMPLACE
-   des chiffres. Ici rien n'est jamais remplacé. Une correspondance s'ajoute ou
-   existe déjà (index unique de la migration 018), donc rejouer le même fichier
-   ne change rien et le dit. Il n'y a pas d'état antérieur à prévisualiser.
+   ── Ce qui subsiste, et pourquoi les deux chemins coexistent ─────────
+   Les deux ne font pas la même chose, et aucun ne remplace l'autre :
+
+     — `POST /site-aliases/import` (ici) déclare DIRECTEMENT des correspondances
+       site ↔ code, en JSON, sous le droit « edit ». C'est le geste d'un
+       opérateur de terrain qui possède déjà l'appariement ;
+     — le type d'import `codes` charge la LISTE elle-même — code, libellé,
+       géographie —, sous le droit « admin » parce qu'elle est nationale, puis
+       `POST /api/code-referentiels/:referentiel/rapprocher` en déduit les
+       correspondances et DIT ce qu'il n'a pas su rattacher.
+
+   Le premier suppose qu'on sait déjà à quel site chaque code correspond ; le
+   second est ce qu'on emploie quand justement on ne le sait pas. C'est aussi
+   pourquoi le cadre d'import lui convient : il y a bien un état antérieur à
+   prévisualiser — une liste se corrige, un libellé change, une géographie
+   s'ajoute — là où une correspondance ne faisait que s'ajouter.
 
    Ce qui comptait vraiment dans ce pipeline — un compte rendu qui n'escamote
-   rien — est repris tel quel : sites introuvables listés ligne à ligne, codes
-   devenus ambigus nommés, lignes invalides motivées.
+   rien — reste repris tel quel ici : sites introuvables listés ligne à ligne,
+   codes devenus ambigus nommés, lignes invalides motivées.
    ═══════════════════════════════════════════════════════════════════════ */
 
 import { Router } from "express";

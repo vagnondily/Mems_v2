@@ -276,6 +276,9 @@ r.put("/visits/:id/status", requireCap("validate"), (req, res) => {
 
 r.get("/audit", requireCap("admin"), (req, res) => {
   const limit = Math.min(500, parseInt(req.query.limit,10) || 100);
-  res.json({ rows: db.prepare("SELECT * FROM audit ORDER BY at DESC LIMIT ?").all(limit) });
+  /* Même départage qu'à /api/state : `at` est à la seconde, et sans second critère
+     ce « N plus récentes » rendait les plus anciennes de la seconde la plus récente. */
+  res.json({ rows: db.prepare("SELECT * FROM audit ORDER BY at DESC, rowid DESC LIMIT ?")
+    .all(limit) });
 });
 export default r;

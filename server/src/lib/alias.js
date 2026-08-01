@@ -34,8 +34,21 @@ import { construireIndex, normaliserCode } from "./rattachement.js";
 
 /* La source réservée au miroir de `sites.external_code`. Elle n'est pas un
    form_id : aucun formulaire ne peut porter ce nom sans qu'on le remarque, et
-   c'est précisément ce qui permet de distinguer le miroir d'un alias importé. */
+   c'est précisément ce qui permet de distinguer le miroir d'un alias importé.
+
+   Depuis que le NOM D'UN RÉFÉRENTIEL, saisi librement, alimente lui aussi la
+   colonne `source` (lib/codes.js), cette réserve doit être opposable : un
+   référentiel baptisé « fiche du site » verrait tous ses codes effacés par la
+   première édition de fiche venue, `synchroniserCodeParDefaut` étant un
+   delete-then-insert sur cette source. D'où le refus, posé là où la valeur entre
+   — le nom du référentiel, à l'import comme sur les routes. */
 export const SOURCE_FICHE = "fiche du site";
+export const estSourceReservee = (v) =>
+  String(v ?? "").trim().toLowerCase() === SOURCE_FICHE.toLowerCase();
+export const MOTIF_SOURCE_RESERVEE =
+  `« ${SOURCE_FICHE} » est réservé au code par défaut de la fiche de site : un `
+  + "référentiel portant ce nom verrait ses codes effacés à la première correction "
+  + "de fiche. Choisissez un autre nom.";
 
 const propre = (v) => {
   if(v === null || v === undefined) return null;
@@ -66,6 +79,31 @@ export function ajouterAlias({ site_id, code, source = null, note = null }){
 
 export const supprimerAlias = (id) =>
   db.prepare("DELETE FROM site_external_code WHERE id=?").run(id).changes === 1;
+
+/* Pose un alias en RETIRANT ceux que la même source portait sur le même code
+   pour un autre site. C'est le geste du rapprochement, et il n'est pas
+   interchangeable avec `ajouterAlias` : une source qui se corrige — l'entrée
+   désignait le mauvais site, le bureau réédite son fichier — laissait sinon
+   derrière elle sa conclusion d'hier. Le code désignait alors deux sites, le
+   résolveur refusait de trancher (lib/rattachement.js), et la correction cassait
+   le rattachement qu'elle venait débloquer.
+
+   La règle est celle qu'énonce déjà `synchroniserCodeParDefaut` juste au-dessus :
+   dans UNE source, un code désigne UN site. D'une source à l'autre, l'ambiguïté
+   reste possible et reste signalée — deux référentiels qui se contredisent sont
+   un fait à porter à la connaissance de l'opérateur, pas une erreur d'écriture. */
+export function poserAliasExclusif({ site_id, code, source = null, note = null }){
+  const c = propre(code);
+  if(!c) return { cree:false, retires:0, motif:"code vide" };
+  const s = propre(source);
+  let retires = 0;
+  const res = tx(() => {
+    retires = db.prepare(`DELETE FROM site_external_code
+                          WHERE code=? AND site_id<>? AND source IS ?`).run(c, site_id, s).changes;
+    return ajouterAlias({ site_id, code:c, source:s, note });
+  })();
+  return { ...res, retires };
+}
 
 /* Aligne le miroir de la fiche sur la valeur de la colonne. Appelée après toute
    écriture qui touche `sites.external_code`, et seulement dans ce cas : un site

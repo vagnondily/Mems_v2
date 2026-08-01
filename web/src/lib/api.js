@@ -102,7 +102,15 @@ export const api = {
   saveCaseload: (rows)            => call("PUT", "/caseload", { rows }),
 
   importKinds:    ()              => call("GET", "/import/kinds"),
-  importTemplate: (kind, year)    => fetchBlob(`/import/${encodeURIComponent(kind)}/template?year=${year}`),
+  /* `extra` porte les paramètres propres à un type d'import — le référentiel, pour
+     un type de portée nationale, qui n'a ni exercice ni périmètre. L'appel à deux
+     arguments reste exactement ce qu'il était. */
+  importTemplate: (kind, year, extra = {}) => {
+    const qs = new URLSearchParams();
+    if(year != null && year !== "") qs.set("year", String(year));
+    for(const [k, v] of Object.entries(extra)) if(v != null && v !== "") qs.set(k, String(v));
+    return fetchBlob(`/import/${encodeURIComponent(kind)}/template?${qs}`);
+  },
   importUpload:   (kind, file)    => postFile(`/import/${encodeURIComponent(kind)}`, file),
   /* Le XLSForm est lu par le serveur, qui a déjà exceljs. Le navigateur
      embarquait SheetJS pour le faire lui-même : deux failles connues, aucun
@@ -212,6 +220,15 @@ export const api = {
          { site_id, creer_alias: !!creer_alias }),
   detacherSubmission:   (id) =>
     call("POST", `/submissions/${encodeURIComponent(id)}/detacher`, {}),
+
+  /* Référentiels de codes d'identification. Aucun de ces points n'entre dans la
+     file de synchronisation des collections : 1 251 lignes n'ont rien à faire
+     dans l'état poussé au démarrage, et moins encore renvoyées au serveur à
+     chaque enregistrement. L'écran lit son propre point d'API. */
+  codeReferentiels: ()          => call("GET", "/code-referentiels"),
+  codeReferentiel:  (nom, q="") => call("GET", `/code-referentiels/${encodeURIComponent(nom)}${q}`),
+  rapprocherCodes:  (nom)       => call("POST", `/code-referentiels/${encodeURIComponent(nom)}/rapprocher`, {}),
+  etatCodes:        (nom)       => call("GET", `/code-referentiels/${encodeURIComponent(nom)}/etat`),
 
   offices:      ()           => call("GET", "/offices"),
   createOffice: (o)          => call("POST", "/offices", o),
