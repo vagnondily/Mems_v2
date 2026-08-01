@@ -1735,15 +1735,39 @@ function ActivityModal({ open, act, busy, onClose, onSave }){
    institutionnel — outcome, output, other output ; l'XLSForm porte les indicateurs
    de PROCESSUS d'une activité. Une seule bibliothèque, deux sous-onglets. */
 const IND_NATURES = [["crf","CRF — résultats"],["xlsform","XLSForm — processus"]];
-const IND_LEVELS = [["outcome","Outcome"],["output","Output"],["other_output","Other output"]];
+/* Les quatre niveaux du cadre de résultats, tels que la masterlist du PAM les
+   range par onglet (migration 027) : Annex 2 Outcome, Annex 3 Output, Detailed
+   Output, Annex 4 Crosscutting. */
+const IND_LEVELS = [["outcome","Outcome"],["output","Output"],
+  ["other_output","Other output (détaillé)"],["crosscutting","Transversal (CC)"]];
 const indLevelLabel = (v) => IND_LEVELS.find(([k])=>k===v)?.[1] || "";
+const IND_PAGE = 100;
 
 function SetIndicators({ db, set, notify, can }){
   const [nat,setNat] = useState("crf");
   const [edit,setEdit] = useState(null);
+  /* La masterlist réelle porte 842 indicateurs rangés par onglet puis par thème
+     (chantier S8-5). Trois filtres et une pagination : sans eux, l'écran servait
+     une liste de huit cents lignes dans laquelle personne ne trouve rien. */
+  const [niv,setNiv] = useState("");
+  const [cat,setCat] = useState("");
+  const [q,setQ]     = useState("");
+  const [page,setPage] = useState(1);
   /* Une ligne sans `kind` est un indicateur d'avant la migration : c'est un CRF. */
   const kindOf = (ind) => ind.kind || "crf";
-  const liste = db.indicators.filter(ind => kindOf(ind) === nat);
+  const listeNature = db.indicators.filter(ind => kindOf(ind) === nat);
+  /* Les catégories proposées sont celles qui EXISTENT dans la nature affichée,
+     et sous le niveau choisi : proposer un filtre qui ne rend rien est une
+     promesse non tenue. */
+  const categories = [...new Set(listeNature
+    .filter(i => !niv || i.level === niv).map(i => i.category).filter(Boolean))].sort();
+  const liste = listeNature.filter(i =>
+    (!niv || i.level === niv)
+    && (!cat || i.category === cat)
+    && (!q.trim() || `${i.id} ${i.name} ${i.category || ""}`.toLowerCase().includes(q.trim().toLowerCase())));
+  const pages = Math.max(1, Math.ceil(liste.length / IND_PAGE));
+  const pageSure = Math.min(page, pages);
+  const visibles = liste.slice((pageSure-1)*IND_PAGE, pageSure*IND_PAGE);
   /* Le référentiel des activités (Paramètres → Activités) sert d'options pour
      rattacher un indicateur de processus à SON activité — la source canonique,
      plus les reflets épars. On propose les activités actives. */
@@ -1756,7 +1780,7 @@ function SetIndicators({ db, set, notify, can }){
   /* L'export ne sort que la nature affichée, mais porte `kind`/`level`/`activity`
      pour qu'un réimport les rétablisse sans ambiguïté. */
   const exp = () => download(`indicateurs_${nat}.csv`,
-    toCSV(liste, ["id","name","kind","level","activity","basket","unit","target","dir","method","freq"]), "text/csv");
+    toCSV(liste, ["id","name","kind","level","category","activity","basket","unit","target","dir","method","freq"]), "text/csv");
   const imp = (file) => { const rd=new FileReader();
     rd.onload=()=>{ const rows=parseCSV(rd.result);
       if(!rows.length){ notify("Fichier vide","err"); return; }
@@ -1765,6 +1789,7 @@ function SetIndicators({ db, set, notify, can }){
         const rec = { id:r.id, name:r.name||r.id, kind,
           level: kind==="crf" ? (IND_LEVELS.some(([k])=>k===r.level) ? r.level : "") : "",
           activity: kind==="xlsform" ? (r.activity||"") : "",
+          category: kind==="crf" ? (r.category||"") : "",
           basket:r.basket||"", unit:r.unit||"%",
           target:n(r.target), dir:(r.dir==="down"?"down":"up"), method:r.method||"", freq:r.freq||"" };
         const i=d.indicators.findIndex(x=>x.id===rec.id);
@@ -1785,28 +1810,53 @@ function SetIndicators({ db, set, notify, can }){
           alimentent le tableau de bord de suivi.</>}
         {" "}La liste s'exporte en CSV et se réimporte pour une mise à jour groupée.</Note>
       <Card flush title={crf ? "Indicateurs CRF" : "Indicateurs de processus (XLSForm)"}
-        subtitle={`${liste.length} indicateur${liste.length>1?"s":""}`}
+        subtitle={`${fmt(liste.length)} indicateur${liste.length>1?"s":""}`
+          + (liste.length !== listeNature.length ? ` sur ${fmt(listeNature.length)}` : "")}
         right={<>
           <label><input type="file" accept=".csv" className="hidden" onChange={e=>e.target.files[0]&&imp(e.target.files[0])} />
             <span className="inline-flex items-center gap-1.5 border rounded font-semibold px-2.5 py-1 f11 m-btn-sec cursor-pointer"><Upload size={13}/> Importer</span></label>
           <Btn size="sm" kind="sec" icon={Download} onClick={exp} disabled={!liste.length}>Exporter</Btn>
           {can("edit") && <Btn size="sm" icon={Plus} onClick={()=>setEdit({ id:"", name:"",
-            kind:nat, level:crf?"outcome":"", activity:"", basket:"", unit:"%",
+            kind:nat, level:crf?"outcome":"", activity:"", category:"", basket:"", unit:"%",
             target:0, dir:"up", method:"", freq:"Annuel" })}>Ajouter</Btn>}</>}>
+        {/* Les filtres de la masterlist : la nature (onglet du classeur), la
+            catégorie thématique, et la recherche libre. Ils sont au-dessus du
+            tableau, pas dans un repli : à 842 lignes, ils SONT l'écran. */}
+        <div className="px-4 pt-3 flex items-center gap-2 flex-wrap">
+          {crf && <Select value={niv} onChange={e=>{ setNiv(e.target.value); setCat(""); setPage(1); }}
+            empty="Tous les niveaux" options={IND_LEVELS} className="mi-py1 mi-xs mi-wauto" />}
+          {crf && <Select value={cat} onChange={e=>{ setCat(e.target.value); setPage(1); }}
+            empty={`Toutes les catégories (${categories.length})`} options={categories}
+            className="mi-py1 mi-xs mi-wauto" />}
+          <div className="relative">
+            <Search size={13} className="absolute left-2 top-2 text-slate-400" />
+            <Input value={q} onChange={e=>{ setQ(e.target.value); setPage(1); }}
+              placeholder="Code, intitulé ou catégorie" className="mi-py1 mi-xs pl-7" style={{width:240}} />
+          </div>
+          {(niv || cat || q) && <Btn size="sm" kind="ghost"
+            onClick={()=>{ setNiv(""); setCat(""); setQ(""); setPage(1); }}>Effacer les filtres</Btn>}
+        </div>
         {!liste.length
-          ? <Empty>{crf ? "Aucun indicateur CRF. Ajoutez un outcome ou un output, ou importez la masterlist."
-              : "Aucun indicateur de processus. Ajoutez-en un rattaché à une activité, ou importez-le."}</Empty>
-          : <TableWrap>
+          ? <Empty title={listeNature.length ? "Aucun indicateur ne correspond" : "Aucun indicateur"}
+              text={listeNature.length
+                ? "Aucun indicateur de cette nature ne correspond aux filtres posés."
+                : crf ? "Ajoutez un outcome ou un output, ou chargez la masterlist réelle "
+                        + "(npm run seed:reel) : 842 indicateurs rangés par catégorie."
+                      : "Ajoutez-en un rattaché à une activité, ou importez-le."} />
+          : <><TableWrap>
           <thead><tr><Th>Code</Th><Th>Intitulé</Th><Th>{crf?"Niveau":"Activité"}</Th>
+            {crf && <Th>Catégorie</Th>}
             {crf && <Th>Panier</Th>}<Th>Unité</Th><Th num>Cible</Th>
             <Th>Sens</Th><Th>Méthode</Th><Th>Fréquence</Th>{crf && <Th num>Valeurs</Th>}<Th /></tr></thead>
-          <tbody>{liste.map(ind=>(
+          <tbody>{visibles.map(ind=>(
             <tr key={ind.id} className="hover:bg-sky-50">
               <Td><Badge tone="b">{ind.id}</Badge></Td>
               <Td className="mw420 truncate font-medium text-slate-800" title={ind.name}>{ind.name}</Td>
               <Td className="text-slate-600">{crf
                 ? (ind.level ? <Badge tone="n">{indLevelLabel(ind.level)}</Badge> : "—")
                 : (ind.activity ? <span title={activiteLabel(ind.activity)}>{ind.activity}</span> : "—")}</Td>
+              {crf && <Td className="text-slate-600 mw240 truncate" title={ind.category}>
+                {ind.category || "—"}</Td>}
               {crf && <Td className="text-slate-600">{ind.basket}</Td>}
               <Td>{ind.unit}</Td><Td num>{ind.target}</Td>
               <Td><Badge tone="n">{ind.dir==="up"?"↑ maximiser":"↓ minimiser"}</Badge></Td>
@@ -1817,12 +1867,20 @@ function SetIndicators({ db, set, notify, can }){
                 {can("del") && <button onClick={()=>set(d=>{ d.indicators=d.indicators.filter(x=>x.id!==ind.id); return d; })}
                   className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</Td>
             </tr>))}</tbody>
-        </TableWrap>}
+        </TableWrap>
+        {pages > 1 && (
+          <div className="px-4 py-3 flex items-center gap-3 f125 text-slate-600">
+            <Btn size="sm" kind="sec" disabled={pageSure<=1} onClick={()=>setPage(pageSure-1)}>Précédents</Btn>
+            <span>{(pageSure-1)*IND_PAGE+1} – {Math.min(pageSure*IND_PAGE, liste.length)} sur {fmt(liste.length)}</span>
+            <Btn size="sm" kind="sec" disabled={pageSure>=pages} onClick={()=>setPage(pageSure+1)}>Suivants</Btn>
+          </div>)}
+        </>}
       </Card>
-      <IndicatorModal open={!!edit} ind={edit} activites={activites} onClose={()=>setEdit(null)} onSave={save} />
+      <IndicatorModal open={!!edit} ind={edit} activites={activites}
+        categories={categories} onClose={()=>setEdit(null)} onSave={save} />
     </>);
 }
-function IndicatorModal({ open, ind, activites, onClose, onSave }){
+function IndicatorModal({ open, ind, activites, categories = [], onClose, onSave }){
   const [f,setF] = useState({});
   useEffect(()=>{ setF(ind||{}); },[ind]);
   if(!open) return null;
@@ -1841,7 +1899,16 @@ function IndicatorModal({ open, ind, activites, onClose, onSave }){
           : <Field label="Activité suivie"><Select value={f.activity||""} onChange={e=>u("activity",e.target.value)}
               empty="— aucune —" options={activites} /></Field>}
         <Field label="Intitulé" className="col-span-2"><Input value={f.name||""} onChange={e=>u("name",e.target.value)} /></Field>
-        {crf && <Field label="Panier thématique" className="col-span-2"><Input value={f.basket||""} onChange={e=>u("basket",e.target.value)} /></Field>}
+        {/* La catégorie vient du classeur institutionnel ; le panier est le
+            regroupement d'analyse propre au bureau. Deux axes, deux champs :
+            les confondre perdrait le second au premier chargement de la
+            masterlist. La liste propose l'existant sans l'imposer. */}
+        {crf && <Field label="Catégorie (masterlist)" className="col-span-2"
+          hint="Le thème tel que le classeur du PAM le nomme — c'est par lui que l'écran filtre">
+          <Input list="mems-cat-indic" value={f.category||""} onChange={e=>u("category",e.target.value)} />
+          <datalist id="mems-cat-indic">{categories.map(c => <option key={c} value={c} />)}</datalist>
+        </Field>}
+        {crf && <Field label="Panier thématique (analyse du bureau)" className="col-span-2"><Input value={f.basket||""} onChange={e=>u("basket",e.target.value)} /></Field>}
         <Field label="Unité"><Select value={f.unit||"%"} onChange={e=>u("unit",e.target.value)} options={["%","idx","nombre","ratio"]} /></Field>
         <Field label="Valeur cible"><Input type="number" step="0.1" value={f.target??0} onChange={e=>u("target",n(e.target.value))} /></Field>
         <Field label="Sens de progression"><Select value={f.dir||"up"} onChange={e=>u("dir",e.target.value)}

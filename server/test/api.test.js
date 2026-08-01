@@ -7951,3 +7951,106 @@ test("mappage : le plan est réservé au super, comme l'écriture qu'il prépare
     .set("Authorization", `Bearer ${t}`).send({ nouveau:"Autre durée" });
   assert.equal(r.status, 403, "un plan qui ne mène à aucune écriture possible n'a pas à être servi");
 });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Chantier S8-5 — Semis des DONNÉES RÉELLES.
+
+   « Dans les settings utilise mes data réels et stocke-les comme valeurs
+   par défaut de MEMS. » Ce test lance le vrai script sur les vrais
+   fichiers de `docs/`, dans une base à part pour ne pas troubler la
+   suite. Il ne vaut que si les fichiers sont là : sur une copie du dépôt
+   sans les documents, il se déclare non applicable plutôt que d'échouer.
+   ═══════════════════════════════════════════════════════════════════════ */
+const DOCS = path.resolve("../docs");
+const CLASSEUR_REEL = path.join(DOCS, "WFP Indicator Master List_UpdMai_2025.xlsx");
+const SHP_REEL = path.join(DOCS, "mdg_bnd_adm3_com_pam_2025.shp");
+
+test("données réelles : activités et masterlist d'indicateurs chargées depuis le classeur du PAM",
+  { skip: fs.existsSync(CLASSEUR_REEL) ? false : "docs/ ne contient pas le classeur du PAM" },
+  async () => {
+    const base = path.resolve("./data/test-reel.db");
+    for(const f of [base, base+"-wal", base+"-shm"]) if(fs.existsSync(f)) fs.unlinkSync(f);
+    execFileSync(process.execPath, ["src/seed-reel.js", "--sans-geo"],
+      { stdio:"pipe", env:{ ...process.env, DB_FILE:base } });
+
+    const { default: Database } = await import("better-sqlite3");
+    const d2 = new Database(base, { readonly:true });
+    try{
+      /* Les activités : l'onglet « Annex 5 Activity tags » en porte 58. */
+      const actifs = d2.prepare("SELECT COUNT(*) c FROM activity_categories").get().c;
+      assert.equal(actifs, 58, "les 58 tags d'activité du classeur sont chargés");
+      const gd = d2.prepare("SELECT * FROM activity_categories WHERE tag='GD'").get();
+      assert.equal(gd.name, "General Distribution", "le tag GD porte son intitulé réel");
+      assert.ok(gd.program_area, "et son groupe d'intervention");
+      /* Le domaine posé existe dans SA liste : le semis ne fabrique pas d'orphelin. */
+      assert.ok(d2.prepare("SELECT 1 FROM list_item WHERE type='domaine' AND code=?")
+        .get(gd.program_area), "le domaine est présent dans la liste des domaines");
+
+      /* Les indicateurs : quatre onglets, quatre niveaux, chacun avec ses
+         catégories thématiques — c'est ce qui rend l'écran filtrable. */
+      const parNiveau = Object.fromEntries(d2.prepare(
+        "SELECT level, COUNT(*) c FROM indicators GROUP BY level").all().map(x => [x.level, x.c]));
+      assert.equal(parNiveau.outcome, 94,      "Annex 2 Outcome");
+      assert.equal(parNiveau.output, 157,      "Annex 3 Output");
+      assert.equal(parNiveau.other_output, 566,"Detailed Output");
+      assert.equal(parNiveau.crosscutting, 25, "Annex 4 Crosscutting");
+      assert.equal(d2.prepare("SELECT COUNT(*) c FROM indicators").get().c, 842);
+      assert.equal(d2.prepare("SELECT COUNT(*) c FROM indicators WHERE kind<>'crf'").get().c, 0,
+        "la masterlist est le cadre de résultats, pas du processus");
+      assert.equal(d2.prepare("SELECT COUNT(*) c FROM indicators WHERE category IS NULL").get().c, 0,
+        "chaque indicateur porte sa catégorie");
+
+      const fcs = d2.prepare("SELECT * FROM indicators WHERE name LIKE 'Food consumption score'").get();
+      assert.ok(fcs, "le score de consommation alimentaire est là");
+      assert.equal(fcs.level, "outcome");
+      assert.equal(fcs.category, "1. Food security and essential needs");
+      const cc = d2.prepare("SELECT * FROM indicators WHERE code='CC.1.1'").get();
+      assert.equal(cc.category, "CC.1 Protection");
+      assert.ok(d2.prepare("SELECT * FROM indicators WHERE code='A.1.1'").get().name
+        .startsWith("Number of people receiving assistance"));
+
+      /* Les catégories sont bien un axe de filtre : plusieurs par niveau. */
+      const cats = d2.prepare(
+        "SELECT COUNT(DISTINCT category) c FROM indicators WHERE level='outcome'").get().c;
+      assert.equal(cats, 8, "les huit domaines programme de l'Annex 2");
+    } finally { d2.close(); }
+  });
+
+test("données réelles : le semis est idempotent — relancé, il corrige sans dupliquer",
+  { skip: fs.existsSync(CLASSEUR_REEL) ? false : "docs/ ne contient pas le classeur du PAM" },
+  async () => {
+    const base = path.resolve("./data/test-reel.db");
+    execFileSync(process.execPath, ["src/seed-reel.js", "--sans-geo"],
+      { stdio:"pipe", env:{ ...process.env, DB_FILE:base } });
+    const { default: Database } = await import("better-sqlite3");
+    const d2 = new Database(base, { readonly:true });
+    try{
+      assert.equal(d2.prepare("SELECT COUNT(*) c FROM indicators").get().c, 842,
+        "aucun doublon au second passage");
+      assert.equal(d2.prepare("SELECT COUNT(*) c FROM activity_categories").get().c, 58);
+      /* La révision a bougé : les lignes ont bien été RELUES, pas ignorées. */
+      assert.ok(d2.prepare("SELECT rev FROM indicators LIMIT 1").get().rev >= 2);
+    } finally { d2.close(); }
+  });
+
+test("données réelles : le shapefile Madagascar donne l'arbre adm0→adm3 complet",
+  { skip: fs.existsSync(SHP_REEL) ? false : "docs/ ne contient pas le shapefile Madagascar" },
+  async () => {
+    /* Le vrai fichier, lu par le vrai lecteur — mais sans écrire en base :
+       ce test dit ce que le fichier CONTIENT, il ne bascule pas le millésime
+       de la suite. */
+    const { lireTable } = await import("../src/lib/shapefile.js");
+    const { buildUnits } = await import("../src/lib/geo.js");
+    const dbf = fs.readFileSync(SHP_REEL.replace(/\.shp$/, ".dbf"));
+    const table = lireTable({ dbf });
+    /* La correspondance des colonnes est trouvée seule sur un jeu COD-AB. */
+    assert.equal(table.mapping.adm3, "ADM3_EN");
+    assert.equal(table.mapping.pcode3, "ADM3_PCODE");
+    const { units, counts, collisions } = buildUnits(table.lignes);
+    assert.equal(counts.adm0, 1,     "un pays");
+    assert.equal(counts.adm1, 24,    "les régions");
+    assert.equal(counts.adm2, 120,   "les districts");
+    assert.equal(counts.adm3, 1701,  "les communes");
+    assert.equal(units.length, 1846);
+    assert.equal(collisions.length, 0, "aucun p-code en double dans le fichier officiel");
+  });

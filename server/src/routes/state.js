@@ -100,7 +100,10 @@ r.get("/state", (req, res) => {
     target:i.target, dir:i.direction, method:i.method||"", freq:i.frequency||"",
     /* Deux natures d'un même objet (migration 022) : le CRF porte un `level`
        de cadre logique, l'XLSForm de processus porte l'`activity` qu'il suit. */
-    kind:i.kind||"crf", level:i.level||"", activity:i.activity||"" }));
+    kind:i.kind||"crf", level:i.level||"", activity:i.activity||"",
+    /* La catégorie thématique de la masterlist (migration 027) : c'est par
+       elle que l'écran filtre 842 indicateurs, elle voyage donc avec eux. */
+    category:i.category||"" }));
   const indByKey = Object.fromEntries(indicators.map(i=>[i.key, i.id]));
 
   /* Les résultats n'ont aucune dimension « bureau » dans le schéma : ils sont mesurés par

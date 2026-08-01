@@ -1,0 +1,43 @@
+-- =====================================================================
+--  La masterlist d'indicateurs porte sa CATÉGORIE  (chantier S8, point 5)
+--
+--  « Master list d'indicateurs par catégorie (onglets = catégories) …
+--  filtrable à l'écran. »
+--
+--  Le classeur `WFP Indicator Master List_UpdMai_2025.xlsx` range ses
+--  indicateurs sur quatre onglets, et chaque onglet les regroupe encore
+--  par thème. Deux niveaux de classement, donc deux colonnes :
+--
+--    `level`     l'ONGLET, c'est-à-dire la nature dans le cadre de
+--                résultats. Il existe depuis la migration 022 avec trois
+--                valeurs ; il en accueille une quatrième :
+--
+--                  outcome        Annex 2 Outcome Indicators   (94)
+--                  output         Annex 3 Output Indicators   (157)
+--                  other_output   Detailed Output Indicators  (566)
+--                  crosscutting   Annex 4 Crosscutting         (25)
+--
+--                Aucune contrainte CHECK ne le borne — c'est du TEXT
+--                depuis l'origine —, donc rien à reconstruire : seules
+--                l'énumération Zod de la route et la liste de l'écran
+--                s'élargissent.
+--
+--    `category`  le THÈME à l'intérieur de l'onglet, tel que le classeur
+--                le nomme : « 1. Food security and essential needs »,
+--                « A. RESOURCES TRANSFERED », « CC.1 Protection »… C'est
+--                la maille à laquelle un bureau cherche réellement un
+--                indicateur, et c'est elle qui manquait pour filtrer.
+--
+--  Pourquoi ne pas réutiliser `basket` (le « panier ») ? Parce qu'il porte
+--  déjà autre chose : le regroupement d'analyse propre au bureau
+--  (« Consommation alimentaire », « Nutrition »), saisi à la main et
+--  indépendant du classeur institutionnel. Écraser l'un avec l'autre
+--  aurait perdu le premier au premier chargement de la masterlist.
+-- =====================================================================
+
+ALTER TABLE indicators ADD COLUMN category TEXT;
+
+-- Le geste de base de l'écran est « les indicateurs de cette nature, dans
+-- cette catégorie » : il passe par un index plutôt que par un balayage de
+-- 842 lignes.
+CREATE INDEX idx_indicators_categorie ON indicators(kind, level, category);

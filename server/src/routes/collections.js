@@ -47,11 +47,19 @@ const COLLECTIONS = {
          CRF, `activity` que pour l'XLSForm : tous deux sont donc facultatifs, le
          serveur ne les impose pas selon `kind` — l'écran s'en charge. */
       kind:z.enum(["crf","xlsform"]).default("crf"),
-      level:z.enum(["outcome","output","other_output"]).nullish().transform(v => v ?? null),
+      /* `crosscutting` est la quatrième nature du cadre de résultats, celle de
+         l'Annex 4 de la masterlist (migration 027). Elle s'ajoute aux trois
+         d'origine : la colonne est du TEXT sans contrainte, c'est cette
+         énumération-ci qui fait foi. */
+      level:z.enum(["outcome","output","other_output","crosscutting"]).nullish()
+        .transform(v => v ?? null),
+      /* La catégorie thématique du classeur institutionnel — la maille à
+         laquelle un bureau cherche un indicateur, et celle que l'écran filtre. */
+      category:S(160),
       activity:S(40) }),
     map: (x) => ({ code:x.code, name:x.name, basket:x.basket, unit:x.unit,
       target:x.target, direction:x.direction, method:x.method, frequency:x.frequency,
-      kind:x.kind, level:x.level, activity:x.activity }) },
+      kind:x.kind, level:x.level, category:x.category, activity:x.activity }) },
 
   outcomes: { table:"outcomes", cap:"edit",
     schema: z.object({ id:S(64), indicator_id:z.string().min(1).max(64), adm1:S(120),
