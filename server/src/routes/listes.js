@@ -82,7 +82,7 @@ function champsValides(def, champs){
    Ce que l'écran affiche avant d'avoir choisi une liste — son nom, ce
    qu'elle sert, combien d'items, et si elle a été relue. */
 r.get("/", (req, res) => {
-  res.json({ types: TYPES.map(def => {
+  res.json({ types: TYPES.filter(def => !def.hidden).map(def => {
     const rows = lignes(def);
     return {
       cle: def.cle, label: def.label, description: def.description || "",

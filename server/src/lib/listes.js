@@ -73,7 +73,15 @@ const generique = (cle, type, label, opts = {}) => ({
   prefixeId:"li", ...opts });
 
 export const TYPES = [
+  /* `activites` reste déclarée — la route des activités s'en sert pour compter
+     l'usage sur ses douze colonnes et pour le renommage de tag en cascade —
+     mais elle est MASQUÉE du gestionnaire de listes typées : les activités ont
+     leur propre onglet (« Activités »), plus riche (sous-activités, liaisons).
+     Deux endroits pour la même liste étaient précisément la redondance à
+     supprimer. `hidden` retire l'entrée du rail sans casser les usages
+     internes. */
   { cle:"activites", label:"Activités", table:"activity_categories", prefixeId:"act", cap:"admin",
+    hidden: true,
     description: "Le référentiel des activités du programme — la colonne vertébrale réutilisée "
       + "pour rattacher un site, suivre un indicateur de processus et planifier.",
     cols: { code:"tag", label:"name", active:"active", rev:"rev" },

@@ -7438,15 +7438,21 @@ test("listes typées : le rail des types est servi avec ses compteurs", async ()
   const r = await request(app).get("/api/listes").set("Authorization", `Bearer ${adminToken}`);
   assert.equal(r.status, 200);
   const cles = r.body.types.map(t => t.cle);
-  for(const attendu of ["activites","denrees","modalites","partenaires","types_partenariat",
+  for(const attendu of ["denrees","modalites","partenaires","types_partenariat",
                         "tiers","sous_types_pi","types_site","types_suivi","durees","domaines"])
     assert.ok(cles.includes(attendu), `le type « ${attendu} » figure au rail : ${cles.join(", ")}`);
+
+  /* « Activités » a QUITTÉ le rail des listes typées : elle a son onglet propre
+     (plus riche), et deux endroits pour la même liste étaient la redondance à
+     supprimer. Elle reste servie par la route :cle (usage, renommage en cascade),
+     mais n'apparaît plus dans le rail. */
+  assert.ok(!cles.includes("activites"), "les activités ne figurent plus au rail (onglet dédié)");
+  const activites = await request(app).get("/api/listes/activites").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(activites.status, 200, "mais la route :cle des activités reste servie");
 
   const denrees = r.body.types.find(t => t.cle === "denrees");
   assert.equal(denrees.native, false, "les denrées vivent dans la table générique");
   assert.ok(denrees.items >= 12, "les denrées sont semées par la migration");
-  const activites = r.body.types.find(t => t.cle === "activites");
-  assert.equal(activites.native, true, "les activités gardent leur table dédiée");
 });
 
 test("listes typées : une liste générique se lit, se crée, se modifie et se supprime", async () => {
