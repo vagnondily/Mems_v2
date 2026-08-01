@@ -56,10 +56,16 @@ const COLLECTIONS = {
       /* La catégorie thématique du classeur institutionnel — la maille à
          laquelle un bureau cherche un indicateur, et celle que l'écran filtre. */
       category:S(160),
+      /* La pertinence (migration 029) : activités concernées et cibles.
+         `activityTags` arrive en tableau du client, stocké en texte joint. */
+      activityTags: z.array(z.string().trim().max(40)).max(80).optional(),
+      targets:S(300),
       activity:S(40) }),
     map: (x) => ({ code:x.code, name:x.name, basket:x.basket, unit:x.unit,
       target:x.target, direction:x.direction, method:x.method, frequency:x.frequency,
-      kind:x.kind, level:x.level, category:x.category, activity:x.activity }) },
+      kind:x.kind, level:x.level, category:x.category, activity:x.activity,
+      ...(x.activityTags !== undefined ? { activity_tags: x.activityTags.join(",") } : {}),
+      ...(x.targets !== undefined ? { targets: x.targets } : {}) }) },
 
   outcomes: { table:"outcomes", cap:"edit",
     schema: z.object({ id:S(64), indicator_id:z.string().min(1).max(64), adm1:S(120),
@@ -92,6 +98,18 @@ const COLLECTIONS = {
     schema: z.object({ id:S(64), name:z.string().min(1).max(160),
       blocks:z.array(z.string().max(40)).max(40).default([]), intro:S(4000) }),
     map: (x) => ({ name:x.name, blocks:JSON.stringify(x.blocks), intro:x.intro }) },
+
+  /* Catalogue de rations (migration 031). « Une ration, une ligne » : un libellé
+     de convention, UNE denrée (son code, = pdd.commodity), un grammage par
+     personne et par jour, une activité par défaut facultative, une note. Une
+     convention composée est plusieurs lignes de même libellé. Le tonnage se
+     calcule à l'usage, jamais stocké. */
+  rationCatalog: { table:"ration_catalog", cap:"edit",
+    schema: z.object({ id:S(64), label:z.string().min(1).max(160),
+      commodity:z.string().min(1).max(120), grams:N(0,1e5),
+      activityTag:S(40), note:S(500), sort:I(0,99999) }),
+    map: (x) => ({ label:x.label, commodity:x.commodity, grams:x.grams,
+      activity_tag:x.activityTag, note:x.note, sort_order:x.sort }) },
 
   dashboards: { table:"dashboards", cap:"edit",
     schema: z.object({ id:S(64), name:z.string().min(1).max(160),

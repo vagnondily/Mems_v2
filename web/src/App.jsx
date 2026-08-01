@@ -19,7 +19,7 @@ import { Shell } from "./views/Shell.jsx";
    Les sites et leur grille mensuelle passent par des routes dédiées : elles portent
    des règles métier — création de visite, cloisonnement par bureau — que le serveur applique. */
 const SYNCED = ["params","outputs","indicators","outcomes","population","pdd",
-                "reportTemplates","dashboards","datasets","scripts","odkForms","settings"];
+                "reportTemplates","rationCatalog","dashboards","datasets","scripts","odkForms","settings"];
 
 /* Réglages de configuration sans table ni route propres. Ils étaient édités à
    l'écran puis réécrits par leurs valeurs codées en dur au rechargement : la
@@ -140,12 +140,14 @@ export default function App(){
        la route de planification l'y écrit, et le reflet dans settings est purgé. On
        lit donc la table, sans plus la laisser ombrer par le blob. */
     outcomePlan: state.outcomePlan || {},
+    /* Le catalogue de rations (migration 031) : une collection synchronisée à part
+       entière. Repli sur [] pour un serveur qui ne le sert pas encore. */
+    rationCatalog: state.rationCatalog || [],
     settings: { org:"Bureau pays", unit:"Unité suivi et évaluation", logo:"", currency:"MGA",
       dateFmt:"DD/MM/YYYY", pageSize:25, syncInterval:30, notifications:true,
       odkBase:"https://odk-central.example.org", apiEnabled:false, opSize:"Large",
-      /* Vide par défaut, à dessein : la ration réelle par denrée est une donnée de
-         programme, propre à chaque opération — personne ne la devine à sa place. */
-      rationTable:{},
+      /* La ration ne vit plus dans settings.rationTable (matrice) : elle est un
+         CATALOGUE synchronisé à part (db.rationCatalog, chantier R). */
       ...cfg },
   }; }, []);
 

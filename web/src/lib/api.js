@@ -242,6 +242,9 @@ export const api = {
      avant d'écrire, jamais l'inverse. */
   connectorApercu:    (id, corps)    => call("POST", `/connectors/${encodeURIComponent(id)}/apercu`, corps),
   connectorSuggestions:(id, corps)   => call("POST", `/connectors/${encodeURIComponent(id)}/suggestions`, corps),
+  /* Découverte des variables : lit un échantillon distant et rend ses colonnes.
+     Sert le peuplement automatique de la table après une épreuve réussie. */
+  connectorVariables: (id, corps={}) => call("POST", `/connectors/${encodeURIComponent(id)}/variables`, corps),
   /* Épreuve de connexion. Rend un diagnostic — hôte joint, schéma employé, code
      HTTP, cause nommée — et jamais le secret : au plus sa présence et sa longueur. */
   connectorTest:      (id)           => call("POST", `/connectors/${encodeURIComponent(id)}/test`),

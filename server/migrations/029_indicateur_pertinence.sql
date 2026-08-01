@@ -1,0 +1,33 @@
+-- =====================================================================
+--  L'indicateur porte sa PERTINENCE : activités et cibles
+--
+--  Le propriétaire : « le volet indicateurs ne planifie pas, il liste les
+--  indicateurs et montre la pertinence pour quels activités (au pluriel) et
+--  qui sont les cibles (groupes). Analyse bien le masterlist et sors quelque
+--  chose de compréhensible. »
+--
+--  La masterlist du PAM porte déjà, colonne par colonne, à quelles ACTIVITÉS
+--  chaque indicateur s'applique, et pour quelles CIBLES :
+--    · Annex 2 (outcome)      « Main Activity tags & Markers », « Gender
+--                               disagregation » ;
+--    · Annex 3 (output)       « Mandatory Activity tags », « Gender » ;
+--    · Annex 4 (crosscutting) « Activity tags », plus le ciblage par TIER de
+--                               bénéficiaires (Tier 1 / Tier 2 & 3).
+--
+--  Ce ne sont donc pas des données à inventer : elles sont dans le classeur,
+--  il fallait juste les extraire et leur donner deux colonnes.
+--
+--    activity_tags  liste (séparée par des virgules) des tags d'activité
+--                   auxquels l'indicateur s'applique — la « pertinence pour
+--                   quelles activités, au pluriel ». Confrontée aux tags
+--                   réels (Annex 5) au chargement : on ne rattache qu'à ce
+--                   qui existe.
+--    targets        les cibles, en clair : désagrégation par genre, tiers de
+--                   bénéficiaires visés, granularité de collecte.
+--
+--  Le seed (`seed-reel.js`) les remplit ; l'écran des indicateurs les
+--  restitue en badges d'activités et en libellé de cibles.
+-- =====================================================================
+
+ALTER TABLE indicators ADD COLUMN activity_tags TEXT;
+ALTER TABLE indicators ADD COLUMN targets       TEXT;

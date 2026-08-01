@@ -301,6 +301,39 @@ function porteurDeConnecteur(c){
   });
 }
 
+/* Lecture d'un échantillon distant, partagée par l'aperçu et la découverte des
+   variables : deux appels sortants au corps identique finiraient par diverger.
+   Rend les lignes brutes de la source et le format lu, ou lève une erreur codée
+   (SOURCE_*) que `repondreErreurSource` traduit en réponse HTTP. */
+async function lireEchantillonDistant(c, limite){
+  const cfg = J(c.config, {});
+  const porteur = porteurDeConnecteur(c);
+  const lu = c.kind === "foundry"
+    ? await lireDatasetFoundry({ baseUrl: c.base_url, datasetRid: cfg.datasetRid,
+        porteur, branche: cfg.branche || cfg.branchName || "master",
+        limite, format: cfg.format || "CSV", chemin: cfg.chemin, pointeur: cfg.pointeur })
+    : c.kind === "kobo"
+    ? await lireKobo({ baseUrl: c.base_url, uid: cfg.uid, porteur,
+        chemin: cfg.chemin || CHEMIN_DONNEES_KOBO_DEFAUT, pointeur: cfg.pointeur, limite })
+    : await lireJsonHttp({ baseUrl: c.base_url, chemin: cfg.chemin, porteur,
+        pointeur: cfg.pointeur, limite });
+  return { lignes: (lu.rows || []).slice(0, limite), format: lu.format };
+}
+
+/* La traduction d'une erreur de lecture sortante en réponse : les mêmes codes,
+   au même endroit, pour l'aperçu comme pour la découverte des variables. */
+function repondreErreurSource(res, e, next, c){
+  if(e.code === "SOURCE_URL" || e.code === "SOURCE_CONFIG" || e.code === "SOURCE_AUTH"
+     || e.code === "SOURCE_NOT_FOUND")
+    return res.status(422).json({ error: e.message, cause: e.causeAuth || null });
+  if(e.code === "SOURCE_NETWORK" || e.code === "SOURCE_HTTP"){
+    log.warn("lecture de source en échec", { connecteur: c.id, kind: c.kind, code: e.code });
+    return res.status(502).json({ error:
+      "la source n'a pas répondu correctement : vérifiez l'adresse, le jeton et la connectivité." });
+  }
+  return next(e);
+}
+
 /* Contrôles qui dépendent de la nature de la source, donc hors de portée de zod.
    `existant` est la ligne en base lors d'une modification, null à la création :
    plusieurs de ces règles ne peuvent se prononcer qu'en sachant ce qui était déjà
@@ -496,33 +529,13 @@ r.post("/connectors/:id/apercu", requireCap("admin"), async (req, res, next) => 
   if(!lignes.length){
     if(NATURES_LUES.has(c.kind)){
       try{
-        const cfg = J(c.config, {});
-        const porteur = porteurDeConnecteur(c);
-        const lu = c.kind === "foundry"
-          ? await lireDatasetFoundry({ baseUrl: c.base_url, datasetRid: cfg.datasetRid,
-              porteur, branche: cfg.branche || cfg.branchName || "master",
-              limite, format: cfg.format || "CSV", chemin: cfg.chemin, pointeur: cfg.pointeur })
-          : c.kind === "kobo"
-          ? await lireKobo({ baseUrl: c.base_url, uid: cfg.uid, porteur,
-              chemin: cfg.chemin || CHEMIN_DONNEES_KOBO_DEFAUT, pointeur: cfg.pointeur, limite })
-          : await lireJsonHttp({ baseUrl: c.base_url, chemin: cfg.chemin, porteur,
-              pointeur: cfg.pointeur, limite });
-        lignes = (lu.rows || []).slice(0, limite);
+        /* La cause nommée part avec le message (voir repondreErreurSource) :
+           l'écran distingue « corrigez le justificatif » de « demandez des
+           droits à la source », ce qu'un texte unique ne permettait pas. */
+        const lu = await lireEchantillonDistant(c, limite);
+        lignes = lu.lignes;
         provenance = `lecture distante (${c.kind}, ${lu.format})`;
-      }catch(e){
-        if(e.code === "SOURCE_URL" || e.code === "SOURCE_CONFIG" || e.code === "SOURCE_AUTH"
-           || e.code === "SOURCE_NOT_FOUND")
-          /* La cause nommée part avec le message : l'écran peut ainsi distinguer
-             « corrigez le justificatif » de « demandez des droits à la source »,
-             ce qu'un texte unique ne permettait pas. */
-          return res.status(422).json({ error: e.message, cause: e.causeAuth || null });
-        if(e.code === "SOURCE_NETWORK" || e.code === "SOURCE_HTTP"){
-          log.warn("lecture de source en échec", { connecteur: c.id, kind: c.kind, code: e.code });
-          return res.status(502).json({ error:
-            "la source n'a pas répondu correctement : vérifiez l'adresse, le jeton et la connectivité." });
-        }
-        return next(e);
-      }
+      }catch(e){ return repondreErreurSource(res, e, next, c); }
     } else {
       return res.status(422).json({ error:
         `aucun échantillon fourni. Une source de type « ${c.kind} » n'est pas lue par le serveur : `
@@ -554,6 +567,40 @@ r.post("/connectors/:id/apercu", requireCap("admin"), async (req, res, next) => 
     manquants,
     ok: manquants.length === 0,
     lignes: resultat,
+  });
+});
+
+/* ── Variables de la source ───────────────────────────────────────────
+   « Config facile : à l'enregistrement, tester la connexion et, si elle passe,
+   peupler automatiquement la table de correspondance. » C'est le maillon qui
+   manquait entre l'épreuve et les suggestions : lire un petit échantillon et en
+   rendre les COLONNES, pour proposer les correspondances SANS que l'utilisateur
+   ait à coller un échantillon ni joindre un XLSForm.
+
+   Elle ne rend que des noms de colonnes et quelques lignes d'exemple — la même
+   donnée que l'aperçu, et réservée à l'administration pour la même raison :
+   elle déchiffre le jeton et déclenche un appel sortant au nom du bureau. */
+r.post("/connectors/:id/variables", requireCap("admin"), async (req, res, next) => {
+  const c = charger(req, res); if(!c) return;
+  if(!NATURES_LUES.has(c.kind)) return res.status(422).json({ error:
+    `une source de type « ${c.kind} » n'est pas lue par le serveur : joignez le XLSForm `
+    + "ou collez un échantillon pour découvrir ses variables." });
+  const limite = z.coerce.number().int().min(1).max(50).catch(10).parse(req.body?.limite);
+  let lignes, format;
+  try{ ({ lignes, format } = await lireEchantillonDistant(c, limite)); }
+  catch(e){ return repondreErreurSource(res, e, next, c); }
+
+  /* Les colonnes, dans l'ordre de première apparition : une ligne peut en
+     omettre une (valeur absente), l'union sur tout l'échantillon les retrouve. */
+  const cles = [];
+  const vus = new Set();
+  for(const l of lignes) for(const k of Object.keys(l || {}))
+    if(!vus.has(k)){ vus.add(k); cles.push(k); }
+
+  res.json({
+    variables: cles.map(name => ({ name, type: "", label: "" })),
+    lignes, lignesLues: lignes.length,
+    provenance: `lecture distante (${c.kind}, ${format})`,
   });
 });
 

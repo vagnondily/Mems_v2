@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api.js";
 import { useGeoCascade, resetGeoCache } from "../lib/geo.js";
-import { Activity, ArrowRightLeft, Building2, CalendarRange, Check, ClipboardList, Copy, Download, FileText, KeyRound, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
+import { Activity, ArrowRightLeft, Building2, CalendarRange, Check, ChevronDown, ChevronUp, ClipboardList, Copy, Download, FileText, HelpCircle, KeyRound, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
 import { Area, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, motifLisible, n, pct, r2, r5, siteRequirement, siteScore, uid, visiteOdk } from "../lib/calc.js";
@@ -185,35 +185,48 @@ function SetGuided({ db, setSub }){
     </div>);
 }
 
-/* ══════════════════ Rail maître-détail réutilisable ══════════════════
-   Le même rail à gauche que la navigation des Paramètres, mais AU SEIN d'un
-   écran : les sujets d'un écran (les sections de Général, les niveaux
-   d'indicateurs, les calculs) se choisissent à gauche, se configurent à
-   droite. « Regroupé à gauche comme des sous-menus, à droite les
-   informations à configurer. » Une seule implémentation pour ne pas
-   réinventer trois fois la même liste. */
+/* ══════════════════ Sous-navigation d'écran, EN HAUT ══════════════════
+   Le rail des CATÉGORIES (Configuration, Référentiels…) reste seul à gauche.
+   La sous-navigation propre à un écran — les sections de Général, les niveaux
+   d'indicateurs, les calculs — n'est PLUS une seconde colonne (« trois écrans,
+   c'est trop ») : elle passe en une barre horizontale EN HAUT, et la
+   configuration vient juste en dessous, à bords égaux. Une seule
+   implémentation, réutilisée par les trois écrans. */
+/* Aide repliable : « enlève les commentaires inutiles ou cache-les en
+   hide/show ». Les longues notes explicatives ne s'imposent plus à l'écran ;
+   elles se dévoilent d'un clic pour qui les veut, et se replient sinon. */
+function Aide({ children, titre = "À quoi sert cet écran ?", ouvert = false }){
+  const [open,setOpen] = useState(ouvert);
+  return (
+    <div className="mb-1">
+      <button onClick={()=>setOpen(o=>!o)}
+        className="inline-flex items-center gap-1.5 f11 font-semibold text-slate-500 hover:text-slate-800">
+        <HelpCircle size={13}/> {titre} {open ? <ChevronUp size={12}/> : <ChevronDown size={12}/>}
+      </button>
+      {open && <div className="mt-2"><Note>{children}</Note></div>}
+    </div>);
+}
+
 function SideRail({ groups, active, onPick, right }){
   return (
-    <div className="grid gap-4 items-start" style={{ gridTemplateColumns:"240px minmax(0,1fr)" }}>
-      <nav className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-auto sticky"
-        style={{ top:"0.75rem", maxHeight:"calc(100vh - 120px)" }}>
-        <div className="py-1.5">
-          {groups.map((g,gi) => (
-            <div key={g.label || gi} className="mb-0.5">
-              {g.label && <div className="px-4 pt-3 pb-1 f10 font-bold uppercase tracking-wider text-slate-400">{g.label}</div>}
-              {g.items.map(it => (
-                <button key={it.value} onClick={()=>onPick(it.value)}
-                  className={clsx("w-full text-left px-4 py-2 f125 border-l-2 transition-colors flex items-center gap-2",
-                    active===it.value
-                      ? "bg-sky-50 bd-brand c-bd font-semibold"
-                      : "border-l-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-900")}>
-                  <span className="truncate flex-1">{it.label}</span>
-                  {it.count != null && <span className={clsx("f10 tabular-nums shrink-0",
-                    active===it.value ? "c-bd" : "text-slate-400")}>{it.count}</span>}
-                </button>))}
-            </div>))}
-        </div>
-      </nav>
+    <div className="space-y-4">
+      <div className="bg-white border border-slate-200 rounded-2xl shadow-sm px-3 py-2.5
+                      flex items-center gap-x-5 gap-y-2 flex-wrap">
+        {groups.map((g,gi) => (
+          <div key={g.label || gi} className="flex items-center gap-2 flex-wrap">
+            {g.label && <span className="f10 font-bold uppercase tracking-wider text-slate-400 shrink-0">{g.label}</span>}
+            {g.items.map(it => (
+              <button key={it.value} onClick={()=>onPick(it.value)}
+                className={clsx("px-3 py-1.5 rounded-full f125 font-semibold transition-colors flex items-center gap-1.5",
+                  active===it.value
+                    ? "bg-brand text-white shadow-sm"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200")}>
+                <span>{it.label}</span>
+                {it.count != null && <span className={clsx("f10 tabular-nums px-1.5 rounded-full",
+                  active===it.value ? "bg-white/25" : "bg-white text-slate-500")}>{it.count}</span>}
+              </button>))}
+          </div>))}
+      </div>
       <div className="min-w-0 space-y-4">{right}</div>
     </div>);
 }
@@ -286,10 +299,10 @@ function SetGeneral({ db, set }){
   return (
     <SideRail groups={groups} active={sec} onPick={setSec}
       right={<>
-        <Note>Les listes — partenaires, modalités, sous-types de point d'intérêt, activity tags,
+        <Aide>Les listes — partenaires, modalités, sous-types de point d'intérêt, activity tags,
           catégories… — se configurent désormais dans <b>Référentiels → Listes paramétrables</b> et
           l'onglet <b>Activités</b> : une liste, un seul endroit. Général ne garde que ce qui lui est
-          propre — l'identité de l'instance et le barème de priorité.</Note>
+          propre — l'identité de l'instance et le barème de priorité.</Aide>
         {sec==="identity" && identity}
         {sec==="scoring" && scoring}
       </>} />
@@ -1700,9 +1713,24 @@ function SetContoursNiveaux({ db, notify, can, onCommitted, inline }){
           </div>
         </div>)}
 
+      {bilan?.niveau && !bilan.erreur && (
+        <div className="mt-3">
+          <Note tone={bilan.écrites ? (bilan.rejetes ? "warn" : "ok") : "err"}>{bilan.message}</Note>
+          {!!bilan.rejets?.length && (
+            <TableWrap max="mh200">
+              <thead><tr><Th>Unité</Th><Th>Motif du rejet</Th></tr></thead>
+              <tbody>{bilan.rejets.map((r,i)=>(
+                <tr key={i}><Td className="f115">{r.pcode || "—"}</Td>
+                  <Td className="text-slate-600 f11" style={{whiteSpace:"normal"}}>{r.message}</Td></tr>))}</tbody>
+            </TableWrap>)}
+        </div>)}
+
       {bilan?.derivation && (
         <div className="mt-3">
-          <Note tone={bilan.derivation.total ? "ok" : "warn"}>{bilan.derivation.message}</Note>
+          {/* Après un dépôt, ce tableau est le DÉTAIL de la dérivation automatique
+              annoncée dans la note ci-dessus ; après un clic « Dériver », il en
+              est le seul compte-rendu. Même structure dans les deux cas. */}
+          {!bilan.niveau && <Note tone={bilan.derivation.total ? "ok" : "warn"}>{bilan.derivation.message}</Note>}
           <TableWrap max="mh240">
             <thead><tr><Th>Niveau</Th><Th>Dérivé de</Th><Th num>Unités</Th><Th num>Contours</Th>
               <Th>Remarque</Th></tr></thead>
@@ -1720,18 +1748,6 @@ function SetContoursNiveaux({ db, notify, can, onCommitted, inline }){
                     : e.ecrites ? "frontières intérieures dissoutes" : "")}</Td>
               </tr>))}</tbody>
           </TableWrap>
-        </div>)}
-
-      {bilan && !bilan.erreur && !bilan.derivation && (
-        <div className="mt-3">
-          <Note tone={bilan.écrites ? (bilan.rejetes ? "warn" : "ok") : "err"}>{bilan.message}</Note>
-          {!!bilan.rejets?.length && (
-            <TableWrap max="mh200">
-              <thead><tr><Th>Unité</Th><Th>Motif du rejet</Th></tr></thead>
-              <tbody>{bilan.rejets.map((r,i)=>(
-                <tr key={i}><Td className="f115">{r.pcode || "—"}</Td>
-                  <Td className="text-slate-600 f11" style={{whiteSpace:"normal"}}>{r.message}</Td></tr>))}</tbody>
-            </TableWrap>)}
         </div>)}
       {bilan?.erreur && <Note tone="err">{bilan.erreur}</Note>}
     </Wrap>
@@ -2072,6 +2088,7 @@ function SetIndicators({ db, set, notify, can }){
      recherche restent au-dessus du tableau, à droite. */
   const [active,setActive] = useState("crf:outcome");
   const [cat,setCat] = useState("");
+  const [act,setAct] = useState("");
   const [q,setQ]     = useState("");
   const [page,setPage] = useState(1);
   const nature = active === "xls" ? "xlsform" : "crf";
@@ -2088,9 +2105,12 @@ function SetIndicators({ db, set, notify, can }){
   ];
   const listeNature = db.indicators.filter(ind => kindOf(ind) === nature && (!crf || ind.level === niv));
   const categories = [...new Set(listeNature.map(i => i.category).filter(Boolean))].sort();
+  const tagsPresents = [...new Set(listeNature.flatMap(i => i.activityTags || []))].sort();
   const liste = listeNature.filter(i =>
     (!cat || i.category === cat)
-    && (!q.trim() || `${i.id} ${i.name} ${i.category || ""}`.toLowerCase().includes(q.trim().toLowerCase())));
+    && (!act || (i.activityTags || []).includes(act))
+    && (!q.trim() || `${i.id} ${i.name} ${i.category || ""} ${(i.activityTags||[]).join(" ")} ${i.targets||""}`
+         .toLowerCase().includes(q.trim().toLowerCase())));
   const pages = Math.max(1, Math.ceil(liste.length / IND_PAGE));
   const pageSure = Math.min(page, pages);
   const visibles = liste.slice((pageSure-1)*IND_PAGE, pageSure*IND_PAGE);
@@ -2120,15 +2140,16 @@ function SetIndicators({ db, set, notify, can }){
     rd.readAsText(file,"utf-8"); };
 
   return (
-    <SideRail groups={groups} active={active} onPick={v=>{ setActive(v); setCat(""); setPage(1); }}
+    <SideRail groups={groups} active={active} onPick={v=>{ setActive(v); setCat(""); setAct(""); setPage(1); }}
       right={<>
-        <Note>{crf
-          ? <>Le <b>CRF</b> est le cadre de résultats. Choisissez le niveau à gauche
-            (<b>{activeLabel.toLowerCase()}</b> ici), puis affinez par catégorie thématique ou
-            recherche. Il alimente le plan de collecte et Programme → Résultats.</>
+        <Aide>{crf
+          ? <>Le <b>CRF</b> est le cadre de résultats. Choisissez le niveau en haut, puis affinez par
+            catégorie thématique ou recherche. Chaque indicateur montre <b>à quelles activités</b> il
+            s'applique et <b>quelles cibles</b> il vise. Il alimente le plan de collecte et
+            Programme → Résultats.</>
           : <>Les indicateurs de <b>processus</b> issus des <b>XLSForms</b> suivent l'exécution d'une
             activité. Ils sont stockés comme référentiel et alimentent le tableau de bord de suivi.</>}
-          {" "}La liste s'exporte en CSV et se réimporte pour une mise à jour groupée.</Note>
+          {" "}La liste s'exporte en CSV et se réimporte pour une mise à jour groupée.</Aide>
         <Card flush title={crf ? `CRF · ${activeLabel}` : "Indicateurs de processus (XLSForm)"}
           subtitle={`${fmt(liste.length)} indicateur${liste.length>1?"s":""}`
             + (liste.length !== listeNature.length ? ` sur ${fmt(listeNature.length)}` : "")}
@@ -2143,13 +2164,17 @@ function SetIndicators({ db, set, notify, can }){
             {crf && !!categories.length && <Select value={cat} onChange={e=>{ setCat(e.target.value); setPage(1); }}
               empty={`Toutes les catégories (${categories.length})`} options={categories}
               className="mi-py1 mi-xs mi-wauto" />}
+            {crf && !!tagsPresents.length && <Select value={act} onChange={e=>{ setAct(e.target.value); setPage(1); }}
+              empty={`Toutes les activités (${tagsPresents.length})`}
+              options={tagsPresents.map(t=>[t, `${t} — ${activiteLabel(t)}`])}
+              className="mi-py1 mi-xs mi-wauto" />}
             <div className="relative">
               <Search size={13} className="absolute left-2 top-2 text-slate-400" />
               <Input value={q} onChange={e=>{ setQ(e.target.value); setPage(1); }}
                 placeholder="Code, intitulé ou catégorie" className="mi-py1 mi-xs pl-7" style={{width:240}} />
             </div>
-            {(cat || q) && <Btn size="sm" kind="ghost"
-              onClick={()=>{ setCat(""); setQ(""); setPage(1); }}>Effacer les filtres</Btn>}
+            {(cat || act || q) && <Btn size="sm" kind="ghost"
+              onClick={()=>{ setCat(""); setAct(""); setQ(""); setPage(1); }}>Effacer les filtres</Btn>}
           </div>
           {!liste.length
             ? <Empty title={listeNature.length ? "Aucun indicateur ne correspond" : "Aucun indicateur à ce niveau"}
@@ -2158,21 +2183,35 @@ function SetIndicators({ db, set, notify, can }){
                   : crf ? "Ajoutez-en un, ou chargez la masterlist réelle (npm run seed:reel)."
                         : "Ajoutez-en un rattaché à une activité, ou importez-le."} />
             : <><TableWrap>
-            <thead><tr><Th>Code</Th><Th>Intitulé</Th>{crf ? <Th>Catégorie</Th> : <Th>Activité</Th>}
-              {crf && <Th>Panier</Th>}<Th>Unité</Th><Th num>Cible</Th>
-              <Th>Sens</Th><Th>Méthode</Th><Th>Fréquence</Th>{crf && <Th num>Valeurs</Th>}<Th /></tr></thead>
+            {/* Le tableau ne PLANIFIE pas : il LISTE, et rend lisible la
+                pertinence. Pour un indicateur du CRF, ce qui compte n'est pas
+                tant l'unité ou le sens (dans la fiche) que : à QUELLES ACTIVITÉS
+                il s'applique, et pour QUELLES CIBLES. Ce sont les deux colonnes
+                mises en avant ; le reste vit dans la fiche. */}
+            <thead><tr><Th>Code</Th><Th>Intitulé</Th>
+              {crf ? <><Th>Activités concernées</Th><Th>Cibles / groupes</Th><Th>Catégorie</Th></>
+                   : <><Th>Activité</Th><Th>Unité</Th><Th>Fréquence</Th></>}<Th /></tr></thead>
             <tbody>{visibles.map(ind=>(
-              <tr key={ind.id} className="hover:bg-sky-50">
+              <tr key={ind.id} className="hover:bg-sky-50 align-top">
                 <Td><Badge tone="b">{ind.id}</Badge></Td>
-                <Td className="mw420 truncate font-medium text-slate-800" title={ind.name}>{ind.name}</Td>
-                {crf
-                  ? <Td className="text-slate-600 mw240 truncate" title={ind.category}>{ind.category || "—"}</Td>
-                  : <Td className="text-slate-600">{ind.activity ? <span title={activiteLabel(ind.activity)}>{ind.activity}</span> : "—"}</Td>}
-                {crf && <Td className="text-slate-600">{ind.basket}</Td>}
-                <Td>{ind.unit}</Td><Td num>{ind.target}</Td>
-                <Td><Badge tone="n">{ind.dir==="up"?"↑ maximiser":"↓ minimiser"}</Badge></Td>
-                <Td className="text-slate-600">{ind.method}</Td><Td>{ind.freq}</Td>
-                {crf && <Td num className="text-slate-500">{db.outcomes.filter(o=>o.indicator===ind.id).length}</Td>}
+                <Td className="mw420 font-medium text-slate-800" style={{whiteSpace:"normal"}} title={ind.name}>{ind.name}</Td>
+                {crf ? <>
+                  <Td style={{whiteSpace:"normal",maxWidth:280}}>
+                    {(ind.activityTags||[]).length
+                      ? <div className="flex flex-wrap gap-1">
+                          {ind.activityTags.slice(0,8).map(t=>(
+                            <span key={t} title={activiteLabel(t)}
+                              className="px-1.5 py-0.5 rounded bg-sky-50 text-sky-800 border border-sky-200 f10 font-semibold">{t}</span>))}
+                          {ind.activityTags.length>8 && <span className="f10 text-slate-400">+{ind.activityTags.length-8}</span>}
+                        </div>
+                      : <span className="text-slate-400 f11">toutes / non précisé</span>}
+                  </Td>
+                  <Td className="text-slate-600 f11" style={{whiteSpace:"normal",maxWidth:200}}>{ind.targets || "—"}</Td>
+                  <Td className="text-slate-600 mw240 truncate" title={ind.category}>{ind.category || "—"}</Td>
+                </> : <>
+                  <Td className="text-slate-600">{ind.activity ? <span title={activiteLabel(ind.activity)}>{ind.activity}</span> : "—"}</Td>
+                  <Td>{ind.unit}</Td><Td>{ind.freq}</Td>
+                </>}
                 <Td className="text-right">
                   {can("edit") && <button onClick={()=>setEdit(ind)} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
                   {can("del") && <button onClick={()=>set(d=>{ d.indicators=d.indicators.filter(x=>x.id!==ind.id); return d; })}
@@ -2324,49 +2363,254 @@ function SetCalc({ db, set, notify, can }){
   );
 }
 
+/* ══════════════════ Catalogue de rations + denrées (chantier R) ══════════════════
+
+   « Une ration, une ligne » : l'onglet n'est plus une matrice activité × denrée
+   mais un CATALOGUE de conventions. Chaque ligne porte un libellé (« GD standard »,
+   « Stunting FEFA 2023 »…), UNE denrée, un grammage par personne et par jour, une
+   activité par défaut facultative, une note. Une convention composée (riz + huile +
+   légumineuses) est plusieurs lignes de même libellé.
+
+   Et « combiner la config des rations et la création de denrée » : les denrées se
+   gèrent DANS le même écran (panneau du haut), et le sélecteur de denrée d'une ligne
+   de ration offre « + créer une denrée » sans quitter la page. Les denrées vivent
+   dans la liste typée `denrees` (routes/listes.js), servie ici par l'API — le
+   catalogue, lui, est une collection synchronisée comme les autres. */
 function SetRations({ db, set, notify, can }){
-  const [actType,setActType] = useState(PDD_ACTS[0][0]);
-  const table = db.settings.rationTable || {};
-  const row = table[actType] || {};
-  const u = (commodity, v) => set(d => {
-    d.settings.rationTable = d.settings.rationTable || {};
-    d.settings.rationTable[actType] = { ...(d.settings.rationTable[actType]||{}), [commodity]: v };
-    return d; });
-  const clearAct = () => { set(d => { d.settings.rationTable = d.settings.rationTable || {};
-    d.settings.rationTable[actType] = {}; return d; }); notify("Rations réinitialisées pour cette activité","ok"); };
-  const configured = PDD_COMMODITIES.filter(c => n(row[c])>0);
-  const sample = 1000, days = 15;
+  const [edit,setEdit]       = useState(null);   /* ligne de catalogue en édition */
+  const [denrees,setDenrees] = useState(null);   /* liste typée « denree », lue par l'API */
+  const [jours,setJours]     = useState(30);
+  const [effectif,setEff]    = useState(1000);
+  const [menage,setMenage]   = useState(1);       /* diviseur ménage : ÷5 en GFD, 1 sinon */
+  const cat = db.rationCatalog || [];
+  const activites = (db.activities || []).filter(a=>a.active);
+  const actLabel = (tag) => activites.find(a=>a.tag===tag)?.name || "";
+
+  /* Les denrées, chargées à l'ouverture puis après chaque création/renommage :
+     le sélecteur de denrée et la liste du haut partagent la même source. */
+  const chargerDenrees = () => api.liste("denrees")
+    .then(r => setDenrees((r.items||[]).map(x=>({ id:x.id, code:x.code, label:x.label,
+      active:x.active!==false, rev:x.rev, usage:x.usageTotal||0 })))).catch(e=>{ notify(e.message,"err"); setDenrees([]); });
+  useEffect(()=>{ chargerDenrees(); },[]);
+  const denreesActives = (denrees||[]).filter(d=>d.active);
+
+  /* Le catalogue est une collection synchronisée : on l'édite par `set`, comme
+     les indicateurs. Un identifiant client, une révision à 1, le serveur tranche. */
+  const saveLigne = (ligne) => {
+    set(d => { const i = d.rationCatalog.findIndex(x=>x.id===ligne.id);
+      if(i>=0) d.rationCatalog[i] = ligne;
+      else d.rationCatalog.push({ ...ligne, id: ligne.id || uid("rc"), rev:1 });
+      return d; });
+    setEdit(null); notify("Ligne de ration enregistrée","ok");
+  };
+  const delLigne = (id) => set(d => { d.rationCatalog = d.rationCatalog.filter(x=>x.id!==id); return d; });
+
+  /* Création d'une denrée sans quitter l'écran : la liste typée l'accueille, et
+     on recharge pour que le sélecteur la propose aussitôt. Le code EST la valeur
+     que portera `pdd.commodity` et `ration_catalog.commodity` — d'où sa présence. */
+  const creerDenree = async (label) => {
+    const nom = (label||"").trim(); if(!nom) return null;
+    try{
+      const r = await api.createItem("denrees", { code:nom, label:nom });
+      await chargerDenrees();
+      notify(`Denrée « ${nom} » créée`,"ok");
+      return r.item?.code || nom;
+    }catch(e){ notify(e.message,"err"); return null; }
+  };
+
+  /* Les conventions, regroupées par libellé pour l'affichage : une ration composée
+     se lit d'un bloc. Trié par `sort` puis libellé, comme le sert le serveur. */
+  const parConvention = useMemo(()=>{
+    const m = new Map();
+    for(const l of [...cat].sort((a,b)=>(a.sort??0)-(b.sort??0) || (a.label||"").localeCompare(b.label||""))){
+      if(!m.has(l.label)) m.set(l.label, []);
+      m.get(l.label).push(l);
+    }
+    return [...m.entries()];
+  },[cat]);
+
+  const eff = Math.max(0, menage>1 ? effectif/menage : effectif);
+  const tonnage = (g) => g*jours*eff/1e6;         /* tonnes */
+
   return (
     <>
-      <Note>Ration journalière par bénéficiaire (grammes/personne/jour), par denrée et par type d'activité —
-        une donnée de programme propre à chaque opération, à saisir ici plutôt qu'à deviner. Elle alimente le
-        bouton « Générer par commune » du plan de distribution (PDD) : une ligne y est créée automatiquement
-        pour chaque denrée dont la ration est renseignée, avec un tonnage calculé (bénéficiaires × jours de
-        ration × ration ÷ 1 000 000).</Note>
-      <div className="flex items-center gap-2 mb-4">
-        <Select value={actType} onChange={e=>setActType(e.target.value)} options={PDD_ACTS} className="mi-wauto" />
-        {can("edit") && <Btn kind="ghost" size="sm" icon={Trash2} onClick={clearAct}>Réinitialiser cette activité</Btn>}
-      </div>
-      <Card flush title={`Rations — ${(PDD_ACTS.find(a=>a[0]===actType)||[])[1]}`}
-        subtitle={`Aperçu sur ${fmt(sample)} bénéficiaires, ${days} jours de ration`}>
-        <TableWrap>
-          <thead><tr><Th>Denrée</Th><Th num>Ration (g/personne/jour)</Th><Th num>Tonnage d'essai (t)</Th></tr></thead>
-          <tbody>{PDD_COMMODITIES.map(c=>{
-            const g = n(row[c]);
-            const t = r2(sample*days*g/1e6);
-            return (
-              <tr key={c} className="hover:bg-sky-50">
-                <Td className="font-medium">{c}</Td>
-                <Td num><Input type="number" min="0" step="1" disabled={!can("edit")} value={row[c] ?? ""}
-                  onChange={e=>u(c, e.target.value===""?"":Math.max(0,n(e.target.value)))}
-                  className="mi-py1 w-24 text-right ml-auto" /></Td>
-                <Td num className="tabular-nums text-slate-500">{g>0?t:"—"}</Td>
-              </tr>); })}</tbody>
-        </TableWrap>
+      <Aide>Le catalogue applique la règle <b>« une ration, une ligne »</b> : chaque ligne est une
+        convention (un libellé), <b>une denrée</b> et son <b>grammage par personne et par jour</b>. Une
+        ration composée (riz + huile + légumineuses) est <b>plusieurs lignes de même libellé</b>. Les denrées
+        se créent et se gèrent ici même, dans le panneau ci-dessous. Le tonnage n'est pas stocké : il se
+        calcule à l'usage — <b>ration × jours × effectif ÷ 1 000 000</b> — les jours étant saisis au plan de
+        distribution parce qu'ils changent à chaque livraison.</Aide>
+
+      {/* ── Denrées : la création combinée à la config des rations ── */}
+      <DenreesPanel denrees={denrees} can={can} notify={notify}
+        onCreate={creerDenree} onReload={chargerDenrees} />
+
+      {/* ── Le catalogue proprement dit ── */}
+      <Card flush title="Catalogue de rations" subtitle={`${cat.length} ligne(s) · ${parConvention.length} convention(s)`}
+        right={can("edit") && <Btn size="sm" icon={Plus}
+          onClick={()=>setEdit({ id:"", label:"", commodity:denreesActives[0]?.code||"", grams:0,
+            activityTag:"", note:"", sort:(cat.reduce((m,l)=>Math.max(m,l.sort||0),0))+10 })}>
+          Ajouter une ligne</Btn>}>
+        {!cat.length
+          ? <Empty icon={ClipboardList} title="Catalogue vide"
+              text="Ajoutez une convention, ou chargez la première charge officielle (npm run seed:reel / migration 031)." />
+          : <TableWrap max="mh480">
+            <thead><tr><Th>Convention</Th><Th>Denrée</Th><Th num>g/pers/jour</Th>
+              <Th>Activité par défaut</Th><Th>Note</Th><Th /></tr></thead>
+            <tbody>{parConvention.map(([label,lignes])=>lignes.map((l,i)=>(
+              <tr key={l.id} className="hover:bg-sky-50 align-top">
+                <Td className={clsx("font-medium text-slate-800", i>0 && "text-transparent")}
+                  style={{whiteSpace:"normal",maxWidth:220}}>{i===0 ? label : label}</Td>
+                <Td><span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 f11 font-semibold">{l.commodity}</span></Td>
+                <Td num className="tabular-nums font-semibold">{fmt(l.grams)}</Td>
+                <Td>{l.activityTag
+                  ? <span title={actLabel(l.activityTag)} className="f11 text-slate-700">{l.activityTag}</span>
+                  : <span className="f11 text-slate-400">toutes</span>}</Td>
+                <Td className="f105 text-slate-500" style={{whiteSpace:"normal",maxWidth:280}}>{l.note||"—"}</Td>
+                <Td className="text-right whitespace-nowrap">
+                  {can("edit") && <button onClick={()=>setEdit(l)} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
+                  {can("del") && <button onClick={()=>delLigne(l.id)} className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}
+                </Td>
+              </tr>)))}</tbody>
+          </TableWrap>}
       </Card>
-      {!configured.length && <Note tone="warn">Aucune ration n'est encore paramétrée pour cette activité — le
-        bouton « Générer par commune » du PDD n'y proposera aucune denrée tant que ceci n'est pas rempli.</Note>}
+
+      {/* ── Jeu d'essai : jours + effectif → tonnage, par convention ── */}
+      {!!cat.length && (
+        <Card title="Jeu d'essai — tonnage par convention"
+          subtitle="Le tonnage se calcule, il ne se stocke pas : ration × jours × effectif ÷ 1 000 000">
+          <div className="flex items-end gap-3 flex-wrap mb-3">
+            <Field label="Jours de ration" className="mb-0"><Input type="number" min="0" step="1" value={jours}
+              onChange={e=>setJours(Math.max(0,n(e.target.value)))} className="w-28" /></Field>
+            <Field label="Effectif (bénéficiaires)" className="mb-0"><Input type="number" min="0" step="1" value={effectif}
+              onChange={e=>setEff(Math.max(0,n(e.target.value)))} className="w-36" /></Field>
+            <Field label="Diviseur ménage" className="mb-0"
+              hint="÷5 pour une ration par ménage (GFD/FFA) ; 1 en nutrition/école"><Input type="number" min="1" step="1" value={menage}
+              onChange={e=>setMenage(Math.max(1,n(e.target.value)||1))} className="w-24" /></Field>
+            <div className="f11 text-slate-500 pb-1.5">Effectif retenu : <b>{fmt(Math.round(eff))}</b></div>
+          </div>
+          <TableWrap max="mh320">
+            <thead><tr><Th>Convention</Th><Th>Denrées</Th><Th num>Ration totale (g/pers/j)</Th>
+              <Th num>Tonnage (kg)</Th><Th num>Tonnage (t)</Th></tr></thead>
+            <tbody>{parConvention.map(([label,lignes])=>{
+              const gTot = lignes.reduce((s,l)=>s+n(l.grams),0);
+              const t = tonnage(gTot);
+              return (
+                <tr key={label} className="hover:bg-sky-50">
+                  <Td className="font-medium text-slate-800" style={{whiteSpace:"normal",maxWidth:220}}>{label}</Td>
+                  <Td className="f11 text-slate-500">{lignes.map(l=>`${l.commodity} ${fmt(l.grams)}`).join(" + ")}</Td>
+                  <Td num className="tabular-nums font-semibold">{fmt(gTot)}</Td>
+                  <Td num className="tabular-nums text-slate-700">{fmt(r2(t*1000))}</Td>
+                  <Td num className="tabular-nums text-slate-500">{r2(t)}</Td>
+                </tr>); })}</tbody>
+          </TableWrap>
+        </Card>)}
+
+      <RationModal open={!!edit} ligne={edit} denrees={denreesActives} activites={activites}
+        labels={[...new Set(cat.map(l=>l.label))]} onCreateDenree={creerDenree}
+        onClose={()=>setEdit(null)} onSave={saveLigne} />
     </>);
+}
+
+/* Le panneau de denrées, dans l'écran des rations : créer, renommer, retirer une
+   denrée sans quitter la config des rations. Les denrées sont une liste typée
+   (routes/listes.js) — édition réservée à l'administration comme toute liste. */
+function DenreesPanel({ denrees, can, notify, onCreate, onReload }){
+  const [ajout,setAjout] = useState("");
+  const [busy,setBusy]   = useState(false);
+  if(denrees === null) return <Card title="Denrées & commodités"><Empty icon={ClipboardList} title="Chargement des denrées…" /></Card>;
+  const ajouter = async () => { if(!ajout.trim()) return; setBusy(true);
+    const code = await onCreate(ajout.trim()); if(code) setAjout(""); setBusy(false); };
+  const basculer = async (d) => { setBusy(true);
+    try{ await api.activerItem("denrees", d.id, !d.active, d.rev); await onReload(); }
+    catch(e){ notify(e.message,"err"); } setBusy(false); };
+  const retirer = async (d) => {
+    if(d.usage>0){ notify(`« ${d.label} » est utilisée ${d.usage} fois (PDD/catalogue) — désactivez-la plutôt`,"warn"); return; }
+    if(!confirm(`Supprimer la denrée « ${d.label} » ?`)) return; setBusy(true);
+    try{ await api.deleteItem("denrees", d.id); await onReload(); notify("Denrée supprimée","ok"); }
+    catch(e){ notify(e.message,"err"); } setBusy(false);
+  };
+  return (
+    <Card flush title="Denrées & commodités"
+      subtitle="Créées et gérées ici même — le code est la valeur portée par le plan de distribution et le catalogue"
+      right={can("admin") && <div className="flex items-center gap-2">
+        <Input value={ajout} onChange={e=>setAjout(e.target.value)} placeholder="Nouvelle denrée (ex. Farine)"
+          onKeyDown={e=>e.key==="Enter"&&ajouter()} className="mi-py1 mi-xs" style={{width:200}} />
+        <Btn size="sm" icon={Plus} disabled={busy||!ajout.trim()} onClick={ajouter}>Créer</Btn>
+      </div>}>
+      <div className="p-3 flex flex-wrap gap-2">
+        {denrees.length ? denrees.map(d=>(
+          <div key={d.id} className={clsx("inline-flex items-center gap-1.5 rounded-full border pl-3 pr-1.5 py-1 f11",
+            d.active ? "bg-white border-slate-200 text-slate-700" : "bg-slate-50 border-slate-200 text-slate-400")}>
+            <span className="font-semibold">{d.label}</span>
+            {d.usage>0 && <span className="f10 text-slate-400" title="Utilisée dans le PDD ou le catalogue">·{d.usage}</span>}
+            {!d.active && <span className="f10 uppercase tracking-wide">inactif</span>}
+            {can("admin") && <>
+              <button onClick={()=>basculer(d)} disabled={busy} title={d.active?"Désactiver":"Réactiver"}
+                className="text-slate-300 hover:text-slate-600 px-1">{d.active?"⦸":"↺"}</button>
+              {!d.usage && <button onClick={()=>retirer(d)} disabled={busy} title="Supprimer"
+                className="text-slate-300 hover:text-rose-600"><Trash2 size={12}/></button>}
+            </>}
+          </div>)) : <span className="f11 text-slate-400">Aucune denrée — créez-en une ci-dessus.</span>}
+      </div>
+    </Card>);
+}
+
+/* La fiche d'une ligne de ration. Le sélecteur de denrée porte « + créer une
+   denrée » : la création se fait sans quitter la fiche, et la nouvelle denrée est
+   aussitôt choisie. Le libellé propose les conventions existantes (datalist) pour
+   qu'une ration composée reçoive le MÊME libellé sur chacune de ses lignes. */
+function RationModal({ open, ligne, denrees, activites, labels, onCreateDenree, onClose, onSave }){
+  const [f,setF] = useState({});
+  const [creation,setCreation] = useState("");
+  useEffect(()=>{ setF(ligne||{}); setCreation(""); },[ligne]);
+  if(!open) return null;
+  const u = (k,v)=>setF(p=>({...p,[k]:v}));
+  const choisirDenree = async (v) => {
+    if(v==="__new__"){ setCreation(" "); return; }
+    u("commodity", v);
+  };
+  const validerCreation = async () => {
+    const code = await onCreateDenree(creation.trim());
+    if(code){ u("commodity", code); setCreation(""); }
+  };
+  return (
+    <Modal open onClose={onClose} title={ligne?.id ? "Modifier la ligne de ration" : "Nouvelle ligne de ration"}
+      subtitle="Une convention, une denrée, un grammage par personne et par jour"
+      footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
+        <Btn icon={Save} disabled={!(f.label||"").trim() || !(f.commodity||"").trim()}
+          onClick={()=>onSave({ ...f, grams:Math.max(0,n(f.grams)), sort:f.sort??0 })}>Enregistrer</Btn></>}>
+      <Field label="Convention (libellé)" hint="Réutilisez le même libellé pour toutes les denrées d'une ration composée">
+        <Input list="mems-ration-labels" value={f.label||""} onChange={e=>u("label",e.target.value)}
+          placeholder="GD standard, Stunting FEFA 2023…" />
+        <datalist id="mems-ration-labels">{(labels||[]).map(l=><option key={l} value={l} />)}</datalist>
+      </Field>
+      <div className="grid grid-cols-2 gap-x-4">
+        <Field label="Denrée">
+          {creation.trim() || creation===" " ? (
+            <div className="flex items-center gap-1.5">
+              <Input autoFocus value={creation.trim()} onChange={e=>setCreation(e.target.value)}
+                placeholder="Nom de la nouvelle denrée" onKeyDown={e=>e.key==="Enter"&&validerCreation()} />
+              <Btn size="sm" onClick={validerCreation} disabled={!creation.trim()}>Créer</Btn>
+              <Btn size="sm" kind="ghost" onClick={()=>setCreation("")}>×</Btn>
+            </div>
+          ) : (
+            <Select value={f.commodity||""} onChange={e=>choisirDenree(e.target.value)} empty="— choisir —"
+              options={[...denrees.map(d=>[d.code, d.label]), ["__new__","➕ Créer une denrée…"]]} />
+          )}
+        </Field>
+        <Field label="Grammage (g/personne/jour)"><Input type="number" min="0" step="1" value={f.grams??0}
+          onChange={e=>u("grams",n(e.target.value))} /></Field>
+        <Field label="Activité par défaut" hint="Facultatif — présélectionne cette ration pour l'activité au PDD">
+          <Select value={f.activityTag||""} onChange={e=>u("activityTag",e.target.value)} empty="— toutes —"
+            options={activites.map(a=>[a.tag, `${a.tag} — ${a.name}`])} /></Field>
+        <Field label="Ordre d'affichage"><Input type="number" min="0" step="1" value={f.sort??0}
+          onChange={e=>u("sort",Math.max(0,n(e.target.value)))} /></Field>
+      </div>
+      <Field label="Note" hint="Jours typiques, modalité espèces, date de la convention — ce qui la rend relisible">
+        <Input value={f.note||""} onChange={e=>u("note",e.target.value)}
+          placeholder="30 j (demi : 15). Espèces : 120 000 Ar/ménage." /></Field>
+    </Modal>);
 }
 
 /* ── ODK Central ── */
@@ -2683,6 +2927,11 @@ const NOM_NATURE = Object.fromEntries(NATURES_CONNECTEUR);
    épreuve de connexion puisse éprouver. Le serveur applique la même règle et
    refuse les autres : cette constante ne fait que masquer un bouton inutile. */
 const RESEAU_CONNECTEUR = new Set(["odk","kobo","foundry","http"]);
+/* Les natures que le SERVEUR sait aller lire tout seul — celles pour lesquelles,
+   l'épreuve passée, on peut découvrir les colonnes et pré-remplir la table sans
+   rien coller. Doit rester le miroir de NATURES_LUES côté serveur : « odk » en
+   est dehors (son tirage a son propre écran et son cache). */
+const LUES_CONNECTEUR = new Set(["foundry","kobo","http"]);
 
 /* Ni `db` ni `set` : cet écran ne passe pas par l'état global. Les connecteurs
    ont leurs propres routes, et les faire transiter par la file de synchronisation
@@ -2700,6 +2949,11 @@ function SetConnectors({ notify, can }){
   const [apercu,setApercu]     = useState(null);
   const [epreuve,setEpreuve]   = useState(null);   /* diagnostic de « tester cette source » */
   const [busy,setBusy]         = useState(false);
+  /* Correspondances pré-remplies par le peuplement automatique, en attente que le
+     connecteur fraîchement enregistré soit sélectionné. Un ref et non un état :
+     l'effet de chargement des correspondances les fusionne au vol, sans re-render
+     supplémentaire ni course avec le setLignes qui suit setSel. */
+  const autoFill = useRef(null);   /* { id, entity, lignes } */
 
   const tester = async (c) => {
     setBusy(true);
@@ -2722,17 +2976,30 @@ function SetConnectors({ notify, can }){
   const conn = (rows||[]).find(x=>x.id===sel) || null;
   const ent  = (registre?.entites||[]).find(e=>e.cle===entity) || null;
 
-  /* Les correspondances déjà enregistrées pour ce connecteur et cette entité. */
-  useEffect(()=>{
+  /* Charge les correspondances enregistrées pour (connecteur, entité), puis
+     fusionne le peuplement automatique en attente. Extraite de l'effet pour être
+     rejouable à la main : réenregistrer le connecteur DÉJÀ sélectionné ne change
+     pas `sel`, donc l'effet ne se redéclenche pas — il faut alors l'appeler. */
+  const chargerMappings = (id, ent) => {
     setApercu(null);
-    if(!sel || !entity){ setLignes({}); return; }
-    api.connectorMappings(sel, entity).then(r=>{
+    if(!id || !ent){ setLignes({}); return Promise.resolve(); }
+    return api.connectorMappings(id, ent).then(r=>{
       const m = {};
       for(const x of r.rows||[]) m[x.mems_field] = { source_path:x.source_path||"",
         transform:x.transform||"brut", required:!!x.required, default_value:x.default_value||"" };
+      /* Peuplement automatique après enregistrement : les propositions ne
+         garnissent que les champs ENCORE VIDES — jamais par-dessus une
+         correspondance déjà déclarée, qu'un rapprochement de noms n'a pas à
+         écraser. Elles portent leur score, pour que chaque ligne se relise. */
+      if(autoFill.current && autoFill.current.id===id && autoFill.current.entity===ent){
+        for(const [f,v] of Object.entries(autoFill.current.lignes))
+          if(!m[f]?.source_path) m[f] = v;
+        autoFill.current = null;
+      }
       setLignes(m);
     }).catch(e=>notify(e.message,"err"));
-  },[sel,entity]);
+  };
+  useEffect(()=>{ chargerMappings(sel, entity); },[sel,entity]);
 
   /* L'échantillon collé sert deux fois : à proposer des correspondances, et à
      montrer l'aperçu. Une saisie encore incomplète ne doit pas crier à l'erreur :
@@ -2848,12 +3115,70 @@ function SetConnectors({ notify, can }){
        n'est pas un secret : il part à chaque fois, sinon l'effacer serait impossible. */
     if((f.secret||"").trim()) payload.secret = f.secret.trim();
     if(f.id) payload.rev = f.rev;
+    let c2;
     try{
       const r = f.id ? await api.updateConnector(f.id, payload) : await api.createConnector(payload);
+      c2 = r.connector;
       setEdit(null); await charger();
-      setSel(r.connector.id);
-      notify("Connecteur enregistré","ok");
-    }catch(e){ notify(e.message,"err"); }
+    }catch(e){ notify(e.message,"err"); setBusy(false); return; }
+
+    /* « Quand on l'enregistre, tester d'abord la connexion et, si ok, peupler
+       automatiquement la table de correspondance. » L'enchaînement littéral :
+       enregistrer → éprouver → lire les colonnes → proposer. Chaque étape peut
+       échouer sans compromettre la précédente — le connecteur, lui, est écrit. */
+    if(!RESEAU_CONNECTEUR.has(c2.kind)){
+      setSel(c2.id); notify("Connecteur enregistré","ok"); setBusy(false); return;
+    }
+    let ep;
+    try{ ep = await api.connectorTest(c2.id); setEpreuve(ep); }
+    catch(e){ setSel(c2.id); notify("Connecteur enregistré. Épreuve de connexion impossible : "+e.message,"warn");
+      setBusy(false); return; }
+    if(!ep.ok){
+      setSel(c2.id);
+      notify("Connecteur enregistré — la connexion n'a pas abouti. Voir le détail de l'épreuve.","warn");
+      setBusy(false); return;
+    }
+    /* Connexion prouvée. Pour les natures que le serveur sait lire, on découvre
+       les colonnes et on pré-remplit la table via l'appariement de noms — sans
+       coller quoi que ce soit. Les autres (ODK) : test seul, l'écran attend leur
+       XLSForm. */
+    if(!LUES_CONNECTEUR.has(c2.kind)){
+      setSel(c2.id); notify("Connexion réussie. Joignez le XLSForm pour proposer les correspondances.","ok");
+      setBusy(false); return;
+    }
+    try{
+      const rv = await api.connectorVariables(c2.id);
+      const cles = (rv.variables||[]).map(v=>v.name);
+      if(!cles.length){
+        setSel(c2.id); notify("Connexion réussie, mais la source n'a renvoyé aucune colonne à rapprocher.","warn");
+        setBusy(false); return;
+      }
+      /* L'échantillon lu alimente les listes déroulantes et l'aperçu, et les
+         suggestions garnissent la table. On passe par le ref pour survivre au
+         rechargement des correspondances déclenché par setSel. */
+      if(rv.lignes?.length) setEch(JSON.stringify(rv.lignes));
+      setVars([]);
+      const rs = await api.connectorSuggestions(c2.id, { entity, cles });
+      const lignesProposees = {};
+      for(const s of rs.suggestions||[]){
+        if(!s.source_path) continue;
+        lignesProposees[s.mems_field] = { source_path:s.source_path, transform:s.transform,
+          required:false, default_value:"", score:s.score, motif:s.motif };
+      }
+      autoFill.current = { id:c2.id, entity, lignes:lignesProposees };
+      /* Si le connecteur était DÉJÀ sélectionné, changer `sel` pour la même
+         valeur ne redéclenche pas l'effet : on applique la fusion à la main. */
+      if(sel===c2.id) await chargerMappings(c2.id, entity); else setSel(c2.id);
+      const n = Object.keys(lignesProposees).length;
+      notify(n
+        ? `Connexion réussie — ${n} correspondance(s) pré-remplie(s) depuis ${rv.lignesLues} ligne(s). `
+          + "Vérifiez chaque ligne, puis Enregistrer."
+        : "Connexion réussie, mais aucun nom de colonne ne s'est rapproché d'un champ MEMS : à faire à la main.",
+        n ? "ok" : "warn");
+    }catch(e){
+      setSel(c2.id);
+      notify("Connexion réussie, mais la lecture des variables a échoué : "+e.message,"warn");
+    }
     setBusy(false);
   };
 
@@ -2867,10 +3192,12 @@ function SetConnectors({ notify, can }){
       <Note tool>
         <b>Une correspondance, pas du code.</b> Un connecteur dit <b>où</b> lire ; les correspondances
         disent <b>quelle variable de la source alimente quel champ MEMS</b>, et par quelle transformation.
-        Brancher une source de plus est alors un acte de configuration. La liste des champs et celle des
-        transformations viennent du serveur : c'est exactement celle contre laquelle l'enregistrement est
-        vérifié. Le bouton <b>Proposer</b> rapproche les noms et donne un score — il ne décide rien,
-        chaque ligne se relit. Le jeton d'accès est chiffré côté serveur et n'est jamais renvoyé.
+        À l'<b>enregistrement d'une source réseau</b>, MEMS <b>éprouve d'abord la connexion</b> ; si elle
+        passe et que la source est lisible (Foundry, Kobo, HTTP), il <b>lit ses colonnes et pré-remplit
+        la table</b> tout seul. Le rapprochement de noms donne un score — il ne décide rien, chaque ligne
+        se relit avant d'enregistrer. La liste des champs et celle des transformations viennent du serveur :
+        c'est exactement celle contre laquelle l'enregistrement est vérifié. Le jeton d'accès est chiffré
+        côté serveur et n'est jamais renvoyé.
       </Note>
       <div className="grid gap-4" style={{gridTemplateColumns:"320px 1fr"}}>
         <Card flush title="Connecteurs" subtitle={`${rows.length} source(s) déclarée(s)`}

@@ -579,18 +579,55 @@ r.post("/shapefile/contours", requireCap("admin"), (req, res, next) => {
           `Contours ${niveau} — ${écrites} écrit(s)`
           + (rejetes ? `, ${rejetes} rejeté(s)` : "") + ` (${source})`);
 
+      /* Dérivation automatique des niveaux supérieurs (demande utilisateur :
+         « Si je remplace le niveau 3 ou 4, la dérivation des niveaux supérieurs
+         devrait se faire automatiquement »). On la déclenche dès qu'un niveau
+         plus fin a reçu des contours et qu'il existe un étage au-dessus. Le mode
+         `auto` ne rafraîchit que les étages VIDES ou déjà DÉRIVÉS : un contour
+         officiel importé à la main n'est jamais écrasé sans qu'on le demande.
+
+         La réponse porte le bilan COMPLET (mêmes `etapes`/`total` que la route
+         manuelle `/geometry/deriver`), pour que l'écran affiche le même tableau
+         sans avoir à interpréter deux structures différentes. */
+      let derivation = null;
+      if(écrites && LEVELS.indexOf(niveau) > 0){
+        const d = deriverNiveaux({ versionId: v.id, source: niveau, auto: true });
+        if(!d.erreur){
+          const touches = (d.etapes || []).filter(e => e.ecrites > 0);
+          const sautes  = (d.etapes || []).filter(e => e.saute);
+          d.message = touches.length
+            ? `${d.total} contour(s) des niveaux supérieurs dérivés automatiquement `
+              + `(${touches.map(e => e.niveau).join(", ")}).`
+              + (sautes.length ? ` Niveaux non touchés — contours officiels conservés.` : "")
+            : sautes.length
+              ? `Niveaux supérieurs inchangés : ils portent déjà leurs propres contours.`
+              : `Rien à dériver au-dessus de ${niveau}.`;
+          derivation = d;
+          if(touches.length)
+            db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+                        VALUES (?,?,?,'plan','geo_geom',?,'derive',?)`)
+              .run(newId("aud"), req.user.id, req.user.first_name, v.id,
+                `Dérivation auto depuis ${niveau} : `
+                + touches.map(e => `${e.niveau} (${e.ecrites})`).join(", "));
+        }
+      }
+      const derivFaits = (derivation?.etapes || []).some(e => e.ecrites > 0);
+
       res.json({
         niveau, lus, écrites, rejetes, rejets,
         version: { id:v.id, label:v.label },
         /* Ce que le millésime porte MAINTENANT, niveau par niveau : c'est l'état
            que la fiche du pays affiche, et il doit venir du serveur — le client
-           qui l'additionnerait lui-même se tromperait au premier rejet. */
+           qui l'additionnerait lui-même se tromperait au premier rejet.
+           Recalculé APRÈS la dérivation, pour que les niveaux dérivés y figurent. */
         parNiveau: geomSummary(v.id),
-        message: écrites
+        derivation,
+        message: (écrites
           ? `${écrites} contour(s) ${niveau} ${remplacer ? "remplacent les précédents" : "ajoutés"}.`
             + (rejetes ? ` ${rejetes} rejeté(s) — voir le détail.` : "")
           : `Aucun contour écrit : les ${rejetes || lus} polygone(s) lus ne correspondent à aucune `
-            + `unité de niveau ${niveau} dans le découpage courant.`,
+            + `unité de niveau ${niveau} dans le découpage courant.`)
+          + (derivFaits ? ` ${derivation.message}` : ""),
       });
     }catch(e){
       if(e.code === "SHAPEFILE") return res.status(422).json({ error: e.message });
