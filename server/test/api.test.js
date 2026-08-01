@@ -7715,6 +7715,17 @@ test("intégrité : désactiver est un geste à part, qui ne touche à rien d'au
    une transaction réécrit la table maîtresse ET toutes ses filles.
    ═══════════════════════════════════════════════════════════════════════ */
 let superToken;
+/* Depuis le point 4 du chantier, un renommage se valide sur SON PLAN : on
+   demande la correspondance, on la lit, puis on renvoie son jeton. Ce
+   raccourci fait les deux appels — c'est exactement ce que fait l'écran. */
+const renommer = async (cle, id, nouveau, mode, token) => {
+  const plan = await request(app).post(`/api/listes/${cle}/${id}/renommer-code/plan`)
+    .set("Authorization", `Bearer ${token}`).send({ nouveau });
+  if(plan.status !== 200) return plan;
+  return request(app).post(`/api/listes/${cle}/${id}/renommer-code`)
+    .set("Authorization", `Bearer ${token}`)
+    .send({ nouveau, mode, jeton: plan.body.plan.jeton });
+};
 test("renommage : préparation d'un compte super pour la cascade", async () => {
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"supercode@test.local", password:"SuperCodeMotDePasse1", first_name:"SuperCode",
@@ -7754,8 +7765,7 @@ test("renommage : la cascade réécrit la table maîtresse ET toutes ses filles,
   const attendues = db.prepare("SELECT COUNT(*) c FROM pdd WHERE commodity='Sorgho'").get().c;
   assert.ok(attendues >= cibles.length);
 
-  const r = await request(app).post(`/api/listes/denrees/${it.id}/renommer-code`)
-    .set("Authorization", `Bearer ${superToken}`).send({ nouveau:"Sorgho blanc", mode:"renommer" });
+  const r = await renommer("denrees", it.id, "Sorgho blanc", "renommer", superToken);
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.mode, "renommer");
   assert.equal(r.body.total, attendues, "toutes les lignes filles ont suivi");
@@ -7784,8 +7794,7 @@ test("renommage : un tag d'activité entraîne les dix colonnes qui le portent",
   assert.ok(avant.sites > 0, "des sites portent ce tag");
 
   const nouveau = act.tag + "_2026";
-  const r = await request(app).post(`/api/listes/activites/${act.id}/renommer-code`)
-    .set("Authorization", `Bearer ${superToken}`).send({ nouveau, mode:"renommer" });
+  const r = await renommer("activites", act.id, nouveau, "renommer", superToken);
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(compter("sites", "activity_tag", act.tag), 0, "plus aucun site sur l'ancien tag");
   assert.equal(compter("sites", "activity_tag", nouveau), avant.sites);
@@ -7799,8 +7808,7 @@ test("renommage : un tag d'activité entraîne les dix colonnes qui le portent",
   assert.equal(sante.body.database.foreignKeyViolations, 0);
 
   /* Retour à l'état d'origine, pour ne pas troubler les tests suivants. */
-  await request(app).post(`/api/listes/activites/${act.id}/renommer-code`)
-    .set("Authorization", `Bearer ${superToken}`).send({ nouveau:act.tag, mode:"renommer" });
+  await renommer("activites", act.id, act.tag, "renommer", superToken);
   assert.equal(compter("sites", "activity_tag", act.tag), avant.sites);
 });
 
@@ -7812,8 +7820,7 @@ test("renommage : viser un code déjà pris est une FUSION, qui ne se devine pas
 
   /* Demander « renommer » vers un code pris : refusé, et le plan est rendu
      pour que l'écran puisse montrer ce que la fusion ferait. */
-  const refus = await request(app).post(`/api/listes/denrees/${source.id}/renommer-code`)
-    .set("Authorization", `Bearer ${superToken}`).send({ nouveau:"Huile", mode:"renommer" });
+  const refus = await renommer("denrees", source.id, "Huile", "renommer", superToken);
   assert.equal(refus.status, 409, JSON.stringify(refus.body));
   assert.ok(/FUSION/.test(refus.body.error), refus.body.error);
   assert.equal(refus.body.plan.mode, "fusionner");
@@ -7823,8 +7830,7 @@ test("renommage : viser un code déjà pris est une FUSION, qui ne se devine pas
   /* Confirmée, la fusion reporte les lignes et fait disparaître l'item source. */
   const ligne = db.prepare("SELECT id FROM pdd LIMIT 1").get();
   db.prepare("UPDATE pdd SET commodity='Dattes' WHERE id=?").run(ligne.id);
-  const ok = await request(app).post(`/api/listes/denrees/${source.id}/renommer-code`)
-    .set("Authorization", `Bearer ${superToken}`).send({ nouveau:"Huile", mode:"fusionner" });
+  const ok = await renommer("denrees", source.id, "Huile", "fusionner", superToken);
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   assert.equal(ok.body.mode, "fusionner");
   assert.equal(db.prepare("SELECT COUNT(*) c FROM list_item WHERE id=?").get(source.id).c, 0,
@@ -7839,9 +7845,109 @@ test("renommage : un code identique, vide ou trop long est refusé sans rien éc
     .set("Authorization", `Bearer ${superToken}`)).body.items[0];
   for(const [corps, statut] of [[{ nouveau:it.code }, 422], [{ nouveau:"" }, 422],
                                 [{ nouveau:"x".repeat(90) }, 422]]){
-    const r = await request(app).post(`/api/listes/types_site/${it.id}/renommer-code`)
-      .set("Authorization", `Bearer ${superToken}`).send(corps);
-    assert.equal(r.status, statut, JSON.stringify(r.body));
+    for(const chemin of ["renommer-code", "renommer-code/plan"]){
+      const r = await request(app).post(`/api/listes/types_site/${it.id}/${chemin}`)
+        .set("Authorization", `Bearer ${superToken}`).send(corps);
+      assert.equal(r.status, statut, JSON.stringify(r.body));
+    }
   }
   assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, it.code);
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Chantier S8-4 — Mappage puis validation explicite.
+
+   « Si je fais une mise à jour d'un paramètre interconnecté, toujours
+   procéder à un mappage puis validation pour ne pas perdre des données. »
+   ═══════════════════════════════════════════════════════════════════════ */
+test("mappage : le plan chiffre l'impact table par table sans rien écrire", async () => {
+  const it = (await request(app).get("/api/listes/modalites")
+    .set("Authorization", `Bearer ${superToken}`)).body.items.find(x => x.code === "Voucher");
+  const lignes = db.prepare("SELECT id FROM pdd LIMIT 2").all().map(x => x.id);
+  for(const id of lignes) db.prepare("UPDATE pdd SET modality='Voucher' WHERE id=?").run(id);
+  const attendu = db.prepare("SELECT COUNT(*) c FROM pdd WHERE modality='Voucher'").get().c;
+
+  const r = await request(app).post(`/api/listes/modalites/${it.id}/renommer-code/plan`)
+    .set("Authorization", `Bearer ${superToken}`).send({ nouveau:"Coupon" });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const plan = r.body.plan;
+  assert.equal(plan.mode, "renommer");
+  assert.equal(plan.ancien, "Voucher");
+  assert.equal(plan.nouveau, "Coupon");
+  const corr = plan.correspondances.find(c => c.table === "pdd" && c.colonne === "modality");
+  assert.ok(corr, JSON.stringify(plan.correspondances));
+  assert.equal(corr.lignes, attendu);
+  assert.equal(corr.de, "Voucher");
+  assert.equal(corr.vers, "Coupon");
+  assert.ok(plan.jeton && plan.jeton.length >= 16, "le plan porte son empreinte");
+
+  /* Le mappage n'écrit RIEN : c'est toute sa raison d'être. */
+  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, "Voucher");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM pdd WHERE modality='Voucher'").get().c, attendu);
+});
+
+test("validation : sans jeton, l'écriture est refusée et le plan est rendu", async () => {
+  const it = (await request(app).get("/api/listes/modalites")
+    .set("Authorization", `Bearer ${superToken}`)).body.items.find(x => x.code === "Voucher");
+  const r = await request(app).post(`/api/listes/modalites/${it.id}/renommer-code`)
+    .set("Authorization", `Bearer ${superToken}`).send({ nouveau:"Coupon", mode:"renommer" });
+  assert.equal(r.status, 409, JSON.stringify(r.body));
+  assert.ok(/mappage|correspondance/.test(r.body.error), r.body.error);
+  assert.ok(r.body.plan.jeton, "le refus rend le plan, pour que l'écran le montre");
+  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, "Voucher");
+});
+
+test("validation : un plan périmé est refusé — on ne valide que ce qu'on a vu", async () => {
+  const it = (await request(app).get("/api/listes/modalites")
+    .set("Authorization", `Bearer ${superToken}`)).body.items.find(x => x.code === "Voucher");
+  const p1 = await request(app).post(`/api/listes/modalites/${it.id}/renommer-code/plan`)
+    .set("Authorization", `Bearer ${superToken}`).send({ nouveau:"Coupon" });
+  const jetonVu = p1.body.plan.jeton;
+  const impactVu = p1.body.plan.total;
+
+  /* La base bouge entre l'affichage et le clic : une ligne de plus porte le code. */
+  const autre = db.prepare("SELECT id FROM pdd WHERE modality<>'Voucher' LIMIT 1").get();
+  db.prepare("UPDATE pdd SET modality='Voucher' WHERE id=?").run(autre.id);
+
+  const refus = await request(app).post(`/api/listes/modalites/${it.id}/renommer-code`)
+    .set("Authorization", `Bearer ${superToken}`)
+    .send({ nouveau:"Coupon", mode:"renommer", jeton:jetonVu });
+  assert.equal(refus.status, 409, JSON.stringify(refus.body));
+  assert.ok(/a changé depuis/.test(refus.body.error), refus.body.error);
+  assert.ok(refus.body.plan.total > impactVu, "le plan à jour compte la ligne apparue");
+  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, "Voucher",
+    "rien n'a été écrit");
+
+  /* Revalidé sur le plan À JOUR, le renommage passe. */
+  const ok = await request(app).post(`/api/listes/modalites/${it.id}/renommer-code`)
+    .set("Authorization", `Bearer ${superToken}`)
+    .send({ nouveau:"Coupon", mode:"renommer", jeton:refus.body.plan.jeton });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.total, refus.body.plan.total);
+  assert.equal(ok.body.reliquat, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM pdd WHERE modality='Voucher'").get().c, 0);
+});
+
+test("mappage : le plan d'une fusion annonce la disparition de l'item d'origine", async () => {
+  const items = (await request(app).get("/api/listes/types_suivi")
+    .set("Authorization", `Bearer ${superToken}`)).body.items;
+  const source = items.find(x => x.code === "Post-distribution monitoring");
+  const r = await request(app).post(`/api/listes/types_suivi/${source.id}/renommer-code/plan`)
+    .set("Authorization", `Bearer ${superToken}`).send({ nouveau:"Distribution monitoring" });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.plan.mode, "fusionner");
+  assert.ok(r.body.plan.avertissements.some(a => /SUPPRIMÉ/.test(a)),
+    JSON.stringify(r.body.plan.avertissements));
+  assert.ok(r.body.plan.cible.code === "Distribution monitoring");
+  /* Toujours rien d'écrit. */
+  assert.ok(db.prepare("SELECT 1 FROM list_item WHERE id=?").get(source.id));
+});
+
+test("mappage : le plan est réservé au super, comme l'écriture qu'il prépare", async () => {
+  const t = (await login("admincode@test.local", "AdminCodeMotDePasse1")).body.token;
+  const it = (await request(app).get("/api/listes/durees")
+    .set("Authorization", `Bearer ${t}`)).body.items[0];
+  const r = await request(app).post(`/api/listes/durees/${it.id}/renommer-code/plan`)
+    .set("Authorization", `Bearer ${t}`).send({ nouveau:"Autre durée" });
+  assert.equal(r.status, 403, "un plan qui ne mène à aucune écriture possible n'a pas à être servi");
 });

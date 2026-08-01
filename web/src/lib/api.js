@@ -293,6 +293,16 @@ export const api = {
   activerItem:  (cle, id, active, rev) =>
     call("PUT", `/listes/${encodeURIComponent(cle)}/${encodeURIComponent(id)}/actif`, { active, rev }),
   validerListe: (cle, note)  => call("POST", `/listes/${encodeURIComponent(cle)}/valider`, { note }),
+  /* Renommage de code : deux appels, jamais un seul. Le premier calcule la
+     correspondance sans rien écrire ; le second l'applique en présentant le
+     jeton du plan qui a été affiché. Un paramètre interconnecté ne se met pas
+     à jour sans mappage puis validation. */
+  planRenommage: (cle, id, nouveau) =>
+    call("POST", `/listes/${encodeURIComponent(cle)}/${encodeURIComponent(id)}/renommer-code/plan`,
+      { nouveau }),
+  renommerCode: (cle, id, nouveau, mode, jeton) =>
+    call("POST", `/listes/${encodeURIComponent(cle)}/${encodeURIComponent(id)}/renommer-code`,
+      { nouveau, mode, jeton }),
 
   users:      ()             => call("GET", "/users"),
   createUser: (u)            => call("POST", "/users", u),

@@ -530,6 +530,42 @@ test("paramètres : « Sites » a quitté la configuration, mais le registre res
   assert.ok(document.body.textContent.includes("Activités du programme"),
     "le référentiel des activités s'affiche");
 
+  /* Les listes paramétrables typées (S8) : maître-détail, rail des types à
+     gauche, liste choisie à droite. On y vérifie ce qui distingue cet écran —
+     qu'il tient onze référentiels, qu'il montre l'usage, et que le renommage
+     de code passe par une correspondance avant d'écrire. */
+  await click(sousOnglet("Listes paramétrables"), "sous-onglet Listes paramétrables");
+  await flush(); await flush();
+  assert.ok(document.body.textContent.includes("Types de liste"),
+    "le rail des types de liste s'affiche");
+  const railListes = all("main button").filter(b => b.className.includes("border-b border-slate-100"));
+  assert.ok(railListes.length >= 8, `le rail porte les types (${railListes.length})`);
+  assert.ok(document.body.textContent.includes("Denrées et commodités")
+    && document.body.textContent.includes("Types de partenariat"),
+    "les listes demandées figurent au rail");
+  assert.ok(document.body.textContent.includes("Référencée par"),
+    "l'écran dit quelles tables référencent la liste choisie");
+
+  const denrees = railListes.find(b => b.textContent.includes("Denrées"));
+  await click(denrees, "liste des denrées"); await flush(); await flush();
+  assert.ok(byText("main td", "Riz"), "les denrées réelles sont listées");
+
+  /* Le renommage de code : réservé au super, il commence par la correspondance. */
+  const lignesDenrees = all("main tbody tr");
+  const boutonsLigne = [...lignesDenrees[0].querySelectorAll("button")];
+  await click(boutonsLigne[boutonsLigne.length - 3], "renommer le code"); await flush();
+  assert.ok(byText(".z60 h3", "Renommer le code"), "la fiche de renommage s'ouvre");
+  assert.ok(document.body.textContent.includes("Calculer la correspondance"),
+    "le mappage précède l'écriture");
+  const valider = byText(".z60 button", "Calculez d'abord");
+  assert.ok(valider && valider.disabled,
+    "la validation est fermée tant que la correspondance n'a pas été calculée");
+  await act(async () => {
+    window.dispatchEvent(new window.KeyboardEvent("keydown", { key:"Escape", bubbles:true }));
+    await sleep(60);
+  });
+  await flush();
+
   /* Le parcours de configuration guidée (S7) est proposé au super et s'ouvre. */
   assert.ok(sousOnglet("Configuration guidée"),
     "l'onglet Configuration guidée est proposé au super-utilisateur");

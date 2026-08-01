@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { db, tx } from "../db.js";
 import { parCle, ligne, ligneParCode, forme } from "./listes.js";
 
@@ -80,7 +81,7 @@ export function planRenommage(cle, id, nouveauBrut){
   if(!lignesTouchees.length) avertissements.push(
     "Aucune ligne ne porte ce code aujourd'hui : seul l'item lui-même changera.");
 
-  return {
+  const plan = {
     cle: def.cle, listeLabel: def.label,
     item: forme(def, item),
     mode: fusion ? "fusionner" : "renommer",
@@ -93,9 +94,35 @@ export function planRenommage(cle, id, nouveauBrut){
     total: lignesTouchees.reduce((a, x) => a + x.lignes, 0),
     avertissements,
   };
+  plan.jeton = jetonDe(plan);
+  return plan;
 }
 
 const detailLien = (l) => ({ table:l.table, colonne:l.colonne, par:l.par, label:l.label });
+
+/* ── Le jeton du plan  (chantier S8, point 4) ─────────────────────────
+   « Si je fais une mise à jour d'un paramètre interconnecté, toujours
+   procéder à un mappage puis validation pour ne pas perdre des données. »
+
+   Le jeton est l'EMPREINTE de ce qui a été montré : le mode, les deux
+   codes, et le nombre de lignes touchées dans chaque table. Il repart avec
+   la validation, et la route recalcule le plan avant d'écrire : si quoi que
+   ce soit a bougé entre l'affichage et le clic — une ligne ajoutée dans une
+   table fille, un item créé qui transforme le renommage en fusion —, les
+   deux empreintes diffèrent et l'écriture est refusée.
+
+   Ce n'est pas un secret et il n'a pas à en être un : il ne protège de rien
+   qu'on veuille cacher, il prouve que la validation porte bien sur ce que
+   l'écran a montré. D'où une empreinte lisible, vérifiable par recalcul,
+   sans état stocké nulle part — un plan mémorisé côté serveur aurait
+   introduit une durée de vie, donc une expiration à gérer et un plan à
+   nettoyer. */
+export function jetonDe(plan){
+  const canon = JSON.stringify([plan.cle, plan.item?.id, plan.ancien, plan.nouveau, plan.mode,
+    plan.cible?.id || null,
+    plan.correspondances.map(c => [c.table, c.colonne, c.par, c.lignes, c.de, c.vers])]);
+  return createHash("sha256").update(canon).digest("hex").slice(0, 32);
+}
 
 /* L'application. Une transaction : la table maîtresse et toutes ses filles,
    ou rien. La route recalcule le plan juste avant d'appeler cette fonction,

@@ -275,10 +275,31 @@ r.delete("/:cle/:id", garde, (req, res, next) => {
    `mode` est CONFIRMÉ par l'appelant, jamais deviné : demander « renommer »
    quand le code visé est déjà pris ne doit pas fusionner deux référentiels
    en silence. */
+/* ① LE MAPPAGE — ce que l'opération fera, avant qu'elle ne fasse rien.
+   « Si je fais une mise à jour d'un paramètre interconnecté, toujours
+   procéder à un mappage puis validation pour ne pas perdre des données. »
+   Cette route n'écrit RIEN : elle rend la correspondance ancien → nouveau,
+   table par table, avec le nombre de lignes touchées et son empreinte. */
+r.post("/:cle/:id/renommer-code/plan", requireSuper, (req, res) => {
+  const p = z.object({ nouveau: z.string().trim().min(1).max(80) }).safeParse(req.body);
+  if(!p.success) return res.status(422).json({ error:"nouveau code invalide",
+    details: p.error.issues.map(i => ({ champ:i.path.join("."), message:i.message })) });
+  const plan = planRenommage(req.params.cle, req.params.id, p.data.nouveau);
+  if(plan.erreur) return res.status(plan.statut || 422).json({ error:plan.erreur });
+  res.json({ plan });
+});
+
+/* ② LA VALIDATION — l'écriture, et elle exige le jeton du plan affiché.
+   Le plan est RECALCULÉ ici : si la base a bougé entre l'affichage et le
+   clic — une ligne de plus dans une table fille, un item créé qui
+   transforme le renommage en fusion —, les deux empreintes diffèrent et
+   rien ne s'écrit. Sans jeton, la réponse est le plan lui-même : le geste
+   ne se refuse pas, il se demande deux fois. */
 r.post("/:cle/:id/renommer-code", requireSuper, (req, res, next) => {
   const p = z.object({
     nouveau: z.string().trim().min(1).max(80),
     mode: z.enum(["renommer", "fusionner"]).optional(),
+    jeton: z.string().trim().max(64).optional(),
   }).safeParse(req.body);
   if(!p.success) return res.status(422).json({ error:"renommage invalide",
     details: p.error.issues.map(i => ({ champ:i.path.join("."), message:i.message })) });
@@ -291,6 +312,15 @@ r.post("/:cle/:id/renommer-code", requireSuper, (req, res, next) => {
         + "FUSION, pas un renommage. Confirmez le mode « fusionner » — l'item d'origine "
         + "disparaîtra et tout ce qui le désignait sera reporté."
       : `le code « ${plan.nouveau} » n'existe pas dans cette liste : il n'y a rien à fusionner.`,
+    plan });
+
+  if(!p.data.jeton) return res.status(409).json({
+    error: "un renommage de code se valide sur son plan : demandez la correspondance "
+      + "(…/renommer-code/plan), examinez-la, puis renvoyez son jeton pour l'appliquer.",
+    plan });
+  if(p.data.jeton !== plan.jeton) return res.status(409).json({
+    error: "la base a changé depuis le calcul de la correspondance : le plan que vous avez validé "
+      + "n'est plus celui qui s'appliquerait. Rien n'a été écrit ; voici le plan à jour.",
     plan });
 
   try{

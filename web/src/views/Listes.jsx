@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api.js";
-import { Check, ListChecks, Pencil, Plus, Save, Search, ShieldCheck, Trash2 } from "lucide-react";
+import { ArrowRightLeft, Check, ListChecks, Pencil, Plus, Save, Search, ShieldCheck,
+         Trash2 } from "lucide-react";
 import { Badge, Btn, Card, Empty, Field, Input, Modal, Note, Select, Sw,
          TableWrap, Td, Th } from "../components/ui.jsx";
 import { clsx, fmt } from "../lib/calc.js";
@@ -33,8 +34,13 @@ function SetListes({ notify, can, me }){
   const [edit,setEdit]     = useState(null);
   const [busy,setBusy]     = useState(false);
   const [refus,setRefus]   = useState(null);      /* le 409 d'une suppression refusée */
+  const [renomme,setRenomme] = useState(null);    /* l'item dont on renomme le code */
 
   const admin = can("admin");
+  /* Le renommage de code touche en un geste des milliers de lignes de tables
+     que l'opérateur n'a pas sous les yeux : le serveur le réserve au super, et
+     l'écran ne montre pas un bouton qui reviendrait en 403. */
+  const superUser = me?.role === "super";
 
   const chargerTypes = () => api.listes()
     .then(r => { const t = r.types || []; setTypes(t); setCle(p => p || t[0]?.cle || ""); })
@@ -110,7 +116,11 @@ function SetListes({ notify, can, me }){
         autres tables enregistrent — et un libellé. Le code ne change pas à la modification :
         il est la clé de jointure, et le casser perdrait le lien avec les données déjà saisies.
         Un item <b>déjà utilisé ne se supprime pas</b> ; il se désactive, ce qui le retire des choix
-        sans effacer l'historique.</Note>
+        sans effacer l'historique.
+        {superUser && <> Un super-utilisateur peut <b>renommer un code</b> (icône <ArrowRightLeft
+          size={12} className="inline" />) : la correspondance ancien → nouveau est calculée et
+          montrée, puis appliquée <b>en une transaction</b> qui réécrit toutes les tables filles.</>}
+      </Note>
 
       <div className="grid gap-4" style={{gridTemplateColumns:"300px 1fr"}}>
         {/* ── Rail de gauche : les TYPES ── */}
@@ -202,6 +212,10 @@ function SetListes({ notify, can, me }){
                           title={it.usage?.map(u => `${u.label} (${u.table}.${u.colonne}) : ${u.lignes}`).join("\n") || ""}>
                           {it.usageTotal ? fmt(it.usageTotal) : "—"}</Td>
                         <Td className="text-right">
+                          {superUser && <button onClick={()=>setRenomme(it)}
+                            className="text-slate-400 m-ico p-1"
+                            title="Renommer le code, en entraînant tout ce qui le porte">
+                            <ArrowRightLeft size={14}/></button>}
                           {admin && <button onClick={()=>setEdit(it)}
                             className="text-slate-400 m-ico p-1"><Pencil size={14}/></button>}
                           {admin && <button onClick={()=>supprimer(it)}
@@ -220,7 +234,131 @@ function SetListes({ notify, can, me }){
 
       <ItemModal open={!!edit} item={edit} type={t} busy={busy}
         onClose={()=>setEdit(null)} onSave={enregistrer} />
+      <RenommageModal open={!!renomme} item={renomme} cle={cle} type={t} notify={notify}
+        onClose={()=>setRenomme(null)} onDone={async ()=>{ setRenomme(null); await recharger(); }} />
     </>);
+}
+
+/* ══════════════════ Mappage puis validation ══════════════════
+   « Si je fais une mise à jour d'un paramètre interconnecté, toujours
+   procéder à un mappage puis validation pour ne pas perdre des données. »
+
+   Deux temps, et le second n'est pas atteignable sans le premier : on
+   demande la CORRESPONDANCE (ancien → nouveau, table par table, avec le
+   nombre de lignes touchées), on la lit, puis on valide. Le jeton du plan
+   part avec la validation ; si la base a bougé entre les deux, le serveur
+   refuse et rend le plan à jour plutôt que d'écrire ce qui n'a pas été vu.
+
+   Même esprit que l'écran de correspondance des connecteurs : rien ne
+   s'écrase en silence. */
+function RenommageModal({ open, item, cle, type, notify, onClose, onDone }){
+  const [nouveau,setNouveau] = useState("");
+  const [plan,setPlan]       = useState(null);
+  const [bilan,setBilan]     = useState(null);
+  const [busy,setBusy]       = useState("");
+
+  useEffect(() => { setNouveau(""); setPlan(null); setBilan(null); setBusy(""); }, [item]);
+  if(!open || !item) return null;
+
+  const calculer = async () => {
+    setBusy("plan"); setPlan(null);
+    try{ const r = await api.planRenommage(cle, item.id, nouveau.trim()); setPlan(r.plan); }
+    catch(e){ notify(e.message, "err"); }
+    setBusy("");
+  };
+
+  const appliquer = async () => {
+    setBusy("apply");
+    try{
+      const r = await api.renommerCode(cle, item.id, plan.nouveau, plan.mode, plan.jeton);
+      setBilan(r);
+      notify(`Code ${r.mode === "fusionner" ? "fusionné" : "renommé"} — `
+        + `${r.total} ligne(s) réécrite(s)`, "ok");
+    }catch(e){
+      /* Le plan a bougé : on le remplace par celui que le serveur renvoie,
+         et l'utilisateur revalide sur ce qu'il voit réellement. */
+      if(e.payload?.plan) setPlan(e.payload.plan);
+      notify(e.message, "err");
+    }
+    setBusy("");
+  };
+
+  const fusion = plan?.mode === "fusionner";
+  return (
+    <Modal open wide onClose={onClose}
+      title={`Renommer le code — ${item.code}`}
+      subtitle={`${type?.label} · réservé au super-utilisateur`}
+      footer={<>
+        <Btn kind="sec" onClick={onClose}>{bilan ? "Fermer" : "Annuler"}</Btn>
+        {!bilan && <Btn kind={fusion ? "danger" : "primary"} icon={ArrowRightLeft}
+          disabled={!plan || busy === "apply"} onClick={appliquer}>
+          {busy === "apply" ? "Application…"
+            : plan ? `Valider et ${fusion ? "fusionner" : "appliquer"} — ${fmt(plan.total)} ligne(s)`
+                   : "Calculez d'abord la correspondance"}</Btn>}
+      </>}>
+      {bilan ? (
+        <div className="space-y-3">
+          <Note tone="ok">Code <b>{bilan.ancien}</b> → <b>{bilan.nouveau}</b> :
+            {" "}{fmt(bilan.total)} ligne(s) réécrite(s) dans {bilan.tables.length} table(s),
+            en une transaction.</Note>
+          {/* Le reliquat est la preuve : plus aucune ligne ne porte l'ancien code. */}
+          <Note tone={bilan.reliquat ? "err" : "ok"}>
+            {bilan.reliquat
+              ? `${fmt(bilan.reliquat)} ligne(s) portent encore l'ancien code — signalez-le.`
+              : "Contrôle d'après-coup : plus aucune ligne ne désigne l'ancien code."}</Note>
+          <TableWrap max="mh300">
+            <thead><tr><Th>Table</Th><Th>Colonne</Th><Th num>Lignes réécrites</Th></tr></thead>
+            <tbody>{bilan.tables.map(t2 => (
+              <tr key={t2.table + t2.colonne}><Td>{t2.label}</Td>
+                <Td className="text-slate-500 f115">{t2.table}.{t2.colonne}</Td>
+                <Td num>{fmt(t2.lignes)}</Td></tr>))}</tbody>
+          </TableWrap>
+          <Btn kind="sec" onClick={onDone}>Recharger la liste</Btn>
+        </div>
+      ) : (<>
+        <Note>Le code est la <b>clé de jointure</b> : le changer sans entraîner ce qui le porte
+          laisserait des lignes désigner un code disparu. Ici, la correspondance est calculée
+          d'abord, montrée ensuite, et appliquée <b>en une transaction</b> — la table maîtresse et
+          toutes ses filles, ou rien.</Note>
+        <div className="grid grid-cols-2 gap-x-4 items-end">
+          <Field label="Code actuel"><Input value={item.code} readOnly disabled /></Field>
+          <Field label="Nouveau code"
+            hint="S'il est déjà pris dans cette liste, l'opération devient une FUSION">
+            <Input value={nouveau} onChange={e=>{ setNouveau(e.target.value); setPlan(null); }}
+              placeholder="Nouveau code" /></Field>
+        </div>
+        <Btn kind="sec" icon={Search} disabled={!nouveau.trim() || busy === "plan"} onClick={calculer}>
+          {busy === "plan" ? "Calcul…" : "Calculer la correspondance"}</Btn>
+
+        {plan && (
+          <div className="mt-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <Badge tone={fusion ? "r" : "b"}>{fusion ? "Fusion" : "Renommage"}</Badge>
+              <span className="f13 text-slate-700">
+                <b>{plan.ancien}</b> → <b>{plan.nouveau}</b>
+                {fusion && plan.cible ? <> (item existant « {plan.cible.label} »)</> : null}</span>
+            </div>
+            {plan.avertissements.map((a,i) => (
+              <Note key={i} tone={fusion ? "err" : "warn"}>{a}</Note>))}
+            {!plan.correspondances.length
+              ? <Empty icon={ArrowRightLeft} title="Aucune ligne à réécrire"
+                  text="Seul l'item lui-même changera de code." />
+              : <TableWrap max="mh300">
+                  <thead><tr><Th>Table concernée</Th><Th>Colonne</Th>
+                    <Th>Valeur actuelle</Th><Th>Deviendra</Th><Th num>Lignes</Th></tr></thead>
+                  <tbody>{plan.correspondances.map(c => (
+                    <tr key={c.table + c.colonne}>
+                      <Td className="font-medium text-slate-800">{c.label}</Td>
+                      <Td className="text-slate-500 f115">{c.table}.{c.colonne}</Td>
+                      <Td><Badge tone="n">{c.de}</Badge></Td>
+                      <Td><Badge tone="b">{c.vers}</Badge></Td>
+                      <Td num className="font-semibold">{fmt(c.lignes)}</Td></tr>))}</tbody>
+                </TableWrap>}
+            <p className="f115 text-slate-500">Rien n'est écrit tant que vous n'avez pas validé.
+              Si la base change d'ici là, la validation est refusée et la correspondance recalculée.</p>
+          </div>)}
+      </>)}
+    </Modal>);
 }
 
 /* Le refus de suppression, montré en clair. Il énumère ce qui retient l'item —
