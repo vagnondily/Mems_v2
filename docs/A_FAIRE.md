@@ -1216,7 +1216,7 @@ contenu à droite :**
 |---|---|
 | Organisation | Général · Pays · Bureaux · Périmètre des bureaux |
 | Référentiels géographiques | Localités (+ import shapefile/contours) |
-| Référentiels M&E | **Activités** · Indicateurs · Calculs · Rations · Codes d'identification |
+| Référentiels M&E | **Activités** · Indicateurs (**CRF** + **XLSForm/processus**) · Calculs · Rations · Codes d'identification |
 | Sources de données | ODK Central · Connecteurs |
 | Rapports | Modèles de rapport |
 | Système | **Mon compte** · API · Utilisateurs · À propos |
@@ -1604,6 +1604,26 @@ L229). C'est la matière de « les coordonnées GPS qui ressortiront des data se
 ---
 
 ## Chantier P — Aligner les indicateurs sur le cadre RBM
+
+**DEUX SOUS-MODULES d'indicateurs (décision du 01/08/2026).** Le référentiel d'indicateurs se
+scinde en deux, parce qu'ils n'ont ni la même origine ni le même usage :
+
+- **CRF** — indicateurs **outcome et output** (y compris *other output*). Source : la WFP
+  Indicator Master List et le logframe pays approuvé (CM-L005), avec la table de passage
+  ancien/nouveau CRF. Usage : redevabilité et rapports de résultats (ACR, bailleurs). C'est
+  l'objet du présent chantier P (niveau de résultat, Strategic Outcome → Activity → Output,
+  baseline/cible/réalisé, moyens de vérification).
+- **XLSForm / suivi de processus** — indicateurs **calculés depuis les soumissions** de
+  collecte (Kobo/MoDa mappées), tirés des XLSForms et des scripts QC. Usage : les **dashboards
+  de couverture et de conformité par activité** (chantier T). Ce ne sont pas des indicateurs
+  de résultat : ils mesurent la QUALITÉ DE MISE EN ŒUVRE (un site a-t-il été suivi, le
+  formulaire est-il complet, l'indice de conformité, le scorecard).
+
+Les deux vivent dans le même écran Paramètres → Indicateurs, en deux sous-onglets, et
+alimentent des sorties différentes (CRF → rapports de résultats ; processus → dashboards de
+suivi). Ils partagent la mécanique (un indicateur porte code, libellé, unité, méthode de
+calcul, désagrégations) mais pas la source ni la destination. Le chantier P couvre le CRF ;
+le volet processus est cadré au chantier T.
 
 Le classeur *Cadre M&E Résilience* et le PPTX RBM montrent ce qu'un indicateur doit porter.
 `indicators` (`001_init.sql:205-215`) porte `id, code, name, basket, unit, target, direction,
