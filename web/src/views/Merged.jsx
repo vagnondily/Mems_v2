@@ -8,6 +8,7 @@ import { CoveragePlan, DistributionActual, DistributionPlan, OutcomePlan, Overre
 import { ActualSummary, ImportView, OutcomeData, OutputData, ProcessData,
          Sources } from "./ActualData.jsx";
 import { SitesModule } from "./Settings.jsx";
+import { ProcessDashboard } from "./ProcessDashboard.jsx";
 import MreView from "./Mre.jsx";
 import Soumissions from "./Soumissions.jsx";
 import TpmView from "./Tpm.jsx";
@@ -54,7 +55,8 @@ function useVolet(initial = "plan"){
    couverture, et sur quels paramètres cette couverture est calculée. */
 export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
   const [volet, setVolet] = useVolet();
-  const items = [["summary","Résumé global"],["monitoring","Suivi des sites"],
+  const items = [["summary","Résumé global"],["dashboard","Tableau de bord"],
+    ["monitoring","Suivi des sites"],
     ["mre","Plan MRE et budget"],["tpm","Suivi tiers"],
     ["coverage","Couverture et MMR"],
     ["sites","Registre des sites"],["params","Paramètres de couverture"]];
@@ -65,6 +67,8 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
       <Tabs items={items} value={sub} onChange={setSub} />
 
       {sub==="summary" && <ActualSummary db={db} />}
+
+      {sub==="dashboard" && <ProcessDashboard db={db} />}
 
       {sub==="monitoring" && (<>
         <Volet value={volet} onChange={setVolet}

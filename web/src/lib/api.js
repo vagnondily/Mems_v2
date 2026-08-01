@@ -125,6 +125,10 @@ export const api = {
   caseload:     (q="")            => call("GET", `/caseload${q}`),
   caseloadTags: (year)            => call("GET", `/caseload/tags?year=${year}`),
   saveCaseload: (rows)            => call("PUT", "/caseload", { rows }),
+  targeting:    (q="")            => call("GET", `/targeting${q}`),
+  addTargeting: (corps)           => call("POST", "/targeting", corps),
+  delTargeting: (id)              => call("DELETE", `/targeting/${encodeURIComponent(id)}`),
+  targetingExtract:(q="")         => fetchBlob(`/targeting/extract${q}`),
 
   importKinds:    ()              => call("GET", "/import/kinds"),
   /* `extra` porte les paramètres propres à un type d'import — le référentiel, pour

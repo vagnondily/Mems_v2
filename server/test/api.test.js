@@ -1138,6 +1138,59 @@ test("population et ciblage : les valeurs incohérentes sont rejetées avec leur
   assert.equal(r.body.crees + r.body.modifies, 0);
 });
 
+test("ciblage daté : plusieurs ciblages par unité, on garde tout et on montre le dernier", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(t);
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${t}`);
+  const year = st.body.year;
+  const unite = (await request(app).get(`/api/caseload?level=adm3&year=${year}`)
+    .set("Authorization", `Bearer ${t}`)).body.rows[0];
+
+  /* Deux ciblages datés pour la MÊME unité et activité — le second plus récent. */
+  const c1 = await request(app).post("/api/targeting").set("Authorization", `Bearer ${t}`)
+    .send({ year, activity_tag:"URT", targeted_at:"2026-02-01", gender:"Femmes", reason:"Sécheresse",
+      units:[{ geo_pcode:unite.pcode, level:"adm3", targeted:1000, targeted_hh:200 }] });
+  assert.equal(c1.status, 200, JSON.stringify(c1.body));
+  assert.equal(c1.body.crees, 1);
+  const c2 = await request(app).post("/api/targeting").set("Authorization", `Bearer ${t}`)
+    .send({ year, activity_tag:"URT", targeted_at:"2026-05-01", gender:"Tous", reason:"Cyclone",
+      units:[{ geo_pcode:unite.pcode, level:"adm3", targeted:1500, targeted_hh:300 }] });
+  assert.equal(c2.body.crees, 1);
+
+  /* Les deux ciblages coexistent ; le plus récent porte dernier=true. */
+  const all = await request(app).get(`/api/targeting?year=${year}&tag=URT`).set("Authorization", `Bearer ${t}`);
+  assert.equal(all.status, 200);
+  const pour = all.body.rows.filter(x => x.pcode === unite.pcode && x.tag === "URT");
+  assert.equal(pour.length, 2, "les DEUX ciblages sont conservés");
+  const dernier = pour.find(x => x.dernier);
+  assert.ok(dernier, "l'un est marqué dernier");
+  assert.equal(dernier.targetedAt, "2026-05-01", "le dernier est le plus récent");
+  assert.equal(dernier.reason, "Cyclone");
+  assert.equal(pour.filter(x => x.dernier).length, 1, "un seul dernier par unité × activité");
+
+  /* onlyLast ne rend que le dernier. */
+  const last = await request(app).get(`/api/targeting?year=${year}&tag=URT&onlyLast=1`).set("Authorization", `Bearer ${t}`);
+  assert.ok(last.body.rows.every(x => x.dernier));
+
+  /* L'extract prérempli est un vrai classeur, et ne reprend que les unités ciblées. */
+  const xls = await request(app).get(`/api/targeting/extract?year=${year}&tag=URT`)
+    .set("Authorization", `Bearer ${t}`).buffer(true)
+    .parse((res, cb) => { const d = []; res.on("data", c => d.push(c)); res.on("end", () => cb(null, Buffer.concat(d))); });
+  assert.equal(xls.status, 200);
+  assert.match(xls.headers["content-type"], /spreadsheetml/);
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(xls.body);
+  const ws = wb.getWorksheet("Ciblage");
+  assert.ok(ws, "la feuille Ciblage existe");
+  /* En-tête + une seule ligne : le dernier ciblage de la seule unité ciblée. */
+  assert.equal(ws.rowCount, 2, "seules les unités ciblées figurent dans l'extract");
+
+  /* La raison est une liste éditable déclarée au registre. */
+  const raisons = await request(app).get("/api/listes/raison_ciblage").set("Authorization", `Bearer ${t}`);
+  assert.equal(raisons.status, 200);
+  assert.ok(raisons.body.items.some(x => x.code === "FSRP"), "la liste des raisons contient FSRP");
+});
+
 /* Chantier A4 — `PUT /api/caseload` n'appliquait aucun contrôle de périmètre alors
    que le même flux par import en applique un ligne à ligne : `scopeOf` était importé
    dans la route mais ne servait qu'en lecture. */
