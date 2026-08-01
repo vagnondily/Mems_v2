@@ -81,6 +81,14 @@ function classify(v, max){
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g,
   c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 
+/* Même précaution que lib/taches.js : `localStorage` n'est pas une variable
+   globale sous le DOM simulé des tests (il ne vit que sur `window`), et la
+   navigation privée le refuse. On passe toujours par cette porte. */
+const stockageLocal = () => {
+  try{ return typeof window !== "undefined" ? window.localStorage : null; }
+  catch(e){ return null; }
+};
+
 export default function MapView({ db, me, notify, go }){
   const [rows, setRows] = useState([]);
   const [bounds, setBounds] = useState(null);
@@ -92,6 +100,15 @@ export default function MapView({ db, me, notify, go }){
   const [sizeByBenef, setSizeByBenef] = useState(true);
   const [f, setF] = useState({ office_id:"", adm1:"", adm2:"", activity_tag:"", status:"Active" });
   const [fillMode, setFillMode] = useState("presence");
+  /* Les contours peuvent s'escamoter entièrement — bordures comprises, pas
+     seulement le remplissage que `fillMode` sait déjà éteindre. Demandé par le
+     propriétaire : le découpage de démonstration dessine des rectangles qui
+     bouchent la vue. Le choix survit au rechargement, comme le fond de carte :
+     l'utilisateur qui les a fermés ne veut pas les rouvrir à chaque visite. */
+  const [contours, setContours] = useState(() => stockageLocal()?.getItem("carte.contours") !== "0");
+  const basculerContours = (on) => { setContours(on);
+    if(!on) setSelShape(null);     /* une unité invisible ne reste pas « sélectionnée » */
+    try{ stockageLocal()?.setItem("carte.contours", on ? "1" : "0"); }catch(e){ /* stockage privé */ } };
   const [geoLevel, setGeoLevel] = useState("adm2");
   const [shapes, setShapes] = useState({ features:[], extent:null, tronque:false, loading:false });
   const [selShape, setSelShape] = useState(null);
@@ -329,7 +346,13 @@ export default function MapView({ db, me, notify, go }){
     if(!L.Browser.svg) return;
     let map;
     try{
+      /* Zoom à la molette, au double clic et au pincement : ce sont les valeurs
+         par défaut de Leaflet, écrites ici noir sur blanc parce que le
+         propriétaire du produit a demandé expressément le zoom à la souris —
+         personne ne doit pouvoir les retirer par accident sans que la ligne
+         le dise. */
       map = L.map(boxRef.current, { zoomControl:true, attributionControl:true,
+        scrollWheelZoom:true, doubleClickZoom:true, touchZoom:true,
         worldCopyJump:false });
     }catch(e){ return; }           /* conteneur absent : on n'affiche pas de carte */
     map.setView([-18.9, 47.5], 5); /* repli avant tout cadrage réel */
@@ -398,6 +421,7 @@ export default function MapView({ db, me, notify, go }){
     const g = shpRef.current;
     if(!g) return;
     g.clearLayers();
+    if(!contours) return;          /* escamotés : rien à dessiner, la vue est libre */
     for(const feat of shapes.features){
       const pc = feat.properties.pcode;
       const a = themeValues.par?.[pc];
@@ -415,7 +439,7 @@ export default function MapView({ db, me, notify, go }){
       couche.bindTooltip(esc(feat.properties.name), { sticky:true });
       g.addLayer(couche);
     }
-  }, [shapes.features, fillMode, themeValues, selShape, pret]);
+  }, [shapes.features, fillMode, themeValues, selShape, pret, contours]);
 
   /* Points de site. Un cercle plutôt qu'une épingle : le rayon porte le nombre
      de bénéficiaires et la couleur porte le mode thématique choisi — deux
@@ -522,10 +546,16 @@ export default function MapView({ db, me, notify, go }){
             empty="Tous les statuts" options={[["Active","Actifs"],["Inactive","Inactifs"]]} className="mi-py1 mi-xs mi-wauto" />
           <span className="w-px h-6 bg-slate-300 mx-1" />
           {db.geoVersion?.geom?.units > 0 && (<>
-            <Select value={geoLevel} onChange={e=>setGeoLevel(e.target.value)}
-              options={GEO_LEVELS} className="mi-py1 mi-xs mi-wauto" />
-            <Select value={fillMode} onChange={e=>setFillMode(e.target.value)}
-              options={FILL_MODES} className="mi-py1 mi-xs mi-wauto" />
+            <label className="flex items-center gap-1.5 f115 text-slate-600"
+              title="Afficher ou masquer les limites administratives — bordures et remplissage">
+              <input type="checkbox" checked={contours} onChange={e=>basculerContours(e.target.checked)} />
+              contours</label>
+            {contours && (<>
+              <Select value={geoLevel} onChange={e=>setGeoLevel(e.target.value)}
+                options={GEO_LEVELS} className="mi-py1 mi-xs mi-wauto" />
+              <Select value={fillMode} onChange={e=>setFillMode(e.target.value)}
+                options={FILL_MODES} className="mi-py1 mi-xs mi-wauto" />
+            </>)}
             <span className="w-px h-6 bg-slate-300 mx-1" />
           </>)}
           <Select value={colorMode} onChange={e=>setColorMode(e.target.value)}
@@ -609,7 +639,7 @@ export default function MapView({ db, me, notify, go }){
           </div>
 
           <aside className="w-72 shrink-0 border-l border-slate-200 p-4 mh68 overflow-auto">
-            {fillMode !== "none" && !!shapes.features.length && (
+            {contours && fillMode !== "none" && !!shapes.features.length && (
               <div className="mb-4">
                 <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">
                   {(FILL_MODES.find(m=>m[0]===fillMode)||[])[1]}

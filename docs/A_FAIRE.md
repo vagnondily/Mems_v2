@@ -21,7 +21,7 @@ Ce document décrit un état daté. Ce qui a été livré depuis est consigné i
 qui le porte — le corps du document reste écrit au moment de l'audit, et le lire sans ce
 journal donnerait une image fausse de ce qui reste à faire.
 
-**Tests au dernier commit : 177 côté serveur, 38 côté web, 0 échec. Audit de production :
+**Tests au dernier commit : 205 côté serveur, 39 côté web, 0 échec. Audit de production :
 aucun avis grave, ni serveur ni web.**
 
 | Commit | Ce qui est livré | Effet sur ce document |
@@ -34,7 +34,8 @@ aucun avis grave, ni serveur ni web.**
 
 | `7239bbe` | **Codes externes multiples** (migration 018 : un site peut être désigné différemment par chaque formulaire), import d'une table de correspondance, **rattachement manuel tracé** avec création d'alias à la volée, et **score de risque aligné sur la date qui fait foi** | **SMP devient rattachable dès que le bureau fournit sa table.** Le rattachement manuel est protégé de tout rejeu et de tout re-versement. La divergence entre score, cloche et carte est résorbée : les trois lisent la même date. |
 | `8ebe2f1` | **Exécution de scripts R et SPSS sur le serveur** (`lib/moteur.js`, `POST /api/scripts/:id/executer`) et **console d'administration de l'instance** (`/api/admin` : sessions, journal de sécurité, santé du fichier de base, sauvegarde et restauration) | Répond aux deux dernières demandes. **Le rôle `super` cesse d'être un doublon d'`admin`** : `requireSuper` (lib/auth.js) marque la frontière que la matrice `CAPS` ne savait pas exprimer — administrer *l'installation* et non son contenu. **La sauvegarde et la restauration demandées en Paramètres sont livrées ici**, où elles ont leur place. |
-| *(ce commit)* | **La visite saisie à la main devient l'exception justifiée** (migration 019, `lib/visites.js`) et **référentiel de codes d'identification importable** (migration 020, `lib/codes.js`, type d'import `codes`, écran Paramètres → Référentiels de codes) | **SMP est rattachable, pour de bon** : le référentiel chargé pose les alias, et le résolveur rattache la soumission par son code école à confiance 1,0. La ligne « SMP reste non rattachable » du bas de ce document tombe. **Un défaut de destruction de données est fermé** : décocher un mois effaçait la visite du mois quelle qu'elle soit, y compris une visite ODK portant sa soumission. |
+| `03eb422` | **La visite saisie à la main devient l'exception justifiée** (migration 019, `lib/visites.js`) et **référentiel de codes d'identification importable** (migration 020, `lib/codes.js`, type d'import `codes`, écran Paramètres → Référentiels de codes) | **SMP est rattachable, pour de bon** : le référentiel chargé pose les alias, et le résolveur rattache la soumission par son code école à confiance 1,0. La ligne « SMP reste non rattachable » du bas de ce document tombe. **Un défaut de destruction de données est fermé** : décocher un mois effaçait la visite du mois quelle qu'elle soit, y compris une visite ODK portant sa soumission. |
+| *(ce commit)* | **Justificatif propre à chaque source de collecte** (migration 021, `lib/authSortante.js`) : schémas d'authentification déclarables (`porteur`/Bearer, `jeton`/Token pour Kobo, `basique`/Basic, session ODK Central renouvelée), **deux secrets** — un justificatif durable et un jeton de session court qui en dérive, mis en cache et renouvelé —, épreuve de connexion réelle qui distingue les cinq causes d'échec, **zoom souris et bascule des contours sur la carte**, et la **synthèse des 27 documents** reçus (indicateurs CRF, rations PDD, shapefile, règles QC) | Répond à « il faut un token à part l'API » : le schéma est une donnée de la source, plus une hypothèse du code — **Kobo, jusqu'ici déclarable mais muet, envoyait `Bearer` au lieu de `Token`**. Le « Jeton général » ODK, qui promettait un repli que le serveur refusait, est supprimé. Ouvre les **chantiers R** (catalogue de rations, fiche de saisie PDD) et **S** (réorganisation produit + UI), et la **synthèse documentaire** transforme les chantiers N et P d'« inventer » en « importer ». |
 
 ### La visite à la main : ce qui change, et pourquoi
 
@@ -387,6 +388,50 @@ de code ». → `npm i better-sqlite3@13.0.2` (embarque SQLite 3.53.4), puis `np
 - Déjà à jour, à ne pas toucher : `multer@2.2.0`, `helmet@8.3.0`, `jsonwebtoken@9`,
   `postcss`, `autoprefixer`.
 
+### B7. Alerte PostCSS `PreviousMap` (signalée le 01/08/2026) — non atteignable ici
+
+**Le mécanisme rapporté est réel.** `postcss` lit l'annotation `/*# sourceMappingURL=… */`
+de toute CSS passée à `process()` et déréférence ce chemin sur le disque, sans schéma ni
+garde de traversée (`lib/previous-map.js`, `loadFile`). Une CSS **contrôlée par un
+attaquant** peut ainsi faire lire un fichier arbitraire du processus Node et en fuiter les
+~10 premiers octets via le message d'un `SyntaxError` de `JSON.parse` (plus un oracle
+d'existence de fichier et un vecteur de déni de service).
+
+**Vérifié : le vecteur n'existe pas dans MEMS.** L'attaque exige que de la CSS non fiable
+atteigne `postcss().process()` — les cas cités (thèmes CMS, feuilles de style téléversées,
+rendu de commentaires) sont tous des pipelines de CSS utilisateur au moment de l'exécution.
+Dans MEMS :
+- `postcss` est une **devDependency** de `web/` (8.5.25), jamais une dépendance de
+  production, et **absente du serveur** — rien de ce qui est déployé ne l'embarque ;
+- il ne tourne **qu'au build**, via Vite/Tailwind (`web/postcss.config.js`), sur la CSS
+  **du projet** — jamais sur une entrée venue de l'extérieur ;
+- **aucun code applicatif** n'appelle `postcss().process()` (vérifié par recherche).
+
+Autrement dit, l'entrée de PostCSS n'est jamais sous le contrôle d'un tiers : elle est le
+code source de première main, compilé sur une machine de build. La faille ne peut pas se
+déclencher. C'est aussi pourquoi l'audit de production reste propre — postcss n'est pas dans
+la surface auditée.
+
+**Condition de réveil, à surveiller** : cette alerte redeviendrait pertinente le jour où
+MEMS traiterait de la CSS fournie par un utilisateur (thème personnalisable, feuille de
+style téléversée, éditeur de rapport rendant de la CSS libre). À ce moment-là — et
+seulement là — il faudrait soit passer `{ map: false }` à `process()`, soit assainir
+l'annotation avant, soit relire l'état amont de PostCSS (le rapport est disputé côté
+mainteneur, qui tient la lecture des source maps pour un comportement voulu d'un outil de
+build). Tant que la surface reste « build-time, CSS de première main », il n'y a rien à
+corriger.
+
+### B8. Minuteur relâché avant la lecture du corps (`odkClient.js`, `foundry.js`)
+
+Relevé en marge du lot d'authentification, hors de son périmètre : `fetchJson` (odkClient)
+et `texteBorne`/`res.json()` (foundry) désarment leur délai **dès l'arrivée des en-têtes**,
+puis lisent le corps sans échéance. Une source qui répond `200` puis se tait fige la requête
+Express en cours. Le lot a corrigé la variante **grave** de ce défaut dans `lib/authSortante.js`
+(là où la promesse figée restait dans `enVol` et rendait la source injoignable pour tout le
+serveur — cf. le test 151) ; ces deux-ci n'ont pas cette amplification, mais restent à
+aligner sur `fetchBorne`, qui lit désormais le corps sous le même délai. Petit, isolé, sans
+CVE — à traiter au prochain passage sur ces fichiers.
+
 ---
 
 ## Chantier C — Chaîne de construction et de livraison
@@ -432,8 +477,11 @@ saisir dans le vide, n'est pas tenable.
 
 S'y ajoutent :
 - **« Générer le plan »** (`Planning.jsx:435-456`) n'écrit rien côté serveur.
-- **Le « Jeton général » ODK** : le champ et le badge « présent » (`Settings.jsx:1659,1677`)
-  ne correspondent à aucune persistance (`collections.js:199-203`).
+- ~~**Le « Jeton général » ODK**~~ **— réglé.** Le champ promettait un repli que le serveur
+  refusait (`odkToken` est dans `FORBIDDEN`, le jeton général ne quittait jamais le
+  navigateur) : le lot d'authentification des sources l'a **supprimé** plutôt que raccommodé.
+  Chaque source ODK porte désormais son propre justificatif, et le badge suit ce que le
+  serveur détient réellement.
 
 ---
 
@@ -839,6 +887,243 @@ style impérative).
 → Voir **Q23**.
 
 ---
+
+# Documents de référence reçus le 01/08/2026
+
+Vingt-cinq fichiers déposés sur `main`, analysés en totalité le jour même (sept lectures
+parallèles, chaque fichier ouvert pour de vrai — feuilles comptées, variables citées).
+L'ensemble change la nature du backlog : **les référentiels qui manquaient existent
+désormais dans le dépôt**, et trois chantiers passent de « inventer » à « importer ».
+
+## Ce que chaque famille apporte
+
+**Les quatre applications QC (R/Shiny) et la syntaxe SPSS** sont le contrôle qualité réel
+de l'équipe, et elles partagent une même architecture, directement transposable : trois
+familles de règles (A erreurs dures, B cohérences à confirmer, C signaux d'intégrité
+escaladés HORS score), un score agent identique partout (40 % erreurs + 20 % cohérence +
+30 % complétude + 10 % bonnes pratiques, seuils 85/70), la lecture sans recalcul des scores
+calculés sur l'appareil, et le cadrage par activité (une règle ne s'évalue que si l'activité
+est présente dans la visite). Environ **80 règles** avec leurs seuils métier (écart registre
+10 %, sachets LQ=15/MQ=30, VSLA 10–25 membres, PB 125 mm ×2…) sont prêtes à devenir un
+référentiel de règles QC évalué à l'ingestion ODK — les seuils en paramètres, jamais en dur.
+Deux découvertes au passage : `app.R` est un outil de **validation GPS point-dans-polygone**
+contre l'adm4 (à porter dans le rattachement MEMS), et le script MIARO calcule son taux
+d'erreur autrement que les trois autres — le même agent n'aurait pas le même score selon
+l'application. MEMS, en unifiant, corrigera cette incohérence.
+
+**Les cinq classeurs d'indicateurs** forment une chaîne complète : Master List corporate
+v2.8 (CRF 2022-2025, 90 outcome + 137 output + 21 transversaux, métadonnées riches) →
+**table de passage ancien/nouveau CRF** → **logframe pays MG03 approuvé HQ** (extraction
+COMET du 21/07/2026, CRF 2026-2029) → logframe bailleur FSRP → kits programme (C4PX/CVA).
+La tension à gérer : la Master List décrit l'ANCIEN cadre, le logframe pays le NOUVEAU —
+la table de passage est donc une **table de base de données**, pas un document. Ordre
+d'import : le logframe CM-L005 d'abord (la liste fermée et approuvée du bureau, avec ses
+codes WBS `MG03.01.011.URT1…`), la Master List pour les métadonnées, le crosswalk pour la
+migration. **Le chantier P cesse d'être une invention : c'est un import.**
+
+**CM-A003 + le tableau de bord HTML** sont les deux moitiés à réunir : les effectifs COMET
+(grain commune × mois × activité × groupe, 2026-01→06) et la qualité du processus (grain
+site × visite). Le CM-A003 n'a **aucun p-code** — rattachement par noms Admin1-3, et le
+`.dbf` du shapefile fournit justement la correspondance officielle nom↔p-code (avec 166
+communes homonymes qui interdisent le nom seul). Règle métier confirmée : bénéficiaires
+uniques = MAX mensuel par commune × activité × groupe. Le tableau de bord HTML est la
+**maquette cible** des écrans de suivi de processus : indice de conformité par visite,
+modules configurables, page agent avec seuils.
+
+**Les deux classeurs Résilience de 12 Mo sont un doublon strict** (diff = 0 sur 23 796
+cellules) : une seule source, le cadre corporate 2020-2022, dont le schéma de métadonnées
+à 16 colonnes étend la table d'indicateurs, et ~450 indicateurs additionnels documentés.
+
+**Les trois PDF** sont les spécifications métier des programmes que les scripts QC
+contrôlent. Le guide UNICEF d'estimation de l'émaciation est **la spécification complète
+du module caseload manquant** — arbre de décision, formules, et les K-values de 7 districts
+en annexe, importables comme référentiel. Le manuel des cantines donne la ration SMP
+officielle (céréale 140 g + légumineuse 30 g + huile 10 g + MNP 0,4 g /élève/jour), le
+dictionnaire des fiches 01a→04, et la norme « chaque école visitée ≥ 2 fois par année
+scolaire » — un seuil concret pour « déjà suivi ».
+
+**Les quatre présentations** : CARI (formules et seuils officiels de l'indice de sécurité
+alimentaire, couleurs imposées comprises — à implanter comme chaîne de formules type et à
+faire tourner via le moteur R/SPSS avec les scripts officiels du PAM) ; Orientation MIARO
+(**les listes de référence du MRE nutrition — le chantier N tient là ses réponses** :
+catégories U2/FE/FA/FEFA, seuils couverture > 70 %, participation > 80 %, abandon < 15 %) ;
+stratégie SMP 2025 (ration confirmée, cycle de vie d'une école, hiérarchie scolaire
+DREN > CISCO > ZAP distincte d'adm1-4) ; Résilience (typologie de sites à étendre : OPB,
+chantier FFA, site RRT, unité de transformation).
+
+**Le shapefile est complet et cohérent** : 1 701 polygones = 1 701 lignes attributaires,
+`ADM3_PCODE` unique, WGS 84 ; le `.shx` manquant se régénère mécaniquement. Le référentiel
+actuel de la base est un **jeu de démonstration** (10 adm3 synthétiques, rectangles) que ce
+fichier remplace. Bonus : les drapeaux de ciblage par commune (`PECMAM` ×225, `PLW` ×33,
+`PLW_child` ×32, `Activités`) sont une couche de ciblage prête pour la carte et le caseload.
+Attention au basculement de millésime : les sites rattachés aux p-codes de démonstration
+deviendront orphelins — la reprise doit être outillée, pas subie.
+
+## Ce que cela ferme, ouvre ou déplace
+
+- **Chantier P (modèle d'indicateurs)** : fermé comme problème de conception, rouvert comme
+  chantier d'import — logframe CM-L005, Master List, crosswalk, schéma résilience.
+- **Chantier N (listes MRE)** : les réponses sont dans l'orientation MIARO et le cadre
+  résilience ; reste à les charger.
+- **Caseload (méthode non outillée)** : spécification complète reçue (guide UNICEF),
+  K-values importables.
+- **Nouveau chantier : moteur de règles QC** sur les soumissions — ~80 règles réelles,
+  architecture commune aux quatre applications, familles A/B/C, cadrage par activité,
+  scores appareil lus sans recalcul. Les signaux d'intégrité (fraude, EAS/SEA) exigent un
+  circuit d'escalade distinct du score, qui n'existe pas encore dans MEMS.
+- **Nouveau référentiel : bureaux de terrain** (codes 1→10 et noms, dans `app.R`), et
+  deuxième puis troisième cas du référentiel de codes : `Adm4Code_MAM` (CRENAM) après les
+  codes école SMP.
+
+## Les deux PDD reçus le même jour : la liste des rations, lue dans les formules
+
+`1.PDD_janvier_mars_2023_NPA Mitigation.xlsx` (474 lignes, feuille « Ration » explicite)
+et `PDD_Global_Novembre.xlsx` (3 911 lignes, 486 communes, 2 247 sites — les grammages y
+sont des constantes et des formules, pas une feuille). Les deux confirment **exactement la
+formule du module Rations de MEMS** : `tonnage = ration (g/pers/j) × jours × effectif ÷
+1 000 000`, multiplicateur ménage = 5 (en GFD, « ménage » = bénéficiaires ÷ 5 ; en
+nutrition et cantines, la personne compte pour elle-même).
+
+**Rations officielles à charger dans Paramètres → Rations** (g/personne/jour) :
+
+| Activité | Vivres | Jours | Espèces |
+|---|---|---|---|
+| GD/GFD (par ménage ×5) | riz 400 + LS 60 + huile 35 | 30 (demi : 15) | 120 000 Ar/ménage (150 000 cyclone 2023) |
+| HH protection | riz 400 + LS 60 | 30 | — |
+| DRR | riz 400 + LS 60 | 20 | — |
+| FFA / Résilience (×5) | riz 400 + LS 60 + huile 35 | 20 | 60 000 Ar (2023) · 120 000 Ar/30 j (CAR 2024) |
+| MAM traitement | P Sup 100 | 30 (2024 : 30/60/90) | — |
+| MAM traitement 2 | CSB++ 200 | 30 | — |
+| PREVMA/MIARO enfants | P Doz 50 | 30 (90 trimestriel, 120 urgence) | — |
+| PREVMA FEFA | huile 20 + CSB+ 200 | 30 | — |
+| PEC FEFA | huile 25 + CSB+ 250 | 30 | — |
+| HIV/TB | huile 20 + CSB+ 200 | 30 | 100 000 Ar |
+| Stunting enfant (NPA) | P Doz 50 (variante LNS 20 en 2023) | 30 | 21 000 Ar/enfant/mois |
+| Stunting FEFA | huile 20 + CSB+ 200 | 30 | 60 000 Ar/mois |
+| SMP cantines | riz 140 + LS 30 + huile 10 | 60/trimestre · LS 13 j si hybride | 315 Ar/élève/j (2023) · 22 088 Ar/période (2024) |
+
+**Les contradictions relevées entre les fichiers** — SMP sans MNP et 60 j au lieu de 175 ;
+deux rations FEFA (200+20 en PrevMa, 250+25 en PEC) ; CSB+ 200 *et* CSB++ 200 sur une même
+ligne 2023 ; cash GD ×2 ou ×1 selon les lignes de novembre 2024 — **ont reçu leur réponse
+du propriétaire le 01/08** : il se peut qu'il y ait eu des conventions arbitraires de
+changement de rations. Elles ne sont donc PAS des erreurs à arbitrer : ce sont des
+conventions datées, et la conséquence architecturale est nette — **les rations ne se codent
+pas, elles se cataloguent**. Voir le chantier ci-dessous.
+
+## Chantier R — Catalogue de rations et fiche de saisie du PDD (demande du 01/08/2026)
+
+La demande, reformulée : *« une ration, une ligne »* dans un module de création de rations ;
+dans le PDD, on **sélectionne** dans ce catalogue ; le **nombre de jours reste saisi par
+l'utilisateur** à chaque ligne parce qu'il change tout le temps (les PDD réels le prouvent :
+30, 60, 90, 120 jours selon les livraisons) ; et une ligne de PDD (une commune × une
+activité) porte **plusieurs denrées et rations**, saisies dans une fiche (userform) avec
+sélection multiple des denrées et, en dessous, un groupe où chaque denrée reçoit sa ration,
+extensible.
+
+Ce que cela donne, concrètement :
+
+1. **Catalogue de rations** (Paramètres → Rations, refondu) : une ligne = un libellé de
+   convention (« GD standard », « Stunting FEFA AMB jan-2023 »…), une denrée, un grammage
+   par personne et par jour, une activité par défaut facultative, une note. CRUD complet,
+   révisions comme partout. Les ~30 conventions extraites des deux PDD sont la première
+   charge du catalogue — **toutes**, y compris les variantes contradictoires, puisqu'elles
+   ont réellement servi, chacune datée par sa source.
+2. **La ligne de PDD compose** : activité, commune (p-code), effectifs, **jours saisis à la
+   main**, et une liste de couples (denrée, ration) — le grammage se présélectionne depuis
+   le catalogue et reste modifiable. Le tonnage se calcule par denrée puis en total :
+   `Σ ration × jours de la denrée × effectif ÷ 1 000 000`. Structure : table fille du PDD
+   (une ligne par denrée), pas une colonne unique.
+3. **La fiche de saisie (userform)** — précisée par le propriétaire le 01/08 : le **nombre
+   de jours se saisit EN HAUT** de la fiche et vaut pour toutes les denrées ; mais chaque
+   ligne de denrée peut **déroger** à ce chiffre, parce que les jours changent selon la
+   disponibilité des denrées — et une dérogation s'accompagne d'une **note explicative**
+   (obligatoire dès qu'on déroge : un chiffre qui s'écarte sans raison écrite redevient
+   une cellule Excel qu'on ne sait plus relire six mois après). Les PDD réels prouvent le
+   besoin : riz 60 j / légumineuses 13 j en cantine hybride. Le reste de la fiche :
+   sélection multiple des denrées en haut ; en bas, un groupe avec une ligne par denrée —
+   sélecteur de ration filtré par denrée + grammage modifiable + jours (hérités, barrés
+   d'une dérogation éventuelle) + aperçu du tonnage calculé ; bouton pour ajouter une
+   denrée. Le multiplicateur ménage (÷5 en GFD, personne = elle-même en nutrition/école)
+   est porté par l'activité, affiché, jamais silencieux.
+4. Au passage, les leçons de l'import : accepter les tags COMET (`URT_GD`, `URT_MAM`,
+   `NPA_STUN`…) dans `act_type`, ajouter la modalité hybride, arrondir les effectifs
+   décimaux en le disant.
+
+Dépendances : aucune — peut partir dès que le lot d'authentification a atterri. Les quatre
+« arbitrages » ci-dessus deviennent quatre lignes de catalogue parmi d'autres.
+
+## Chantier S — Réorganisation produit et interface (demande du 01/08/2026)
+
+La demande, dans les mots du propriétaire : faire de MEMS un outil « exploitable, facile à
+utiliser pour chaque type d'utilisateur », comparable aux plateformes du domaine (COMET,
+DHIS2, DevResults, ActivityInfo), en réorganisant ce qui existe — pas en ajoutant. Il dit
+ne pas réussir à formuler précisément ce qu'il a en tête ; la reformulation ci-dessous fait
+foi jusqu'à correction de sa part.
+
+### S1 — L'architecture d'information : chaque chose chez son métier
+
+Règle directrice donnée : **tout ce qui relève de l'analyse et des données va au
+Suivi-évaluation, sauf le PDD et les distributions qui restent au Programme.**
+
+- **Suivi-évaluation** devient l'espace de travail M&E complet : plans de suivi et visites,
+  soumissions ODK, **outcomes et indicateurs** (aujourd'hui éparpillés), **population et
+  ciblage** (aujourd'hui dans Programme), couverture, qualité des données (futur moteur QC),
+  analyses et scripts.
+- **Programme** garde l'opérationnel : PDD (avec le chantier R), distributions, réceptions.
+- Le ciblage est **mis en cohérence avec le PDD quand il existe** : sur une même commune ×
+  activité, l'écran confronte personnes ciblées et bénéficiaires planifiés, et montre
+  l'écart au lieu de laisser deux chiffres vivre chacun de leur côté.
+
+### S2 — La population : mise à jour et taux de glissement
+
+Système demandé explicitement : pouvoir **mettre à jour les effectifs de population** et,
+tant qu'aucun rapport validé sur l'évolution des populations bénéficiaires n'existe,
+**appliquer un taux de glissement entre les années** — c'est-à-dire projeter N+1 = N ×
+(1 + taux), par unité géographique ou globalement. Conséquences de conception :
+
+- chaque valeur de population porte un **statut de source** : recensement / projection par
+  taux / rapport validé — et la projection se distingue visuellement du constaté ;
+- appliquer un taux est un geste explicite, tracé (qui, quand, quel taux, depuis quelle
+  année), et réversible tant qu'un rapport validé ne l'a pas remplacé ;
+- quand un rapport validé arrive, il **remplace** la projection et le dit.
+
+### S3 — Paramètres et listes : regrouper, pas empiler
+
+Aujourd'hui ~16 onglets à plat. Cible : un **volet gauche de catégories** avec sous-onglets,
+le contenu à droite (maître-détail). Regroupement proposé : Organisation (général, pays,
+bureaux, périmètres) · Référentiels géographiques (localités, contours/shapefile) ·
+Référentiels M&E (indicateurs, calculs, rations, codes d'identification) · Sources de
+données (ODK Central, connecteurs) · Modèles de rapport · Système (API, utilisateurs, à
+propos). Même principe pour la gestion des listes : des sous-catégories au lieu d'un écran
+surchargé.
+
+### S4 — La passe de cohérence transversale
+
+Le reste de la discussion « professionnelle vs bricolage » : hiérarchie visuelle, densité,
+états vides qui disent quoi faire, chargements, vocabulaire uniforme entre écrans, parcours
+par type d'utilisateur (chargé M&E, point focal bureau, prestataire TPM, direction), clair/
+sombre, accessibilité de base. Un tour complet en tant qu'utilisateur final, écran par
+écran, avec grille de lecture : est-ce que je comprends où je suis, ce que je peux faire,
+ce qui s'est passé après mon clic.
+
+Position dans la séquence : **après** les chantiers fonctionnels en cours (authentification,
+shapefile, cadre de résultats, QC, chantier R) — c'est la passe finale voulue par le
+propriétaire (« une fois tout terminé on va s'attaquer au UI »).
+
+**Le format PDD comme gabarit d'import** : la logique de « Details » (1 ligne = lieu × mois
+× activité × modalité) est le bon modèle, mais le fichier réel est inutilisable tel quel —
+aucun p-code (noms seuls, casse variable), grain site plus fin que la clé MEMS, mois en
+toutes lettres, modalité « hybride » absente de l'énumération, bénéficiaires décimaux,
+en-têtes en ligne 3 ou 5. Le gabarit MEMS garde la logique et impose p-code + énumérations.
+Les fichiers réels portent aussi une leçon : l'énumération `act_type` du type d'import
+`pdd` (GD/PREVMA) est trop étroite — le PDD national 2024 porte déjà les tags COMET
+(`URT_GD`, `URT_PREV`, `URT_MAM`, `NPA_STUN`), il faut les accepter tels quels.
+
+Et une leçon d'outillage : les deux classeurs contiennent des **formules cassées ou
+décoratives** (taux de change pointant une cellule vide, blocs Février/Mars jamais lus par
+le XLOOKUP, jours recopiés en 31, 32, 33… au lieu de 30, tonnages saisis à la main qui ne
+recollent pas avec ration × jours). C'est l'argument le plus concret en faveur du calcul
+par MEMS : la formule vit à UN endroit, testée, au lieu de 3 911 cellules.
 
 # Documents de référence reçus le 31/07/2026
 

@@ -101,6 +101,7 @@ mems/
 │  │  ├─ lib/import.js         modèles Excel, réconciliation par clé, diff
 │  │  ├─ lib/scope.js          périmètre géographique — une seule définition
 │  │  ├─ lib/odkClient.js      client OData minimal pour tirer les soumissions ODK Central
+│  │  ├─ lib/authSortante.js   schémas d'authentification des sources — le seul fabricant d'en-tête
 │  │  ├─ import-geo.js         chargement du référentiel complet en ligne de commande
 │  │  ├─ link-geo.js           rapprochement des données existantes vers le référentiel
 │  │  ├─ import-odk-forms.js   enregistrement de sources ODK Central depuis leurs XLSForms
@@ -796,10 +797,16 @@ OData d'ODK Central (`.svc/Submissions`, paginée), les met en cache sur la sour
 exactement le geste déjà existant, désormais alimenté pour de vrai. Trois limites assumées
 pour cette première version :
 
-- **Un jeton propre à la source est obligatoire.** Le jeton général (Paramètres → ODK
-  Central → Serveur) ne quitte jamais le navigateur — il ne peut donc pas servir à un appel
-  serveur. Sans jeton propre, la route refuse avec un message explicite plutôt que d'échouer
-  à moitié.
+- **Un justificatif propre à la source est obligatoire.** Il n'existe aucun repli : le champ
+  « Jeton général » de l'écran ODK Central a été retiré, parce qu'il ne servait à rien et que
+  les deux indications successives qui l'accompagnaient étaient fausses toutes les deux
+  (« repris par les sources qui n'en ont pas », puis « reste dans ce navigateur »). Le
+  serveur refuse d'écrire `odkToken` (`PUT /settings`), aucun tirage ne s'en sert, et la file
+  de synchronisation du navigateur, elle, l'envoyait bel et bien à chaque frappe. Sans
+  justificatif propre, la route refuse avec un message explicite plutôt que d'échouer à
+  moitié — et ce refus vient désormais du SCHÉMA déclaré sur la source, si bien qu'une source
+  déclarée « Aucune (source publique) » n'est plus sommée de fournir un jeton dont son schéma
+  dit qu'il est inutile. Sa forme dépend du schéma : voir la section suivante.
 - **Les groupes sont aplatis sur leur seul nom de feuille**, comme le fait déjà le
   rattachement d'un XLSForm. Deux variables de groupes différents portant le même nom
   s'écrasent — un défaut du XLSForm source (`HHCoord` dans `GD_PREVMA`, voir l'audit),
@@ -807,6 +814,93 @@ pour cette première version :
 - **Les groupes répétés ne sont pas suivis** : l'API OData les expose par une requête
   `$expand` séparée par répétition, hors périmètre pour l'instant. Aucun indicateur de
   performance audité n'en dépend.
+
+### Le justificatif d'une source, et le second jeton qui en dérive
+
+« Pour la partie intégration ODK/KoboToolbox, n'oublie pas qu'on a besoin d'un token à part
+l'API. » Une source de collecte ne se déclare pas en donnant seulement une **adresse** : il
+lui faut un **justificatif**, et ce justificatif n'a pas la même forme selon la source.
+
+Tout l'accès sortant de MEMS supposait auparavant un schéma unique — `Authorization: Bearer
+<jeton>` — écrit en dur dans `lib/odkClient.js` et `lib/foundry.js`. C'était une hypothèse,
+pas une règle du monde, et elle est fausse deux fois : **KoboToolbox emploie le mot-clé
+`Token`** (`TokenAuthentication` de Django REST Framework — un jeton valide présenté en
+`Bearer` revient en 401, et l'ancien message accusait alors le jeton) ; et **ODK Central ne
+délivre pas de jeton permanent à un compte web**, il délivre une **session** qui expire, ce
+qui obligeait à recoller le jeton à la main à chaque expiration.
+
+**`server/src/lib/authSortante.js`** est désormais le seul endroit du serveur qui sache
+fabriquer un en-tête d'autorisation. Les deux chemins sortants l'emploient tous les deux ;
+aucun des deux ne connaît plus le mot « Bearer ». Le schéma est une **donnée de la source**
+(`odk_forms.auth_schema`, `connector.auth_schema`, migration 021) et non une constante du
+code : en ajouter un est une entrée dans la table `SCHEMAS_AUTH`, comme ajouter un
+interpréteur dans `lib/moteur.js` ou une transformation dans `lib/mapping.js`.
+
+| Schéma | En-tête émis | Second secret |
+|---|---|---|
+| `aucun` | *(aucun)* | — |
+| `porteur` | `Bearer <jeton>` | — |
+| `jeton` | `Token <jeton>` | — |
+| `basique` | `Basic <base64>` | — |
+| `odk_session` | `Bearer <session>` | courriel + mot de passe → session ODK, **qui expire** |
+| `kobo_jeton` | `Token <clé>` | identifiants → clé d'API Kobo, **qui n'expire pas** |
+
+**Rien à ressaisir à la migration.** Toute source déjà configurée reçoit `porteur` et continue
+d'émettre exactement `Bearer <jeton>`, à l'octet près. Un connecteur réseau **sans** secret, lui,
+passe à `aucun` : il n'émettait déjà aucun en-tête, et le laisser à `porteur` le ferait refuser
+du jour au lendemain alors qu'il fonctionnait la veille sur une source publique. La migration
+écrit donc noir sur blanc ce que ces lignes faisaient en silence — tandis qu'un connecteur
+**nouveau** part sur `porteur`, pour qu'une configuration incomplète continue de se voir.
+
+**Deux secrets, et non un.** Le justificatif **durable** se saisit et reste où il était —
+`odk_forms.token_enc`, `connector.secret_enc`, chiffrés en AES-256-GCM par `lib/crypto.js` ;
+c'est un jeton collé, une clé d'API, ou un mot de passe. Le second jeton **ne se saisit
+jamais** : il se fabrique, se met en cache dans `source_session`, et se renouvelle seul avant
+l'échéance **annoncée par la source** — aucune durée n'est codée en dur, `sessionLifetime`
+étant un réglage de l'instance ODK et non une propriété du monde. Le cache vit dans une table
+à part, et pas dans une colonne de plus : `odk_forms.rev` et `connector.rev` servent au
+contrôle de concurrence, et un renouvellement automatique qui les incrémenterait ferait
+échouer en 409 l'administrateur en train d'éditer sa fiche.
+
+Le renouvellement est **borné** : un rejeu après 401 et jamais deux ; une seule ouverture en
+vol par source, quel que soit le nombre de tirages simultanés ; et un échec **se signale sans
+se rejouer** — il est consigné dans `source_session.echec_motif`, rendu tel quel à l'écran, et
+bloque les tentatives pendant `AUTH_SESSION_RETRY_DELAY_S`. Enregistrer un justificatif corrigé
+lève ce blocage immédiatement : le cache est indexé par une empreinte HMAC du justificatif, il
+cesse donc de correspondre dès qu'on le change, sans qu'aucune route n'ait à penser à le vider.
+
+**Les messages d'échec disent la bonne cause.** Le texte unique d'avant — « jeton absent,
+expiré, ou sans droit sur ce jeu de données » — énumérait trois causes qu'il ne savait pas
+départager et en ignorait deux. Six causes sont désormais distinguées : `AUTH_ABSENT` (constaté
+sans sortir sur le réseau), `AUTH_HOTE` (garde anti-SSRF), `AUTH_DROITS` (403 : authentifié mais
+sans droit — un renouvellement n'y changerait rien, il n'est donc jamais tenté), `AUTH_SESSION`,
+`AUTH_SCHEMA`, et `AUTH_REFUS` — ce dernier existe parce que rien ne garantit qu'une source
+motive son refus : quand aucune des cinq n'est démontrable, le message **le dit** au lieu d'en
+désigner une au hasard.
+
+**`POST /api/odk-forms/:id/test`** et **`POST /api/connectors/:id/test`** (droit `admin`)
+éprouvent une source pour de bon — le bouton « Tester la connexion » n'appelait jusqu'ici
+rien du tout. Côté ODK, en deux étapes qui ne disent pas la même chose : le justificatif
+(`/v1/users/current`), puis l'accès à **ce** formulaire — un compte valide sans droit sur le
+projet se voit à la seconde. Le diagnostic rend l'hôte, le schéma employé, le mot-clé, le code
+HTTP, la cause nommée, et l'état de la session. Du secret, il ne rend que sa présence et sa
+longueur — assez pour repérer un copier-coller tronqué, jamais sa valeur ni ses derniers
+caractères.
+
+**Ce qui n'a pas pu être vérifié.** Aucune instance réelle n'était joignable depuis
+l'environnement de développement, et la documentation publique des deux produits y est refusée
+par le mandataire. Les chemins ont donc été établis en lisant le **code source** de
+`getodk/central-backend` et de `kobotoolbox/kpi` — le fichier exact est cité au-dessus de
+chaque valeur dans `lib/authSortante.js`. Une instance ancienne ou auto-hébergée peut différer :
+tous ces chemins sont **réglables par source** (`config.cheminAuth`, `config.chemin`,
+`config.cheminEpreuve` ; réglages `odkCheminSession` et `odkCheminEpreuve` pour ODK), sans
+nouvelle livraison. Les tests tournent contre un serveur simulé en mémoire : ils prouvent
+l'en-tête émis, le renouvellement et les diagnostics, pas le comportement d'un vrai serveur.
+
+**Réglages** : `AUTH_SESSION_MARGIN_S` (renouveler N secondes avant l'échéance, 120),
+`AUTH_SESSION_DEFAULT_TTL_S` (durée retenue si la source n'annonce aucune échéance, 3600),
+`AUTH_SESSION_RETRY_DELAY_S` (blocage après un échec d'ouverture, 300),
+`AUTH_SESSION_TIMEOUT_S` (délai d'un appel d'authentification, 20).
 
 ### Périmètre géographique d'un bureau
 

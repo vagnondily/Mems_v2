@@ -21,6 +21,7 @@
 import dns from "node:dns/promises";
 import net from "node:net";
 import { config } from "../config.js";
+import { appelAuthentifie, causeRefus } from "./authSortante.js";
 
 const MAX_PAGES = 50;
 const PAGE_SIZE = 1000;
@@ -57,7 +58,12 @@ const MAX_ROWS = 20_000;
    client minimal. La liste blanche reste la parade complète pour qui en a besoin.
    ═══════════════════════════════════════════════════════════════════════ */
 
-const refus = (message) => { const e = new Error(message); e.code = "ODK_URL"; return e; };
+/* `causeAuth` accompagne le code : « l'hôte est refusé » est l'une des causes
+   nommées de lib/authSortante.js, et l'écran doit pouvoir la distinguer d'un
+   justificatif fautif sans lire le texte du message. */
+const refus = (message) => {
+  const e = new Error(message); e.code = "ODK_URL"; e.causeAuth = "AUTH_HOTE"; return e;
+};
 
 /* Le motif pour lequel une adresse est refusée, ou null si elle est publique.
    On nomme le motif : « refusé » sans dire pourquoi envoie chercher pendant une heure.
@@ -158,23 +164,55 @@ function aplatirSoumission(item){
   return out;
 }
 
-async function fetchJson(url, token){
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
-  let res;
-  try{
-    res = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-      signal: ac.signal,
-    });
-  }catch(e){
-    const err = new Error(e.name === "AbortError" ? "délai dépassé" : e.message);
-    err.code = "ODK_NETWORK";
-    throw err;
-  }finally{ clearTimeout(timer); }
+/* Ce client ne sait plus fabriquer un en-tête d'autorisation : il en reçoit un
+   porteur (lib/authSortante.js), qui est le seul du serveur à savoir le faire.
+   Le mot « Bearer » n'apparaît donc plus ici — il était écrit en dur, et il ne
+   valait que pour ODK Central alors qu'il était pris pour une règle universelle.
+   Le renouvellement d'une session expirée et le rejeu de l'appel sont pris en
+   charge par `appelAuthentifie`, une fois et une seule. */
+async function fetchJson(url, porteur){
+  const appel = async (enTetes) => {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
+    try{
+      return await fetch(url, {
+        headers: { ...enTetes, Accept: "application/json" },
+        signal: ac.signal,
+        /* Posé au même titre que chez lib/foundry.js, et pour la même raison :
+           une redirection sortirait de l'hôte vérifié en emportant l'en-tête
+           d'autorisation. Cette garde manquait de ce côté-ci — une règle écrite
+           d'un côté et pas de l'autre finit toujours par se payer du côté nu. */
+        redirect: "manual",
+      });
+    }catch(e){
+      const err = new Error(e.name === "AbortError" ? "délai dépassé" : e.message);
+      err.code = "ODK_NETWORK";
+      throw err;
+    }finally{ clearTimeout(timer); }
+  };
 
+  const { res, renouvele, motifRenouvellement } = await appelAuthentifie(porteur, appel);
+
+  if(res.status >= 300 && res.status < 400){
+    /* La destination est dite, et c'est tout l'intérêt du message : « indiquez
+       l'adresse finale » sans nommer laquelle envoie chercher. Elle vient de la
+       source, donc on la borne et on en retire les caractères de contrôle avant
+       de la recopier — un en-tête d'origine extérieure n'écrit pas dans nos
+       journaux ce qu'il veut. Le cas courant est un ODK Central sur site derrière
+       un nginx qui redirige http vers https : l'adresse à corriger est dans
+       Paramètres → ODK Central → Serveur. */
+    const vers = String(res.headers.get("location") || "")
+      .replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 200);
+    const e = new Error("ODK Central répond par une redirection : le serveur ne la suit pas, car "
+      + "elle emporterait le justificatif vers un hôte qui n'a pas été vérifié. "
+      + (vers ? `Elle mène vers « ${vers} » : indiquez cette adresse` : "Indiquez l'adresse finale")
+      + " dans Paramètres → ODK Central → Serveur.");
+    e.code = "ODK_URL"; throw e;
+  }
   if(res.status === 401 || res.status === 403){
-    const e = new Error("accès refusé par ODK Central"); e.code = "ODK_AUTH"; throw e;
+    const { cause, message } = await causeRefus({ porteur, res, renouvele, motifRenouvellement });
+    const e = new Error(`ODK Central — ${message}`);
+    e.code = "ODK_AUTH"; e.causeAuth = cause; throw e;
   }
   if(res.status === 404){
     const e = new Error("formulaire introuvable sur ODK Central"); e.code = "ODK_NOT_FOUND"; throw e;
@@ -188,21 +226,54 @@ async function fetchJson(url, token){
 
 /* Tire les soumissions d'un formulaire, page par page, jusqu'à épuisement,
    au plafond de pages, ou au plafond de lignes — le premier atteint. */
-export async function pullSubmissions({ baseUrl, project, formId, token }){
+export async function pullSubmissions({ baseUrl, project, formId, porteur }){
   /* Le contrôle est ici, au seul point de sortie, et non chez l'appelant : un
      futur second appelant hériterait sinon de la faille sans que rien ne le dise. */
   await verifierBaseOdk(baseUrl);
   const base = String(baseUrl).replace(/\/+$/, "");
-  let url = `${base}/v1/projects/${encodeURIComponent(project)}/forms/${encodeURIComponent(formId)}`
+  const premiere = `${base}/v1/projects/${encodeURIComponent(project)}/forms/${encodeURIComponent(formId)}`
     + `.svc/Submissions?$top=${PAGE_SIZE}`;
+  const origine = new URL(premiere).origin;
+  let url = premiere;
   const rows = [];
   let pages = 0, truncated = false;
   while(url){
     if(pages >= MAX_PAGES || rows.length >= MAX_ROWS){ truncated = true; break; }
-    const body = await fetchJson(url, token);
+    const body = await fetchJson(url, porteur);
     for(const item of body.value || []) rows.push(aplatirSoumission(item));
     pages++;
-    url = body["@odata.nextLink"] || null;
+    url = pageSuivante(body["@odata.nextLink"], origine);
   }
   return { rows: rows.slice(0, MAX_ROWS), pages, truncated };
+}
+
+/* Le lien de page suivante d'OData est une URL ABSOLUE, et c'est le SERVEUR
+   DISTANT qui la fabrique : chez ODK Central elle est composée du réglage
+   `default.domain` de l'instance suivi du chemin (lib/util/odata.js, gabarit
+   `"@odata.nextLink":"{{{domain}}}{{{nextUrl}}}"`). La suivre telle quelle, comme
+   on le faisait, rendait la garde anti-SSRF contournable par la source elle-même :
+   il suffisait d'un ODK Central compromis — ou seulement mal configuré — pour
+   faire partir la page 2, et l'en-tête d'autorisation avec elle, vers n'importe
+   quel hôte.
+
+   On ne retient donc du lien que ce que la source a le droit de décider : le
+   CHEMIN et sa requête. L'origine, elle, reste celle du premier appel, sans quoi
+   la source choisirait où l'on va. Refuser tout lien dont l'origine diffère aurait
+   fermé la même faille, mais cassé au passage un déploiement parfaitement
+   légitime : `default.domain` est le nom public de l'instance, et rien n'oblige
+   qu'il soit l'adresse par laquelle MEMS la joint — un ODK Central sur site
+   déclaré « http://odk.interne.org » compose ses liens avec « https://odk.exemple.org ».
+   Le tirage s'y arrêtait à la première page de plus de mille soumissions.
+
+   Un lien illisible, lui, reste une erreur franche : on ne devine pas une
+   pagination. */
+function pageSuivante(lien, origine){
+  if(!lien) return null;
+  let u;
+  try{ u = new URL(String(lien), origine); }
+  catch(e){
+    const err = new Error("ODK Central renvoie un lien de page suivante illisible : tirage interrompu.");
+    err.code = "ODK_HTTP"; throw err;
+  }
+  return origine + u.pathname + u.search;
 }

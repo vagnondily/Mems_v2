@@ -194,6 +194,10 @@ export const api = {
      avant d'écrire, jamais l'inverse. */
   connectorApercu:    (id, corps)    => call("POST", `/connectors/${encodeURIComponent(id)}/apercu`, corps),
   connectorSuggestions:(id, corps)   => call("POST", `/connectors/${encodeURIComponent(id)}/suggestions`, corps),
+  /* Épreuve de connexion. Rend un diagnostic — hôte joint, schéma employé, code
+     HTTP, cause nommée — et jamais le secret : au plus sa présence et sa longueur. */
+  connectorTest:      (id)           => call("POST", `/connectors/${encodeURIComponent(id)}/test`),
+  odkFormTest:        (id)           => call("POST", `/odk-forms/${encodeURIComponent(id)}/test`),
 
   /* Chaîne ODK : verser, puis rattacher. Les deux sont réservés à
      l'administration côté serveur — ils écrivent dans le référentiel

@@ -396,6 +396,31 @@ test("bureaux : l'écran de configuration liste les bureaux et leur périmètre"
   assert.equal(ctx.errors.length, 0, "aucune erreur sur l'écran des bureaux");
 });
 
+test("ODK Central : l'écran ne propose plus de « jeton général », et le badge suit ce que le serveur détient", async () => {
+  /* Deux affirmations fausses vivaient sur cet écran, et la seconde a remplacé la
+     première. « Repris par les sources qui n'ont pas de jeton propre » : ce repli
+     n'a jamais existé. Puis « Reste dans ce navigateur : le serveur ne le reçoit
+     jamais » : la file de synchronisation POSTe l'objet `settings` entier, ce
+     jeton compris, et le serveur le reçoit avant de le jeter. Le champ ne servait
+     à rien — aucun code ne le lit —, il ne pouvait donc pas être décrit
+     honnêtement : il est parti. */
+  const onglet = all("main button").filter(b => b.className.includes("-mb-px"))
+    .find(b => b.textContent.trim() === "ODK Central");
+  await click(onglet, "sous-onglet ODK Central");
+  await flush(); await flush();
+
+  assert.ok(document.body.textContent.includes("Adresse du serveur"), "l'écran est bien ouvert");
+  assert.ok(!document.body.textContent.includes("Jeton général"),
+    "un champ qui n'est lu par personne ne reste pas à l'écran pour être mal décrit");
+  assert.ok(!document.body.textContent.includes("reste dans votre navigateur"),
+    "et la promesse qui l'accompagnait est partie avec lui");
+  /* Ce que le serveur reçoit réellement en est la preuve : le mot n'apparaît
+     nulle part dans le corps envoyé, puisque plus rien ne le produit. */
+  assert.ok(document.body.textContent.includes("justificatif propre à cette source"),
+    "l'écran dit ce qui vaut : chaque source porte le sien");
+  assert.equal(ctx.errors.length, 0, "aucune erreur sur l'écran ODK Central");
+});
+
 test("connecteurs : la table de correspondance est bâtie sur le registre servi par le serveur", async () => {
   /* Le point vérifié ici n'est pas cosmétique : les champs MEMS et les
      transformations affichés ne sont écrits nulle part dans le navigateur. S'ils
