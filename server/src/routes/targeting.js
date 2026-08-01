@@ -132,7 +132,10 @@ r.post("/", requireCap("edit"), (req, res) => {
   res.json({ crees, rejetes: rejets.length, rejets: rejets.slice(0,20) });
 });
 
-r.delete("/:id", requireCap("edit"), (req, res) => {
+/* Suppression dure d'un ciblage daté : elle exige « del », pas « edit » — un
+   module qui conserve délibérément chaque événement daté suit la règle
+   suppression ⇒ del, comme sites, mre et tpm. */
+r.delete("/:id", requireCap("del"), (req, res) => {
   const row = db.prepare("SELECT * FROM targeting WHERE id=?").get(req.params.id);
   if(!row) return res.status(404).json({ error:"ciblage introuvable" });
   const v = currentVersion();
