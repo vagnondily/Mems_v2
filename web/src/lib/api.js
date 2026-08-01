@@ -62,6 +62,10 @@ async function postFile(path, file, field = "file"){
   return payload;
 }
 
+/* Point de montage des routes d'administration de l'instance. Une seule
+   constante : les onze appels ci-dessous ne connaissent pas le préfixe. */
+const ADMIN = "/admin";
+
 export const api = {
   get:  (p, o)    => call("GET", p, undefined, o),
   post: (p, b, o) => call("POST", p, b ?? {}, o),
@@ -223,6 +227,54 @@ export const api = {
   coverage:   (q="")         => call("GET", `/analytics/coverage${q}`),
   summary:    (q="")         => call("GET", `/analytics/summary${q}`),
   audit:      (limit=100)    => call("GET", `/audit?limit=${limit}`),
+
+  /* ── Exécution des scripts d'analyse sur le serveur ────────────────────
+     Tout ce routeur est réservé au super-utilisateur : l'appeler avec un autre
+     compte rend 403. L'interface ne doit donc l'interroger que pour ce rôle,
+     sinon elle fabrique une erreur pour apprendre ce qu'elle savait déjà. */
+  scriptMoteurs:   ()           => call("GET", "/scripts/moteurs"),
+  /* `lignes` porte le jeu de données APURÉ par le navigateur. Sans lui le
+     serveur relit les lignes brutes enregistrées avec le jeu de données : il ne
+     rejoue pas les règles d'apurement et ne prétend pas le faire. */
+  executerScript:  (id, lignes) => call("POST", `/scripts/${encodeURIComponent(id)}/executer`,
+                                        lignes ? { lignes } : {}),
+  /* Le manifeste d'exécution porte déjà une `url` toute faite, mais elle
+     contient le préfixe « /api » en dur alors que VITE_API_URL peut le
+     déplacer. On rebâtit donc le chemin depuis l'identifiant et le nom, qui
+     figurent tous deux au manifeste. */
+  fichierExecution: (execId, nom) => fetchBlob(
+    `/scripts/executions/${encodeURIComponent(execId)}/fichiers/${encodeURIComponent(nom)}`),
+
+  /* ── Sessions ──────────────────────────────────────────────────────────
+     Lire les SIENNES est ouvert à tous ; tout le reste — celles d'autrui,
+     révocation, purge — est réservé au super-utilisateur côté serveur. */
+  sessions:           (q="")    => call("GET", `/auth/sessions${q}`),
+  /* Le serveur refuse (409) de couper la session de l'appelant sans une
+     confirmation explicite : ce n'est pas un effet de bord acceptable pour un
+     geste de ménage. `confirmer` la porte. */
+  revoquerSession:    (id, confirmer=false) => call("DELETE",
+                          `/auth/sessions/${encodeURIComponent(id)}${confirmer ? "?confirmer=1" : ""}`),
+  revoquerSessionsDe: (userId, inclureCourante=false) => call("DELETE",
+                          `/auth/users/${encodeURIComponent(userId)}/sessions`
+                          + (inclureCourante ? "?inclure_courante=1" : "")),
+  purgerSessions:     (jours=0) => call("POST", `/auth/sessions/purge?jours=${jours}`, {}),
+
+  journal:            (q="")    => call("GET", `${ADMIN}/journal${q}`),
+  journalFacettes:    ()        => call("GET", `${ADMIN}/journal/facettes`),
+
+  baseEtat:           ()        => call("GET", `${ADMIN}/base`),
+  baseCheckpoint:     ()        => call("POST", `${ADMIN}/base/checkpoint`, {}),
+  baseVacuum:         ()        => call("POST", `${ADMIN}/base/vacuum`, {}),
+
+  sauvegardes:          ()      => call("GET", `${ADMIN}/sauvegardes`),
+  creerSauvegarde:      ()      => call("POST", `${ADMIN}/sauvegarde`, {}),
+  controlerSauvegarde:  (nom)   => call("GET", `${ADMIN}/sauvegardes/${encodeURIComponent(nom)}/controle`),
+  supprimerSauvegarde:  (nom)   => call("DELETE", `${ADMIN}/sauvegardes/${encodeURIComponent(nom)}`),
+  telechargerSauvegarde:(nom)   => fetchBlob(`${ADMIN}/sauvegardes/${encodeURIComponent(nom)}`),
+  /* `confirmation` est un mot à recopier, exigé par le serveur : une case à
+     cocher se coche par réflexe, un mot ne s'écrit pas par accident. */
+  restaurerBase:        (fichier, confirmation) =>
+                                   call("POST", `${ADMIN}/restauration`, { fichier, confirmation }),
 };
 
 /* Un navigateur ne rend jamais ce minuteur — seul Node (tests, rendu serveur) expose

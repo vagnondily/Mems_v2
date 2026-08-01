@@ -21,7 +21,7 @@ Ce document décrit un état daté. Ce qui a été livré depuis est consigné i
 qui le porte — le corps du document reste écrit au moment de l'audit, et le lire sans ce
 journal donnerait une image fausse de ce qui reste à faire.
 
-**Tests au dernier commit : 134 côté serveur, 28 côté web, 0 échec. Audit de production :
+**Tests au dernier commit : 155 côté serveur, 34 côté web, 0 échec. Audit de production :
 aucun avis grave, ni serveur ni web.**
 
 | Commit | Ce qui est livré | Effet sur ce document |
@@ -32,7 +32,23 @@ aucun avis grave, ni serveur ni web.**
 | `68de783` | Cloche de notifications (**K3**), sélecteur d'année et filtre de période (**Q9 appliquée, K1 partiel**), chaîne ODK côté serveur (migration 017, résolveur, « déjà suivi », GPS), **menus déroulants de l'en-tête supprimés** | **K3 fait. L4/13d fait côté serveur.** Le défaut d'affichage des menus est corrigé à la racine : `overflow-x-auto` sur la barre empêchait le panneau d'être visible, et le bouton naviguait *et* ouvrait le menu. |
 | `f0a6cdd` | Écran Programme → Soumissions ODK, code externe dans la fiche de site, double date de dernière visite, couche GPS sur la carte, **correction d'une perte de données sur `PUT /api/sites/:id`** | **Chantier O largement fait.** Le `PUT` n'était pas partiel : renommer un site effaçait antenne, catégorie, activité, type et code externe. Même défaut que sur les comptes, sur une table où il fait plus de dégâts. |
 
-| *(ce commit)* | **Codes externes multiples** (migration 018 : un site peut être désigné différemment par chaque formulaire), import d'une table de correspondance, **rattachement manuel tracé** avec création d'alias à la volée, et **score de risque aligné sur la date qui fait foi** | **SMP devient rattachable dès que le bureau fournit sa table.** Le rattachement manuel est protégé de tout rejeu et de tout re-versement. La divergence entre score, cloche et carte est résorbée : les trois lisent la même date. |
+| `7239bbe` | **Codes externes multiples** (migration 018 : un site peut être désigné différemment par chaque formulaire), import d'une table de correspondance, **rattachement manuel tracé** avec création d'alias à la volée, et **score de risque aligné sur la date qui fait foi** | **SMP devient rattachable dès que le bureau fournit sa table.** Le rattachement manuel est protégé de tout rejeu et de tout re-versement. La divergence entre score, cloche et carte est résorbée : les trois lisent la même date. |
+| *(ce commit)* | **Exécution de scripts R et SPSS sur le serveur** (`lib/moteur.js`, `POST /api/scripts/:id/executer`) et **console d'administration de l'instance** (`/api/admin` : sessions, journal de sécurité, santé du fichier de base, sauvegarde et restauration) | Répond aux deux dernières demandes. **Le rôle `super` cesse d'être un doublon d'`admin`** : `requireSuper` (lib/auth.js) marque la frontière que la matrice `CAPS` ne savait pas exprimer — administrer *l'installation* et non son contenu. **La sauvegarde et la restauration demandées en Paramètres sont livrées ici**, où elles ont leur place. |
+
+### Ce qu'il faut savoir avant d'activer l'exécution de scripts
+
+La fonction est **absente tant qu'aucun interpréteur n'est nommément déclaré** (`ANALYSIS_R`,
+`ANALYSIS_SPSS`) : une instance qui ne s'en sert pas ne peut pas exécuter de code par accident,
+même si un compte est compromis. Ce que le moteur garantit — environnement purgé, répertoire de
+travail neuf et détruit, mise à mort du **groupe** de processus au bout d'un délai borné, sorties
+et fichiers produits plafonnés — et surtout **ce qu'il ne garantit pas**, sont écrits en toutes
+lettres en tête de `server/src/lib/moteur.js`. Le point à retenir : l'enfant tourne sous
+l'utilisateur du processus MEMS, il lit donc le `.env` et la base ; le réseau lui est ouvert ; ni
+processeur ni mémoire ne sont bornés. **Ce n'est pas un bac à sable.** Une instance qui active la
+fonction doit faire tourner MEMS dans un conteneur dont la perte est acceptable.
+
+**L'image Docker n'embarque ni `Rscript` ni `pspp`** — les installer est une décision
+d'exploitation, prise sciemment, pas un défaut hérité de l'image.
 
 ## Ce qui reste ouvert, et pourquoi
 
@@ -46,7 +62,7 @@ aucun avis grave, ni serveur ni web.**
 - **Chantiers N et P** : intacts. Les référentiels MRE et le modèle d'indicateurs ne
   correspondent toujours à aucun référentiel du PAM.
 - **SMP reste non rattachable** : ses codes sont des entiers hors du référentiel p-code. Le
-  mécanisme d'alias est en cours de livraison ; la table de correspondance des 1 251 codes
+  mécanisme d'alias est livré (migration 018) ; la table de correspondance des 1 251 codes
   école, elle, doit venir du bureau — elle ne s'invente pas.
 - **Q15c** (sur quelle période un site compte comme « déjà suivi »), **Q25** et **Q26**
   (position déclarée contre position observée) restent des décisions métier. Le code les

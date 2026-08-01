@@ -1,6 +1,7 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { execFileSync } from "node:child_process";
@@ -15,6 +16,12 @@ process.env.DATA_KEY = "y".repeat(48);
 process.env.BOOTSTRAP_EMAIL = "admin@test.local";
 process.env.BOOTSTRAP_PASSWORD = "MotDePasseTest2026";
 process.env.RATE_LOGIN_MAX = "50";
+/* La suite entière tient dans une poignée de secondes, donc dans une seule
+   fenêtre du limiteur de débit : passé 600 requêtes elle se mettrait à
+   échouer en 429, et l'échec se déplacerait au gré des tests ajoutés. Même
+   raison que RATE_LOGIN_MAX juste au-dessus — on neutralise ici ce que la
+   production règle à 600. */
+process.env.RATE_API_MAX = "100000";
 process.env.BCRYPT_ROUNDS = "4";          /* tests rapides ; la production reste à 12 */
 process.env.FORCE_SEED = "1";
 /* Le serveur ODK Central simulé plus bas tourne en http sur la boucle locale — que le
@@ -3640,4 +3647,984 @@ test("soumissions : le rattachement manuel est tracé, il apprend, et rien ne l'
   const encore = await request(app).post(`/api/submissions/${brute.id}/detacher`)
     .set("Authorization", `Bearer ${adminToken}`).send({});
   assert.equal(encore.status, 409, "détacher ce qui ne l'est pas est refusé, pas ignoré");
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Exécution des scripts d'analyse R et SPSS sur le serveur.
+
+   Ces tests portent sur une fonction qui exécute du code arbitraire : ils
+   vérifient d'abord ce qui l'empêche de s'ouvrir toute seule, puis ce qui la
+   borne quand elle est ouverte.
+
+   Deux familles, volontairement distinctes :
+     — les tests de MÉCANIQUE (environnement expurgé, délai, troncature,
+       fichiers produits, nettoyage) passent par un interpréteur d'essai : un
+       script shell de trois lignes déclaré comme n'importe quel interpréteur.
+       Ce qu'ils éprouvent — le bac de travail, l'environnement, le groupe de
+       processus — appartient à lib/moteur.js et non à R ; les faire dépendre
+       d'une installation de R rendrait muet le jour où elle manque exactement
+       ce qui doit rester vérifié ;
+     — les tests d'EXÉCUTION RÉELLE lancent Rscript et pspp. Ils sont
+       conditionnés à leur présence et annoncent leur absence au lieu de la
+       masquer.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const bacAnalyse = fs.mkdtempSync(path.join(os.tmpdir(), "mems-analyse-test-"));
+process.env.ANALYSIS_WORKDIR = path.join(bacAnalyse, "travaux");
+fs.mkdirSync(process.env.ANALYSIS_WORKDIR, { recursive:true });
+after(() => fs.rmSync(bacAnalyse, { recursive:true, force:true }));
+
+/* Interpréteur d'essai : il ignore les options et exécute le dernier argument
+   — le fichier de script — avec sh. Vu du serveur c'est un interpréteur comme
+   un autre, déclaré par la même variable et lancé par le même code. */
+const FAUX_INTERPRETEUR = path.join(bacAnalyse, "faux-interpreteur");
+fs.writeFileSync(FAUX_INTERPRETEUR,
+  '#!/bin/sh\nfor a in "$@"; do f="$a"; done\nexec /bin/sh "$f"\n', { mode:0o755 });
+
+const trouverBinaire = (nom) => {
+  try{ return execFileSync("which", [nom], { encoding:"utf8" }).trim() || null; }
+  catch{ return null; }
+};
+const RSCRIPT = trouverBinaire("Rscript");
+const PSPP = trouverBinaire("pspp");
+
+let nAnalyse = 0;
+const creerJeu = (lignes) => {
+  const id = `ds_essai_${++nAnalyse}`;
+  db.prepare("INSERT INTO datasets (id,name,raw) VALUES (?,?,?)")
+    .run(id, "Jeu d'essai", JSON.stringify(lignes));
+  return id;
+};
+const creerScript = ({ lang="R", code="", jeu=null }={}) => {
+  const id = `sc_essai_${++nAnalyse}`;
+  db.prepare(`INSERT INTO scripts (id,name,language,stage,dataset_id,code,notes)
+              VALUES (?,?,?,'analysis',?,?,'')`)
+    .run(id, `Analyse d'essai ${nAnalyse}`, lang, jeu, code);
+  return id;
+};
+/* Les réglages sont posés le temps de l'appel puis rendus : la configuration
+   d'analyse est relue à chaque exécution, c'est ce qui rend ces tests possibles
+   sans redémarrer le serveur. */
+async function lancerAnalyse({ code, lang="R", jeu=null, reglages={}, corps={}, jeton=null }){
+  const anciens = {};
+  for(const [k,v] of Object.entries(reglages)){ anciens[k] = process.env[k]; process.env[k] = v; }
+  try{
+    const id = creerScript({ lang, code, jeu });
+    /* Sans jeu de données relié, la route exige des lignes explicites : un
+       script d'analyse qui n'analyse rien est une erreur de saisie, pas un cas
+       normal. Les essais qui n'ont pas besoin de données envoient donc [] . */
+    const charge = (jeu || corps.lignes) ? corps : { ...corps, lignes: [] };
+    return await request(app).post(`/api/scripts/${id}/executer`)
+      .set("Authorization", `Bearer ${jeton || adminToken}`).send(charge);
+  }finally{
+    for(const [k,v] of Object.entries(anciens))
+      v === undefined ? delete process.env[k] : (process.env[k] = v);
+  }
+}
+const travauxRestants = () => fs.readdirSync(path.join(process.env.ANALYSIS_WORKDIR, "mems-analyse"))
+  .filter(n => n.startsWith("travail-"));
+
+test("scripts d'analyse : sans interpréteur déclaré la fonction est absente, et le 503 dit comment l'activer", async () => {
+  delete process.env.ANALYSIS_R; delete process.env.ANALYSIS_SPSS;
+
+  const etat = await request(app).get("/api/scripts/moteurs")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(etat.status, 200);
+  assert.equal(etat.body.actif, false, "aucun interpréteur ne doit être actif par défaut");
+  assert.deepEqual(etat.body.moteurs.map(m => m.lang).sort(), ["R","SPSS"]);
+  assert.ok(etat.body.moteurs.every(m => !m.disponible && /n'est pas renseignée/.test(m.raison)));
+
+  const id = creerScript({ code:"echo bonjour" });
+  const r = await request(app).post(`/api/scripts/${id}/executer`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ lignes:[] });
+  assert.equal(r.status, 503);
+  assert.match(r.body.error, /ANALYSIS_R/);
+  assert.match(r.body.error, /ANALYSIS_SPSS/);
+  assert.match(r.body.error, /aucun script/);
+
+  /* Un nom d'exécutable relatif s'en remettrait au PATH du serveur : refusé
+     aussi, et pour une raison qui se lit. */
+  const relatif = await lancerAnalyse({ code:"echo bonjour", reglages:{ ANALYSIS_R:"Rscript" }});
+  assert.equal(relatif.status, 503);
+  assert.match(relatif.body.error, /chemin absolu/);
+
+  const absent = await lancerAnalyse({ code:"echo bonjour",
+    reglages:{ ANALYSIS_R: path.join(bacAnalyse, "nulle-part") }});
+  assert.equal(absent.status, 503);
+  assert.match(absent.body.error, /introuvable|exécutable/);
+});
+
+test("scripts d'analyse : un administrateur qui n'est pas super-utilisateur est refusé", async () => {
+  const cree = await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"admin-simple@test.local", password:"AdminSimple2026x", first_name:"Admin",
+            last_name:"Simple", role:"admin", tabs:["home"], active:true });
+  assert.equal(cree.status, 201, JSON.stringify(cree.body));
+  motDePasseAdopte("admin-simple@test.local");
+  const jeton = (await login("admin-simple@test.local", "AdminSimple2026x")).body.token;
+
+  /* Ce compte a bel et bien la capacité « admin » : le journal de sécurité,
+     qui l'exige, lui répond. Le refus qui suit ne vient donc pas d'un manque
+     de droits d'administration, mais de la distinction super/admin. */
+  assert.equal((await request(app).get("/api/audit")
+    .set("Authorization", `Bearer ${jeton}`)).status, 200);
+
+  /* Interpréteur déclaré et utilisable : rien d'autre que le rôle ne bloque. */
+  const r = await lancerAnalyse({ code:"echo bonjour", jeton,
+    reglages:{ ANALYSIS_R: FAUX_INTERPRETEUR }});
+  assert.equal(r.status, 403);
+  assert.match(r.body.error, /super-utilisateur/);
+  assert.equal((await request(app).get("/api/scripts/moteurs")
+    .set("Authorization", `Bearer ${jeton}`)).status, 403);
+
+  /* Et le super-utilisateur, lui, passe : le refus est bien une question de rôle. */
+  const ok = await lancerAnalyse({ code:"echo bonjour", reglages:{ ANALYSIS_R: FAUX_INTERPRETEUR }});
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+});
+
+test("scripts d'analyse : le script n'hérite d'AUCUNE variable de l'application", async () => {
+  const code = [
+    'echo "JWT=[$JWT_SECRET]"',
+    'echo "CLE=[$DATA_KEY]"',
+    'echo "BASE=[$DB_FILE]"',
+    'echo "AMORCE=[$BOOTSTRAP_PASSWORD]"',
+    'echo "ODK=[$ODK_ALLOWED_HOSTS]"',
+    'echo "---"',
+    'env | sort',
+  ].join("\n");
+  const r = await lancerAnalyse({ code, reglages:{ ANALYSIS_R: FAUX_INTERPRETEUR }});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const ex = r.body.execution;
+  assert.equal(ex.statut, "ok", ex.erreur);
+
+  for(const v of ["JWT","CLE","BASE","AMORCE","ODK"])
+    assert.match(ex.sortie, new RegExp(`^${v}=\\[\\]$`, "m"),
+      `${v} devait être vide dans l'environnement de l'enfant`);
+  assert.ok(!ex.sortie.includes("x".repeat(48)), "le secret de signature n'a pas fuité");
+  assert.ok(!ex.sortie.includes("y".repeat(48)), "la clé de chiffrement n'a pas fuité");
+  assert.ok(!ex.sortie.includes("MotDePasseTest2026"), "le mot de passe d'amorçage n'a pas fuité");
+  assert.ok(!/test\.db/.test(ex.sortie), "le chemin de la base n'a pas fuité");
+
+  /* L'environnement complet, et pas seulement les variables qu'on a pensé à
+     interroger : tout ce que l'enfant voit tient dans la liste blanche, plus
+     ce que le shell se pose lui-même (PWD, SHLVL…). */
+  const bloc = ex.sortie.split("---\n")[1] || "";
+  const noms = bloc.split("\n").map(l => l.split("=")[0]).filter(Boolean);
+  const blanche = new Set(["PATH","HOME","TMPDIR","LANG","LC_ALL","PWD","SHLVL","_","OLDPWD","IFS","PS1","PS2","PS4"]);
+  assert.deepEqual(noms.filter(n => !blanche.has(n)), [],
+    "aucune variable hors liste blanche ne doit atteindre le script");
+  assert.match(bloc, /^PATH=\/usr\/local\/bin:\/usr\/bin:\/bin$/m);
+  assert.match(bloc, /^HOME=.*mems-analyse.*foyer$/m,
+    "HOME pointe dans le bac de travail, jamais sur celui du compte serveur");
+  assert.match(bloc, /^TMPDIR=.*mems-analyse.*foyer$/m);
+});
+
+test("scripts d'analyse : le délai dépassé tue le script ET les processus qu'il a lancés", async () => {
+  const temoin = path.join(bacAnalyse, "temoin-groupe.txt");
+  /* Le petit-fils écrit HORS du répertoire de travail : s'il survivait au
+     nettoyage comme à la mort de son père, son témoin resterait. Tuer le seul
+     pid du script le laisserait précisément vivre. */
+  const code = [
+    `/bin/sh -c 'sleep 5; : > ${temoin}' &`,
+    "sleep 60",
+  ].join("\n");
+  const t0 = Date.now();
+  const r = await lancerAnalyse({ code, reglages:{
+    ANALYSIS_R: FAUX_INTERPRETEUR, ANALYSIS_TIMEOUT_S:"1", ANALYSIS_KILL_GRACE_S:"1" }});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.execution.statut, "delai");
+  assert.match(r.body.execution.message, /délai dépassé/);
+  assert.ok(Date.now() - t0 < 20_000, "la requête ne doit pas attendre la fin du script");
+
+  await new Promise(res => setTimeout(res, 7000));
+  assert.equal(fs.existsSync(temoin), false,
+    "le processus lancé par le script devait mourir avec son groupe");
+  assert.deepEqual(travauxRestants(), [], "le répertoire de travail est supprimé même après un délai dépassé");
+});
+
+test("scripts d'analyse : une sortie trop longue est coupée et annoncée comme tronquée", async () => {
+  const code = [
+    "i=0",
+    "while [ $i -lt 400 ]; do",
+    "  echo '0123456789012345678901234567890123456789012345678901234567890123456789'",
+    "  i=$((i + 1))",
+    "done",
+    "j=0",
+    "while [ $j -lt 400 ]; do",
+    "  echo 'erreur 0123456789012345678901234567890123456789012345678901234567890' >&2",
+    "  j=$((j + 1))",
+    "done",
+  ].join("\n");
+  const r = await lancerAnalyse({ code, reglages:{
+    ANALYSIS_R: FAUX_INTERPRETEUR, ANALYSIS_MAX_OUTPUT_KB:"1" }});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const ex = r.body.execution;
+  assert.equal(ex.statut, "ok");
+  assert.equal(ex.tronque, true);
+  assert.equal(ex.sortieTronquee, true);
+  assert.equal(ex.erreurTronquee, true);
+  assert.equal(Buffer.byteLength(ex.sortie), 1024, "la sortie est coupée au plafond, pas au-delà");
+  assert.equal(Buffer.byteLength(ex.erreur), 1024);
+
+  const trace = db.prepare(`SELECT * FROM audit WHERE entity='scripts' AND action='execute'
+                            ORDER BY at DESC, rowid DESC LIMIT 1`).get();
+  assert.match(trace.text, /sortie tronquée/, "le journal dit aussi que la sortie a été coupée");
+});
+
+test("scripts d'analyse : données transmises par CSV local, fichiers produits servis, répertoire effacé, exécution journalisée", async () => {
+  const jeu = creerJeu([
+    { site:"A", note:'un guillemet " et, une virgule', n:1 },
+    { site:"B", note:"un retour\nligne", n:2 },
+  ]);
+  const code = [
+    "cp donnees.csv copie-des-donnees.csv",
+    /* Le script tel qu'il a réellement été exécuté : sert à prouver que les
+       données n'y ont pas été interpolées. */
+    "cp analyse.R script-tel-quel.txt",
+    "pwd > ou-suis-je.txt",
+    "mkdir un-dossier",
+    "ln -s /etc/passwd lien-vers-passwd",
+    "echo cache > .fichier-cache",
+  ].join("\n");
+  const avant = new Date().toISOString();
+  const r = await lancerAnalyse({ code, jeu, reglages:{ ANALYSIS_R: FAUX_INTERPRETEUR }});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const ex = r.body.execution;
+  assert.equal(ex.statut, "ok", ex.erreur);
+  assert.equal(ex.code, 0);
+  assert.equal(ex.lignes, 2);
+
+  assert.deepEqual(ex.fichiers.map(f => f.nom).sort(),
+    ["copie-des-donnees.csv","ou-suis-je.txt","script-tel-quel.txt"],
+    "ni le dossier, ni le lien symbolique, ni le fichier caché ne sont récupérés");
+  assert.ok(ex.fichiers.every(f => f.octets > 0), "chaque fichier produit est annoncé avec sa taille");
+  assert.ok(ex.fichiersEcartes.some(m => /lien-vers-passwd/.test(m)),
+    "un lien symbolique posé par le script est écarté, et le dire est plus utile que le taire");
+  assert.ok(ex.fichiersEcartes.some(m => /un-dossier/.test(m)));
+
+  const csv = ex.fichiers.find(f => f.nom === "copie-des-donnees.csv");
+  const tele = await request(app).get(csv.url).set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(tele.status, 200);
+  assert.match(tele.headers["content-disposition"], /attachment/,
+    "un fichier produit ne se rend jamais dans la page : il se télécharge");
+  const contenu = tele.text || tele.body.toString();
+  assert.match(contenu, /^site,note,n$/m);
+  assert.match(contenu, /"un guillemet "" et, une virgule"/, "le CSV échappe guillemets et virgules");
+
+  /* Le code exécuté ne contient pas une seule valeur du jeu de données : elles
+     ont voyagé par le fichier, jamais par le script. */
+  const src = ex.fichiers.find(f => f.nom === "script-tel-quel.txt");
+  const vu = await request(app).get(src.url).set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(vu.status, 200);
+  const texteScript = vu.text || vu.body.toString();
+  assert.ok(!/un guillemet|retour/.test(texteScript), "aucune donnée n'est interpolée dans le code");
+
+  /* Le script lit son jeu de données par un chemin relatif : son répertoire
+     courant est le bac de travail, il n'a aucune notion du disque du serveur. */
+  const ou = ex.fichiers.find(f => f.nom === "ou-suis-je.txt");
+  const pwd = await request(app).get(ou.url).set("Authorization", `Bearer ${adminToken}`);
+  assert.match((pwd.text || pwd.body.toString()).trim(), /mems-analyse\/travail-/);
+
+  assert.deepEqual(travauxRestants(), [], "le répertoire de travail ne survit pas à l'exécution");
+
+  const trace = db.prepare(`SELECT * FROM audit WHERE entity='scripts' AND action='execute'
+                            AND at >= ? ORDER BY at DESC, rowid DESC LIMIT 1`).get(avant.slice(0,19).replace("T"," "));
+  assert.ok(trace, "toute exécution est journalisée");
+  assert.equal(trace.kind, "securite");
+  assert.equal(trace.user_id, db.prepare("SELECT id FROM users WHERE email='admin@test.local'").get().id);
+  assert.match(trace.text, /exécuté sur le serveur/);
+  assert.match(trace.text, /code de sortie 0/);
+  assert.match(trace.text, / s —/, "la durée figure au journal");
+  assert.match(trace.text, /3 fichier\(s\) produit\(s\)/);
+
+  /* Ce qui n'est pas au manifeste n'existe pas : ni remontée d'arborescence, ni
+     fichier écarté, ni exécution inconnue. */
+  const base = `/api/scripts/executions/${ex.id}/fichiers`;
+  for(const nom of ["..%2f..%2f..%2fetc%2fpasswd", "lien-vers-passwd", ".fichier-cache"]){
+    const nok = await request(app).get(`${base}/${nom}`).set("Authorization", `Bearer ${adminToken}`);
+    assert.equal(nok.status, 404, nom);
+  }
+  assert.equal((await request(app).get(`/api/scripts/executions/exec_inconnu/fichiers/x.csv`)
+    .set("Authorization", `Bearer ${adminToken}`)).status, 404);
+
+  /* Les résultats appartiennent à qui a lancé l'analyse : un autre
+     super-utilisateur ne les lit pas. */
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"super-deux@test.local", password:"SuperDeuxMdp2026", first_name:"Super",
+            last_name:"Deux", role:"super", tabs:["home"], active:true });
+  motDePasseAdopte("super-deux@test.local");
+  const autre = (await login("super-deux@test.local", "SuperDeuxMdp2026")).body.token;
+  assert.equal((await request(app).get(csv.url).set("Authorization", `Bearer ${autre}`)).status, 404);
+});
+
+test("scripts d'analyse : un jeu de données au-delà du plafond est refusé avant tout lancement", async () => {
+  const jeu = creerJeu([{ a:1 },{ a:2 },{ a:3 }]);
+  const r = await lancerAnalyse({ code:"echo bonjour", jeu, reglages:{
+    ANALYSIS_R: FAUX_INTERPRETEUR, ANALYSIS_MAX_ROWS:"2" }});
+  assert.equal(r.status, 413);
+  assert.match(r.body.error, /3 lignes/);
+});
+
+test("scripts d'analyse : exécution réelle d'un script R", { skip: RSCRIPT ? false
+  : "Rscript n'est pas installé sur cette machine : la chaîne R n'a pas pu être éprouvée" }, async () => {
+  const jeu = creerJeu([
+    { site:"A", n:1 }, { site:"A", n:3 }, { site:"B", n:5 },
+  ]);
+  const code = [
+    'donnees <- read.csv("donnees.csv", stringsAsFactors = FALSE)',
+    'cat("lignes:", nrow(donnees), "\\n")',
+    'cat("secret:[", Sys.getenv("JWT_SECRET"), "]\\n", sep = "")',
+    'resume <- aggregate(n ~ site, data = donnees, FUN = sum)',
+    'print(resume)',
+    'write.csv(resume, "resultats.csv", row.names = FALSE)',
+    'pdf("graphique.pdf"); plot(donnees$n); invisible(dev.off())',
+  ].join("\n");
+  const r = await lancerAnalyse({ code, jeu, reglages:{ ANALYSIS_R: RSCRIPT }});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const ex = r.body.execution;
+  assert.equal(ex.statut, "ok", `${ex.erreur}\n${ex.sortie}`);
+  assert.equal(ex.code, 0);
+  assert.match(ex.moteur, /Rscript/);
+  assert.match(ex.sortie, /lignes: 3/);
+  assert.match(ex.sortie, /secret:\[\]/, "R non plus ne voit le secret de signature");
+  assert.deepEqual(ex.fichiers.map(f => f.nom).sort(), ["graphique.pdf","resultats.csv"]);
+
+  const res = await request(app).get(ex.fichiers.find(f => f.nom === "resultats.csv").url)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(res.status, 200);
+  const csv = res.text || res.body.toString();
+  assert.match(csv, /"A",4/);
+  assert.match(csv, /"B",5/);
+  assert.deepEqual(travauxRestants(), []);
+});
+
+test("scripts d'analyse : exécution réelle d'un script SPSS", { skip: PSPP ? false
+  : "pspp n'est pas installé sur cette machine : la chaîne SPSS n'a pas pu être éprouvée" }, async () => {
+  const jeu = creerJeu([{ site:"A", n:1 }, { site:"B", n:3 }, { site:"C", n:5 }]);
+  const code = [
+    "GET DATA /TYPE=TXT /FILE='donnees.csv' /DELIMITERS=\",\" /FIRSTCASE=2",
+    "  /VARIABLES=site A8 n F8.0.",
+    "DESCRIPTIVES VARIABLES=n.",
+    "SAVE TRANSLATE /OUTFILE='resultats.csv' /TYPE=CSV /REPLACE.",
+  ].join("\n");
+  const r = await lancerAnalyse({ code, lang:"SPSS", jeu, reglages:{ ANALYSIS_SPSS: PSPP }});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const ex = r.body.execution;
+  assert.equal(ex.statut, "ok", `${ex.erreur}\n${ex.sortie}`);
+  assert.match(ex.moteur, /pspp/);
+  assert.match(ex.sortie, /Mean|Moyenne/);
+  assert.ok(ex.fichiers.some(f => f.nom === "resultats.csv"),
+    `pspp devait produire resultats.csv, fichiers : ${JSON.stringify(ex.fichiers)}`);
+  assert.deepEqual(travauxRestants(), []);
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ADMINISTRATION DE L'INSTANCE — ce qui sépare `super` de `admin`
+
+   Jusqu'ici la matrice CAPS (lib/auth.js) donnait à `super` et à `admin`
+   exactement les mêmes quatre capacités : le rôle `super` existait sans rien
+   apporter. Ce qui suit lui donne un contenu — non pas « plus de droits sur
+   les mêmes objets », mais un objet différent : l'instance elle-même.
+
+   Les tests ci-dessous éprouvent quatre familles de routes et, pour chacune,
+   les trois mêmes questions : un administrateur non super est-il refusé, la
+   trace est-elle écrite, et un secret peut-il sortir.
+
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const ADMIN = "/api/admin";
+const { dossierSauvegardes } = await import("../src/lib/sauvegarde.js");
+const verrou = await import("../src/lib/sauvegarde.js");
+const { default: SQLite } = await import("better-sqlite3");
+const { encrypt } = await import("../src/lib/crypto.js");
+
+/* Le `jti` est dans la charge utile du jeton : le lire évite de deviner
+   quelle ligne de `sessions` correspond à quelle connexion quand plusieurs
+   tombent dans la même seconde. */
+const jtiDe = (jeton) =>
+  JSON.parse(Buffer.from(jeton.split(".")[1], "base64url").toString()).jti;
+
+const superId = () => db.prepare("SELECT id FROM users WHERE email='admin@test.local'").get().id;
+const auSuper = (r) => r.set("Authorization", `Bearer ${adminToken}`);
+
+after(() => fs.rmSync(dossierSauvegardes(), { recursive:true, force:true }));
+
+test("instance : un administrateur non super est refusé sur CHACUNE des routes", async () => {
+  const r = await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"admin-instance@test.local", password:"AdminInstanceMotDePasse1",
+            first_name:"Admin", last_name:"Simple", role:"admin", tabs:["home"], active:true });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  motDePasseAdopte("admin-instance@test.local");
+  const t = (await login("admin-instance@test.local", "AdminInstanceMotDePasse1")).body.token;
+  const lui = db.prepare("SELECT id FROM users WHERE email='admin-instance@test.local'").get().id;
+
+  /* Il est bien administrateur au sens de la matrice : la gestion des comptes,
+     des bureaux et des référentiels lui reste ouverte. C'est ce qui donne son
+     sens au reste du test — ce n'est pas un compte diminué. */
+  assert.equal((await request(app).get("/api/users")
+    .set("Authorization", `Bearer ${t}`)).status, 200);
+  assert.equal((await request(app).get("/api/offices")
+    .set("Authorization", `Bearer ${t}`)).status, 200);
+
+  const routes = [
+    ["get",    `${ADMIN}/journal`],
+    ["get",    `${ADMIN}/journal/facettes`],
+    ["get",    `${ADMIN}/base`],
+    ["post",   `${ADMIN}/base/checkpoint`],
+    ["post",   `${ADMIN}/base/vacuum`],
+    ["post",   `${ADMIN}/sauvegarde`],
+    ["get",    `${ADMIN}/sauvegardes`],
+    ["get",    `${ADMIN}/sauvegardes/quelconque.db`],
+    ["get",    `${ADMIN}/sauvegardes/quelconque.db/controle`],
+    ["delete", `${ADMIN}/sauvegardes/quelconque.db`],
+    ["post",   `${ADMIN}/restauration`],
+    ["post",   "/api/auth/sessions/purge"],
+    ["delete", "/api/auth/sessions/sess_quelconque"],
+    ["delete", `/api/auth/users/${lui}/sessions`],
+  ];
+  for(const [m, chemin] of routes){
+    const rep = await request(app)[m](chemin).set("Authorization", `Bearer ${t}`)
+      .send({ fichier:"x.db", confirmation:"RESTAURER" });
+    assert.equal(rep.status, 403, `${m.toUpperCase()} ${chemin} doit être refusé`);
+    assert.match(rep.body.error, /super/, `${m.toUpperCase()} ${chemin}`);
+  }
+
+  /* Le refus vaut aussi pour REGARDER les sessions d'autrui — fermer la
+     session d'un tiers commence par savoir qu'elle existe. */
+  for(const q of ["?tous=1", `?user_id=${superId()}`]){
+    const rep = await request(app).get(`/api/auth/sessions${q}`)
+      .set("Authorization", `Bearer ${t}`);
+    assert.equal(rep.status, 403, `GET /api/auth/sessions${q}`);
+  }
+  /* Mais ses PROPRES sessions restent lisibles : la route existante n'est pas
+     fermée au passage, elle est seulement complétée. */
+  const miennes = await request(app).get("/api/auth/sessions")
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(miennes.status, 200);
+  assert.equal(miennes.body.portee, "compte");
+  assert.ok(miennes.body.sessions.some(s => s.courante && s.active));
+
+  /* Et le super, lui, passe partout : sans quoi le test ci-dessus prouverait
+     seulement que les routes n'existent pas. */
+  assert.equal((await auSuper(request(app).get(`${ADMIN}/base`))).status, 200);
+  assert.equal((await auSuper(request(app).get(`${ADMIN}/journal`))).status, 200);
+});
+
+test("sessions : révoquer une session la rend inutilisable au prochain appel", async () => {
+  const t = (await login("admin-instance@test.local", "AdminInstanceMotDePasse1")).body.token;
+  const jti = jtiDe(t);
+  assert.equal((await request(app).get("/api/auth/me")
+    .set("Authorization", `Bearer ${t}`)).status, 200, "la session est vivante avant révocation");
+
+  const cible = db.prepare("SELECT id FROM users WHERE email='admin-instance@test.local'").get().id;
+  const vue = await auSuper(request(app).get(`/api/auth/sessions?user_id=${cible}`));
+  assert.equal(vue.status, 200);
+  assert.equal(vue.body.portee, "autre_compte");
+  assert.ok(vue.body.sessions.some(s => s.id === jti && s.active));
+
+  const rev = await auSuper(request(app).delete(`/api/auth/sessions/${jti}`));
+  assert.equal(rev.status, 200, JSON.stringify(rev.body));
+  assert.equal(rev.body.revoquee, jti);
+  assert.equal(rev.body.courante, false);
+
+  /* Le point de bascule : le porteur du jeton n'obtient plus rien. Le jeton
+     JWT est pourtant toujours valide et non expiré — c'est bien la session en
+     base qui décide, comme le veut lib/auth.js. */
+  assert.equal((await request(app).get("/api/auth/me")
+    .set("Authorization", `Bearer ${t}`)).status, 401);
+  assert.equal((await request(app).get("/api/state")
+    .set("Authorization", `Bearer ${t}`)).status, 401);
+
+  const trace = db.prepare(
+    "SELECT * FROM audit WHERE entity='sessions' AND action='revoke' AND entity_id=?").get(jti);
+  assert.ok(trace, "la révocation est journalisée");
+  assert.equal(trace.kind, "securite");
+  assert.match(trace.text, /admin-instance@test\.local/);
+
+  /* Rejouer ne casse rien et ne ment pas : l'état voulu est déjà atteint. */
+  const encore = await auSuper(request(app).delete(`/api/auth/sessions/${jti}`));
+  assert.equal(encore.status, 200);
+  assert.equal(encore.body.deja_revoquee, true);
+
+  assert.equal((await auSuper(request(app).delete("/api/auth/sessions/sess_inexistante"))).status, 404);
+});
+
+test("sessions : révocation en masse, et la protection de sa propre session", async () => {
+  const r = await auSuper(request(app).post("/api/users"))
+    .send({ email:"super2@test.local", password:"SecondSuperMotDePasse1", first_name:"Second",
+            last_name:"Super", role:"super", tabs:["home"], active:true });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  motDePasseAdopte("super2@test.local");
+  const moi = db.prepare("SELECT id FROM users WHERE email='super2@test.local'").get().id;
+
+  const a = (await login("super2@test.local", "SecondSuperMotDePasse1")).body.token;
+  const b = (await login("super2@test.local", "SecondSuperMotDePasse1")).body.token;
+  const c = (await login("super2@test.local", "SecondSuperMotDePasse1")).body.token;
+  const commeA = (req) => req.set("Authorization", `Bearer ${a}`);
+
+  /* ── Refus par défaut de se couper soi-même en désignant sa session ── */
+  const refus = await commeA(request(app).delete(`/api/auth/sessions/${jtiDe(a)}`));
+  assert.equal(refus.status, 409);
+  assert.equal(refus.body.courante, true);
+  assert.match(refus.body.error, /confirmer=1/);
+  assert.equal((await commeA(request(app).get("/api/auth/me"))).status, 200,
+    "le refus n'a évidemment rien révoqué");
+
+  /* ── Révocation en masse : la session courante est préservée par défaut ── */
+  const masse = await commeA(request(app).delete(`/api/auth/users/${moi}/sessions`));
+  assert.equal(masse.status, 200, JSON.stringify(masse.body));
+  assert.equal(masse.body.courante_preservee, true);
+  assert.equal(masse.body.courante_revoquee, false);
+  assert.equal(masse.body.revoquees, 2, "b et c fermées, a conservée");
+  for(const mort of [b, c])
+    assert.equal((await request(app).get("/api/auth/me")
+      .set("Authorization", `Bearer ${mort}`)).status, 401);
+  assert.equal((await commeA(request(app).get("/api/auth/me"))).status, 200,
+    "celle qui a lancé l'opération fonctionne encore");
+  assert.ok(db.prepare(`SELECT 1 FROM audit WHERE entity='sessions' AND action='revoke_all'
+                        AND entity_id=?`).get(moi), "la révocation en masse est journalisée");
+
+  /* ── Et l'inclusion explicite, qui elle coupe bien l'appelant ── */
+  const tout = await commeA(request(app).delete(`/api/auth/users/${moi}/sessions?inclure_courante=1`));
+  assert.equal(tout.status, 200);
+  assert.equal(tout.body.courante_revoquee, true);
+  assert.equal(tout.body.courante_preservee, false);
+  assert.equal((await commeA(request(app).get("/api/auth/me"))).status, 401,
+    "la réponse est arrivée, le coup d'après non — c'est ce qui était annoncé");
+
+  /* ── La confirmation explicite sur une session désignée ── */
+  const d = (await login("super2@test.local", "SecondSuperMotDePasse1")).body.token;
+  const suicide = await request(app).delete(`/api/auth/sessions/${jtiDe(d)}?confirmer=1`)
+    .set("Authorization", `Bearer ${d}`);
+  assert.equal(suicide.status, 200, JSON.stringify(suicide.body));
+  assert.equal(suicide.body.courante, true);
+  assert.equal((await request(app).get("/api/auth/me")
+    .set("Authorization", `Bearer ${d}`)).status, 401);
+
+  assert.equal((await auSuper(request(app).delete("/api/auth/users/user_inconnu/sessions"))).status, 404);
+});
+
+test("sessions : la purge efface les sessions closes et n'effleure pas les vivantes", async () => {
+  const moi = superId();
+  const monJti = jtiDe(adminToken);
+  db.prepare(`INSERT INTO sessions (id,user_id,issued_at,expires_at,revoked)
+              VALUES ('sess_expiree_essai',?,datetime('now','-9 hours'),datetime('now','-1 hour'),0)`).run(moi);
+  db.prepare(`INSERT INTO sessions (id,user_id,issued_at,expires_at,revoked)
+              VALUES ('sess_revoquee_essai',?,datetime('now'),datetime('now','+8 hours'),1)`).run(moi);
+  /* Une session close mais RÉCENTE, pour éprouver la fenêtre de conservation. */
+  db.prepare(`INSERT INTO sessions (id,user_id,issued_at,expires_at,revoked)
+              VALUES ('sess_recente_close',?,datetime('now'),datetime('now','-1 minute'),0)`).run(moi);
+
+  /* Avec une fenêtre de trente jours, rien de ce qui a été émis aujourd'hui ne
+     part — pas même ce qui est déjà mort. */
+  const menagee = await auSuper(request(app).post("/api/auth/sessions/purge?jours=30"));
+  assert.equal(menagee.status, 200, JSON.stringify(menagee.body));
+  assert.equal(menagee.body.supprimees, 0);
+  assert.ok(db.prepare("SELECT 1 FROM sessions WHERE id='sess_recente_close'").get());
+
+  const avant = db.prepare("SELECT COUNT(*) c FROM sessions").get().c;
+  const vivantesAvant = db.prepare(
+    "SELECT id FROM sessions WHERE revoked=0 AND expires_at > datetime('now')").all().map(s => s.id);
+  assert.ok(vivantesAvant.includes(monJti), "la session du super est bien vivante avant la purge");
+
+  const purge = await auSuper(request(app).post("/api/auth/sessions/purge"));
+  assert.equal(purge.status, 200, JSON.stringify(purge.body));
+  assert.equal(purge.body.avant, avant);
+  assert.ok(purge.body.supprimees >= 3);
+
+  for(const morte of ["sess_expiree_essai", "sess_revoquee_essai", "sess_recente_close"])
+    assert.equal(db.prepare("SELECT 1 FROM sessions WHERE id=?").get(morte), undefined,
+      `${morte} devait être purgée`);
+
+  /* LE point du test : aucune session vivante n'a disparu, et celle qui a
+     lancé la purge marche toujours. */
+  const vivantesApres = db.prepare(
+    "SELECT id FROM sessions WHERE revoked=0 AND expires_at > datetime('now')").all().map(s => s.id);
+  assert.deepEqual(vivantesApres.sort(), vivantesAvant.sort());
+  assert.equal(purge.body.restantes, vivantesAvant.length);
+  assert.equal((await auSuper(request(app).get("/api/auth/me"))).status, 200);
+
+  assert.ok(db.prepare(`SELECT 1 FROM audit WHERE entity='sessions' AND action='purge'`).get(),
+    "la purge est journalisée");
+});
+
+test("journal d'audit : filtres, période, recherche et pagination", async () => {
+  /* Le genre `securite` est précisément celui que /api/state masque à tous
+     (state.js, `kind<>'securite'`) : les connexions et les échecs de connexion
+     n'étaient lisibles par personne. */
+  const sec = await auSuper(request(app).get(`${ADMIN}/journal?kind=securite&taille=5`));
+  assert.equal(sec.status, 200);
+  assert.ok(sec.body.total > 5, `journal de sécurité trop court : ${sec.body.total}`);
+  assert.equal(sec.body.lignes.length, 5);
+  assert.ok(sec.body.lignes.every(l => l.kind === "securite"));
+  assert.equal(sec.body.pages, Math.ceil(sec.body.total / 5));
+
+  /* Pagination : la page 2 n'est pas la page 1, et les deux tiennent dans le
+     total annoncé. */
+  const p2 = await auSuper(request(app).get(`${ADMIN}/journal?kind=securite&taille=5&page=2`));
+  assert.equal(p2.body.total, sec.body.total);
+  assert.equal(p2.body.page, 2);
+  const idsP1 = sec.body.lignes.map(l => l.id);
+  assert.ok(p2.body.lignes.every(l => !idsP1.includes(l.id)), "aucun recouvrement entre les pages");
+
+  const echecs = await auSuper(request(app).get(`${ADMIN}/journal?action=login_failed`));
+  assert.ok(echecs.body.total > 0);
+  assert.ok(echecs.body.lignes.every(l => l.action === "login_failed"));
+
+  const parEntite = await auSuper(request(app).get(`${ADMIN}/journal?entity=sites`));
+  assert.ok(parEntite.body.total > 0);
+  assert.ok(parEntite.body.lignes.every(l => l.entity === "sites"));
+
+  const moi = superId();
+  const parCompte = await auSuper(request(app).get(`${ADMIN}/journal?user_id=${moi}`));
+  assert.ok(parCompte.body.total > 0);
+  assert.ok(parCompte.body.lignes.every(l => l.user_id === moi));
+
+  /* Combinaison de filtres : le total ne peut que se resserrer. */
+  const croise = await auSuper(request(app)
+    .get(`${ADMIN}/journal?user_id=${moi}&kind=securite&entity=sessions`));
+  assert.ok(croise.body.total > 0);
+  assert.ok(croise.body.total <= parCompte.body.total);
+  assert.ok(croise.body.lignes.every(l =>
+    l.user_id === moi && l.kind === "securite" && l.entity === "sessions"));
+
+  /* Période. `at` est écrit par datetime('now'), donc en UTC : la borne se
+     compare à une date UTC. Une date seule doit couvrir la journée entière —
+     c'est le piège que la borne haute complétée à 23:59:59 évite. */
+  const aujourdhui = new Date().toISOString().slice(0, 10);
+  const duJour = await auSuper(request(app)
+    .get(`${ADMIN}/journal?depuis=${aujourdhui}&jusqu_a=${aujourdhui}`));
+  assert.ok(duJour.body.total > 0, "les traces du jour doivent être dans l'intervalle du jour");
+  const total = (await auSuper(request(app).get(`${ADMIN}/journal`))).body.total;
+  assert.equal(duJour.body.total, total, "tout le journal de ce test date d'aujourd'hui");
+  assert.equal((await auSuper(request(app).get(`${ADMIN}/journal?depuis=2099-01-01`))).body.total, 0);
+  assert.equal((await auSuper(request(app).get(`${ADMIN}/journal?jusqu_a=2000-01-01`))).body.total, 0);
+
+  /* Recherche libre sur le libellé, jokers LIKE neutralisés : « %_% » ne doit
+     pas ramener tout le journal. */
+  const texte = await auSuper(request(app).get(`${ADMIN}/journal?q=Connexion`));
+  assert.ok(texte.body.total > 0);
+  assert.ok(texte.body.lignes.every(l => /Connexion/i.test(l.text)));
+  assert.equal((await auSuper(request(app).get(`${ADMIN}/journal?q=%25`))).body.total, 0,
+    "« % » est cherché comme un caractère, pas comme un joker");
+
+  /* Entrées invalides : refusées, pas silencieusement ignorées. */
+  assert.equal((await auSuper(request(app).get(`${ADMIN}/journal?depuis=hier`))).status, 422);
+  assert.equal((await auSuper(request(app).get(`${ADMIN}/journal?taille=5000`))).status, 422);
+  assert.equal((await auSuper(request(app).get(`${ADMIN}/journal?page=0`))).status, 422);
+  assert.equal((await auSuper(request(app).get(`${ADMIN}/journal?filtre_invente=1`))).status, 422);
+
+  const f = await auSuper(request(app).get(`${ADMIN}/journal/facettes`));
+  assert.equal(f.status, 200);
+  assert.ok(f.body.kinds.some(k => k.v === "securite"));
+  assert.ok(f.body.actions.some(a => a.v === "login"));
+  assert.ok(f.body.comptes.some(c => c.user_id === moi));
+  assert.ok(f.body.bornes.premier <= f.body.bornes.dernier);
+});
+
+test("santé de la base : état complet, entretien mesuré, et pas deux à la fois", async () => {
+  const b = await auSuper(request(app).get(`${ADMIN}/base`));
+  assert.equal(b.status, 200);
+  assert.equal(b.body.integrite.integrity_check, "ok");
+  assert.equal(b.body.integrite.violations_cles_etrangeres, 0);
+  assert.equal(b.body.integrite.conforme, true);
+  assert.ok(b.body.fichier.principal > 0, "la taille du fichier est rapportée");
+  assert.equal(b.body.reglages.journal_mode, "wal");
+  assert.ok(b.body.tables.length >= 45);
+  assert.equal(b.body.tables.find(t => t.nom === "users").lignes,
+               db.prepare("SELECT COUNT(*) c FROM users").get().c);
+  assert.ok(b.body.migrations.length >= 18);
+  assert.ok(b.body.migrations.every(m => m.name.endsWith(".sql") && m.applied_at));
+  assert.equal(b.body.entretien_en_cours, null);
+
+  /* Les deux entretiens : ils bloquent, ils disent combien de temps. */
+  const ck = await auSuper(request(app).post(`${ADMIN}/base/checkpoint`));
+  assert.equal(ck.status, 200, JSON.stringify(ck.body));
+  assert.equal(typeof ck.body.ms, "number");
+  assert.ok(ck.body.resultat && typeof ck.body.resultat.busy === "number");
+  assert.ok(ck.body.avant && ck.body.apres);
+
+  const vac = await auSuper(request(app).post(`${ADMIN}/base/vacuum`));
+  assert.equal(vac.status, 200, JSON.stringify(vac.body));
+  assert.equal(typeof vac.body.ms, "number");
+  assert.equal(typeof vac.body.gain, "number");
+
+  /* La base sort indemne des deux opérations — c'est la seule chose qui
+     compte vraiment quand on réécrit un fichier de production. */
+  const apres = await auSuper(request(app).get(`${ADMIN}/base`));
+  assert.equal(apres.body.integrite.conforme, true);
+  assert.equal(apres.body.tables.find(t => t.nom === "users").lignes,
+               b.body.tables.find(t => t.nom === "users").lignes);
+
+  for(const action of ["checkpoint", "vacuum"])
+    assert.ok(db.prepare("SELECT 1 FROM audit WHERE entity='base' AND action=?").get(action),
+      `${action} est journalisé`);
+
+  /* ── Deux entretiens en parallèle : refusés ──
+     On prend le verrou à la main plutôt que de lancer deux requêtes et
+     d'espérer qu'elles se croisent : better-sqlite3 étant synchrone, un
+     VACUUM ne rend jamais la main en cours de route et le croisement ne
+     serait pas reproductible. La sauvegarde, elle, rend la main — c'est
+     exactement pour ce cas que le verrou existe. */
+  assert.equal(verrou.prendreVerrou("essai", "test"), true);
+  assert.equal(verrou.prendreVerrou("second essai", "test"), false,
+    "le verrou ne se prend pas deux fois");
+  try{
+    for(const [m, chemin] of [["post", `${ADMIN}/base/checkpoint`],
+                              ["post", `${ADMIN}/base/vacuum`],
+                              ["post", `${ADMIN}/sauvegarde`]]){
+      const rep = await auSuper(request(app)[m](chemin));
+      assert.equal(rep.status, 409, `${chemin} pendant un entretien`);
+      assert.match(rep.body.error, /en cours/);
+      assert.equal(rep.body.entretien_en_cours.operation, "essai");
+    }
+    const pendant = await auSuper(request(app).get(`${ADMIN}/base`));
+    assert.equal(pendant.body.entretien_en_cours.operation, "essai");
+  }finally{ verrou.rendreVerrou(); }
+
+  assert.equal((await auSuper(request(app).post(`${ADMIN}/base/checkpoint`))).status, 200,
+    "le verrou rendu, l'entretien repasse");
+});
+
+test("sauvegarde : fichier SQLite valide, relisible, téléchargeable et tracé", async () => {
+  const cree = await auSuper(request(app).post(`${ADMIN}/sauvegarde`));
+  assert.equal(cree.status, 201, JSON.stringify(cree.body));
+  const s = cree.body.sauvegarde;
+  assert.match(s.nom, /^mems-\d{14}-[0-9A-Z]{4}\.db$/);
+  assert.equal(s.integrite, "ok");
+  assert.ok(s.octets > 0 && s.pages > 0);
+  assert.equal(typeof s.ms, "number");
+
+  /* Le cœur de l'exigence : le fichier produit est une base SQLite qu'on
+     rouvre, qui passe integrity_check, et qui contient bien les données. Une
+     copie à chaud du fichier en mode WAL échouerait ici. */
+  const chemin = path.join(dossierSauvegardes(), s.nom);
+  assert.ok(fs.existsSync(chemin));
+  const copie = new SQLite(chemin, { readonly:true, fileMustExist:true });
+  try{
+    assert.equal(copie.pragma("integrity_check", { simple:true }), "ok");
+    assert.equal(copie.pragma("foreign_key_check").length, 0);
+    for(const t of ["users", "sites", "sessions", "_migrations"])
+      assert.equal(copie.prepare(`SELECT COUNT(*) c FROM "${t}"`).get().c,
+                   db.prepare(`SELECT COUNT(*) c FROM "${t}"`).get().c,
+                   `la table ${t} doit être copiée intégralement`);
+    /* `audit` est comparée à part : la trace de la sauvegarde elle-même est
+       écrite APRÈS la copie, la base vivante a donc une ligne d'avance. C'est
+       le comportement voulu — une sauvegarde ne peut pas contenir le récit de
+       sa propre création. */
+    const dansCopie = copie.prepare("SELECT COUNT(*) c FROM audit").get().c;
+    const vivante = db.prepare("SELECT COUNT(*) c FROM audit").get().c;
+    assert.ok(dansCopie > 0 && dansCopie === vivante - 1,
+      `journal copié : ${dansCopie} lignes contre ${vivante} en base`);
+    assert.ok(copie.prepare("SELECT 1 FROM sites LIMIT 1").get(), "la sauvegarde n'est pas vide");
+  }finally{ copie.close(); }
+
+  const liste = await auSuper(request(app).get(`${ADMIN}/sauvegardes`));
+  assert.equal(liste.status, 200);
+  assert.ok(liste.body.sauvegardes.some(x => x.nom === s.nom && x.octets === s.octets));
+
+  const ctrl = await auSuper(request(app).get(`${ADMIN}/sauvegardes/${s.nom}/controle`));
+  assert.equal(ctrl.body.controle.lisible, true);
+  assert.equal(ctrl.body.controle.violations, 0);
+  assert.ok(ctrl.body.controle.tables >= 45);
+
+  /* Téléchargeable, et ce qui sort est octet pour octet le fichier vérifié. */
+  const dl = await auSuper(request(app).get(`${ADMIN}/sauvegardes/${s.nom}`));
+  assert.equal(dl.status, 200);
+  assert.match(dl.headers["content-disposition"], new RegExp(s.nom));
+  assert.ok(Buffer.isBuffer(dl.body));
+  assert.equal(dl.body.length, fs.statSync(chemin).size);
+  const recu = path.join(dossierSauvegardes(), "recu-par-http.db");
+  fs.writeFileSync(recu, dl.body);
+  const relu = new SQLite(recu, { readonly:true, fileMustExist:true });
+  try{
+    assert.equal(relu.pragma("integrity_check", { simple:true }), "ok",
+      "le fichier tel qu'il sort par HTTP est une base SQLite valide");
+    assert.equal(relu.prepare("SELECT COUNT(*) c FROM users").get().c,
+                 db.prepare("SELECT COUNT(*) c FROM users").get().c);
+  }finally{ relu.close(); fs.unlinkSync(recu); }
+
+  assert.ok(db.prepare(`SELECT 1 FROM audit WHERE entity='base' AND action='sauvegarde'
+                        AND entity_id=?`).get(s.nom), "la création est journalisée");
+  assert.ok(db.prepare(`SELECT 1 FROM audit WHERE entity='base' AND action='telechargement'
+                        AND entity_id=?`).get(s.nom), "le téléchargement est journalisé");
+
+  /* Un nom venu du client ne construit jamais un chemin : ni remontée, ni
+     chemin absolu, ni fichier hors du dossier des sauvegardes. */
+  for(const mauvais of ["..%2F..%2Fdata%2Ftest.db", "%2Fetc%2Fpasswd",
+                        "..%2Fmems.db", "sauvegarde.txt", "..%2E%2Fx.db"]){
+    const rep = await auSuper(request(app).get(`${ADMIN}/sauvegardes/${mauvais}`));
+    assert.equal(rep.status, 404, `téléchargement de « ${mauvais} » doit être refusé`);
+  }
+  assert.ok(fs.existsSync(path.resolve("./data/test.db")), "la base d'essai est toujours là");
+
+  const jetable = (await auSuper(request(app).post(`${ADMIN}/sauvegarde`))).body.sauvegarde.nom;
+  const sup = await auSuper(request(app).delete(`${ADMIN}/sauvegardes/${jetable}`));
+  assert.equal(sup.status, 200);
+  assert.ok(!fs.existsSync(path.join(dossierSauvegardes(), jetable)));
+  assert.equal((await auSuper(request(app).delete(`${ADMIN}/sauvegardes/${jetable}`))).status, 404);
+  assert.ok(db.prepare(`SELECT 1 FROM audit WHERE action='suppression_sauvegarde'
+                        AND entity_id=?`).get(jetable));
+});
+
+test("administration : aucune route ne laisse sortir un secret", async () => {
+  /* On plante des secrets reconnaissables, pour que l'absence de fuite ne soit
+     pas due à l'absence de donnée. */
+  const EN_CLAIR = "JETON-ODK-SECRET-A-NE-JAMAIS-SORTIR";
+  const chiffre = encrypt(EN_CLAIR);
+  db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind)
+              VALUES ('odkf_secret','Formulaire témoin','F_TEMOIN','P1',?,'process')`).run(chiffre);
+  const empreinte = db.prepare("SELECT pw_hash FROM users WHERE email='admin@test.local'").get().pw_hash;
+  assert.ok(empreinte?.startsWith("$2"), "le témoin est bien une empreinte bcrypt");
+  assert.equal(db.prepare("SELECT token_enc FROM odk_forms WHERE id='odkf_secret'").get().token_enc,
+               chiffre, "le témoin chiffré est bien en base");
+
+  const s = (await auSuper(request(app).post(`${ADMIN}/sauvegarde`))).body.sauvegarde;
+  const reponses = [];
+  for(const chemin of [`${ADMIN}/base`, `${ADMIN}/journal?taille=200`, `${ADMIN}/journal/facettes`,
+                       `${ADMIN}/sauvegardes`, `${ADMIN}/sauvegardes/${s.nom}/controle`,
+                       "/api/auth/sessions?tous=1", "/api/auth/sessions"]){
+    const r = await auSuper(request(app).get(chemin));
+    assert.equal(r.status, 200, chemin);
+    reponses.push([chemin, JSON.stringify(r.body)]);
+  }
+  reponses.push(["checkpoint",
+    JSON.stringify((await auSuper(request(app).post(`${ADMIN}/base/checkpoint`))).body)]);
+  reponses.push(["purge",
+    JSON.stringify((await auSuper(request(app).post("/api/auth/sessions/purge?jours=3650"))).body)]);
+
+  for(const [chemin, corps] of reponses){
+    for(const interdit of [EN_CLAIR, chiffre, empreinte, "MotDePasseTest2026",
+                           "SecondSuperMotDePasse1", "AdminInstanceMotDePasse1"])
+      assert.ok(!corps.includes(interdit), `${chemin} laisse sortir un secret`);
+    /* On cherche des CLÉS JSON, pas des sous-chaînes : `password_change` est un
+       nom d'action légitime du journal, et le confondre avec une fuite ferait
+       échouer le test pour une bonne raison — ce qui revient à ne plus rien
+       garantir du tout. */
+    for(const cle of ['"pw_hash"', '"token_enc"', '"secret_enc"', '"password"', '"token"'])
+      assert.ok(!corps.includes(cle), `${chemin} expose le champ ${cle}`);
+  }
+
+  /* Le fichier de sauvegarde, lui, contient bien ces colonnes — c'est la base.
+     Ce qui compte est qu'il n'y ait RIEN EN CLAIR : bcrypt d'un côté, AES-GCM
+     de l'autre, et la clé de déchiffrement dans l'environnement, jamais dans
+     le fichier. Un sauvegarde volée ne rend pas un jeton ODK. */
+  const octets = fs.readFileSync(path.join(dossierSauvegardes(), s.nom));
+  assert.ok(!octets.includes(Buffer.from(EN_CLAIR)),
+    "le jeton en clair ne doit apparaître nulle part dans la sauvegarde");
+  assert.ok(!octets.includes(Buffer.from("MotDePasseTest2026")),
+    "aucun mot de passe en clair dans la sauvegarde");
+  assert.ok(octets.includes(Buffer.from(chiffre)), "le chiffré, lui, est bien sauvegardé");
+  assert.ok(octets.includes(Buffer.from(empreinte)), "l'empreinte bcrypt aussi");
+  /* Ce sont les VALEURS des clés qu'on cherche, pas leurs noms : « DATA_KEY »
+     apparaît légitimement dans du code de script stocké en base, et confondre
+     les deux ferait échouer le test sans rien prouver. Si ces deux valeurs sont
+     absentes du fichier, alors une sauvegarde volée ne déchiffre rien et ne
+     signe aucun jeton — c'est toute la garantie. */
+  for(const cle of [process.env.DATA_KEY, process.env.JWT_SECRET])
+    assert.ok(!octets.includes(Buffer.from(cle)),
+      "les clés vivent dans l'environnement, jamais dans la base");
+
+  db.prepare("DELETE FROM odk_forms WHERE id='odkf_secret'").run();
+});
+
+/* Ce test doit rester le DERNIER du fichier : il ramène la base à l'état
+   qu'elle avait quelques lignes plus haut. Tout ce qui a été créé avant la
+   sauvegarde y est — donc rien de ce que les tests précédents ont vérifié
+   n'est perdu — mais ce qui naîtrait après lui serait effacé. */
+test("restauration : confirmation exigée, filet automatique, et retour exact", async () => {
+  const s = (await auSuper(request(app).post(`${ADMIN}/sauvegarde`))).body.sauvegarde;
+
+  /* Un changement postérieur à la sauvegarde : c'est lui qui prouvera que la
+     restauration a réellement remplacé le contenu. */
+  const cree = await auSuper(request(app).post("/api/sites"))
+    .send({ code:"TEMOIN-RESTAURATION", name:"Site témoin de restauration", status:"Active" });
+  assert.equal(cree.status, 201, JSON.stringify(cree.body));
+  const temoin = cree.body.site.id;
+  assert.ok(db.prepare("SELECT 1 FROM sites WHERE id=?").get(temoin));
+
+  /* ── Ce qui est refusé ── */
+  const sansMot = await auSuper(request(app).post(`${ADMIN}/restauration`))
+    .send({ fichier:s.nom, confirmation:"oui" });
+  assert.equal(sansMot.status, 422);
+  assert.match(sansMot.body.error, /RESTAURER/);
+  assert.equal((await auSuper(request(app).post(`${ADMIN}/restauration`))
+    .send({ fichier:s.nom })).status, 422, "la confirmation est un champ requis");
+  assert.equal((await auSuper(request(app).post(`${ADMIN}/restauration`))
+    .send({ fichier:"inexistante.db", confirmation:"RESTAURER" })).status, 404);
+  assert.equal((await auSuper(request(app).post(`${ADMIN}/restauration`))
+    .send({ fichier:"../test.db", confirmation:"RESTAURER" })).status, 404);
+  assert.ok(db.prepare("SELECT 1 FROM sites WHERE id=?").get(temoin),
+    "aucun refus n'a touché à la base");
+
+  /* Un fichier qui n'est pas une base : refusé à la relecture, pas à mi-course. */
+  fs.writeFileSync(path.join(dossierSauvegardes(), "pas-une-base.db"), "bonjour");
+  const pasUneBase = await auSuper(request(app).post(`${ADMIN}/restauration`))
+    .send({ fichier:"pas-une-base.db", confirmation:"RESTAURER" });
+  assert.equal(pasUneBase.status, 422);
+  assert.match(pasUneBase.body.error, /inexploitable|illisible/);
+
+  /* Une sauvegarde d'un autre niveau de schéma : refusée AVANT de commencer,
+     parce qu'un « INSERT … SELECT * » entre schémas divergents écrirait dans
+     les mauvaises colonnes. */
+  const autreNiveau = path.join(dossierSauvegardes(), "autre-niveau.db");
+  fs.copyFileSync(path.join(dossierSauvegardes(), s.nom), autreNiveau);
+  const bricole = new SQLite(autreNiveau);
+  bricole.prepare("DELETE FROM _migrations WHERE name=(SELECT MAX(name) FROM _migrations)").run();
+  bricole.close();
+  const divergente = await auSuper(request(app).post(`${ADMIN}/restauration`))
+    .send({ fichier:"autre-niveau.db", confirmation:"RESTAURER" });
+  assert.equal(divergente.status, 422);
+  assert.match(divergente.body.error, /migration/);
+  assert.ok(db.prepare("SELECT 1 FROM sites WHERE id=?").get(temoin),
+    "un refus de schéma ne laisse aucune trace sur la base");
+
+  /* ── La restauration elle-même ── */
+  const avant = (await auSuper(request(app).get(`${ADMIN}/sauvegardes`))).body.sauvegardes.length;
+  const r = await auSuper(request(app).post(`${ADMIN}/restauration`))
+    .send({ fichier:s.nom, confirmation:"RESTAURER" });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.restaure, s.nom);
+  assert.equal(r.body.apres.integrite, "ok");
+  assert.equal(r.body.apres.violations, 0);
+  assert.ok(r.body.tables >= 45);
+
+  /* Le filet : une sauvegarde de l'état d'AVANT a été prise toute seule, et
+     elle est exploitable — sans quoi restaurer le mauvais fichier serait sans
+     retour. */
+  assert.ok(r.body.sauvegarde_prealable, "une sauvegarde préalable est obligatoire");
+  const filet = path.join(dossierSauvegardes(), r.body.sauvegarde_prealable);
+  assert.ok(fs.existsSync(filet));
+  const relu = new SQLite(filet, { readonly:true, fileMustExist:true });
+  try{
+    assert.equal(relu.pragma("integrity_check", { simple:true }), "ok");
+    assert.ok(relu.prepare("SELECT 1 FROM sites WHERE id=?").get(temoin),
+      "le filet contient bien l'état d'avant, témoin compris");
+  }finally{ relu.close(); }
+  assert.equal((await auSuper(request(app).get(`${ADMIN}/sauvegardes`))).body.sauvegardes.length,
+    avant + 1, "exactement une sauvegarde de plus : le filet");
+
+  /* La preuve que le contenu a bien été remplacé. */
+  assert.equal(db.prepare("SELECT 1 FROM sites WHERE id=?").get(temoin), undefined,
+    "le site créé après la sauvegarde a disparu avec la restauration");
+  assert.equal((await auSuper(request(app).get(`/api/sites/${temoin}`))).status, 404);
+
+  /* La trace est écrite APRÈS le remplacement — écrite avant, elle aurait été
+     effacée par la restauration, la table `audit` étant elle aussi remplacée. */
+  const trace = db.prepare(
+    "SELECT * FROM audit WHERE entity='base' AND action='restauration'").get();
+  assert.ok(trace, "la restauration est journalisée et la trace survit à la restauration");
+  assert.equal(trace.kind, "securite");
+  assert.ok(trace.text.includes(s.nom) && trace.text.includes(r.body.sauvegarde_prealable));
+
+  /* La session de l'appelant figurait dans la sauvegarde : elle survit, et
+     c'est annoncé. La base reste intègre et pleinement utilisable. */
+  assert.equal(r.body.session_toujours_valide, true);
+  assert.equal(r.body.compte_toujours_present, true);
+  assert.equal(r.body.avertissement, null);
+  assert.equal((await auSuper(request(app).get("/api/auth/me"))).status, 200);
+  const sante = await auSuper(request(app).get(`${ADMIN}/base`));
+  assert.equal(sante.body.integrite.conforme, true);
+  assert.ok(sante.body.tables.find(t => t.nom === "users").lignes > 0);
+  assert.equal((await auSuper(request(app).get("/api/state"))).status, 200,
+    "l'application fonctionne normalement après la restauration");
 });

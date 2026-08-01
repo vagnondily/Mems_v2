@@ -30,6 +30,8 @@ import odkRoutes from "./routes/odk.js";
 import submissionRoutes from "./routes/submissions.js";
 import aliasRoutes from "./routes/aliases.js";
 import connectorRoutes from "./routes/connectors.js";
+import scriptRoutes from "./routes/scripts.js";
+import adminRoutes from "./routes/admin.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 migrate(path.join(here, "..", "migrations"));
@@ -138,6 +140,15 @@ app.use("/api", authenticate, xlsformRoutes);
    précédents, dont il prolonge le travail — le XLSForm dit ce que la source
    contient, le connecteur dit ce que MEMS en retient. */
 app.use("/api", authenticate, connectorRoutes);
+/* Exécution des scripts R et SPSS. Désactivée tant qu'aucun interpréteur n'est
+   déclaré, et réservée au super-utilisateur : le routeur pose lui-même son
+   garde, monter la route ne l'ouvre donc à personne. Voir lib/moteur.js. */
+app.use("/api/scripts", authenticate, scriptRoutes);
+/* Administration de l'INSTANCE — sessions, journal de sécurité, santé du
+   fichier de base, sauvegarde et restauration. Distincte de l'administration
+   du contenu (/api/users, /api/offices…), ouverte aux administrateurs : ce
+   routeur-ci pose lui-même `requireSuper` sur sa totalité. */
+app.use("/api/admin", authenticate, adminRoutes);
 app.use("/api/mre", authenticate, mreRoutes);
 app.use("/api/tpm", authenticate, tpmRoutes);
 app.use("/api", authenticate, collectionRoutes);

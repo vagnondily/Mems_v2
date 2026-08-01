@@ -92,3 +92,15 @@ export const can = (user, capability) => !!(CAPS[user?.role]?.[capability]);
 export const requireCap = (capability) => (req, res, next) =>
   can(req.user, capability) ? next()
     : res.status(403).json({ error:`droit « ${capability} » requis pour cette action` });
+
+/* Réservé au super-utilisateur, et non à la capacité « admin ».
+   La matrice ci-dessus donne les mêmes droits à `super` et à `admin` : les
+   deux rôles administrent le contenu de l'application. Ce garde marque la
+   frontière que la matrice ne sait pas exprimer, celle de l'administration de
+   l'installation elle-même — exécuter un script sur le serveur, restaurer une
+   sauvegarde, fermer la session d'un tiers. Un administrateur gère des comptes
+   et des référentiels ; il n'a pas à obtenir un interpréteur de commandes sur
+   le serveur en écrivant trois lignes de R. */
+export const requireSuper = (req, res, next) =>
+  req.user?.role === "super" ? next()
+    : res.status(403).json({ error:"action réservée au super-utilisateur" });

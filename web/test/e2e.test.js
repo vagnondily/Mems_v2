@@ -23,6 +23,11 @@ const env = { ...process.env,
   BOOTSTRAP_EMAIL: ADMIN.email, BOOTSTRAP_PASSWORD: ADMIN.password,
   BCRYPT_ROUNDS: "4", FORCE_SEED: "1", LOG_LEVEL: "error",
   CORS_ORIGINS: `http://127.0.0.1:${PORT}`,
+  /* Explicitement vides : l'environnement du test hérite de celui de la machine,
+     et une instance de développement qui aurait déclaré un interpréteur R ferait
+     basculer l'écran des scripts dans son autre état. On fixe donc le cas testé
+     — exécution serveur fermée — au lieu de le subir. */
+  ANALYSIS_R: "", ANALYSIS_SPSS: "",
 };
 
 let child, ctx, React, createRoot, act, App;
@@ -431,6 +436,81 @@ test("soumissions ODK : l'écran part du vide, puis montre la file de travail et
   assert.ok(byText("div", "Examinées"), "le compte rendu est chiffré");
 
   assert.equal(ctx.errors.length, 0, "aucune erreur sur l'écran des soumissions");
+});
+
+test("scripts d'analyse : l'exécution serveur s'annonce fermée au lieu de disparaître", async () => {
+  const nav = (l) => all("header nav button").find(b => b.textContent.trim().startsWith(l));
+  const sousOnglet = (l) => all("main button").filter(b => b.className.includes("-mb-px"))
+    .find(b => b.textContent.trim() === l);
+
+  await click(nav("Analyses"), "destination Analyses"); await flush();
+  await click(sousOnglet("Scripts d'analyse"), "sous-onglet Scripts d'analyse");
+  await flush(); await flush();
+
+  /* Aucun interpréteur n'est déclaré dans cet environnement : le serveur répond
+     que la fonction est fermée, et l'écran doit le DIRE. Un bouton « Exécuter »
+     simplement absent laisserait chercher un défaut de droits ou une panne, là
+     où il s'agit d'un réglage volontaire du serveur. */
+  const texte = document.body.textContent;
+  assert.ok(texte.includes("L'exécution des scripts sur le serveur est désactivée"),
+    "l'écran annonce que la fonction est fermée sur cette instance");
+  assert.ok(texte.includes("ANALYSIS_R"), "la variable à renseigner est nommée");
+  assert.ok(!byText("main button", "Exécuter"),
+    "aucun bouton d'exécution n'est proposé tant qu'aucun interpréteur n'est disponible");
+  /* Le travail hors ligne, lui, n'a pas bougé. */
+  assert.ok(byText("main button", "Exporter") || byText("h4", "Aucun script"),
+    "le téléchargement du script et des données reste offert");
+  assert.equal(ctx.errors.length, 0, "aucune erreur sur l'écran des scripts");
+});
+
+test("administration : la destination existe pour le compte super et l'onglet Santé répond", async () => {
+  const nav = (l) => all("header nav button").find(b => b.textContent.trim().startsWith(l));
+  const sousOnglet = (l) => all("main button").filter(b => b.className.includes("-mb-px"))
+    .find(b => b.textContent.trim() === l);
+
+  /* Le compte d'amorçage est un super-utilisateur, mais sa liste d'onglets a été
+     enregistrée avant que cette destination existe. Qu'elle apparaisse quand
+     même est précisément ce qui se vérifie ici : la règle suit le RÔLE, sinon
+     aucun compte déjà créé ne verrait jamais l'administration. */
+  const dest = nav("Administration");
+  assert.ok(dest, "la destination Administration est proposée au super-utilisateur");
+  await click(dest, "destination Administration");
+  await flush(); await flush();
+  assert.ok(byText("main h2", "Administration"), "la console d'administration s'ouvre");
+
+  /* Sessions : la liste vient de GET /api/auth/sessions?tous=1, réservé au rôle
+     super — la session de l'appelant doit s'y reconnaître. */
+  assert.ok(all("[data-session]").length >= 1, "au moins une session est listée");
+  assert.ok(document.body.textContent.includes("la vôtre"),
+    "la session courante est signalée comme telle");
+
+  await click(sousOnglet("Santé"), "sous-onglet Santé");
+  await flush(); await flush();
+
+  /* Chacune de ces affirmations vient de la réponse du serveur, pas du rendu :
+     l'intégrité, les réglages du moteur et les migrations appliquées ne sont
+     écrits nulle part dans le navigateur. */
+  const texte = document.body.textContent;
+  assert.ok(texte.includes("Intégrité"), "l'état d'intégrité de la base est affiché");
+  assert.ok(texte.includes("Conforme"), "la base de test est déclarée conforme");
+  assert.ok(byText("h3", "Entretien"), "les opérations d'entretien sont proposées");
+  assert.ok(byText("main button", "VACUUM"), "le VACUUM est offert, sous confirmation");
+  assert.ok(byText("h3", "Migrations appliquées"), "les migrations appliquées sont listées");
+  assert.ok(texte.includes("journal_mode"), "les réglages SQLite viennent du serveur");
+  assert.ok(all("main tbody tr").length > 5, "les tables de la base sont dénombrées");
+
+  /* Une action destructrice ne part pas au premier clic : elle énonce d'abord
+     ce qu'elle va faire. */
+  await click(byText("main button", "VACUUM"), "VACUUM");
+  await flush();
+  assert.ok(byText(".z60 h3", "Lancer un VACUUM sur la base ?"),
+    "la confirmation nomme l'opération avant de la lancer");
+  assert.ok(document.body.textContent.includes("bloque toute lecture et toute écriture"),
+    "la confirmation dit ce que l'opération va provoquer");
+  await click(byText(".z60 button", "Annuler"), "annuler le VACUUM");
+  await flush();
+
+  assert.equal(ctx.errors.length, 0, "aucune erreur sur la console d'administration");
 });
 
 test("déconnexion : la session est fermée et l'écran de connexion revient", async () => {

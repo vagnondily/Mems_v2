@@ -131,13 +131,45 @@ const D_INDICATORS = [
    rendait introuvable à qui n'ouvrait pas ce menu. */
 const TABS_ALL = [["home","Accueil"],["suivi","Suivi-évaluation"],["programme","Programme"],
   ["map","Cartographie"],["analytics","Analyses"],["reports","Rapports"],["settings","Paramètres"]];
+
+/* La console d'administration est la seule destination qui ne figure PAS dans
+   TABS_ALL, et c'est délibéré : TABS_ALL est la liste des destinations qu'on
+   coche compte par compte dans Paramètres → Utilisateurs. L'y ajouter poserait
+   une case à cocher qui ne produirait rien — le serveur (routes/admin.js,
+   requireSuper) n'ouvre ces routes qu'au rôle `super`, quelle que soit la liste
+   enregistrée. Cette destination suit donc le RÔLE et non la préférence, comme
+   du côté serveur. */
+const TAB_ADMIN = ["admin","Administration"];
+
 const D_ROLES = {
-  super:  { label:"Super-utilisateur", tabs:TABS_ALL.map(t=>t[0]), edit:true, del:true, validate:true, admin:true, sync:true },
+  /* Première différence réelle entre `super` et `admin` : les quatre capacités
+     (edit, del, validate, admin) restent identiques — un administrateur gère
+     déjà comptes, bureaux et référentiels — mais une destination de plus n'est
+     ouverte qu'au super-utilisateur. Ce qui les sépare n'est pas « plus de
+     droits sur les mêmes objets », c'est un objet différent : l'instance
+     elle-même (sessions, journal de sécurité, base, sauvegardes). */
+  super:  { label:"Super-utilisateur", tabs:[...TABS_ALL.map(t=>t[0]), TAB_ADMIN[0]], edit:true, del:true, validate:true, admin:true, sync:true },
   admin:  { label:"Administrateur",    tabs:TABS_ALL.map(t=>t[0]), edit:true, del:true, validate:true, admin:true, sync:true },
   validator:{label:"Validateur",       tabs:["home","suivi","programme","analytics","reports"], edit:true, del:false, validate:true, admin:false, sync:true },
   editor: { label:"Éditeur",           tabs:["home","suivi","programme","analytics","reports"], edit:true, del:false, validate:false,admin:false, sync:true },
   viewer: { label:"Lecteur",           tabs:["home","suivi","programme","reports"],              edit:false,del:false, validate:false,admin:false, sync:false },
 };
+
+/* Les destinations réellement ouvertes à un compte, règle unique partagée par
+   App et par la coquille.
+
+   `tabs` est une liste figée à la CRÉATION du compte : un super-utilisateur
+   créé avant l'existence de l'administration porte une liste qui ne la contient
+   pas et ne la verrait jamais apparaître, pas même après mise à jour — c'est
+   exactement le cas du compte d'amorçage. On accroche donc l'administration au
+   rôle, et on la retire de la liste de quiconque n'est pas `super` même si elle
+   y a été enregistrée : le serveur refuserait de toute façon, mieux vaut ne pas
+   promettre une porte qui se referme au premier clic. */
+function destinationsAutorisees(u){
+  const base = (u?.tabs?.length ? u.tabs : D_ROLES[u?.role]?.tabs) || ["home"];
+  const sansAdmin = base.filter(t => t !== TAB_ADMIN[0]);
+  return u?.role === "super" ? [...sansAdmin, TAB_ADMIN[0]] : sansAdmin;
+}
 
 const D_WEIGHTS = {
   security:   { label:"Situation sécuritaire",             pts:{0:0,1:2,3:4,99:0} },
@@ -288,4 +320,4 @@ function coverageRows(db, category, scope){
     cumul: { active: Math.max(0,...active), plan: plan.reduce((t,x)=>t+x,0), actual: actual.reduce((t,x)=>t+x,0) } };
 }
 
-export { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, CSS, DURATIONS, D_ADJUST, D_FORMULAS, D_INDICATORS, D_MMR, D_MODALITY, D_OFFICES, D_PARTNERS, D_POI_SUB, D_ROLES, D_SCORING, D_SECURITY, D_STATUS, D_TAGS, D_URBAN, D_WEIGHTS, MODALITY_TYPES, MONITORING_TYPES, MONTHS, MONTHS_L, PROG_AREAS, SERIES, SITE_TYPES, TABS_ALL, caseloadScore, coverageRows, siteDerived, sitePriority };
+export { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, CSS, DURATIONS, D_ADJUST, D_FORMULAS, D_INDICATORS, D_MMR, D_MODALITY, D_OFFICES, D_PARTNERS, D_POI_SUB, D_ROLES, D_SCORING, D_SECURITY, D_STATUS, D_TAGS, D_URBAN, D_WEIGHTS, MODALITY_TYPES, MONITORING_TYPES, MONTHS, MONTHS_L, PROG_AREAS, SERIES, SITE_TYPES, TABS_ALL, TAB_ADMIN, caseloadScore, coverageRows, destinationsAutorisees, siteDerived, sitePriority };

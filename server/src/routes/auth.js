@@ -1,11 +1,12 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
+import { z } from "zod";
 import { db } from "../db.js";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 import { validate, schemas } from "../lib/validate.js";
 import { verifyPassword, hashPassword, issueToken, revoke, authenticate,
-         passwordProblems } from "../lib/auth.js";
+         passwordProblems, requireSuper } from "../lib/auth.js";
 import { newId } from "../lib/crypto.js";
 
 const r = Router();
@@ -99,9 +100,165 @@ r.post("/password", authenticate, validate(schemas.changePassword), async (req, 
   res.json({ ok:true });
 });
 
-r.get("/sessions", authenticate, (req, res) => {
-  res.json({ sessions: db.prepare(
-    `SELECT id, issued_at, expires_at, revoked, ip FROM sessions
-     WHERE user_id=? ORDER BY issued_at DESC LIMIT 20`).all(req.user.id) });
+/* ═══════════════════════════════════════════════════════════════════════
+   SESSIONS — consultation, révocation, purge
+
+   `GET /api/auth/sessions` existait et ne permettait rien : on voyait ses
+   sessions ouvertes sans pouvoir en fermer une seule. Un ordinateur portable
+   perdu restait connecté huit heures, et la seule parade était de désactiver
+   le compte entier. Symétriquement, la table n'était jamais nettoyée : elle
+   grossit d'une ligne par connexion, pour toujours (docs/A_FAIRE.md,
+   chantier A, point 8).
+
+   La lecture de ses PROPRES sessions reste ouverte à tous, inchangée. Tout ce
+   qui agit — révoquer, purger — et tout ce qui regarde le compte d'autrui est
+   réservé au super-utilisateur : fermer la session de quelqu'un d'autre, c'est
+   l'expulser de l'application en cours de saisie.
+
+   ── SE COUPER SOI-MÊME : le choix retenu, et pourquoi ──
+   Deux gestes peuvent trancher la session de l'appelant, et ils ne méritent
+   pas la même réponse.
+
+   • Révoquer UNE session en la désignant : la sienne est refusée par défaut
+     (409), et n'est acceptée qu'avec `?confirmer=1`. Se déconnecter est
+     légitime — c'est ce que fait POST /api/auth/logout — mais ça ne doit
+     jamais être l'effet de bord d'un ménage. Refuser puis demander confirme
+     que l'intention est bien celle-là.
+
+   • Révoquer TOUTES les sessions d'un compte : la sienne est préservée par
+     défaut, et la réponse le dit (`courante_preservee`). Le geste sert à
+     chasser un appareil compromis ; se couper au milieu empêcherait de
+     terminer — désactiver le compte, changer le mot de passe. `?inclure_courante=1`
+     force l'inclusion pour qui veut vraiment tout fermer.
+
+   Interdire purement et simplement aurait été la troisième voie : elle rend
+   impossible « je ferme tout, y compris d'ici », qui est un besoin réel le
+   jour d'une compromission. On préfère prévenir que priver. ══════════════ */
+
+const sessionsQuery = z.object({
+  user_id: z.string().max(64).optional(),
+  tous:    z.enum(["0","1"]).optional(),
+  limite:  z.coerce.number().int().min(1).max(200).default(50),
+}).strict();
+
+/* Ce que l'on montre d'une session : de quoi la reconnaître et la révoquer,
+   rien de plus. `id` est le `jti` du jeton, pas le jeton : il ne permet pas
+   de s'authentifier — il ne sert qu'à désigner la ligne à fermer. */
+const vueSession = (s, jti) => ({
+  id:s.id, issued_at:s.issued_at, expires_at:s.expires_at, revoked:s.revoked,
+  ip:s.ip, courante: s.id === jti, active: !!s.active,
 });
+
+/* « Vivante » se calcule en SQL et pas en JavaScript : c'est l'horloge de
+   SQLite qui a émis `expires_at`, c'est elle qui doit dire s'il est passé.
+   Comparer à une date construite côté Node, c'est parier sur un format et
+   sur un fuseau. */
+const COLONNES = `s.*, (s.revoked=0 AND s.expires_at > datetime('now')) AS active`;
+
+r.get("/sessions", authenticate, validate(sessionsQuery, "query"), (req, res) => {
+  const { user_id, tous, limite } = req.query;
+  const elargi = tous === "1" || (user_id && user_id !== req.user.id);
+  if(elargi && req.user.role !== "super") return res.status(403).json({
+    error:"seul un super-utilisateur consulte les sessions d'un autre compte" });
+
+  if(tous === "1"){
+    const lignes = db.prepare(
+      `SELECT ${COLONNES}, u.email FROM sessions s LEFT JOIN users u ON u.id = s.user_id
+       ORDER BY s.issued_at DESC LIMIT ?`).all(limite);
+    return res.json({ portee:"toutes", total: db.prepare("SELECT COUNT(*) c FROM sessions").get().c,
+      sessions: lignes.map(s => ({ ...vueSession(s, req.jti),
+        user_id:s.user_id, email:s.email, user_agent:s.user_agent })) });
+  }
+  const cible = user_id || req.user.id;
+  const lignes = db.prepare(
+    `SELECT ${COLONNES} FROM sessions s WHERE s.user_id=?
+     ORDER BY s.issued_at DESC LIMIT ?`).all(cible, limite);
+  res.json({ portee: cible === req.user.id ? "compte" : "autre_compte", user_id:cible,
+    sessions: lignes.map(s => elargi
+      ? { ...vueSession(s, req.jti), user_id:s.user_id, user_agent:s.user_agent }
+      : vueSession(s, req.jti)) });
+});
+
+/* Purge avant `/sessions/:id` par lisibilité seulement : les deux routes
+   n'ont ni le même verbe ni le même chemin, elles ne se disputent rien. */
+const purgeQuery = z.object({
+  /* Fenêtre de conservation : une session close depuis peu reste parfois utile
+     à une enquête. `0` — le défaut — purge tout ce qui est déjà mort. */
+  jours: z.coerce.number().int().min(0).max(3650).default(0),
+}).strict();
+
+r.post("/sessions/purge", authenticate, requireSuper, validate(purgeQuery, "query"),
+  (req, res) => {
+    const { jours } = req.query;
+    /* Une session VIVANTE a `revoked=0` ET `expires_at` dans le futur : la
+       condition ci-dessous l'exclut par construction, pas par précaution.
+       Aucun paramètre ne peut l'y ramener — `jours` ne fait que restreindre
+       davantage. */
+    const conditions = "revoked=1 OR expires_at <= datetime('now')";
+    const fenetre = jours > 0 ? " AND issued_at <= datetime('now', ?)" : "";
+    const args = jours > 0 ? [`-${jours} days`] : [];
+    const avant = db.prepare("SELECT COUNT(*) c FROM sessions").get().c;
+    const info = db.prepare(`DELETE FROM sessions WHERE (${conditions})${fenetre}`).run(...args);
+    const restantes = db.prepare("SELECT COUNT(*) c FROM sessions").get().c;
+    db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
+                VALUES (?,?,?,'securite','sessions','purge',?)`)
+      .run(newId("aud"), req.user.id, req.user.email,
+           `Purge des sessions closes — ${info.changes} supprimée(s), ${restantes} conservée(s)`);
+    log.info("purge des sessions", { supprimees:info.changes, restantes, jours });
+    res.json({ ok:true, supprimees:info.changes, avant, restantes, jours });
+  });
+
+r.delete("/sessions/:id", authenticate, requireSuper, (req, res) => {
+  const s = db.prepare("SELECT * FROM sessions WHERE id=?").get(req.params.id);
+  if(!s) return res.status(404).json({ error:"session introuvable" });
+
+  if(s.id === req.jti && req.query.confirmer !== "1") return res.status(409).json({
+    error:"c'est la session avec laquelle vous êtes connecté : elle ne sera plus "
+      + "utilisable dès cette requête. Confirmez par ?confirmer=1, ou utilisez "
+      + "POST /api/auth/logout qui fait exactement cela.", courante:true });
+
+  /* Déjà révoquée : l'état voulu est atteint, on le dit sans échouer. Un
+     refus pousserait à recommencer pour rien, au pire moment — celui où l'on
+     ferme dans l'urgence les accès d'un appareil perdu. */
+  if(s.revoked) return res.json({ ok:true, revoquee:s.id, deja_revoquee:true });
+
+  revoke(s.id);
+  const cible = db.prepare("SELECT email FROM users WHERE id=?").get(s.user_id);
+  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+              VALUES (?,?,?,'securite','sessions',?,'revoke',?)`)
+    .run(newId("aud"), req.user.id, req.user.email, s.id,
+         `Session révoquée — compte ${cible?.email || s.user_id}`
+         + (s.id === req.jti ? " (la sienne, sur confirmation)" : ""));
+  res.json({ ok:true, revoquee:s.id, compte:s.user_id, courante: s.id === req.jti });
+});
+
+const revocationQuery = z.object({
+  inclure_courante: z.enum(["0","1"]).optional(),
+}).strict();
+
+r.delete("/users/:id/sessions", authenticate, requireSuper, validate(revocationQuery, "query"),
+  (req, res) => {
+    const u = db.prepare("SELECT id, email FROM users WHERE id=?").get(req.params.id);
+    if(!u) return res.status(404).json({ error:"compte introuvable" });
+
+    const inclure = req.query.inclure_courante === "1";
+    const sienne = db.prepare("SELECT 1 FROM sessions WHERE id=? AND user_id=? AND revoked=0")
+      .get(req.jti, u.id);
+    const info = inclure
+      ? db.prepare("UPDATE sessions SET revoked=1 WHERE user_id=? AND revoked=0").run(u.id)
+      : db.prepare("UPDATE sessions SET revoked=1 WHERE user_id=? AND revoked=0 AND id<>?")
+          .run(u.id, req.jti);
+
+    db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+                VALUES (?,?,?,'securite','sessions',?,'revoke_all',?)`)
+      .run(newId("aud"), req.user.id, req.user.email, u.id,
+           `Toutes les sessions du compte ${u.email} révoquées — ${info.changes} fermée(s)`
+           + (sienne && !inclure ? ", la session courante préservée" : ""));
+    res.json({ ok:true, compte:u.id, email:u.email, revoquees:info.changes,
+      courante_preservee: !!sienne && !inclure,
+      /* Dit explicitement quand le geste vient de couper l'appelant : la
+         réponse arrive encore, le prochain appel non. */
+      courante_revoquee: !!sienne && inclure });
+  });
+
 export default r;

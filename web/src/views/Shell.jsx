@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { BarChart3, Bell, CalendarRange, Check, ChevronDown, Cog, Database, FileText, LayoutDashboard, LogOut, MapPin } from "lucide-react";
+import { BarChart3, Bell, CalendarRange, Check, ChevronDown, Cog, Database, FileText, LayoutDashboard, LogOut, MapPin, ShieldCheck } from "lucide-react";
 import { Badge, BrandMark, Empty } from "../components/ui.jsx";
 import { clsx } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
@@ -18,6 +18,12 @@ const NAV = [
   { id:"map", label:"Cartographie", icon:MapPin },
   { id:"analytics", label:"Analyses", icon:BarChart3 },
   { id:"reports", label:"Rapports", icon:FileText },
+  /* Dernière de la barre, et volontairement : ce n'est pas une destination de
+     travail. On y va pour exploiter l'instance — sessions, journal de sécurité,
+     base, sauvegardes — pas pour saisir de la donnée. Elle n'apparaît que pour
+     le rôle `super` (lib/constants.js, destinationsAutorisees) ; `allowed` fait
+     seul le filtrage, cette liste ne décide de rien. */
+  { id:"admin", label:"Administration", icon:ShieldCheck },
 ];
 
 /* État d'enregistrement : l'utilisateur doit savoir si son travail est parti au serveur. */
