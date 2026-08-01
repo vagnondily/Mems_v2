@@ -123,6 +123,12 @@ export default function App(){
         code:t, label:(state.categories.find(c=>c.tag===t)||{}).name || t })),
     },
     actCategories: cfg.actCategories ?? (state.categories.length ? state.categories.map(c => c.name) : [...ACT_CATEGORIES]),
+    /* Le référentiel canonique des activités (activity_categories), tel quel :
+       nom, tag (code), domaine programme, actif, rev. C'est la source unique de
+       l'écran Paramètres → Activités et du rattachement d'un indicateur de
+       processus. Les reflets `lists.tags`/`actCategories` ci-dessus en dérivent. */
+    activities: (state.categories || []).map(c => ({ id:c.id, name:c.name, tag:c.tag,
+      programArea:c.program_area || "", active: c.active !== 0, rev:c.rev || 1 })),
     /* `weights` reste codé en dur : D_WEIGHTS n'alimente que le score hérité, que
        plus aucun écran vivant n'atteint (siteScore reçoit toujours `db`). */
     roles: cfg.roles || D_ROLES, weights: D_WEIGHTS, scoring: cfg.scoring || D_SCORING,

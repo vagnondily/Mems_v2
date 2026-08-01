@@ -25,7 +25,8 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
      Registre des sites (Merged.jsx) — le composant n'est donc pas retiré, seulement
      son entrée ici. */
   const items = [["general","Général"],["country","Pays"],["offices","Bureaux"],
-    ["locations","Localités"],["scope","Périmètre des bureaux"],["indicators","Indicateurs"],
+    ["locations","Localités"],["scope","Périmètre des bureaux"],
+    ["activities","Activités"],["indicators","Indicateurs"],
     ["calc","Calculs"],["rations","Rations"],["odk","ODK Central"],["connectors","Connecteurs"],
     ["codes","Référentiels de codes"],["templates","Modèles de rapport"],
     ["api","API"],["users","Utilisateurs"],["about","À propos"]];
@@ -39,6 +40,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
       {sub==="about" && <SetAbout db={db} />}
       {sub==="locations" && <SetLocations db={db} notify={notify} can={can} reload={reload} />}
       {sub==="scope" && <SetScope db={db} notify={notify} can={can} />}
+      {sub==="activities" && <SetActivities db={db} notify={notify} can={can} reload={reload} />}
       {sub==="indicators" && <SetIndicators db={db} set={set} notify={notify} can={can} />}
       {sub==="calc" && <SetCalc db={db} set={set} notify={notify} can={can} />}
       {sub==="rations" && <SetRations db={db} set={set} notify={notify} can={can} />}
@@ -1551,6 +1553,82 @@ function SetLocations({ db, notify, can, reload }){
     </>);
 }
 
+/* ── Référentiel des activités (activity_categories) ──────────────────
+   La liste canonique des activités du programme, désormais éditable (S4/S7) :
+   nom, tag (code), domaine programme, actif. C'est la source unique que
+   réutilisent le rattachement d'un site, les indicateurs de processus, les
+   plans. Les mutations passent par la route dédiée puis rechargent l'état. */
+function SetActivities({ db, notify, can, reload }){
+  const [edit,setEdit] = useState(null);
+  const [busy,setBusy] = useState(false);
+  const liste = db.activities || [];
+  const save = async (a) => {
+    setBusy(true);
+    const payload = { name:(a.name||"").trim(), tag:(a.tag||"").trim().toUpperCase(),
+      program_area:a.programArea || null, active:a.active !== false, rev:a.rev };
+    try{
+      if(a.id) await api.updateActivity(a.id, payload); else await api.createActivity(payload);
+      await reload(); setEdit(null); notify("Activité enregistrée", "ok");
+    }catch(e){ notify(e.message, "err"); }
+    setBusy(false);
+  };
+  const remove = async (a) => {
+    if(!confirm(`Supprimer l'activité « ${a.name} » ?`)) return;
+    try{ await api.deleteActivity(a.id); await reload(); notify("Activité supprimée", "ok"); }
+    catch(e){ notify(e.message, "err"); }
+  };
+  return (
+    <>
+      <Note>Le référentiel des <b>activités</b> du programme — une activité, une ligne : son code (tag),
+        son intitulé et son domaine. C'est la source unique réutilisée pour rattacher un site, suivre un
+        indicateur de processus et planifier. Désactiver une activité la retire des choix sans effacer
+        l'historique.</Note>
+      <Card flush title="Activités du programme" subtitle={`${liste.length} activité${liste.length>1?"s":""}`}
+        right={can("admin") && <Btn size="sm" icon={Plus}
+          onClick={()=>setEdit({ id:"", name:"", tag:"", programArea:"", active:true })}>Ajouter</Btn>}>
+        {!liste.length
+          ? <Empty>Aucune activité. Ajoutez-en une, ou importez le découpage du pays qui les amorce.</Empty>
+          : <TableWrap>
+          <thead><tr><Th>Code</Th><Th>Intitulé</Th><Th>Domaine programme</Th><Th>Statut</Th>
+            <Th num>Sites</Th><Th num>Paramètres</Th><Th /></tr></thead>
+          <tbody>{liste.map(a=>(
+            <tr key={a.id} className="hover:bg-sky-50">
+              <Td><Badge tone="b">{a.tag}</Badge></Td>
+              <Td className="font-medium text-slate-800">{a.name}</Td>
+              <Td className="text-slate-600">{a.programArea || "—"}</Td>
+              <Td>{a.active ? <Badge tone="g">Active</Badge> : <Badge>Inactive</Badge>}</Td>
+              <Td num className="text-slate-500">{a.usage?.sites ?? "—"}</Td>
+              <Td num className="text-slate-500">{a.usage?.params ?? "—"}</Td>
+              <Td className="text-right">
+                {can("admin") && <button onClick={()=>setEdit(a)} className="text-slate-400 m-ico p-1"><Pencil size={14}/></button>}
+                {can("admin") && <button onClick={()=>remove(a)} className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={14}/></button>}</Td>
+            </tr>))}</tbody>
+        </TableWrap>}
+      </Card>
+      <ActivityModal open={!!edit} act={edit} busy={busy} onClose={()=>setEdit(null)} onSave={save} />
+    </>);
+}
+function ActivityModal({ open, act, busy, onClose, onSave }){
+  const [f,setF] = useState({});
+  useEffect(()=>{ setF(act||{}); },[act]);
+  if(!open) return null;
+  const u=(k,v)=>setF(p=>({...p,[k]:v}));
+  return (
+    <Modal open onClose={onClose} title={act?.id?"Modifier l'activité":"Nouvelle activité"}
+      footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
+        <Btn icon={Save} disabled={busy || !f.name || !f.tag} onClick={()=>onSave(f)}>Enregistrer</Btn></>}>
+      <div className="grid grid-cols-2 gap-x-4">
+        <Field label="Code (tag)" hint="Court, en majuscules — porté par les sources"><Input value={f.tag||""}
+          onChange={e=>u("tag",e.target.value.toUpperCase())} placeholder="URT" /></Field>
+        <Field label="Domaine programme"><Select value={f.programArea||""} onChange={e=>u("programArea",e.target.value)}
+          empty="— aucun —" options={PROG_AREAS.map(p=>p[0])} /></Field>
+        <Field label="Intitulé" className="col-span-2"><Input value={f.name||""}
+          onChange={e=>u("name",e.target.value)} placeholder="Unconditional Resource Transfer" /></Field>
+      </div>
+      <Sw label="Activité active" hint="Une activité inactive n'est plus proposée dans les choix" on={f.active!==false} onChange={v=>u("active",v)} />
+    </Modal>);
+}
+
 /* Les deux natures d'indicateur (migration 022). Le CRF est le cadre de résultats
    institutionnel — outcome, output, other output ; l'XLSForm porte les indicateurs
    de PROCESSUS d'une activité. Une seule bibliothèque, deux sous-onglets. */
@@ -1564,10 +1642,11 @@ function SetIndicators({ db, set, notify, can }){
   /* Une ligne sans `kind` est un indicateur d'avant la migration : c'est un CRF. */
   const kindOf = (ind) => ind.kind || "crf";
   const liste = db.indicators.filter(ind => kindOf(ind) === nat);
-  /* Les tags d'activité servent d'options pour rattacher un indicateur de
-     processus à SON activité, en attendant le référentiel Activités dédié. */
-  const activites = (db.lists?.tags || []).map(t => [t.code, `${t.code} — ${t.label}`]);
-  const activiteLabel = (code) => (db.lists?.tags || []).find(t=>t.code===code)?.label || code || "";
+  /* Le référentiel des activités (Paramètres → Activités) sert d'options pour
+     rattacher un indicateur de processus à SON activité — la source canonique,
+     plus les reflets épars. On propose les activités actives. */
+  const activites = (db.activities || []).filter(a=>a.active).map(a => [a.tag, `${a.tag} — ${a.name}`]);
+  const activiteLabel = (tag) => (db.activities || []).find(a=>a.tag===tag)?.name || tag || "";
 
   const save = (ind) => { set(d => { const i=d.indicators.findIndex(x=>x.id===ind.id);
       if(i>=0) d.indicators[i]=ind; else d.indicators.push(ind); return d; });

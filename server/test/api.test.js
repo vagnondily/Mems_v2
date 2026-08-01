@@ -1834,6 +1834,62 @@ test("bureaux : un bureau référencé ne peut pas être supprimé, seulement d�
   assert.equal(del.status, 200);
 });
 
+/* Chantier S4/S7 — le référentiel des activités devient éditable, sur le modèle
+   des bureaux : lecture ouverte, écriture admin, suppression refusée si référencée. */
+test("activités : lecture, création, révision optimiste et refus de suppression si référencée", async () => {
+  const liste = await request(app).get("/api/activities").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(liste.status, 200);
+  assert.ok(Array.isArray(liste.body.activities) && liste.body.activities.length > 0);
+  assert.ok("usage" in liste.body.activities[0], "chaque activité porte son décompte de références");
+
+  /* Création + refus du doublon de nom. */
+  const cree = await request(app).post("/api/activities").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Activité d'essai", tag:"tst", program_area:"Résilience" });
+  assert.equal(cree.status, 201, JSON.stringify(cree.body));
+  assert.equal(cree.body.activity.tag, "TST", "le tag est mis en majuscules");
+  const id = cree.body.activity.id;
+  const doublon = await request(app).post("/api/activities").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"activité d'essai", tag:"AUT" });
+  assert.equal(doublon.status, 409, "un nom déjà pris est refusé");
+
+  /* Révision périmée refusée. */
+  const stale = await request(app).put(`/api/activities/${id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Renommée", tag:"TST", rev:999 });
+  assert.equal(stale.status, 409, "une révision périmée est refusée");
+  const maj = await request(app).put(`/api/activities/${id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Renommée", tag:"TST", rev:cree.body.activity.rev });
+  assert.equal(maj.status, 200);
+  assert.equal(db.prepare("SELECT name FROM activity_categories WHERE id=?").get(id).name, "Renommée");
+
+  /* Une activité référencée par un site ne se supprime pas : on la désactive. */
+  const référencée = db.prepare(
+    "SELECT id FROM activity_categories WHERE id IN (SELECT category_id FROM sites) LIMIT 1").get();
+  if(référencée){
+    const orphelins = () => db.prepare("SELECT COUNT(*) c FROM sites WHERE category_id IS NULL").get().c;
+    const avant = orphelins();
+    const refus = await request(app).delete(`/api/activities/${référencée.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    assert.equal(refus.status, 409);
+    assert.ok(refus.body.usage.sites > 0);
+    assert.equal(orphelins(), avant, "aucun site détaché");
+  }
+
+  /* L'activité neuve, sans référence, se supprime. */
+  const del = await request(app).delete(`/api/activities/${id}`).set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(del.status, 200);
+
+  /* Un éditeur lit mais n'écrit pas : le référentiel est de l'administration. */
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"actedit@test.local", password:"ActEditMotDePasse1", first_name:"ActEdit",
+            role:"editor", tabs:["home"], active:true });
+  motDePasseAdopte("actedit@test.local");
+  const te = (await login("actedit@test.local", "ActEditMotDePasse1")).body.token;
+  assert.equal((await request(app).get("/api/activities").set("Authorization", `Bearer ${te}`)).status, 200);
+  const refusEdit = await request(app).post("/api/activities").set("Authorization", `Bearer ${te}`)
+    .send({ name:"Interdite", tag:"NON" });
+  assert.equal(refusEdit.status, 403, "un éditeur ne crée pas d'activité");
+});
+
 test("bureaux : désactiver un bureau portant des comptes actifs est refusé", async () => {
   const o = db.prepare(
     "SELECT * FROM offices WHERE id IN (SELECT office_id FROM users WHERE active=1) LIMIT 1").get();

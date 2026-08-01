@@ -525,6 +525,11 @@ test("paramètres : « Sites » a quitté la configuration, mais le registre res
   assert.ok(sousOnglet("Localités"), "les onglets des Paramètres sont bien affichés");
   assert.ok(!sousOnglet("Sites"), "l'onglet « Sites » ne figure plus dans les Paramètres");
 
+  /* Le référentiel des activités, nouvel onglet, s'ouvre et affiche sa liste. */
+  await click(sousOnglet("Activités"), "sous-onglet Activités"); await flush();
+  assert.ok(document.body.textContent.includes("Activités du programme"),
+    "le référentiel des activités s'affiche");
+
   await click(nav("Suivi-évaluation"), "Suivi-évaluation"); await flush();
   await click(sousOnglet("Registre des sites"), "sous-onglet Registre des sites");
   await flush(); await flush();

@@ -268,6 +268,11 @@ export const api = {
   createOffice: (o)          => call("POST", "/offices", o),
   updateOffice: (id, o)      => call("PUT", `/offices/${encodeURIComponent(id)}`, o),
   deleteOffice: (id)         => call("DELETE", `/offices/${encodeURIComponent(id)}`),
+  /* Référentiel des activités (activity_categories), admin. La lecture passe
+     par /state (db.activities) ; ces trois-là mutent, puis on recharge l'état. */
+  createActivity: (a)        => call("POST", "/activities", a),
+  updateActivity: (id, a)    => call("PUT", `/activities/${encodeURIComponent(id)}`, a),
+  deleteActivity: (id)       => call("DELETE", `/activities/${encodeURIComponent(id)}`),
 
   users:      ()             => call("GET", "/users"),
   createUser: (u)            => call("POST", "/users", u),
