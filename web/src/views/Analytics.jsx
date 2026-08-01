@@ -4,18 +4,27 @@ import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieCh
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { RULE_TYPES, applyFormulas, applyRules, fmt, n, pct, profileColumn, r1, siteScore, uid } from "../lib/calc.js";
 import { C, MONTHS, SERIES } from "../lib/constants.js";
+import { anneeMoisDe, dateDansPeriode, libelleCourtPeriode, moisDansPeriode,
+  normalisePeriode, periodeAnnee } from "../lib/periode.js";
+import { BarrePeriode } from "./Reports.jsx";
 import { PageHead } from "./Shell.jsx";
 
 /* ══════════════════ Analyses ══════════════════ */
 function Analytics({ db, set, sub, setSub, notify, can }){
   const items = [["datasets","Jeux de données"],["scripts","Scripts d'analyse"],["viz","Visualisations"]];
+  const [periode,setPeriode] = useState(() => periodeAnnee(db.year));
   return (
     <div className="space-y-4">
       <PageHead title="Analyses" text="Constitution des jeux de données à partir d'ODK Central, apurement, scripts R ou SPSS et visualisations." />
       <Tabs items={items} value={sub} onChange={setSub} />
+      {/* La barre ne sort que sur les visualisations. Les jeux de données et les
+          scripts portent des colonnes ODK quelconques, sans date garantie ni
+          nommée : y poser un filtre de période afficherait un réglage qui ne
+          filtrerait rien. */}
+      {sub==="viz" && <BarrePeriode db={db} periode={periode} onChange={setPeriode} />}
       {sub==="datasets" && <Datasets db={db} set={set} notify={notify} can={can} />}
       {sub==="scripts" && <Scripts db={db} set={set} notify={notify} can={can} />}
-      {sub==="viz" && <Viz db={db} set={set} notify={notify} can={can} />}
+      {sub==="viz" && <Viz db={db} set={set} periode={periode} notify={notify} can={can} />}
     </div>);
 }
 
@@ -327,24 +336,45 @@ const SOURCES = {
   outcomes:{ label:"Outcomes", dims:[["indicator","Indicateur"],["adm1","Zone"],["round","Ronde"]],
              measures:[["value","Valeur moyenne"],["planned","Valeur planifiée moyenne"],["sample","Échantillon"]] },
 };
-function aggregate(db, source, dim, measure){
+/* Où la période mord réellement. Les sites sont un registre : leur nombre, leurs
+   bénéficiaires et leur score de risque sont l'état du jour, pas une série
+   mensuelle — seules les colonnes du plan de suivi en ont une. Annoncer « T2 »
+   au-dessus d'un décompte de sites serait un décor, et un décor sur un chiffre
+   se prend pour une mesure. */
+const temporel = (source, measure) =>
+  source==="sites" ? (measure==="planned" || measure==="done") : true;
+
+function aggregate(db, source, dim, measure, periode){
   if(!SOURCES[source]) source = "sites";
+  const p = normalisePeriode(periode, db.year);
+  /* La grille mensuelle et les outputs ne descendent du serveur que pour
+     l'exercice chargé : sur une autre année il n'y a rien à agréger, et
+     réutiliser les chiffres de l'exercice sous une autre étiquette serait faux. */
+  const grille = p.annee === db.year;
+  const dansP = (mi) => moisDansPeriode(mi+1, p);   /* le magasin indexe les mois de 0 à 11 */
   const map = {};
   const push = (k,v) => { k = (k===undefined||k===null||k==="") ? "—" : k;
     map[k] = map[k] || { key:k, sum:0, n:0 }; map[k].sum += v; map[k].n++; };
+  const surPeriode = (s,champ) => grille ? s.plan.filter((x,i)=>x[champ] && dansP(i)).length : 0;
   if(source==="sites") db.sites.forEach(s => {
     const v = measure==="count" ? 1 : measure==="beneficiaries" ? n(s.beneficiaries)
-      : measure==="planned" ? s.plan.filter(p=>p.planned).length
-      : measure==="done" ? s.plan.filter(p=>p.done).length : siteScore(s, db.weights, db).pct;
+      : measure==="planned" ? surPeriode(s,"planned")
+      : measure==="done" ? surPeriode(s,"done") : siteScore(s, db.weights, db).pct;
     push(s[dim], v); });
-  else if(source==="visits") db.visits.forEach(v => push(dim==="month" ? MONTHS[new Date(v.date).getMonth()] : v[dim], 1));
-  else if(source==="outputs") db.outputs.forEach(o => push(dim==="month" ? MONTHS[o.month] : o[dim], n(o[measure])));
-  else db.outcomes.forEach(o => push(o[dim], n(o[measure])));
+  else if(source==="visits") db.visits.forEach(v => {
+    if(!dateDansPeriode(v.date, p)) return;
+    push(dim==="month" ? MONTHS[anneeMoisDe(v.date).mois-1] : v[dim], 1); });
+  else if(source==="outputs") db.outputs.forEach(o => {
+    if(!grille || !dansP(o.month)) return;
+    push(dim==="month" ? MONTHS[o.month] : o[dim], n(o[measure])); });
+  else db.outcomes.forEach(o => {
+    if(!dateDansPeriode(o.date, p)) return;
+    push(o[dim], n(o[measure])); });
   return Object.values(map).map(x => ({ name:String(x.key),
     value: (measure==="score"||measure==="value"||measure==="planned"&&source==="outcomes") ? r1(x.sum/x.n) : x.sum }))
     .sort((a,b)=>b.value-a.value).slice(0,14);
 }
-function Viz({ db, set, notify, can }){
+function Viz({ db, set, periode, notify, can }){
   const [active,setActive] = useState(db.dashboards[0]?.id); const [edit,setEdit] = useState(null);
   const dash = db.dashboards.find(d=>d.id===active) || db.dashboards[0];
   const addDash = () => { const d = { id:uid("db"), name:"Nouvel onglet", widgets:[] };
@@ -362,26 +392,32 @@ function Viz({ db, set, notify, can }){
       </div>
       {dash?.widgets?.length ? (
         <div className="grid gap-4" style={{gridTemplateColumns:"repeat(auto-fit,minmax(400px,1fr))"}}>
-          {dash.widgets.map(w=><Widget key={w.id} w={w} db={db}
+          {dash.widgets.map(w=><Widget key={w.id} w={w} db={db} periode={periode}
             onEdit={can("edit")?()=>setEdit(w):null}
             onDelete={can("edit")?()=>set(x=>{ const d=x.dashboards.find(y=>y.id===active);
               d.widgets=d.widgets.filter(y=>y.id!==w.id); return x; }):null} />)}
         </div>
       ) : <Card><Empty icon={BarChart3} title="Onglet vide" text="Ajoutez une visualisation en choisissant une source, une dimension et une mesure."
             action={can("edit") && <Btn icon={Plus} onClick={()=>setEdit({ type:"bar", source:"sites", dim:"subOffice", measure:"count", title:"" })}>Ajouter</Btn>} /></Card>}
-      <WidgetModal open={!!edit} w={edit} db={db} onClose={()=>setEdit(null)} onSave={saveW} />
+      <WidgetModal open={!!edit} w={edit} db={db} periode={periode} onClose={()=>setEdit(null)} onSave={saveW} />
     </>);
 }
-function Widget({ w, db, onEdit, onDelete }){
+function Widget({ w, db, periode, onEdit, onDelete }){
   const src = SOURCES[w.source] ? w.source : "sites";
   const SRC = SOURCES[src];
   const dim = SRC.dims.some(d=>d[0]===w.dim) ? w.dim : SRC.dims[0][0];
   const measure = SRC.measures.some(m=>m[0]===w.measure) ? w.measure : SRC.measures[0][0];
-  const data = useMemo(()=>aggregate(db, src, dim, measure), [db,src,dim,measure]);
+  const p = normalisePeriode(periode, db.year);
+  const data = useMemo(()=>aggregate(db, src, dim, measure, p),
+    [db,src,dim,measure,p.annee,p.gran,p.valeur]);
   const dimLabel = (SRC.dims.find(d=>d[0]===dim)||[])[1] || dim;
   const mLabel = (SRC.measures.find(m=>m[0]===measure)||[])[1] || measure;
+  /* Le sous-titre ne mentionne la période que là où elle a servi à restreindre :
+     ailleurs, il dirait à l'utilisateur qu'il regarde un trimestre alors qu'il
+     regarde tout. */
+  const portee = temporel(src, measure) ? `${SRC.label} · ${libelleCourtPeriode(p)}` : SRC.label;
   return (
-    <Card title={w.title || `${mLabel} par ${dimLabel.toLowerCase()}`} subtitle={SRC.label}
+    <Card title={w.title || `${mLabel} par ${dimLabel.toLowerCase()}`} subtitle={portee}
       right={<>{onEdit && <button onClick={onEdit} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
         {onDelete && <button onClick={onDelete} className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</>}>
       {w.type==="table" ? (
@@ -416,7 +452,7 @@ function Widget({ w, db, onEdit, onDelete }){
           </BarChart></ResponsiveContainer>)}
     </Card>);
 }
-function WidgetModal({ open, w, db, onClose, onSave }){
+function WidgetModal({ open, w, db, periode, onClose, onSave }){
   const [f,setF] = useState({});
   useEffect(()=>{ setF(w||{}); },[w]);
   if(!open) return null;
@@ -438,9 +474,9 @@ function WidgetModal({ open, w, db, onClose, onSave }){
       </div>
       <div className="border border-slate-200 rounded p-3 bg-slate-50">
         <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">Aperçu</div>
-        <div className="bg-white rounded border border-slate-200"><Widget w={{...f,id:"prev"}} db={db} /></div>
+        <div className="bg-white rounded border border-slate-200"><Widget w={{...f,id:"prev"}} db={db} periode={periode} /></div>
       </div>
     </Modal>);
 }
 
-export { Analytics, CleanModal, Datasets, SCRIPT_TPL, SOURCES, ScriptModal, Scripts, Viz, Widget, WidgetModal, aggregate };
+export { Analytics, CleanModal, Datasets, SCRIPT_TPL, SOURCES, ScriptModal, Scripts, Viz, Widget, WidgetModal, aggregate, temporel };

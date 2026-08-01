@@ -131,6 +131,27 @@ export const REGISTRE = {
         + "le rattachement au site se fait ensuite, et peut échouer — c'est voulu, un code "
         + "non résolu doit rester visible.",
         ["site_code", "dpname", "poiname", "adm4code_smp", "sitecode", "site", "ecole"]),
+      /* Le nom et l'activité ne sont pas décoratifs : croisés, ils forment la
+         troisième passe du résolveur (lib/rattachement.js), celle que le
+         propriétaire du produit a demandée mot pour mot — « lier par site name,
+         activité, date je crois ». Sans eux dans le registre, un connecteur ne
+         pourrait pas les alimenter, et cette passe n'aurait aucune source. */
+      c("site_name", "texte", false,
+        "Nom du site tel qu'il est écrit dans la soumission. Croisé avec l'activité, il "
+        + "rattache une soumission dont le code est absent, inconnu ou ambigu.",
+        ["site_name", "sitename", "nom_site", "dpname_label", "poi_name", "nom"]),
+      c("activity_tag", "texte", false,
+        "Code d'activité de la soumission (URT, SMP, NTA…). Il désambiguïse deux sites "
+        + "homonymes suivis au titre d'activités différentes.",
+        ["activity_tag", "activitytag", "activite", "activity", "tag", "wbs", "programme"]),
+      c("geo_pcode", "texte", false,
+        "P-code de l'unité administrative déclarée dans la soumission, quand le formulaire "
+        + "le porte à part du code de site. Il sert de repli à la passe par préfixe p-code.",
+        ["geo_pcode", "pcode", "adm4code", "adm4pcode", "adm3code", "fokontanycode"]),
+      c("submitted_at", "texte", false,
+        "Horodatage du dépôt de la soumission sur le serveur. À distinguer de la date de "
+        + "collecte : un formulaire rempli hors ligne peut être déposé plusieurs jours après.",
+        ["submitted_at", "submissiondate", "submission_date", "end", "date_envoi"]),
       c("svy_date", "date", false, "Date de collecte déclarée dans le formulaire.",
         ["svydate", "svy_date", "date", "date_visite", "visit_date", "today"]),
       c("lat", "nombre", false,

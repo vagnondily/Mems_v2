@@ -1,28 +1,23 @@
-import { useEffect, useState } from "react";
-import { BarChart3, CalendarRange, ChevronDown, Cog, Database, FileText, LayoutDashboard, LogOut, MapPin } from "lucide-react";
-import { Badge, BrandMark } from "../components/ui.jsx";
+import { useEffect, useMemo, useState } from "react";
+import { BarChart3, Bell, CalendarRange, Check, ChevronDown, Cog, Database, FileText, LayoutDashboard, LogOut, MapPin } from "lucide-react";
+import { Badge, BrandMark, Empty } from "../components/ui.jsx";
 import { clsx } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
+import { SEVERITES, ecrireLues, elaguerLues, lireLues, tachesUtilisateur } from "../lib/taches.js";
 
 /* ══════════════════ Coquille ══════════════════ */
+/* Les destinations, et rien d'autre. Chaque écran déclare lui-même ses
+   sous-onglets (composant Tabs) : les redire ici en ferait une seconde liste à
+   tenir à jour, qui finirait par mentir le jour où un écran change les siens. */
 const NAV = [
   { id:"home", label:"Accueil", icon:LayoutDashboard },
   /* Un sujet par destination : le prévu et le réalisé s'y basculent, ils ne se
      dupliquent plus. Le premier niveau suit les deux métiers, non la nature des données. */
-  { id:"suivi", label:"Suivi-évaluation", icon:CalendarRange,
-    sub:[["summary","Résumé global"],["monitoring","Suivi des sites"],
-         ["mre","Plan MRE et budget"],["tpm","Suivi tiers"],
-         ["coverage","Couverture et MMR"],
-         ["sites","Registre des sites"],["params","Paramètres de couverture"]] },
-  { id:"programme", label:"Programme", icon:Database,
-    sub:[["distribution","Distributions"],["population","Population et outputs"],
-         ["results","Résultats"],["import","Import Excel"],["sources","Sources de données"]] },
-  /* Destination à part entière, sans sous-onglets : la carte est un seul écran. */
+  { id:"suivi", label:"Suivi-évaluation", icon:CalendarRange },
+  { id:"programme", label:"Programme", icon:Database },
   { id:"map", label:"Cartographie", icon:MapPin },
-  { id:"analytics", label:"Analyses", icon:BarChart3,
-    sub:[["datasets","Jeux de données"],["scripts","Scripts d'analyse"],["viz","Visualisations"]] },
-  { id:"reports", label:"Rapports", icon:FileText,
-    sub:[["extract","Extraction ODK"],["build","Générateur de rapport"]] },
+  { id:"analytics", label:"Analyses", icon:BarChart3 },
+  { id:"reports", label:"Rapports", icon:FileText },
 ];
 
 /* État d'enregistrement : l'utilisateur doit savoir si son travail est parti au serveur. */
@@ -44,11 +39,117 @@ function SyncBadge({ sync }){
     </span>);
 }
 
+/* Nombre de tâches montrées d'emblée : au-delà, le panneau cesse d'être une
+   notification et redevient le tableau qu'on vient justement de retirer de
+   l'accueil. Le reste s'ouvre à la demande. */
+const APERCU = 6;
+
+/* Cloche de notifications.
+   Les tâches ne viennent pas du serveur : elles sont déduites de l'état par
+   lib/taches.js, filtrées selon le bureau et les droits du compte. La cloche ne
+   décide rien, elle compte et elle mène. */
+function Cloche({ db, me, allowed, setTab, ouvert, setOuvert }){
+  const [lues,setLues] = useState(() => lireLues(me.id));
+  const [tout,setTout] = useState(false);
+  const toutes = useMemo(() => tachesUtilisateur(db, me, allowed), [db, me, allowed]);
+
+  /* Une tâche réglée sort de la dérivation ; son identifiant n'a plus à rester
+     masqué. C'est cet élagage qui la fait réapparaître si elle redevient vraie. */
+  useEffect(() => { setLues(prev => {
+    const next = elaguerLues(prev, toutes);
+    if(next.size === prev.size) return prev;
+    ecrireLues(me.id, next); return next;
+  }); }, [toutes, me.id]);
+
+  /* Refermer le panneau le remet à son aperçu : rouvrir ne doit pas restituer un
+     déroulé de quarante lignes dont on était sorti. */
+  useEffect(() => { if(!ouvert) setTout(false); }, [ouvert]);
+
+  const taches = toutes.filter(t => !lues.has(t.id));
+  const urgentes = taches.filter(t => t.severite === "urgent").length;
+  const visibles = tout ? taches : taches.slice(0, APERCU);
+  const toutMarquerLu = () => { const next = new Set(toutes.map(t => t.id));
+    setLues(next); ecrireLues(me.id, next); };
+
+  return (
+    <div className="relative" onClick={e=>e.stopPropagation()}>
+      <button onClick={()=>setOuvert(o=>!o)} data-cloche
+        title={taches.length ? `${taches.length} tâche(s) en attente` : "Aucune tâche en attente"}
+        aria-label={`Notifications — ${urgentes} urgente(s) sur ${taches.length}`}
+        className="relative p-1.5 rounded-full text-white/85 hover:bg-white/10 hover:text-white">
+        <Bell size={17} />
+        {/* Le nombre porté par la pastille est celui des urgences : c'est la seule
+            question qu'on pose à une cloche d'un coup d'œil. Le reste se compte
+            dans le panneau — mais un point signale qu'il y a tout de même à lire. */}
+        {urgentes > 0
+          ? <span data-cloche-compte={urgentes}
+              className="absolute -top-0.5 -right-0.5 min-w-[17px] h-[17px] px-1 rounded-full grid place-items-center
+                         bg-rose-500 text-white f9 font-bold tabular-nums ring-2 ring-[#085387]">
+              {urgentes > 99 ? "99+" : urgentes}</span>
+          : taches.length > 0
+            ? <span data-cloche-compte="0"
+                className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-amber-300 ring-2 ring-[#085387]" />
+            : null}
+      </button>
+      {ouvert && (
+        <div className="absolute right-0 top-10 bg-white rounded shadow-xl border border-slate-200 w-96 max-w-[92vw] z-50 overflow-hidden">
+          <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-100">
+            <div className="min-w-0">
+              <div className="f13 font-semibold text-slate-800">Notifications</div>
+              <div className="f115 text-slate-500">{taches.length
+                ? `${urgentes} urgente(s) sur ${taches.length} tâche(s)`
+                : "Tout est à jour"}</div>
+            </div>
+            {taches.length > 0 && (
+              <button onClick={toutMarquerLu}
+                className="ml-auto shrink-0 f11 font-semibold c-bd hover:underline">Tout marquer comme lu</button>)}
+          </div>
+          {taches.length ? (<>
+            <div className="mh340 overflow-auto">
+              {SEVERITES.map(([code,label,tone]) => {
+                const groupe = visibles.filter(t => t.severite === code);
+                if(!groupe.length) return null;
+                /* Le compte du bandeau est celui de la SÉVÉRITÉ, pas celui des
+                   lignes affichées : n'annoncer que la tranche visible ferait
+                   lire « Urgent 6 » là où il y en a cent soixante-dix-sept. */
+                const total = taches.filter(t => t.severite === code).length;
+                return (
+                  <div key={code}>
+                    <div className="flex items-center gap-2 px-4 py-1.5 bg-slate-50 border-y border-slate-100">
+                      <Badge tone={tone}>{label}</Badge>
+                      <span className="f11 text-slate-500 tabular-nums">
+                        {total > groupe.length ? `${groupe.length} sur ${total}` : total}</span>
+                    </div>
+                    {/* Chaque tâche mène à l'écran qui la résout : une notification
+                        qu'on ne peut pas suivre ne vaut pas la peine d'être posée. */}
+                    {groupe.map(t => (
+                      <button key={t.id} data-tache={t.id}
+                        onClick={()=>{ setTab(...t.vers); setOuvert(false); }}
+                        className="block w-full text-left px-4 py-2.5 border-b border-slate-50 hover:bg-sky-50">
+                        <div className="f125 font-semibold text-slate-800">{t.titre}</div>
+                        <div className="f115 text-slate-600 leading-snug">{t.detail}</div>
+                        {t.contexte && <div className="f105 text-slate-400 mt-0.5">{t.contexte} →</div>}
+                      </button>))}
+                  </div>);
+              })}
+            </div>
+            {!tout && taches.length > APERCU && (
+              <button onClick={()=>setTout(true)}
+                className="w-full px-4 py-2.5 f115 font-semibold c-bd border-t border-slate-100 hover:bg-slate-50">
+                Tout voir ({taches.length})</button>)}
+          </>) : (
+            <Empty icon={Check} title="Rien d'urgent"
+              text="Aucune échéance en attente pour votre périmètre." />)}
+        </div>)}
+    </div>);
+}
+
 /* `allowed` est calculé une seule fois par App (resolveTabs) et transmis ici :
    deux règles divergentes laissaient un compte sans aucune navigation. */
 function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, allowed = [] }){
-  const [open,setOpen] = useState(null); const [menu,setMenu] = useState(false);
-  useEffect(()=>{ const h=()=>{setOpen(null);setMenu(false);};
+  const [menu,setMenu] = useState(false);
+  const [cloche,setCloche] = useState(false);
+  useEffect(()=>{ const h=()=>{setMenu(false);setCloche(false);};
     window.addEventListener("click",h); return ()=>window.removeEventListener("click",h); },[]);
   const initials = (me.firstName?.[0]||"") + (me.lastName?.[0]||"");
   return (
@@ -71,31 +172,47 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, allowed = [
           <BrandMark size={30} tone="light" />
           <span className="f15 font-bold tr14">MEMS</span>
         </div>
+        {/* La barre du haut ne porte plus que les DESTINATIONS. Les menus
+            déroulants qui s'y ouvraient ont été retirés, pour trois raisons
+            constatées ensemble :
+
+            1. Ils étaient découpés. Cette barre a besoin de `overflow-x-auto`
+               pour défiler sur un écran étroit ; or en CSS, dès que `overflow-x`
+               vaut `auto`, `overflow-y` cesse d'être `visible`. Un panneau posé
+               en `absolute top-14`, donc SOUS la barre, était donc rogné par son
+               propre parent — le défaut d'affichage signalé à l'usage.
+            2. Le bouton faisait deux choses d'un seul clic : il changeait de
+               destination ET ouvrait le menu. On arrivait sur l'écran demandé
+               avec un panneau posé par-dessus, et recliquer renavigait au lieu
+               de simplement refermer.
+            3. Ils étaient redondants. Chaque destination affiche déjà sa propre
+               barre de sous-onglets dans la page (composant Tabs), entièrement
+               visible et non contrainte par un parent qui défile.
+
+            Un menu qui duplique une navigation existante en la cassant n'est pas
+            à réparer, il est à retirer. */}
         <nav className="flex items-center gap-0.5 overflow-x-auto">
           {NAV.filter(x=>allowed.includes(x.id)).map(x => (
-            <div key={x.id} className="relative" onClick={e=>e.stopPropagation()}>
-              {/* Un seul signal pour l'onglet courant : le filet. Le fond teinté
-                  et le texte blanc en plus faisaient trois marques pour une idée. */}
-              <button onClick={()=>{ setTab(x.id); if(x.sub) setOpen(o=>o===x.id?null:x.id); }}
-                className={clsx("flex items-center gap-1.5 px-3 h-14 f125 font-semibold whitespace-nowrap border-b-2 transition-colors",
-                  tab===x.id ? "border-white text-white" : "border-transparent text-white/65 hover:text-white")}>
-                <x.icon size={15} className={tab===x.id ? "" : "opacity-80"} />{x.label}
-                {x.sub && <ChevronDown size={13} className="opacity-60" />}</button>
-              {x.sub && open===x.id && (
-                <div className="absolute left-0 top-14 bg-white rounded-b-xl shadow-xl border border-slate-200 mnw260 py-1.5 z-50">
-                  {x.sub.map(([sid,slab]) => (
-                    <button key={sid} onClick={()=>{setTab(x.id,sid);setOpen(null);}}
-                      className={clsx("block w-full text-left px-4 py-1.5 f125 hover:bg-slate-50",
-                        tab===x.id&&sub===sid ? "c-bd font-semibold bg-sky-50" : "text-slate-700")}>{slab}</button>))}
-                </div>)}
-            </div>))}
+            /* Un seul signal pour la destination courante : le filet. Le fond
+               teinté et le texte blanc en plus faisaient trois marques pour une
+               idée. */
+            <button key={x.id} onClick={()=>setTab(x.id)}
+              className={clsx("flex items-center gap-1.5 px-3 h-14 f125 font-semibold whitespace-nowrap border-b-2 transition-colors",
+                tab===x.id ? "border-white text-white" : "border-transparent text-white/65 hover:text-white")}>
+              <x.icon size={15} className={tab===x.id ? "" : "opacity-80"} />{x.label}
+            </button>))}
         </nav>
         <div className="ml-auto flex items-center gap-3 shrink-0">
           <SyncBadge sync={sync} />
+          {/* Les tâches urgentes occupaient un tableau au milieu de l'accueil : on ne
+              les voyait qu'en s'y rendant, et jamais depuis les autres écrans. Elles
+              sont désormais où l'on va les chercher — dans la barre, à toute heure. */}
+          <Cloche db={db} me={me} allowed={allowed} setTab={setTab} ouvert={cloche}
+            setOuvert={v=>{ setMenu(false); setCloche(v); }} />
           <div className="relative" onClick={e=>e.stopPropagation()}>
             {/* La pastille suffit à identifier le compte ; l'anneau et le fond
                 translucide autour ajoutaient deux bordures sans rien dire. */}
-            <button onClick={()=>setMenu(m=>!m)}
+            <button onClick={()=>{ setMenu(m=>!m); setCloche(false); }}
               className="flex items-center gap-2 pl-0.5 pr-2 py-0.5 rounded-full hover:bg-white/10 f125">
               <span className="w-7 h-7 rounded-full grid place-items-center f105 font-bold c-deep" style={{background:C.aqua}}>{initials||"?"}</span>
               <span className="hidden sm:inline text-white/90">{me.firstName}</span>

@@ -141,11 +141,40 @@ test("connexion : identifiants valides, puis changement de mot de passe imposé"
 test("accueil : les données viennent du serveur et les indicateurs sont calculés", async () => {
   assert.ok(byText("h2", "Accueil"), "la page d'accueil s'affiche");
   const texte = document.body.textContent;
+  /* « Tâches urgentes » ne figure plus dans cette liste : le tableau a quitté
+     l'accueil pour la cloche de la barre du haut, éprouvée au test suivant. */
   for(const bloc of ["Exigence minimale de suivi", "Trois derniers mois",
-                     "Tâches urgentes", "Plan et réalisé par catégorie d'activité"])
+                     "Plan et réalisé par catégorie d'activité", "Information annuelle"])
     assert.ok(texte.includes(bloc), `le bloc « ${bloc} » est présent`);
-  const lignes = all("main tbody tr").length;
-  assert.ok(lignes > 0, "les tâches urgentes sont alimentées");
+  assert.ok(!texte.includes("Tâches urgentes et actions à mener"),
+    "le tableau des tâches a bien quitté l'accueil");
+  assert.equal(ctx.errors.length, 0, "aucune erreur sur l'accueil");
+});
+
+test("notifications : la cloche compte les tâches, les liste et mène à l'écran concerné", async () => {
+  const cloche = all("header [data-cloche]")[0];
+  assert.ok(cloche, "la cloche est posée dans la barre du haut");
+
+  /* La pastille porte le nombre brut : le texte affiché peut être « 99+ ». */
+  const pastille = document.querySelector("header [data-cloche-compte]");
+  assert.ok(pastille, "la pastille est présente");
+  const urgentes = Number(pastille.getAttribute("data-cloche-compte"));
+  assert.ok(urgentes > 0, `la pastille annonce des urgences (${urgentes})`);
+
+  await click(cloche, "ouvrir les notifications"); await flush();
+  assert.ok(byText("div", "Notifications"), "le panneau s'ouvre");
+  const taches = all("[data-tache]");
+  assert.ok(taches.length > 0, `le panneau liste des tâches (${taches.length})`);
+  assert.ok(byText("button", "Tout marquer comme lu"), "le marquage comme lu est proposé");
+
+  /* Cliquer une tâche referme le panneau et emmène à l'écran qui la résout. */
+  const premiere = taches[0];
+  const destination = premiere.getAttribute("data-tache");
+  await click(premiere, `tâche ${destination}`); await flush(); await flush();
+  assert.equal(all("[data-tache]").length, 0, "le panneau s'est refermé");
+  assert.ok(!byText("main h2", "Accueil"), "l'écran a changé");
+  assert.ok(all("main h2").length > 0, "la destination affiche un titre");
+  assert.equal(ctx.errors.length, 0, "aucune erreur sur les notifications");
 });
 
 test("navigation : les cinq onglets s'ouvrent sans erreur", async () => {

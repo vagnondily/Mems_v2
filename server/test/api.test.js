@@ -2957,3 +2957,395 @@ test("connecteurs : la valeur par défaut passe par la même transformation que 
   assert.equal(zzz.status, 422);
   assert.match(JSON.stringify(zzz.body.details), /transformation inconnue/);
 });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Chaîne ODK : soumissions, rattachement aux sites, dernière visite, GPS.
+
+   « Et si 01 sites existe sur les bases de données alors on note qu'il a été
+   suivi, lier par site name, activité, date je crois. Date de dernière visite =
+   dernière date de suivi disponible dans odk selon svydate. »
+
+   Les fixtures ci-dessous reproduisent le cas réel documenté dans
+   docs/A_FAIRE.md (chantier O) : deux points de distribution partageant le code
+   `MG51507010014` dans GD_PREVMA, un code MIARO de 16 caractères dont seul le
+   préfixe de 13 est un p-code, et deux homonymes que rien ne départage.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+const CODE_AMBIGU = "MG51507010014";
+const siteLotC = {};
+
+const creerSiteLotC = async (corps) => {
+  const r = await request(app).post("/api/sites").set("Authorization", `Bearer ${adminToken}`)
+    .send(corps);
+  assert.equal(r.status, 201, `création du site ${corps.code} refusée : ${JSON.stringify(r.body)}`);
+  return r.body.site;
+};
+
+const verser = (corps) => request(app).post("/api/submissions/ingest")
+  .set("Authorization", `Bearer ${adminToken}`).send(corps);
+
+test("soumissions : le référentiel de test est en place (codes ambigus, homonymes, p-code)", async () => {
+  /* Les deux points de distribution que GD_PREVMA confond sous un seul code —
+     `allow_choice_duplicates='yes'` l'autorise, et sept codes sont dans ce cas. */
+  siteLotC.androka = await creerSiteLotC({ code:"LOTC-A", external_code:CODE_AMBIGU,
+    name:"Androka Betohoke", activity_tag:"URT_GD", geo_pcode:CODE_AMBIGU, lat:-25.0300, lon:45.1200 });
+  siteLotC.betsibarike = await creerSiteLotC({ code:"LOTC-B", external_code:CODE_AMBIGU,
+    name:"Betsibarike", activity_tag:"URT_GD", geo_pcode:CODE_AMBIGU });
+  /* Sans code externe : seul le préfixe p-code de 13 caractères le rattache. */
+  siteLotC.csb = await creerSiteLotC({ code:"LOTC-C", name:"CSB Tsihombé",
+    activity_tag:"NTA", geo_pcode:"MG23210070009", last_visit:"2026-01-15",
+    lat:-25.3100, lon:45.4900 });
+  /* Deux homonymes de même activité, dans deux unités différentes. */
+  siteLotC.homonymeA = await creerSiteLotC({ code:"LOTC-D", name:"EPP Homonyme",
+    activity_tag:"SMP", geo_pcode:"MG23299990001" });
+  siteLotC.homonymeB = await creerSiteLotC({ code:"LOTC-E", name:"EPP Homonyme",
+    activity_tag:"SMP", geo_pcode:"MG23299990002" });
+
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM sites WHERE external_code=?").get(CODE_AMBIGU).c, 2,
+    "le code externe n'est délibérément pas unique : l'ambiguïté doit pouvoir entrer en base");
+});
+
+test("soumissions : rattachement par nom de site croisé avec l'activité", async () => {
+  const r = await verser({ form_id:"GD_PREVMA_v2", enregistrements: [
+    /* Ni code, ni p-code : seuls le nom et l'activité peuvent rattacher. Le nom
+       est écrit autrement que dans le référentiel — accent, casse, ponctuation —
+       ce que la normalisation doit absorber. */
+    { instance_id:"lotc-nom-1", SvyDate:"2026-05-04",
+      site_name:"csb  tsihombe", activity_tag:"nta" },
+  ]});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.resolues, 1, JSON.stringify(r.body));
+
+  const s = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-nom-1");
+  assert.equal(s.site_id, siteLotC.csb.id);
+  assert.equal(s.resolution_passe, "nom_activite");
+  assert.match(s.resolution_motif, /croisé avec l'activité/);
+  assert.ok(s.resolution_confiance > 0 && s.resolution_confiance < 1,
+    "un rapprochement par nom n'est pas une égalité de codes : sa confiance est inférieure");
+});
+
+test("soumissions : deux candidats égaux valent non résolu, jamais un tirage au sort", async () => {
+  const r = await verser({ form_id:"GD_PREVMA_v2", enregistrements: [
+    /* Le code ambigu, sans nom pour départager : c'est le cas des sept codes
+       GD_PREVMA relevés dans les XLSForms. */
+    { instance_id:"lotc-ambigu-1", DPName:CODE_AMBIGU, SvyDate:"2026-05-06" },
+    /* Le même code, mais le nom tranche entre les deux prétendants. */
+    { instance_id:"lotc-ambigu-2", DPName:CODE_AMBIGU, SvyDate:"2026-05-07",
+      site_name:"BETSIBARIKE", activity_tag:"URT_GD" },
+    /* Deux homonymes de même activité : le nom ne tranche plus rien. */
+    { instance_id:"lotc-homonyme", SvyDate:"2026-05-08",
+      site_name:"epp homonyme", activity_tag:"SMP" },
+  ]});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+
+  const ambigu = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-ambigu-1");
+  assert.equal(ambigu.site_id, null, "aucun des deux sites n'est choisi au hasard");
+  assert.match(ambigu.resolution_motif, /désigne 2 sites/);
+  assert.match(ambigu.resolution_motif, /Androka Betohoke/);
+  assert.match(ambigu.resolution_motif, /Betsibarike/);
+  assert.equal(ambigu.resolution_confiance, 0);
+
+  const departage = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-ambigu-2");
+  assert.equal(departage.site_id, siteLotC.betsibarike.id,
+    "le nom départage les deux porteurs du même code — sans jamais sortir de cette paire");
+  assert.equal(departage.resolution_passe, "nom_activite");
+
+  const homonyme = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-homonyme");
+  assert.equal(homonyme.site_id, null);
+  assert.match(homonyme.resolution_motif, /rien ne les départage/);
+});
+
+test("soumissions : rattachement par préfixe p-code, et par code externe exact", async () => {
+  const r = await verser({ form_id:"MIARO_PROD", enregistrements: [
+    /* Code MIARO de 16 caractères : p-code adm4 de 13 suivi d'un numéro d'ordre.
+       Aucune longueur n'est écrite en dur — c'est le référentiel qui décide. */
+    { instance_id:"lotc-pcode-1", POIName:"MG23210070009001", SvyDate:"2026-05-09" },
+  ]});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const s = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-pcode-1");
+  assert.equal(s.site_id, siteLotC.csb.id);
+  assert.equal(s.resolution_passe, "pcode_adm4");
+
+  /* Un code externe non ambigu : égalité stricte, confiance maximale. */
+  await request(app).put(`/api/sites/${siteLotC.homonymeA.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ ...siteLotC.homonymeA, external_code:"MG23299990001999", rev:siteLotC.homonymeA.rev });
+  const r2 = await verser({ form_id:"NutritionAIM", enregistrements: [
+    { instance_id:"lotc-code-1", DPName:"MG23299990001999", SvyDate:"2026-05-10" }]});
+  assert.equal(r2.status, 200, JSON.stringify(r2.body));
+  const s2 = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-code-1");
+  assert.equal(s2.site_id, siteLotC.homonymeA.id);
+  assert.equal(s2.resolution_passe, "code_externe");
+  assert.equal(s2.resolution_confiance, 1);
+});
+
+test("soumissions : l'ingestion est idempotente par instance_id", async () => {
+  const lot = { form_id:"GD_PREVMA_v2", enregistrements: [
+    { instance_id:"lotc-idem-1", DPName:CODE_AMBIGU, SvyDate:"2026-06-01",
+      site_name:"Androka Betohoke", activity_tag:"URT_GD" },
+    { instance_id:"lotc-idem-2", SvyDate:"2026-06-02", site_name:"csb tsihombe", activity_tag:"NTA" },
+  ]};
+  const un = await verser(lot);
+  assert.equal(un.status, 200, JSON.stringify(un.body));
+  assert.equal(un.body.crees, 2);
+  assert.equal(un.body.misAJour, 0);
+  const apres1 = db.prepare("SELECT COUNT(*) c FROM submissions").get().c;
+
+  const deux = await verser(lot);
+  assert.equal(deux.status, 200);
+  assert.equal(deux.body.crees, 0, "le second versement ne crée rien");
+  assert.equal(deux.body.misAJour, 2);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM submissions").get().c, apres1,
+    "deux tirages successifs se recouvrent au lieu de doubler");
+
+  /* L'identité de ligne est conservée : sans cela, les visites déjà créées
+     depuis une soumission pointeraient dans le vide au tirage suivant. */
+  const ids = db.prepare("SELECT id FROM submissions WHERE instance_id IN ('lotc-idem-1','lotc-idem-2')")
+    .all().map(x => x.id);
+  const troisieme = await verser(lot);
+  assert.equal(troisieme.status, 200);
+  assert.deepEqual(
+    db.prepare("SELECT id FROM submissions WHERE instance_id IN ('lotc-idem-1','lotc-idem-2')")
+      .all().map(x => x.id), ids);
+
+  /* Une soumission sans identifiant d'instance reçoit une empreinte
+     déterministe : le même enregistrement versé deux fois reste une seule ligne,
+     et l'API le dit au lieu de le taire. */
+  const sansId = { form_id:"SMP_2025", enregistrements: [
+    { Adm4Code_SMP:"603140007", SvyDate:"2026-06-03", site_name:"csb tsihombe", activity_tag:"NTA" }]};
+  const a = await verser(sansId);
+  assert.equal(a.body.crees, 1);
+  assert.equal(a.body.sansIdentifiant, 1);
+  assert.match(a.body.avertissement, /identifiant d'instance/);
+  const b = await verser(sansId);
+  assert.equal(b.body.crees, 0);
+  assert.equal(b.body.misAJour, 1);
+});
+
+test("soumissions : la dernière visite vient de svy_date, sans détruire la valeur saisie", async () => {
+  const fiche = await request(app).get(`/api/sites/${siteLotC.csb.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(fiche.status, 200);
+  const d = fiche.body.derniereVisite;
+  /* La valeur saisie n'a pas bougé : c'est la garantie demandée. */
+  assert.equal(d.last_visit, "2026-01-15");
+  assert.equal(fiche.body.site.last_visit, "2026-01-15");
+  /* La plus récente des svy_date rattachées à ce site, tous formulaires confondus. */
+  const attendue = db.prepare("SELECT MAX(svy_date) d FROM submissions WHERE site_id=?")
+    .get(siteLotC.csb.id).d;
+  assert.equal(d.last_visit_odk, attendue);
+  assert.ok(d.last_visit_odk > d.last_visit);
+  assert.equal(d.last_visit_effective, d.last_visit_odk, "l'observée prime sur la convention saisie");
+  assert.equal(d.last_visit_source, "odk");
+
+  const liste = await request(app).get("/api/submissions/derniere-visite?site_id=" + siteLotC.csb.id)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(liste.status, 200);
+  assert.equal(liste.body.rows[0].last_visit, "2026-01-15");
+  assert.equal(liste.body.rows[0].last_visit_odk, attendue);
+  assert.ok(liste.body.rows[0].soumissions >= 3);
+
+  /* Un site sans aucune soumission rattachée continue d'afficher la sienne. */
+  const sansOdk = await request(app).get(`/api/sites/${siteLotC.homonymeB.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(sansOdk.body.derniereVisite.last_visit_odk, null);
+  assert.equal(sansOdk.body.derniereVisite.last_visit_source, null);
+
+  /* La carte sert les deux colonnes : elle ne peut pas afficher une date de
+     terrain si le serveur ne la lui envoie pas. */
+  const carte = await request(app).get("/api/analytics/map?year=2026")
+    .set("Authorization", `Bearer ${adminToken}`);
+  const point = carte.body.sites.find(x => x.id === siteLotC.csb.id);
+  assert.ok(point, "le site de test figure sur la carte");
+  assert.equal(point.last_visit, "2026-01-15");
+  assert.equal(point.last_visit_odk, attendue);
+  assert.equal(point.last_visit_effective, attendue);
+});
+
+test("soumissions : le geopoint est découpé en latitude, longitude et précision", async () => {
+  const r = await verser({ form_id:"GD_PREVMA_v2", enregistrements: [
+    /* La forme exacte d'un geopoint ODK : « lat lon altitude précision ». */
+    { instance_id:"lotc-gps-1", SvyDate:"2026-05-12", site_name:"csb tsihombe",
+      activity_tag:"NTA", HHCoord:"-25.3142 45.4931 37.5 8" },
+    /* Sans altitude ni précision : les deux doivent rendre null, jamais zéro —
+       « précision inconnue » et « précision de zéro mètre » ne sont pas la même
+       information. */
+    { instance_id:"lotc-gps-2", SvyDate:"2026-05-13", site_name:"csb tsihombe",
+      activity_tag:"NTA", HHCoord:"-25.3000 45.5000" },
+  ]});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const un = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-gps-1");
+  assert.equal(un.lat, -25.3142);
+  assert.equal(un.lon, 45.4931);
+  assert.equal(un.gps_accuracy, 8);
+  const deux = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-gps-2");
+  assert.equal(deux.gps_accuracy, null);
+
+  /* Q25 n'est pas tranchée : la position déclarée du site n'est pas touchée. */
+  const site = db.prepare("SELECT lat, lon FROM sites WHERE id=?").get(siteLotC.csb.id);
+  assert.equal(site.lat, -25.3100);
+  assert.equal(site.lon, 45.4900);
+
+  /* Elle est servie comme une couche distincte, avec l'écart aux deux positions —
+     c'est cette mesure qui permettra de trancher Q25 sur des chiffres. */
+  const pos = await request(app).get(`/api/submissions/positions?site_id=${siteLotC.csb.id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(pos.status, 200);
+  const p = pos.body.points.find(x => x.instance_id === "lotc-gps-1");
+  assert.ok(p, "la position observée est servie");
+  assert.equal(p.site_lat, -25.3100);
+  assert.ok(p.ecart_m > 0 && p.ecart_m < 5000, `écart attendu de quelques centaines de mètres, reçu ${p.ecart_m}`);
+  assert.ok(pos.body.bounds);
+});
+
+test("soumissions : une soumission non résolue le reste, et reste visible", async () => {
+  const inconnu = "MG99988877766";
+  const r = await verser({ form_id:"GD_PREVMA_v2", enregistrements: [
+    { instance_id:"lotc-orphelin", DPName:inconnu, SvyDate:"2026-05-20",
+      site_name:"EPP Introuvable", activity_tag:"URT_GD" }]});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.nonResolues, 1);
+
+  const liste = await request(app).get("/api/submissions?resolution=non_resolues")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(liste.status, 200);
+  const o = liste.body.rows.find(x => x.instance_id === "lotc-orphelin");
+  assert.ok(o, "elle n'est ni jetée ni rattachée d'office : elle est en attente, et visible");
+  assert.equal(o.site_id, null);
+  assert.ok(o.resolution_motif.length > 20, "le motif dit pourquoi, pas seulement que");
+  assert.match(o.resolution_motif, /aucun site ne porte le code/);
+  assert.equal(o.site_code_raw, inconnu, "le code saisi est conservé tel quel");
+
+  /* Rejouer le rattachement sans rien changer au référentiel ne la résout pas :
+     c'est le contraire d'un résolveur qui finit par céder. */
+  const rejeu = await request(app).post("/api/submissions/rattacher")
+    .set("Authorization", `Bearer ${adminToken}`).send({});
+  assert.equal(rejeu.status, 200);
+  assert.equal(db.prepare("SELECT site_id FROM submissions WHERE instance_id=?")
+    .get("lotc-orphelin").site_id, null);
+
+  /* Elle se résout dès que le référentiel apprend le code — sans re-tirer depuis
+     ODK Central, ce qui est le point du stockage de `raw`. */
+  await creerSiteLotC({ code:"LOTC-F", external_code:inconnu, name:"EPP Introuvable",
+    activity_tag:"URT_GD" });
+  const rejeu2 = await request(app).post("/api/submissions/rattacher")
+    .set("Authorization", `Bearer ${adminToken}`).send({});
+  assert.equal(rejeu2.status, 200);
+  assert.ok(rejeu2.body.rattachees >= 1, JSON.stringify(rejeu2.body));
+  assert.ok(db.prepare("SELECT site_id FROM submissions WHERE instance_id=?")
+    .get("lotc-orphelin").site_id, "le code enfin connu la rattache");
+});
+
+test("soumissions : « déjà suivi » marque le mois et crée une visite, sans jamais la doubler", async () => {
+  const lecture = await request(app).get("/api/submissions/suivi?year=2026&month=4")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(lecture.status, 200);
+  assert.equal(lecture.body.periode.debut, "2026-05-01");
+  assert.equal(lecture.body.periode.fin, "2026-05-31");
+  const vu = lecture.body.rows.find(x => x.site_id === siteLotC.csb.id);
+  assert.ok(vu, "le site a bien des soumissions sur mai 2026");
+  assert.equal(vu.suivi, true);
+
+  const un = await request(app).post("/api/submissions/suivi")
+    .set("Authorization", `Bearer ${adminToken}`).send({ year:2026, month:4 });
+  assert.equal(un.status, 200, JSON.stringify(un.body));
+  assert.ok(un.body.marques >= 1);
+  assert.ok(un.body.visitesCreees >= 1);
+
+  const mois = db.prepare("SELECT done FROM site_months WHERE site_id=? AND year=2026 AND month=4")
+    .get(siteLotC.csb.id);
+  assert.equal(mois.done, 1);
+  const visites = db.prepare(
+    "SELECT * FROM visits WHERE site_id=? AND visit_date LIKE '2026-05%'").all(siteLotC.csb.id);
+  assert.equal(visites.length, 1);
+  assert.ok(visites[0].submission_id, "la visite dit de quelle soumission elle vient");
+  /* Datée du jour DÉCLARÉ de collecte, pas du 15 du mois que pose la saisie. */
+  assert.notEqual(visites[0].visit_date, "2026-05-15");
+
+  const deux = await request(app).post("/api/submissions/suivi")
+    .set("Authorization", `Bearer ${adminToken}`).send({ year:2026, month:4 });
+  assert.equal(deux.status, 200);
+  assert.equal(deux.body.visitesCreees, 0, "relancer ne double pas les visites");
+  assert.ok(deux.body.dejaMarques >= 1);
+  assert.equal(db.prepare(
+    "SELECT COUNT(*) c FROM visits WHERE site_id=? AND visit_date LIKE '2026-05%'")
+    .get(siteLotC.csb.id).c, 1);
+
+  /* La grille mensuelle n'a pas d'autre maille qu'un mois civil : demander une
+     fenêtre libre en écriture est refusé, pas approximé. */
+  const libre = await request(app).get("/api/submissions/suivi?debut=2026-05-01&fin=2026-06-30")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(libre.status, 200);
+  assert.equal(libre.body.periode.mois, null);
+});
+
+test("soumissions : un connecteur porteur de correspondances passe par appliquer(), pas par la détection", async () => {
+  const c = (await creerConnecteur({ name:"ODK — NutritionAIM", kind:"odk",
+    base_url:"https://odk.exemple.org", config:{ project:"1", formId:"NutritionAIM" } })).body.connector;
+  const m = await request(app).put(`/api/connectors/${c.id}/mappings`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ entity:"submission", mappings: [
+      { entity:"submission", mems_field:"instance_id", source_path:"uuid", transform:"texte" },
+      /* Le formulaire nomme ses variables autrement : c'est exactement ce que la
+         couche de correspondance existe pour absorber, sans une ligne de code. */
+      { entity:"submission", mems_field:"site_name", source_path:"NomDuPoint", transform:"trim" },
+      { entity:"submission", mems_field:"activity_tag", source_path:"Programme", transform:"majuscules" },
+      { entity:"submission", mems_field:"svy_date", source_path:"DateReleve", transform:"date_iso" },
+      { entity:"submission", mems_field:"lat", source_path:"Position", transform:"geopoint_lat" },
+      { entity:"submission", mems_field:"lon", source_path:"Position", transform:"geopoint_lon" },
+      { entity:"submission", mems_field:"gps_accuracy", source_path:"Position",
+        transform:"geopoint_precision" }] });
+  assert.equal(m.status, 200, JSON.stringify(m.body));
+
+  const r = await verser({ connector_id:c.id, form_id:"NutritionAIM", enregistrements: [
+    { uuid:"lotc-conn-1", NomDuPoint:"CSB TSIHOMBE", Programme:"nta",
+      DateReleve:"14/05/2026", Position:"-25.3150 45.4940 30 12" }]});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const s = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-conn-1");
+  assert.equal(s.site_id, siteLotC.csb.id);
+  assert.equal(s.svy_date, "2026-05-14", "la date française est normalisée par la transformation déclarée");
+  assert.equal(s.gps_accuracy, 12);
+  assert.equal(s.connector_id, c.id);
+
+  /* Un connecteur sans correspondance pour cette entité est refusé avec le
+     chemin de correction, plutôt que rattrapé en silence par la détection. */
+  const vide = (await creerConnecteur({ name:"ODK — sans correspondance", kind:"odk",
+    base_url:"https://odk.exemple.org", config:{} })).body.connector;
+  const ko = await verser({ connector_id:vide.id, form_id:"X",
+    enregistrements:[{ instance_id:"x" }] });
+  assert.equal(ko.status, 422);
+  assert.match(ko.body.error, /aucune correspondance/);
+});
+
+test("soumissions : le tirage ODK conserve l'identifiant d'instance, et le cache se verse tel quel", async () => {
+  await request(app).put("/api/settings").set("Authorization", `Bearer ${adminToken}`)
+    .send({ odkBase: odkMockUrl });
+  /* La source « testform » existe déjà — `odk_forms` est unique sur (projet,
+     formulaire), et c'est bien elle qu'on veut : on reprend la chaîne là où le
+     test du tirage l'a laissée, plutôt que d'en déclarer une seconde. */
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  const f = st.body.odkForms.find(x => x.formId === "testform" && x.project === "1");
+  assert.ok(f, "la source ODK de test est déjà déclarée");
+  const pull = await request(app).post(`/api/odk-forms/${f.id}/pull`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(pull.status, 200, JSON.stringify(pull.body));
+
+  /* `__id` était écarté avec le reste des champs système d'OData : sans lui, deux
+     tirages du même formulaire créaient des doublons au lieu de se recouvrir. */
+  const cache = JSON.parse(db.prepare("SELECT raw FROM odk_forms WHERE id=?").get(f.id).raw);
+  assert.ok(cache.every(x => x.instance_id), "chaque soumission du cache porte son identifiant");
+
+  const un = await verser({ odk_form_id:f.id });
+  assert.equal(un.status, 200, JSON.stringify(un.body));
+  assert.equal(un.body.crees, 3);
+  const deux = await verser({ odk_form_id:f.id });
+  assert.equal(deux.body.crees, 0);
+  assert.equal(deux.body.misAJour, 3);
+
+  /* La détection par défaut ne devine pas en silence : elle rend les
+     correspondances retenues, variable source par champ MEMS. */
+  const parChamp = Object.fromEntries(un.body.correspondances.map(x => [x.mems_field, x.source_path]));
+  assert.equal(parChamp.instance_id, "instance_id");
+  assert.equal(parChamp.svy_date, "SvyDate");
+  assert.equal(parChamp.site_code, "DPName");
+});

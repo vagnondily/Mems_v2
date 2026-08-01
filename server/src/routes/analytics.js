@@ -32,6 +32,18 @@ r.get("/map", (req, res) => {
               ce qui échoue sur les homonymes de deux districts différents. */
            s.geo_pcode,
            s.activity_tag, s.beneficiaries, s.security, s.last_visit, s.modality,
+           /* Les deux dates de dernière visite voyagent ensemble, jamais l'une
+              à la place de l'autre : last_visit est saisie (la grille mensuelle
+              la pose au 15 du mois, par convention), last_visit_odk est
+              observée — c'est la « dernière date de suivi disponible dans odk
+              selon svydate ». L'observée prime, la saisie reste lisible ;
+              écraser l'une par l'autre en base détruirait sans trace un travail
+              de saisie. Voir lib/soumissions.js, combinerDerniereVisite. */
+           v.derniere AS last_visit_odk,
+           COALESCE(v.derniere, s.last_visit) AS last_visit_effective,
+           CASE WHEN v.derniere IS NOT NULL THEN 'odk'
+                WHEN s.last_visit IS NOT NULL THEN 'saisie' END AS last_visit_source,
+           COALESCE(v.soumissions,0) AS submissions,
            o.name AS office, c.name AS category,
            COALESCE(m.planned,0) AS planned, COALESCE(m.done,0) AS done
     FROM sites s
@@ -39,6 +51,9 @@ r.get("/map", (req, res) => {
     LEFT JOIN activity_categories c ON c.id = s.category_id
     LEFT JOIN (SELECT site_id, SUM(planned) planned, SUM(done) done
                FROM site_months WHERE year = ? GROUP BY site_id) m ON m.site_id = s.id
+    LEFT JOIN (SELECT site_id, MAX(svy_date) derniere, COUNT(*) soumissions
+               FROM submissions WHERE site_id IS NOT NULL AND svy_date IS NOT NULL
+               GROUP BY site_id) v ON v.site_id = s.id
     WHERE ${where.join(" AND ")}
     ORDER BY s.code LIMIT 6000`).all(f.year, ...args);
 

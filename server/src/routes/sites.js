@@ -5,6 +5,7 @@ import { labelsFor } from "../lib/geo.js";
 import { requireCap } from "../lib/auth.js";
 import { officeBound as scopeOf } from "../lib/scope.js";
 import { validate, schemas } from "../lib/validate.js";
+import { combinerDerniereVisite, derniereVisiteOdk } from "../lib/soumissions.js";
 import { z } from "zod";
 
 const r = Router();
@@ -41,7 +42,18 @@ r.get("/", (req, res) => {
   if(f.status){ where.push("status = ?"); args.push(f.status); }
   if(f.search){ where.push("(name LIKE ? OR code LIKE ? OR adm3 LIKE ?)");
     const s = `%${f.search}%`; args.push(s,s,s); }
-  const sql = `SELECT * FROM sites ${where.length ? "WHERE "+where.join(" AND ") : ""}
+  /* La date issue des soumissions ODK accompagne la liste, sans remplacer la
+     valeur saisie : les deux colonnes voyagent ensemble, `last_visit_effective`
+     dit laquelle prime. Un appel de plus par site serait autrement inévitable
+     dès qu'un écran affiche « dernière visite » sur une liste de 200 lignes. */
+  const sql = `SELECT sites.*, v.derniere AS last_visit_odk,
+                      COALESCE(v.derniere, sites.last_visit) AS last_visit_effective,
+                      COALESCE(v.soumissions,0) AS submissions
+               FROM sites
+               LEFT JOIN (SELECT site_id, MAX(svy_date) derniere, COUNT(*) soumissions
+                          FROM submissions WHERE site_id IS NOT NULL AND svy_date IS NOT NULL
+                          GROUP BY site_id) v ON v.site_id = sites.id
+               ${where.length ? "WHERE "+where.join(" AND ") : ""}
                ORDER BY code LIMIT ? OFFSET ?`;
   const rows = db.prepare(sql).all(...args, f.limit, f.offset);
   const total = db.prepare(`SELECT COUNT(*) c FROM sites ${where.length ? "WHERE "+where.join(" AND ") : ""}`)
@@ -53,7 +65,11 @@ r.get("/:id", (req, res) => {
   const s = db.prepare("SELECT * FROM sites WHERE id=?").get(req.params.id);
   if(!s) return res.status(404).json({ error:"site introuvable" });
   assertScope(req, s);
-  res.json({ site:s, months: db.prepare("SELECT * FROM site_months WHERE site_id=?").all(s.id) });
+  /* La fiche porte les DEUX dates de dernière visite. Le site garde la sienne,
+     saisie ; la date issue des soumissions ODK est calculée à la demande et
+     prime à l'affichage — voir lib/soumissions.js pour le pourquoi. */
+  res.json({ site:s, months: db.prepare("SELECT * FROM site_months WHERE site_id=?").all(s.id),
+    derniereVisite: combinerDerniereVisite(s.last_visit, derniereVisiteOdk(s.id)) });
 });
 
 

@@ -126,12 +126,35 @@ export async function verifierBaseOdk(baseUrl){
   return u;
 }
 
+/* Deux valeurs sont extraites des champs « système » d'OData avant que le reste
+   ne soit écarté, et il faut dire pourquoi cette exception existe.
+
+   `__id` est l'identifiant d'instance de la soumission — sa clé primaire chez
+   ODK Central, pas un détail de protocole. Sans lui, deux tirages successifs du
+   même formulaire ne se recouvrent pas : ils créent des doublons. Il ressort donc
+   sous `instance_id`, qui est le nom du champ dans le registre (lib/champs.js) et
+   la colonne d'unicité de `submissions`. `__system/submissionDate` sort de même
+   sous `submitted_at` : la date de dépôt n'est pas la date de collecte, et un
+   formulaire rempli hors ligne peut être déposé plusieurs jours plus tard.
+
+   Tout le reste de `__system` (état de relecture, appareil, pièces jointes) et
+   toutes les annotations `@odata` continuent d'être écartées : ce sont bien des
+   détails de protocole, et les faire apparaître comme des variables du
+   formulaire polluerait l'éditeur de formules. */
 function flatten(obj, out = {}){
   for(const [k, v] of Object.entries(obj || {})){
     if(k.startsWith("__") || k.startsWith("@odata")) continue;
     if(v && typeof v === "object" && !Array.isArray(v)) flatten(v, out);
     else if(!Array.isArray(v)) out[k] = v;
   }
+  return out;
+}
+
+function aplatirSoumission(item){
+  const out = flatten(item);
+  if(item?.__id !== undefined && out.instance_id === undefined) out.instance_id = item.__id;
+  const depot = item?.__system?.submissionDate;
+  if(depot !== undefined && out.submitted_at === undefined) out.submitted_at = depot;
   return out;
 }
 
@@ -177,7 +200,7 @@ export async function pullSubmissions({ baseUrl, project, formId, token }){
   while(url){
     if(pages >= MAX_PAGES || rows.length >= MAX_ROWS){ truncated = true; break; }
     const body = await fetchJson(url, token);
-    for(const item of body.value || []) rows.push(flatten(item));
+    for(const item of body.value || []) rows.push(aplatirSoumission(item));
     pages++;
     url = body["@odata.nextLink"] || null;
   }

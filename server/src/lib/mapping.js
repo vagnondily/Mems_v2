@@ -84,21 +84,41 @@ function versGeopoint(v){
   if(vide(v)) return null;
   if(typeof v === "object" && !Array.isArray(v)){
     if(Array.isArray(v.coordinates) && v.coordinates.length >= 2)
-      return borner(Number(v.coordinates[1]), Number(v.coordinates[0]));
+      return borner(Number(v.coordinates[1]), Number(v.coordinates[0]),
+        v.coordinates[2], v.accuracy ?? v.precision);
     if(v.latitude !== undefined || v.longitude !== undefined)
-      return borner(Number(v.latitude), Number(v.longitude));
+      return borner(Number(v.latitude), Number(v.longitude),
+        v.altitude, v.accuracy ?? v.precision);
     return null;
   }
   const parts = String(v).trim().split(/[\s,;]+/).filter(x => x !== "");
   if(parts.length < 2) return null;
   const lat = Number(parts[0]), lon = Number(parts[1]);
-  return borner(lat, lon);
+  return borner(lat, lon, parts[2], parts[3]);
 }
-function borner(lat, lon){
+/* Les deux composantes de queue sont facultatives : un geopoint saisi à la main
+   ou recopié d'un tableur n'en porte souvent aucune. Elles rendent `null` plutôt
+   que 0 — une précision de zéro mètre se lirait comme un relevé parfait, ce qui
+   est l'inverse de « précision inconnue ». Une précision négative est refusée
+   pour la même raison : elle n'a aucun sens physique. */
+function borner(lat, lon, altitude, precision){
   if(!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
   if(lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
-  return { lat, lon };
+  const nb = (x) => {
+    if(x === null || x === undefined || (typeof x === "string" && x.trim() === "")) return null;
+    const n = Number(x);
+    return Number.isFinite(n) ? n : null;
+  };
+  const p = nb(precision);
+  return { lat, lon, altitude: nb(altitude), precision: p !== null && p >= 0 ? p : null };
 }
+
+/* Le geopoint découpé en entier, pour les appelants qui en veulent les quatre
+   composantes d'un coup — l'ingestion des soumissions, qui écrit lat, lon et
+   précision sur la même ligne. Trois appels aux transformations feraient trois
+   analyses de la même chaîne, et surtout laisseraient croire que les trois
+   valeurs peuvent venir de trois sources différentes. */
+export const decouperGeopoint = versGeopoint;
 
 const VRAI = new Set(["1", "true", "vrai", "oui", "o", "yes", "y", "x", "on"]);
 const FAUX = new Set(["0", "false", "faux", "non", "n", "no", "off"]);
@@ -187,6 +207,18 @@ export const TRANSFORMATIONS = {
     note: "Extrait la longitude du même geopoint. Attention : en GeoJSON les coordonnées sont "
       + "dans l'ordre inverse (longitude d'abord) — c'est traité ici, pas chez l'appelant.",
     fn: (v) => versGeopoint(v)?.lon ?? null,
+  },
+  /* Ajoutée pour l'ingestion des soumissions : la précision est la quatrième
+     composante du geopoint ODK, et c'est la seule des quatre qui permette
+     d'écarter un relevé au lieu d'y croire. La règle du fichier a été suivie —
+     une transformation de plus, nommée, documentée et testée, plutôt qu'un
+     découpage improvisé chez l'appelant. */
+  geopoint_precision: {
+    label: "Précision d'un geopoint",
+    note: "Extrait la précision en mètres, quatrième composante d'un geopoint ODK "
+      + "« lat lon altitude précision ». Absente ou négative, elle rend null : « précision "
+      + "inconnue » et « précision de zéro mètre » ne doivent pas se confondre.",
+    fn: (v) => versGeopoint(v)?.precision ?? null,
   },
 };
 

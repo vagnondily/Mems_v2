@@ -27,6 +27,7 @@ import caseloadRoutes from "./routes/caseload.js";
 import importRoutes from "./routes/import.js";
 import xlsformRoutes from "./routes/xlsform.js";
 import odkRoutes from "./routes/odk.js";
+import submissionRoutes from "./routes/submissions.js";
 import connectorRoutes from "./routes/connectors.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -124,6 +125,9 @@ app.use("/api/analytics", authenticate, analyticsRoutes);
 app.use("/api/caseload", authenticate, caseloadRoutes);
 app.use("/api/import", authenticate, importRoutes);
 app.use("/api", authenticate, odkRoutes);
+/* Suite immédiate du tirage ODK : `odk-forms/:id/pull` remplit le cache,
+   `submissions/ingest` en tire des lignes rattachées à des sites. */
+app.use("/api", authenticate, submissionRoutes);
 app.use("/api", authenticate, xlsformRoutes);
 /* Connecteurs et correspondance des variables : monté sous /api comme les deux
    précédents, dont il prolonge le travail — le XLSForm dit ce que la source

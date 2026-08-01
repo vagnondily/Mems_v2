@@ -26,6 +26,13 @@ export const schemas = {
   site: z.object({
     id: id.optional(),
     code: z.string().min(1).max(40),
+    /* Le code que la SOURCE emploie, quand ce n'est pas celui de MEMS. Les
+       XLSForms du bureau Madagascar portent « MG23210070009001 » là où `code`
+       porte « L0001 » : sans cette colonne, la première passe du résolveur
+       (lib/rattachement.js) n'a rien à comparer. Non unique volontairement —
+       sept codes GD_PREVMA désignent deux sites, et l'ambiguïté doit entrer
+       telle quelle pour être traitée comme telle. */
+    external_code: nullableStr(80),
     name: z.string().min(1).max(200),
     status: z.enum(["Active","Inactive"]).default("Active"),
     office_id: nullableStr(64), antenne: nullableStr(120),
