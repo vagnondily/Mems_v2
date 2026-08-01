@@ -26,6 +26,7 @@ import listeRoutes from "./routes/listes.js";
 import userRoutes from "./routes/users.js";
 import analyticsRoutes from "./routes/analytics.js";
 import caseloadRoutes from "./routes/caseload.js";
+import targetingRoutes from "./routes/targeting.js";
 import importRoutes from "./routes/import.js";
 import xlsformRoutes from "./routes/xlsform.js";
 import odkRoutes from "./routes/odk.js";
@@ -134,6 +135,7 @@ app.use("/api/listes", authenticate, listeRoutes);
 app.use("/api/country", authenticate, countryRoutes);
 app.use("/api/analytics", authenticate, analyticsRoutes);
 app.use("/api/caseload", authenticate, caseloadRoutes);
+app.use("/api/targeting", authenticate, targetingRoutes);
 app.use("/api/import", authenticate, importRoutes);
 app.use("/api", authenticate, odkRoutes);
 /* Suite immédiate du tirage ODK : `odk-forms/:id/pull` remplit le cache,

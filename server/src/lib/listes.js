@@ -129,6 +129,11 @@ export const TYPES = [
     liens: [lien("pdd",   "modality", "code", "Plan de distribution"),
             lien("sites", "modality", "code", "Sites")] }),
 
+  generique("raison_ciblage", "raison_ciblage", "Raisons de ciblage", {
+    description: "Pourquoi une unité est ciblée : sécheresse, cyclone, projet, FSRP, RRT… "
+      + "Chaque ciblage daté (onglet Population › Ciblage) en porte une.",
+    liens: [lien("targeting", "reason", "code", "Ciblages datés")] }),
+
   { cle:"partenaires", label:"Partenaires coopérants", table:"partners", prefixeId:"part", cap:"admin",
     description: "Les partenaires de mise en œuvre. Ils portent désormais un code "
       + "d'identification et un type de partenariat.",

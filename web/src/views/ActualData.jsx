@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { api } from "../lib/api.js";
-import { Activity, Check, ClipboardList, Download, Globe, Link2, ListChecks, Pencil, Plus, Save, Target, Trash2, Users } from "lucide-react";
+import { Activity, Check, ChevronDown, ChevronRight, ClipboardList, Download, Globe, Link2, ListChecks, Pencil, Plus, Save, Target, Trash2, Users } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ComposedChart, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Badge, Bar2, Btn, Card, Field, Input, Modal, Note, Select, Stat, StatRow, TableWrap, Tabs, Td, Th } from "../components/ui.jsx";
+import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, TableWrap, Tabs, Td, Th } from "../components/ui.jsx";
 import { POP_BASE_YEAR, clsx, computeMMR, fmt, motifLisible, n, pct, populationFor, uid, visiteOdk } from "../lib/calc.js";
 import { C, D_ADJUST, MONTHS, MONTHS_L, SERIES } from "../lib/constants.js";
 import { DistributionActual, rate } from "./Planning.jsx";
@@ -492,7 +492,8 @@ function OutputData({ db, set, notify, can }){
   return (
     <>
       <Tabs className="mb-4" value={tab} onChange={setTab}
-        items={[["outputs","Bénéficiaires par activité"],["population","Population, ciblage et distribution"]]} />
+        items={[["outputs","Bénéficiaires par activité"],["population","Population, ciblage et distribution"],
+                ["ciblage","Ciblage daté"]]} />
       {tab==="outputs" ? (
         <>
           <Note>Pour chaque mois, saisissez les bénéficiaires planifiés et atteints, et qualifiez l'ajustement :
@@ -538,7 +539,205 @@ function OutputData({ db, set, notify, can }){
               </BarChart></ResponsiveContainer>
           </Card>
         </>
-      ) : <CaseloadView db={db} notify={notify} can={can} />}
+      ) : tab==="ciblage" ? <TargetingView db={db} notify={notify} can={can} />
+        : <CaseloadView db={db} notify={notify} can={can} />}
+    </>);
+}
+
+/* ── Ciblage daté ─────────────────────────────────────────────────────
+   « Le ciblage peut se faire plusieurs fois… afficher le dernier, garder tous
+   les ciblages avec leur date. Sélectionner les districts/communes à cibler en
+   amont, un genre et une raison, puis extraire un fichier prérempli. »
+
+   On sélectionne des unités dans l'arbre (région → district → commune), on leur
+   affecte un ciblage daté (personnes, ménages, genre, raison), on enregistre —
+   et le tableau du bas montre le DERNIER ciblage par unité × activité, chaque
+   ligne dépliable sur son historique. L'extract Excel ne reprend que les unités
+   ciblées. */
+function TargetingView({ db, notify, can }){
+  const [year,setYear]   = useState(db.year);
+  const [tag,setTag]     = useState("");
+  const [level,setLevel] = useState("adm3");
+  const [sel,setSel]     = useState({ adm1:"", adm2:"" });
+  const geo = useGeoCascade(sel);
+  const [rows,setRows]   = useState([]);
+  const [loading,setLoading] = useState(true);
+  const [busy,setBusy]   = useState(false);
+  const [open,setOpen]   = useState(() => new Set());   /* historiques dépliés */
+  const [reasons,setReasons] = useState([]);
+  /* Le formulaire d'un nouveau ciblage. */
+  const [date,setDate]   = useState(new Date().toISOString().slice(0,10));
+  const [gender,setGender] = useState("Tous");
+  const [reason,setReason] = useState("");
+  const [note,setNote]   = useState("");
+  const [nb,setNb]       = useState(0);
+  const [nbHh,setNbHh]   = useState(0);
+  const [picked,setPicked] = useState(() => new Set());  /* p-codes sélectionnés */
+
+  const activites = (db.activities || []).filter(a=>a.active);
+  const genres = ["Tous","Femmes","Hommes","Filles","Garçons","Femmes enceintes et allaitantes"];
+
+  const charger = () => {
+    setLoading(true);
+    const qs = new URLSearchParams({ year:String(year) });
+    if(tag) qs.set("tag", tag);
+    api.targeting("?"+qs).then(r => { setRows(r.rows||[]); setLoading(false); })
+      .catch(e => { notify(e.message,"err"); setRows([]); setLoading(false); });
+  };
+  useEffect(()=>{ charger(); }, [year, tag]);
+  useEffect(()=>{ api.liste("raison_ciblage")
+    .then(r=>setReasons((r.items||[]).filter(x=>x.active!==false).map(x=>x.code))).catch(()=>{}); }, []);
+
+  /* Les unités du niveau choisi, dans la sélection région/district. */
+  const parent = geo.codes.adm2 || geo.codes.adm1 || "";
+  const [unites,setUnites] = useState([]);
+  useEffect(()=>{
+    if(!db.geoVersion) return;
+    const qs = new URLSearchParams({ level, limit:"3000" });
+    if(parent) qs.set("parent", parent);
+    api.caseload("?year="+year+"&"+qs).then(r=>setUnites((r.rows||[]).map(x=>({ pcode:x.pcode, name:x.name,
+      adm1:x.adm1||"", adm2:x.adm2||"" })))).catch(()=>setUnites([]));
+  }, [level, parent, year, db.geoVersion]);
+
+  const togglePick = (pcode) => setPicked(s => { const n2=new Set(s); n2.has(pcode)?n2.delete(pcode):n2.add(pcode); return n2; });
+  const pickAll = () => setPicked(new Set(unites.map(u=>u.pcode)));
+  const pickNone = () => setPicked(new Set());
+
+  const enregistrer = async () => {
+    if(!picked.size){ notify("Sélectionnez au moins une unité à cibler","warn"); return; }
+    setBusy(true);
+    try{
+      const r = await api.addTargeting({ year, activity_tag:tag, targeted_at:date,
+        gender:gender==="Tous"?null:gender, reason:reason||null, note:note||null,
+        units:[...picked].map(pcode => ({ geo_pcode:pcode, level, targeted:nb, targeted_hh:nbHh })) });
+      notify(`Ciblage enregistré sur ${r.crees} unité(s)${r.rejetes?`, ${r.rejetes} rejetée(s)`:""}`,"ok");
+      setPicked(new Set()); charger();
+    }catch(e){ notify(e.message,"err"); }
+    setBusy(false);
+  };
+
+  const supprimer = async (id) => {
+    if(!confirm("Supprimer ce ciblage ?")) return;
+    try{ await api.delTargeting(id); charger(); notify("Ciblage supprimé","ok"); }
+    catch(e){ notify(e.message,"err"); }
+  };
+
+  const extraire = async () => {
+    try{
+      const qs = new URLSearchParams({ year:String(year) }); if(tag) qs.set("tag", tag);
+      const blob = await api.targetingExtract("?"+qs);
+      const url = URL.createObjectURL(blob); const a=document.createElement("a");
+      a.href=url; a.download=`mems_ciblage_${year}${tag?"_"+tag:""}.xlsx`;
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+      notify("Fichier de ciblage prérempli téléchargé","ok");
+    }catch(e){ notify(e.message||"extraction impossible","err"); }
+  };
+
+  /* Le tableau montre le DERNIER ciblage par unité × activité ; l'historique se
+     déplie. On regroupe par (pcode, tag). */
+  const derniers = rows.filter(r=>r.dernier);
+  const histo = (r) => rows.filter(x => x.pcode===r.pcode && x.tag===r.tag);
+
+  if(!db.geoVersion) return (
+    <Note tone="warn"><b>Aucun référentiel chargé.</b> Le ciblage se rattache aux unités administratives.
+      Chargez un millésime depuis Paramètres → Localités.</Note>);
+
+  return (
+    <>
+      <Note>Le ciblage se refait dans le temps : chaque ciblage est <b>daté</b> et conservé. Le tableau
+        montre le <b>dernier</b> ciblage par unité et activité — dépliez une ligne pour voir tout l'historique.
+        Sélectionnez les districts ou communes à cibler, affectez-leur une <b>date</b>, un <b>genre</b> et
+        une <b>raison</b>, puis enregistrez. Le fichier prérempli ne reprend que les unités ciblées.</Note>
+
+      {/* ── Nouveau ciblage ── */}
+      <Card flush title="Nouveau ciblage" subtitle="Sélectionnez des unités, puis affectez-leur un ciblage daté"
+        right={<div className="flex items-center gap-2 flex-wrap">
+          <Select value={String(year)} onChange={e=>setYear(+e.target.value)} className="mi-py1 mi-xs mi-wauto"
+            options={[db.year-1, db.year, db.year+1].map(y=>[String(y), String(y)])} />
+          <Select value={tag} onChange={e=>setTag(e.target.value)} empty="Toutes activités"
+            options={activites.map(a=>[a.tag, `${a.tag} — ${a.name}`])} className="mi-py1 mi-xs mi-wauto" />
+        </div>}>
+        <div className="p-4 space-y-3">
+          <div className="flex items-end gap-2 flex-wrap">
+            <Select value={level} onChange={e=>{ setLevel(e.target.value); pickNone(); }} className="mi-py1 mi-xs mi-wauto"
+              options={[["adm2","Par district"],["adm3","Par commune"],["adm4","Par fokontany"]]} />
+            <Select value={sel.adm1} onChange={e=>setSel({ adm1:e.target.value, adm2:"" })}
+              empty="Toutes les régions" options={geo.adm1.map(x=>x.name)} className="mi-py1 mi-xs mi-wauto" />
+            <Select value={sel.adm2} onChange={e=>setSel(s=>({ ...s, adm2:e.target.value }))} disabled={!sel.adm1}
+              empty="Tous les districts" options={geo.adm2.map(x=>x.name)} className="mi-py1 mi-xs mi-wauto" />
+            <Btn size="sm" kind="sec" onClick={pickAll} disabled={!unites.length}>Tout sélectionner</Btn>
+            <Btn size="sm" kind="ghost" onClick={pickNone} disabled={!picked.size}>Vider</Btn>
+            <span className="f11 text-slate-500 pb-1.5">{picked.size} unité(s) sélectionnée(s)</span>
+          </div>
+          {/* Sélection des unités */}
+          <div className="border border-slate-200 rounded-lg max-h-52 overflow-auto p-2 flex flex-wrap gap-1.5">
+            {unites.length ? unites.map(u=>(
+              <button key={u.pcode} onClick={()=>togglePick(u.pcode)}
+                className={clsx("px-2.5 py-1 rounded-full f11 border transition-colors",
+                  picked.has(u.pcode) ? "bg-brand text-white border-transparent" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50")}>
+                {u.name}</button>))
+              : <span className="f11 text-slate-400 p-2">Aucune unité à ce niveau dans la sélection.</span>}
+          </div>
+          {/* Paramètres du ciblage */}
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-2 items-end">
+            <Field label="Date du ciblage" className="mb-0"><Input type="date" value={date} onChange={e=>setDate(e.target.value)} /></Field>
+            <Field label="Personnes ciblées" className="mb-0"><Input type="number" min="0" value={nb} onChange={e=>setNb(Math.max(0,n(e.target.value)))} /></Field>
+            <Field label="Ménages ciblés" className="mb-0"><Input type="number" min="0" value={nbHh} onChange={e=>setNbHh(Math.max(0,n(e.target.value)))} /></Field>
+            <Field label="Genre" className="mb-0"><Select value={gender} onChange={e=>setGender(e.target.value)} options={genres} /></Field>
+            <Field label="Raison" className="mb-0"><Select value={reason} onChange={e=>setReason(e.target.value)} empty="—" options={reasons} /></Field>
+            <Field label="Note" className="mb-0"><Input value={note} onChange={e=>setNote(e.target.value)} placeholder="Précision" /></Field>
+          </div>
+          <div className="flex items-center gap-2">
+            {can("edit")
+              ? <Btn size="sm" icon={Target} disabled={busy||!picked.size} onClick={enregistrer}>Enregistrer ce ciblage</Btn>
+              : <Note tone="warn">La saisie du ciblage est réservée aux comptes ayant le droit d'édition.</Note>}
+            <span className="f11 text-slate-400">Raisons éditables dans Paramètres › Listes › Raisons de ciblage.</span>
+          </div>
+        </div>
+      </Card>
+
+      {/* ── Le dernier ciblage par unité, historique dépliable ── */}
+      <Card flush title="Ciblages enregistrés" subtitle={loading ? "Chargement…"
+          : `${fmt(derniers.length)} unité(s) ciblée(s) · ${fmt(rows.length)} ciblage(s) au total · ${year}${tag?" — "+tag:""}`}
+        right={<Btn size="sm" kind="sec" icon={Download} disabled={!derniers.length} onClick={extraire}>Fichier prérempli (Excel)</Btn>}>
+        {!derniers.length
+          ? <Empty icon={Target} title="Aucun ciblage" text="Sélectionnez des unités ci-dessus et enregistrez un ciblage daté." />
+          : <TableWrap max="mh420">
+            <thead><tr><Th /><Th>Région</Th><Th>District</Th><Th>Unité</Th><Th>Activité</Th>
+              <Th>Dernier ciblage</Th><Th num>Ciblés</Th><Th num>Ménages</Th><Th>Genre</Th><Th>Raison</Th><Th /></tr></thead>
+            <tbody>{derniers.map(r=>{
+              const h = histo(r); const cle = r.pcode+"|"+r.tag; const ouvert = open.has(cle);
+              return (
+              <Fragment key={r.id}>
+                <tr className="hover:bg-sky-50">
+                  <Td>{h.length>1 ? <button onClick={()=>setOpen(s=>{ const n2=new Set(s); n2.has(cle)?n2.delete(cle):n2.add(cle); return n2; })}
+                    className="text-slate-400 hover:text-slate-700">{ouvert?<ChevronDown size={14}/>:<ChevronRight size={14}/>}</button> : null}</Td>
+                  <Td className="text-slate-500">{r.adm1||"—"}</Td>
+                  <Td className="text-slate-500">{r.adm2||"—"}</Td>
+                  <Td className="font-medium text-slate-800">{r.name}</Td>
+                  <Td>{r.tag ? <Badge tone="b">{r.tag}</Badge> : <span className="f11 text-slate-400">toutes</span>}</Td>
+                  <Td className="f115 text-slate-600">{r.targetedAt}{h.length>1 && <span className="f10 text-slate-400"> · {h.length} ×</span>}</Td>
+                  <Td num><b>{fmt(r.targeted)}</b></Td>
+                  <Td num className="text-slate-500">{fmt(r.targetedHh)}</Td>
+                  <Td className="f11">{r.gender || <span className="text-slate-400">—</span>}</Td>
+                  <Td>{r.reason ? <Badge>{r.reason}</Badge> : <span className="f11 text-slate-400">—</span>}</Td>
+                  <Td className="text-right">{can("edit") && <button onClick={()=>supprimer(r.id)}
+                    className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</Td>
+                </tr>
+                {ouvert && h.slice(1).map(x=>(
+                  <tr key={x.id} className="bg-slate-50/60">
+                    <Td /><Td /><Td /><Td className="f11 text-slate-400 pl-6">antérieur</Td><Td />
+                    <Td className="f115 text-slate-500">{x.targetedAt}</Td>
+                    <Td num className="text-slate-500">{fmt(x.targeted)}</Td>
+                    <Td num className="text-slate-400">{fmt(x.targetedHh)}</Td>
+                    <Td className="f11 text-slate-400">{x.gender||"—"}</Td>
+                    <Td className="f11 text-slate-400">{x.reason||"—"}</Td>
+                    <Td className="text-right">{can("edit") && <button onClick={()=>supprimer(x.id)}
+                      className="text-slate-300 hover:text-rose-600 p-1"><Trash2 size={12}/></button>}</Td>
+                  </tr>))}
+              </Fragment>); })}</tbody>
+          </TableWrap>}
+      </Card>
     </>);
 }
 
