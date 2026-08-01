@@ -164,11 +164,19 @@ export const api = {
       { mapping: JSON.stringify(mapping || {}), label, source,
         allowDuplicates: allowDuplicates ? "true" : "", country: country || "" }),
 
-  /* Contours administratifs. Ils sont désormais écrits PAR LE COMMIT du shapefile
-     (le .shp les porte, le serveur les simplifie et les rattache) : la lecture sert
-     la carte, la suppression est une action de maintenance. */
+  /* Contours administratifs. Le commit du shapefile écrit ceux du niveau qu'il
+     porte ; `shapefileContours` en dépose UN NIVEAU DE PLUS sur le millésime
+     courant, sans toucher à l'arbre — c'est ce qui permet le breakdown
+     cartographique adm1→adm4 (un fichier par maille). */
+  shapefileContours: (files, niveau, mapping, source, remplacer = true) =>
+    postFiles("/geo/shapefile/contours", files,
+      { niveau, mapping: JSON.stringify(mapping || {}), source: source || "",
+        remplacer: remplacer ? "true" : "false" }),
   geoGeometry:      (q="")                => call("GET", `/geo/geometry${q}`),
-  clearGeometry:    ()                    => call("DELETE", "/geo/geometry"),
+  /* Sans niveau : tous les contours. Avec : cette maille seulement — corriger
+     les régions ne doit pas obliger à redéposer les quatre fichiers. */
+  clearGeometry:    (niveau = null)       =>
+    call("DELETE", `/geo/geometry${niveau ? `?level=${encodeURIComponent(niveau)}` : ""}`),
 
   mre:          (q="")       => call("GET", `/mre${q}`),
   createMre:    (a)          => call("POST", "/mre", a),

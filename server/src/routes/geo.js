@@ -493,6 +493,113 @@ r.post("/shapefile/commit", requireCap("admin"), (req, res, next) => {
 });
 
 
+/* ③ Contours d'UN NIVEAU, ajoutés au millésime courant  (chantier S8, point 6)
+
+   « Durant la configuration pays, insérer plusieurs shapefiles : adm1 à adm4
+   pour pouvoir avoir un affichage par type de breakdown sur la carte après. »
+
+   Le commit ci-dessus fait autre chose : il construit un millésime — l'arbre
+   ET les contours du fichier déposé. Rejouer ce geste pour chaque niveau
+   créerait quatre millésimes concurrents dont un seul serait courant, et les
+   contours des trois autres seraient invisibles. Ce qu'il faut est l'inverse :
+   UN millésime, l'arbre qu'il porte déjà, et des contours qui s'AJOUTENT
+   niveau par niveau. `geo_geom.level` existe depuis la migration 012 ; il ne
+   manquait que la porte pour l'alimenter.
+
+   Le .dbf est ici indispensable, et ce n'est pas la même exigence qu'au commit :
+   sans lui on ne sait rattacher aucun polygone à une unité existante, alors
+   qu'un commit sans .dbf CRÉE des identités provisoires. Ici il n'y a rien à
+   créer — l'arbre est là, il faut le reconnaître. */
+r.post("/shapefile/contours", requireCap("admin"), (req, res, next) => {
+  televerseShapefile.any()(req, res, async (err) => {
+    if(err) return res.status(422).json({ error: messageMulter(err) });
+    try{
+      const q = z.object({
+        niveau: z.enum(LEVELS),
+        /* Vrai par défaut : redéposer un niveau REMPLACE ce niveau. Un ajout
+           silencieux laisserait cohabiter deux découpages successifs de la même
+           maille, et la carte dessinerait les deux l'un sur l'autre. */
+        remplacer: z.enum(["true","false","1","0"]).optional()
+          .transform(v => v === undefined ? true : (v === "true" || v === "1")),
+      }).safeParse({ niveau: req.body?.niveau, remplacer: req.body?.remplacer });
+      if(!q.success) return res.status(422).json({
+        error: `niveau invalide : attendu l'un de ${LEVELS.join(", ")}` });
+      const { niveau, remplacer } = q.data;
+
+      const v = version();
+      if(!v) return res.status(409).json({
+        error:"aucun découpage courant : importez d'abord l'arbre administratif du pays, "
+          + "puis déposez les contours niveau par niveau" });
+
+      const { shp, dbf } = await fichiersDuDepot(req.files);
+      if(!shp) return res.status(422).json({
+        error:"aucun .shp : c'est lui qui porte les géométries" });
+      if(!dbf) return res.status(422).json({
+        error:"le .dbf est indispensable ici : sans table attributaire, aucun polygone ne peut "
+          + "être rattaché à une unité du découpage déjà chargé. Déposez le .shp et le .dbf, "
+          + "ou une archive .zip." });
+
+      const table = lireTable({ dbf, mapping: lireMapping(req.body?.mapping) });
+      const source = String(req.body?.source || "").trim()
+        || `Contours ${niveau} du ${new Date().toISOString().slice(0, 10)}`;
+
+      /* Même streaming par lots que le commit : les contours ne sont jamais
+         tous tenus en mémoire à la fois. */
+      let écrites = 0, rejetes = 0, lus = 0;
+      const rejets = [];
+      const LOT = 500;
+      let lot = [], premier = true;
+      const vider = () => {
+        if(!lot.length) return;
+        const b = writeGeometries({ versionId:v.id, features:lot,
+          reset: premier && remplacer, source, niveau });
+        premier = false; écrites += b.écrites; rejetes += b.rejetes || 0;
+        for(const rj of b.rejets || []) if(rejets.length < 20) rejets.push(rj);
+        lot = [];
+      };
+      parcourirGeometriesShp(shp, (i, g) => {
+        if(!g) return;
+        lus++;
+        const at = attributsContour(table.lignes[i]);
+        if(!at) return;
+        lot.push({ ...at, geometry:g });
+        if(lot.length >= LOT) vider();
+      });
+      vider();
+      /* Un dépôt qui ne remplace rien et n'écrit rien n'a pas vidé le niveau :
+         la garde `premier && remplacer` n'a jamais été exécutée. On le fait ici,
+         sinon « remplacer » sur un fichier entièrement rejeté serait un
+         non-geste silencieux qui laisse l'ancien contenu en place. */
+      if(premier && remplacer && !écrites)
+        db.prepare("DELETE FROM geo_geom WHERE version_id=? AND level=?").run(v.id, niveau);
+
+      db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+                  VALUES (?,?,?,'plan','geo_geom',?,'import',?)`)
+        .run(newId("aud"), req.user.id, req.user.first_name, v.id,
+          `Contours ${niveau} — ${écrites} écrit(s)`
+          + (rejetes ? `, ${rejetes} rejeté(s)` : "") + ` (${source})`);
+
+      res.json({
+        niveau, lus, écrites, rejetes, rejets,
+        version: { id:v.id, label:v.label },
+        /* Ce que le millésime porte MAINTENANT, niveau par niveau : c'est l'état
+           que la fiche du pays affiche, et il doit venir du serveur — le client
+           qui l'additionnerait lui-même se tromperait au premier rejet. */
+        parNiveau: geomSummary(v.id),
+        message: écrites
+          ? `${écrites} contour(s) ${niveau} ${remplacer ? "remplacent les précédents" : "ajoutés"}.`
+            + (rejetes ? ` ${rejetes} rejeté(s) — voir le détail.` : "")
+          : `Aucun contour écrit : les ${rejetes || lus} polygone(s) lus ne correspondent à aucune `
+            + `unité de niveau ${niveau} dans le découpage courant.`,
+      });
+    }catch(e){
+      if(e.code === "SHAPEFILE") return res.status(422).json({ error: e.message });
+      next(e);
+    }
+  });
+});
+
+
 /* ── Géométries administratives ──────────────────────────────────────
    Le référentiel ne portait que des points ; la carte projetait des cercles sur
    un fond vide. Une commune non couverte était donc invisible — c'est un vide, et
@@ -570,16 +677,31 @@ r.get("/geometry", (req, res) => {
   });
 });
 
+/* Retrait des contours. `?level=adm1` n'en retire qu'un niveau : depuis que les
+   contours arrivent niveau par niveau (chantier S8, point 6), tout effacer pour
+   corriger une seule maille reviendrait à redéposer les quatre fichiers. */
 r.delete("/geometry", requireCap("admin"), (req, res) => {
   const v = version();
   if(!v) return res.status(409).json({ error:"aucun millésime courant" });
-  const n = db.prepare("DELETE FROM geo_geom WHERE version_id=?").run(v.id).changes;
-  db.prepare("UPDATE geo_version SET geom_units=0, geom_source=NULL, geom_at=NULL WHERE id=?").run(v.id);
+  const q = z.object({ level: z.enum(LEVELS).optional() }).safeParse(req.query);
+  if(!q.success) return res.status(422).json({ error:"niveau invalide" });
+  const niveau = q.data.level || null;
+
+  const n = niveau
+    ? db.prepare("DELETE FROM geo_geom WHERE version_id=? AND level=?").run(v.id, niveau).changes
+    : db.prepare("DELETE FROM geo_geom WHERE version_id=?").run(v.id).changes;
+  /* Le compteur du millésime est RECOMPTÉ, jamais mis à zéro d'office : retirer
+     les régions ne fait pas disparaître les communes. */
+  const reste = db.prepare("SELECT COUNT(*) c FROM geo_geom WHERE version_id=?").get(v.id).c;
+  db.prepare(`UPDATE geo_version SET geom_units=?,
+              geom_source=CASE WHEN ?=0 THEN NULL ELSE geom_source END,
+              geom_at=CASE WHEN ?=0 THEN NULL ELSE geom_at END WHERE id=?`)
+    .run(reste, reste, reste, v.id);
   db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'plan','geo_geom',?,'delete',?)`)
     .run(newId("aud"), req.user.id, req.user.first_name, v.id,
-         `Contours administratifs retirés — ${n} unité(s)`);
-  res.json({ ok:true, supprimes:n });
+         `Contours ${niveau || "administratifs"} retirés — ${n} unité(s)`);
+  res.json({ ok:true, supprimes:n, niveau, reste, parNiveau: geomSummary(v.id) });
 });
 
 /* ── Périmètre géographique des bureaux ──────────────────────────────

@@ -530,6 +530,15 @@ test("paramètres : « Sites » a quitté la configuration, mais le registre res
   assert.ok(document.body.textContent.includes("Activités du programme"),
     "le référentiel des activités s'affiche");
 
+  /* La fiche du pays porte désormais les contours MAILLE PAR MAILLE (S8-6) :
+     un shapefile par niveau sur le même millésime, pour que la carte puisse
+     changer de niveau de breakdown. */
+  await click(sousOnglet("Pays"), "sous-onglet Pays"); await flush(); await flush();
+  assert.ok(document.body.textContent.includes("Contours par niveau"),
+    "la fiche du pays propose les contours par niveau");
+  assert.ok(document.body.textContent.includes("breakdown"),
+    "l'écran dit à quoi sert le dépôt par niveau");
+
   /* Les listes paramétrables typées (S8) : maître-détail, rail des types à
      gauche, liste choisie à droite. On y vérifie ce qui distingue cet écran —
      qu'il tient onze référentiels, qu'il montre l'usage, et que le renommage

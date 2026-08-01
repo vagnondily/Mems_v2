@@ -892,14 +892,20 @@ function SetCountry({ db, notify, can, reload }){
           et le millésime importé s'attache à lui — la bascule du courant reste
           cloisonnée par pays (voir lib/geo.js). */}
       {data.current?.code
-        ? <SetShapefileServer db={db} notify={notify} can={can} country={data.current}
-            onCommitted={async ()=>{
-              /* Le découpage importé devient le référentiel courant du pays : on
-                 rafraîchit la fiche (compteur de millésimes), on vide le cache
-                 géographique et on remonte les libellés — sans quoi les écrans
-                 garderaient l'ancien découpage jusqu'au prochain rechargement. */
-              resetGeoCache(); await charger(); if(reload) await reload();
-            }} />
+        ? <>
+            <SetShapefileServer db={db} notify={notify} can={can} country={data.current}
+              onCommitted={async ()=>{
+                /* Le découpage importé devient le référentiel courant du pays : on
+                   rafraîchit la fiche (compteur de millésimes), on vide le cache
+                   géographique et on remonte les libellés — sans quoi les écrans
+                   garderaient l'ancien découpage jusqu'au prochain rechargement. */
+                resetGeoCache(); await charger(); if(reload) await reload();
+              }} />
+            {/* Puis les contours maille par maille, sur ce même millésime : c'est
+                ce qui donne à la carte son choix de niveau de breakdown. */}
+            <SetContoursNiveaux db={db} notify={notify} can={can}
+              onCommitted={async ()=>{ resetGeoCache(); if(reload) await reload(); }} />
+          </>
         : <Note tone="warn">Rendez d'abord un pays courant : le découpage administratif se rattache
             au pays courant, et il n'y en a pas encore.</Note>}
 
@@ -1428,6 +1434,105 @@ function SetShapefileServer({ db, notify, can, onCommitted, country }){
         <Btn icon={Upload} disabled={busy || !can("admin") || !apercu.arbre.total} onClick={valider}>
           {busy ? "Validation…" : "Valider et basculer le millésime"}</Btn>
       </>)}
+    </Card>
+  );
+}
+
+/* ── Contours par niveau de découpage (chantier S8, point 6) ──────────
+   « Durant la configuration pays, insérer plusieurs shapefiles : adm1 à adm4
+   pour pouvoir avoir un affichage par type de breakdown sur la carte après. »
+
+   Le téléversement du dessus construit le millésime — l'arbre et les contours du
+   fichier déposé, à la maille qu'il porte. Ici on AJOUTE une maille : un fichier
+   par niveau, rattaché au même millésime, sans reconstruire l'arbre. Chaque
+   niveau dit ce qu'il porte, se remplace, et se retire seul. */
+function SetContoursNiveaux({ db, notify, can, onCommitted }){
+  const [busy,setBusy]   = useState("");
+  const [bilan,setBilan] = useState(null);
+  const gv = db.geoVersion;
+  const parNiveau = Object.fromEntries((gv?.geom?.parNiveau || []).map(x => [x.level, x.units]));
+  const NIVEAUX = niveaux(db, { from:"adm1", to:"adm4" });
+
+  const deposer = async (niveau, list) => {
+    const fichiers = Array.from(list || []);
+    if(!fichiers.length) return;
+    setBusy(niveau); setBilan(null);
+    try{
+      const r = await api.shapefileContours(fichiers, niveau, {}, fichiers[0].name, true);
+      setBilan({ ...r, niveau });
+      notify(r.message, r.écrites ? (r.rejetes ? "warn" : "ok") : "err");
+      if(onCommitted) await onCommitted();
+    }catch(e){ notify(e.message, "err"); setBilan({ niveau, erreur:e.message }); }
+    setBusy("");
+  };
+
+  const retirer = async (niveau, libelle) => {
+    if(!confirm(`Retirer les contours « ${libelle} » du millésime courant ?`)) return;
+    setBusy(niveau);
+    try{
+      const r = await api.clearGeometry(niveau);
+      notify(`${fmt(r.supprimes)} contour(s) retirés`, "ok");
+      setBilan(null);
+      if(onCommitted) await onCommitted();
+    }catch(e){ notify(e.message, "err"); }
+    setBusy("");
+  };
+
+  if(!gv) return null;
+  return (
+    <Card title="Contours par niveau — le breakdown de la carte"
+      subtitle={`Millésime courant : ${gv.label} · ${fmt(gv.geom?.units || 0)} contour(s) au total`}>
+      <Note>La carte dessine les limites <b>au niveau de breakdown choisi</b> : elle ne peut le faire
+        que pour les niveaux dont elle a les contours. Déposez <b>un shapefile par maille</b> —
+        {" "}{NIVEAUX.map(([,l])=>l).join(", ")} — rattaché à ce même millésime ; l'arbre
+        administratif n'est pas reconstruit. Le <b>.dbf est indispensable ici</b> : sans lui, aucun
+        polygone ne peut être reconnu dans le découpage déjà chargé. Un dépôt <b>remplace</b> le
+        niveau qu'il annonce, et ne touche pas aux autres.</Note>
+
+      <TableWrap max="mh300">
+        <thead><tr><Th>Niveau</Th><Th num>Unités du découpage</Th><Th num>Contours</Th>
+          <Th>État</Th><Th /></tr></thead>
+        <tbody>{NIVEAUX.map(([code,libelle])=>{
+          const unites = gv.counts?.[code] || 0;
+          const contours = parNiveau[code] || 0;
+          return (
+            <tr key={code} className="hover:bg-sky-50">
+              <Td className="font-medium text-slate-800">{libelle} <span className="text-slate-400 f11">{code}</span></Td>
+              <Td num className="text-slate-500">{unites ? fmt(unites) : "—"}</Td>
+              <Td num className={contours ? "font-semibold text-slate-700" : "text-slate-400"}>
+                {contours ? fmt(contours) : "—"}</Td>
+              <Td>{contours
+                ? (unites && contours < unites
+                    ? <Badge tone="y">partiel — {Math.round((contours/unites)*100)} %</Badge>
+                    : <Badge tone="g">complet</Badge>)
+                : <Badge>aucun contour</Badge>}</Td>
+              <Td className="text-right">
+                {can("admin") && <label className="inline-block">
+                  <input type="file" multiple accept=".zip,.shp,.dbf,.prj" className="hidden"
+                    disabled={!!busy} onChange={e=>{ deposer(code, e.target.files); e.target.value=""; }} />
+                  <span className="inline-flex items-center gap-1.5 border rounded font-semibold px-2.5 py-1 f11 m-btn-sec cursor-pointer">
+                    <Upload size={13}/> {busy===code ? "Lecture…" : contours ? "Remplacer" : "Déposer"}</span>
+                </label>}
+                {can("admin") && !!contours && <button onClick={()=>retirer(code, libelle)}
+                  disabled={!!busy} className="text-slate-400 hover:text-rose-600 p-1 ml-1"
+                  title="Retirer les contours de ce niveau"><Trash2 size={14}/></button>}
+              </Td>
+            </tr>);
+        })}</tbody>
+      </TableWrap>
+
+      {bilan && !bilan.erreur && (
+        <div className="mt-3">
+          <Note tone={bilan.écrites ? (bilan.rejetes ? "warn" : "ok") : "err"}>{bilan.message}</Note>
+          {!!bilan.rejets?.length && (
+            <TableWrap max="mh200">
+              <thead><tr><Th>Unité</Th><Th>Motif du rejet</Th></tr></thead>
+              <tbody>{bilan.rejets.map((r,i)=>(
+                <tr key={i}><Td className="f115">{r.pcode || "—"}</Td>
+                  <Td className="text-slate-600 f11" style={{whiteSpace:"normal"}}>{r.message}</Td></tr>))}</tbody>
+            </TableWrap>)}
+        </div>)}
+      {bilan?.erreur && <Note tone="err">{bilan.erreur}</Note>}
     </Card>
   );
 }

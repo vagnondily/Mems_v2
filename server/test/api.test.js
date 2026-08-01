@@ -8054,3 +8054,124 @@ test("données réelles : le shapefile Madagascar donne l'arbre adm0→adm3 comp
     assert.equal(units.length, 1846);
     assert.equal(collisions.length, 0, "aucun p-code en double dans le fichier officiel");
   });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Chantier S8-6 — Un shapefile PAR NIVEAU sur le même millésime.
+
+   « Durant la configuration pays, insérer plusieurs shapefiles : adm1 à
+   adm4 pour pouvoir avoir un affichage par type de breakdown sur la carte
+   après. » Le commit construit un millésime ; cette route-ci AJOUTE une
+   maille de contours à celui qui existe.
+   ═══════════════════════════════════════════════════════════════════════ */
+/* Le millésime sur lequel portent les trois tests suivants. Il est pris du
+   COMMIT qui vient de le créer, et non d'un `SELECT … WHERE is_current=1` :
+   l'unicité du millésime courant est cloisonnée par pays (migration 013), et
+   cette requête-là peut rendre le courant d'un autre pays. */
+let vContours;
+const deposerContours = (token, niveau, { shp, dbf, remplacer } = {}) => {
+  let req = request(app).post("/api/geo/shapefile/contours")
+    .set("Authorization", `Bearer ${token}`)
+    .attach("fichier", shp ?? shpMdg(), "c.shp");
+  if(dbf !== null) req = req.attach("fichier", dbf ?? dbfMdg(), "c.dbf");
+  req = req.field("niveau", niveau);
+  if(remplacer !== undefined) req = req.field("remplacer", String(remplacer));
+  return req;
+};
+
+test("contours par niveau : un dépôt adm1 s'ajoute aux communes sans reconstruire l'arbre", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  /* On repart d'un millésime propre : l'arbre des trois communes COD-AB. */
+  const commit = await commitShp(t, { label:"Millésime pour contours par niveau" });
+  assert.equal(commit.status, 200, JSON.stringify(commit.body));
+  vContours = commit.body.versionId;
+  const v = db.prepare("SELECT * FROM geo_version WHERE id=?").get(vContours);
+  const versionsAvant = db.prepare("SELECT COUNT(*) c FROM geo_version").get().c;
+  const unitesAvant = db.prepare("SELECT COUNT(*) c FROM geo_unit WHERE version_id=?").get(v.id).c;
+  const adm3Avant = db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm3'").get(v.id).c;
+  assert.ok(adm3Avant > 0, "le commit a posé les contours des communes");
+
+  /* Un fichier de RÉGION : une seule colonne de niveau, donc une seule unité
+     résolue — la région Anosy. Trois polygones y mènent, le dernier gagne. */
+  const dbfRegion = forgeDbf([{ nom:"ADM1_PCODE", len:10 }, { nom:"ADM1_EN", len:12 }],
+    LIGNES_MDG.map(l => ({ ADM1_PCODE:l.ADM1_PCODE, ADM1_EN:l.ADM1_EN })));
+  const r = await deposerContours(t, "adm1", { dbf:dbfRegion });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.niveau ?? r.body.niveau, "adm1");
+  assert.ok(r.body.écrites > 0, JSON.stringify(r.body));
+
+  /* Aucun millésime créé, aucune unité touchée : c'est la différence avec le commit. */
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM geo_version").get().c, versionsAvant);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM geo_unit WHERE version_id=?").get(v.id).c,
+    unitesAvant);
+  /* Et les communes sont TOUJOURS là : déposer les régions ne les a pas effacées. */
+  assert.equal(db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm3'").get(v.id).c, adm3Avant);
+  assert.equal(db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm1'").get(v.id).c, 1);
+
+  /* Le bilan par niveau vient du serveur, et il porte les deux mailles. */
+  const niveaux = Object.fromEntries(r.body.parNiveau.map(x => [x.level, x.units]));
+  assert.equal(niveaux.adm1, 1);
+  assert.equal(niveaux.adm3, adm3Avant);
+
+  /* La carte peut désormais demander l'une ou l'autre maille. */
+  const carte1 = await request(app).get("/api/geo/geometry?level=adm1")
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(carte1.body.features.length, 1);
+  assert.equal(carte1.body.features[0].properties.level, "adm1");
+  const carte3 = await request(app).get("/api/geo/geometry?level=adm3")
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(carte3.body.features.length, adm3Avant);
+});
+
+test("contours par niveau : un fichier déposé au mauvais niveau est rejeté, pas écrit", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const v = db.prepare("SELECT * FROM geo_version WHERE id=?").get(vContours);
+  const adm1Avant = db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm1'").get(v.id).c;
+
+  /* Le fichier des COMMUNES annoncé comme régions : chaque polygone se résout
+     à une commune, aucun n'est du niveau annoncé. */
+  const r = await deposerContours(t, "adm1", { remplacer:false });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.écrites, 0, "rien n'est écrit sous une étiquette fausse");
+  assert.equal(r.body.rejetes, 3);
+  assert.ok(/niveau adm3/.test(r.body.rejets[0].message), r.body.rejets[0].message);
+  assert.equal(db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm1'").get(v.id).c, adm1Avant,
+    "le niveau visé n'a pas bougé (dépôt sans remplacement)");
+});
+
+test("contours par niveau : le .dbf est exigé, et un millésime doit exister", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const sansDbf = await deposerContours(t, "adm2", { dbf:null });
+  assert.equal(sansDbf.status, 422, JSON.stringify(sansDbf.body));
+  assert.ok(/\.dbf est indispensable/.test(sansDbf.body.error), sansDbf.body.error);
+
+  const mauvaisNiveau = await deposerContours(t, "adm9");
+  assert.equal(mauvaisNiveau.status, 422);
+});
+
+test("contours par niveau : le retrait ne vise qu'une maille, et recompte le millésime", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const v = db.prepare("SELECT * FROM geo_version WHERE id=?").get(vContours);
+  const adm3 = db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm3'").get(v.id).c;
+
+  const r = await request(app).delete("/api/geo/geometry?level=adm1")
+    .set("Authorization", `Bearer ${t}`);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.niveau, "adm1");
+  assert.equal(r.body.supprimes, 1);
+  assert.equal(r.body.reste, adm3, "les communes sont intactes");
+  /* Le compteur du millésime est RECOMPTÉ, pas remis à zéro. */
+  assert.equal(db.prepare("SELECT geom_units FROM geo_version WHERE id=?").get(v.id).geom_units,
+    adm3);
+
+  /* Sans niveau, tout part — et le millésime redevient sans contours. */
+  const tout = await request(app).delete("/api/geo/geometry").set("Authorization", `Bearer ${t}`);
+  assert.equal(tout.body.supprimes, adm3);
+  assert.equal(tout.body.reste, 0);
+  assert.equal(db.prepare("SELECT geom_units FROM geo_version WHERE id=?").get(v.id).geom_units, 0);
+});

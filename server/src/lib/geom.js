@@ -129,8 +129,21 @@ export function centroid(geometry){
 
 /* ── Écriture ────────────────────────────────────────────────────────
    Par lots, parce que l'ensemble ne passe pas dans une requête. Le client envoie
-   le premier lot avec `reset`, et le millésime se souvient de ce qu'il porte. */
-export function writeGeometries({ versionId, features, reset, source }){
+   le premier lot avec `reset`, et le millésime se souvient de ce qu'il porte.
+
+   `niveau` (chantier S8, point 6) borne le dépôt à UN niveau administratif.
+   Un pays se cartographie à plusieurs mailles — régions, districts, communes,
+   fokontany — et chaque maille arrive dans son propre fichier. Deux effets,
+   tous deux nécessaires pour que les dépôts successifs s'ajoutent au lieu de
+   se remplacer :
+
+     — `reset` ne vide QUE ce niveau. Sans cela, déposer les régions effacerait
+       les communes déjà chargées, et le multi-niveau serait impossible ;
+     — un contour qui se résout à un AUTRE niveau est rejeté, avec son motif.
+       C'est la garde qui manque le plus : un fichier de communes déposé dans
+       l'emplacement des régions s'écrirait sans erreur, et la carte afficherait
+       1 701 contours sous l'étiquette « régions » sans que rien ne le dise. */
+export function writeGeometries({ versionId, features, reset, source, niveau = null }){
   const unites = Object.fromEntries(db.prepare(
     "SELECT pcode, level, lat, lon FROM geo_unit WHERE version_id=?").all(versionId)
     .map(u => [u.pcode, u]));
@@ -170,7 +183,9 @@ export function writeGeometries({ versionId, features, reset, source }){
   const rejets = [];
   tx(() => {
     if(reset){
-      db.prepare("DELETE FROM geo_geom WHERE version_id=?").run(versionId);
+      if(niveau) db.prepare("DELETE FROM geo_geom WHERE version_id=? AND level=?")
+        .run(versionId, niveau);
+      else db.prepare("DELETE FROM geo_geom WHERE version_id=?").run(versionId);
     }
     for(const f of features){
       const pcode = resoudre(f);
@@ -178,6 +193,11 @@ export function writeGeometries({ versionId, features, reset, source }){
       if(!u){ rejets.push({ pcode: f.pcode || Object.values(f.names || {}).filter(Boolean).join(" / "),
         message:"unité introuvable dans le millésime — ni par p-code ni par chemin de noms" });
         continue; }
+      if(niveau && u.level !== niveau){
+        rejets.push({ pcode, message:`ce contour désigne une unité de niveau ${u.level}, `
+          + `or le dépôt annonce ${niveau} — vérifiez le fichier ou le niveau choisi` });
+        continue;
+      }
       const g = f.geometry;
       if(!g || !["Polygon","MultiPolygon"].includes(g.type)){
         rejets.push({ pcode, message:"géométrie ni Polygon ni MultiPolygon" }); continue; }
