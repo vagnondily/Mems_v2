@@ -138,9 +138,17 @@ r.get("/coverage", (req, res) => {
   /* Chaque site apporte le chemin de l'unité à laquelle il est rattaché.
      Le cloisonnement par bureau s'applique ici comme partout ailleurs. */
   const scoped = !scopeOf(req.user).unbounded;
+  /* La date retenue est celle qui fait foi — la plus récente `svy_date` des
+     soumissions rattachées, à défaut la valeur saisie — et non la seule saisie.
+     Sans cette jointure, la couverture affichée sur la carte contredirait le
+     registre des sites et le score de risque, qui suivent tous deux cette règle
+     depuis que la dernière visite vient d'ODK. */
   const sites = db.prepare(
-    `SELECT s.status, s.last_visit, gu.path
+    `SELECT s.status, COALESCE(v.derniere, s.last_visit) AS last_visit, gu.path
      FROM sites s JOIN geo_unit gu ON gu.pcode = s.geo_pcode AND gu.version_id = ?
+     LEFT JOIN (SELECT site_id, MAX(svy_date) derniere FROM submissions
+                WHERE site_id IS NOT NULL AND svy_date IS NOT NULL
+                GROUP BY site_id) v ON v.site_id = s.id
      ${scoped ? "WHERE s.office_id = ?" : ""}`).all(...(scoped ? [v.id, req.user.office_id] : [v.id]));
 
   const rows = units.map(u => {

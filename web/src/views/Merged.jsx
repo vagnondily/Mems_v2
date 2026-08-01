@@ -3,13 +3,13 @@ import { CalendarRange, Check } from "lucide-react";
 import { Tabs } from "../components/ui.jsx";
 import { clsx } from "../lib/calc.js";
 import { PageHead } from "./Shell.jsx";
-import MapView from "./MapView.jsx";
 import { CoveragePlan, DistributionActual, DistributionPlan, OutcomePlan, Overreaching,
          ProcessPlan } from "./Planning.jsx";
 import { ActualSummary, ImportView, OutcomeData, OutputData, ProcessData,
          Sources } from "./ActualData.jsx";
 import { SitesModule } from "./Settings.jsx";
 import MreView from "./Mre.jsx";
+import Soumissions from "./Soumissions.jsx";
 import TpmView from "./Tpm.jsx";
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -56,7 +56,7 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
   const [volet, setVolet] = useVolet();
   const items = [["summary","Résumé global"],["monitoring","Suivi des sites"],
     ["mre","Plan MRE et budget"],["tpm","Suivi tiers"],
-    ["coverage","Couverture et MMR"],["map","Cartographie"],
+    ["coverage","Couverture et MMR"],
     ["sites","Registre des sites"],["params","Paramètres de couverture"]];
   return (
     <div className="space-y-4">
@@ -84,7 +84,6 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
       {/* La couverture rapproche par nature le prévu et le réalisé : elle n'a pas
           de volet, les deux colonnes sont côte à côte. */}
       {sub==="coverage" && <CoveragePlan db={db} set={set} me={me} notify={notify} can={can} />}
-      {sub==="map"      && <MapView db={db} me={me} notify={notify} go={go} />}
       {sub==="sites"    && <SitesModule db={db} set={set} me={me} notify={notify} can={can} context="actual" />}
       {sub==="params"   && <Overreaching db={db} set={set} notify={notify} can={can} />}
     </div>);
@@ -98,11 +97,12 @@ export function Programme({ db, set, me, sub, setSub, notify, can, go }){
   const [voletD, setVoletD] = useVolet();
   const [voletR, setVoletR] = useVolet();
   const items = [["distribution","Distributions"],["population","Population et outputs"],
-    ["results","Résultats"],["import","Import Excel"],["sources","Sources de données"]];
+    ["results","Résultats"],["import","Import Excel"],["sources","Sources de données"],
+    ["soumissions","Soumissions ODK"]];
   return (
     <div className="space-y-4">
       <PageHead title="Programme"
-        text="Plan de distribution et réalisations, population ciblée, indicateurs de résultat et sources de données." />
+        text="Plan de distribution et réalisations, population ciblée, indicateurs de résultat, sources de données et soumissions collectées." />
       <Tabs items={items} value={sub} onChange={setSub} />
 
       {sub==="distribution" && (<>
@@ -125,5 +125,11 @@ export function Programme({ db, set, me, sub, setSub, notify, can, go }){
 
       {sub==="import"  && <ImportView db={db} notify={notify} can={can} />}
       {sub==="sources" && <Sources db={db} set={set} notify={notify} can={can} />}
+
+      {/* « Sources de données » dit d'où les soumissions viennent ; celui-ci dit
+          ce qu'elles sont devenues une fois versées. Les deux sont voisins parce
+          qu'on passe de l'un à l'autre : on tire, puis on regarde ce qui s'est
+          rattaché — et surtout ce qui ne s'est pas rattaché. */}
+      {sub==="soumissions" && <Soumissions db={db} notify={notify} can={can} />}
     </div>);
 }

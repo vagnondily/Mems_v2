@@ -3,6 +3,7 @@ import { db } from "../db.js";
 import { currentVersion } from "../lib/geo.js";
 import { officeBound } from "../lib/scope.js";
 import { currentCountry } from "../lib/country.js";
+import { dernieresVisitesOdk } from "../lib/soumissions.js";
 
 const r = Router();
 const J = (v, d) => { try{ return JSON.parse(v); }catch(e){ return d; } };
@@ -26,6 +27,13 @@ r.get("/state", (req, res) => {
     ? db.prepare("SELECT * FROM sites WHERE office_id=? ORDER BY code").all(officeFilter)
     : db.prepare("SELECT * FROM sites ORDER BY code").all();
   const year = new Date().getFullYear();
+  /* « Date de dernière visite = dernière date de suivi disponible dans odk selon
+     svydate. » Elle est servie À CÔTÉ de la valeur saisie, jamais à sa place :
+     `lastVisit` reste ce que quelqu'un a coché, `lastVisitOdk` est ce que le
+     terrain a déclaré, et `lastVisitEffective` dit laquelle l'emporte — l'ODK,
+     parce qu'elle est observée là où la saisie est une convention posée au 15 du
+     mois par la grille mensuelle. Voir lib/soumissions.js. */
+  const odkVisites = dernieresVisitesOdk({ office_id: officeFilter });
   const months = db.prepare("SELECT * FROM site_months WHERE year=?").all(year);
   const byId = {};
   siteRows.forEach(s => { byId[s.id] = Array.from({length:12}, () =>
@@ -36,6 +44,10 @@ r.get("/state", (req, res) => {
 
   const sites = siteRows.map(s => ({
     id:s.id, code:s.code, poi:s.name, status:s.status,
+    /* Le code que porte la source de collecte pour désigner ce site. Il doit
+       voyager jusqu'au navigateur : sans lui, la fiche du registre l'écraserait
+       en enregistrant, et le rattachement des soumissions se romprait. */
+    externalCode: s.external_code || "",
     subOffice: officeName[s.office_id] || "", office_id:s.office_id,
     antenne:s.antenne||"", activityCategory: catName[s.category_id] || "", category_id:s.category_id,
     activityTag:s.activity_tag||"", programArea:s.program_area||"", programTag:s.program_tag||"",
@@ -45,6 +57,9 @@ r.get("/state", (req, res) => {
     urbanArea:s.urban_area, lat:s.lat, lon:s.lon, security:s.security, modality:s.modality||"",
     beneficiaries:s.beneficiaries, partner: partnerName[s.partner_id] || "", partner_id:s.partner_id,
     responsible:s.responsible||"", lastVisit:s.last_visit||"",
+    lastVisitOdk: odkVisites.get(s.id)?.derniere || "",
+    lastVisitEffective: odkVisites.get(s.id)?.derniere || s.last_visit || "",
+    submissions: odkVisites.get(s.id)?.soumissions || 0,
     synergies:s.synergies, newPartner:s.new_partner, expPartner:s.exp_partner,
     issueIPM:s.issue_ipm, issueReport:s.issue_report, issueCFM:s.issue_cfm, fraud:s.fraud,
     plan: byId[s.id],

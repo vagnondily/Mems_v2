@@ -5,6 +5,8 @@ import { labelsFor } from "../lib/geo.js";
 import { requireCap } from "../lib/auth.js";
 import { officeBound as scopeOf } from "../lib/scope.js";
 import { validate, schemas } from "../lib/validate.js";
+import { combinerDerniereVisite, derniereVisiteOdk } from "../lib/soumissions.js";
+import { listerAlias, synchroniserCodeParDefaut } from "../lib/alias.js";
 import { z } from "zod";
 
 const r = Router();
@@ -41,7 +43,18 @@ r.get("/", (req, res) => {
   if(f.status){ where.push("status = ?"); args.push(f.status); }
   if(f.search){ where.push("(name LIKE ? OR code LIKE ? OR adm3 LIKE ?)");
     const s = `%${f.search}%`; args.push(s,s,s); }
-  const sql = `SELECT * FROM sites ${where.length ? "WHERE "+where.join(" AND ") : ""}
+  /* La date issue des soumissions ODK accompagne la liste, sans remplacer la
+     valeur saisie : les deux colonnes voyagent ensemble, `last_visit_effective`
+     dit laquelle prime. Un appel de plus par site serait autrement inévitable
+     dès qu'un écran affiche « dernière visite » sur une liste de 200 lignes. */
+  const sql = `SELECT sites.*, v.derniere AS last_visit_odk,
+                      COALESCE(v.derniere, sites.last_visit) AS last_visit_effective,
+                      COALESCE(v.soumissions,0) AS submissions
+               FROM sites
+               LEFT JOIN (SELECT site_id, MAX(svy_date) derniere, COUNT(*) soumissions
+                          FROM submissions WHERE site_id IS NOT NULL AND svy_date IS NOT NULL
+                          GROUP BY site_id) v ON v.site_id = sites.id
+               ${where.length ? "WHERE "+where.join(" AND ") : ""}
                ORDER BY code LIMIT ? OFFSET ?`;
   const rows = db.prepare(sql).all(...args, f.limit, f.offset);
   const total = db.prepare(`SELECT COUNT(*) c FROM sites ${where.length ? "WHERE "+where.join(" AND ") : ""}`)
@@ -53,7 +66,16 @@ r.get("/:id", (req, res) => {
   const s = db.prepare("SELECT * FROM sites WHERE id=?").get(req.params.id);
   if(!s) return res.status(404).json({ error:"site introuvable" });
   assertScope(req, s);
-  res.json({ site:s, months: db.prepare("SELECT * FROM site_months WHERE site_id=?").all(s.id) });
+  /* La fiche porte les DEUX dates de dernière visite. Le site garde la sienne,
+     saisie ; la date issue des soumissions ODK est calculée à la demande et
+     prime à l'affichage — voir lib/soumissions.js pour le pourquoi. */
+  /* `aliases` s'ajoute, il ne remplace rien : `site.external_code` reste le code
+     par défaut que la fiche affiche et modifie. Un site désigné autrement par
+     chaque formulaire porte plusieurs codes (migration 018), et la fiche est le
+     seul endroit où l'on peut les voir tous. */
+  res.json({ site:s, months: db.prepare("SELECT * FROM site_months WHERE site_id=?").all(s.id),
+    aliases: listerAlias(s.id),
+    derniereVisite: combinerDerniereVisite(s.last_visit, derniereVisiteOdk(s.id)) });
 });
 
 
@@ -83,11 +105,27 @@ r.post("/", requireCap("edit"), validate(schemas.site), (req, res) => {
   const cols = Object.keys(b).filter(k=>k!=="id");
   db.prepare(`INSERT INTO sites (id,${cols.join(",")}) VALUES (?,${cols.map(()=>"?").join(",")})`)
     .run(id, ...cols.map(k=>b[k]));
+  /* Le code par défaut est miroité dans la table des codes externes, pour que la
+     liste des codes d'un site soit complète en une requête. Voir lib/alias.js. */
+  synchroniserCodeParDefaut(id, b.external_code);
   audit(req, "create", id, `Site créé — ${b.name}`);
   res.status(201).json({ site: db.prepare("SELECT * FROM sites WHERE id=?").get(id) });
 });
 
-r.put("/:id", requireCap("edit"), validate(schemas.site), (req, res) => {
+/* Modification : schéma PARTIEL, et c'est essentiel.
+ *
+ * Avec le schéma complet, tout champ facultatif absent de la requête ressortait
+ * de zod transformé en `null` (nullableStr fait `.nullish().transform(v => v ?? null)`),
+ * et l'UPDATE ci-dessous, bâti sur Object.keys du corps validé, l'écrivait tel
+ * quel. Autrement dit un PUT ne portant que le nom EFFAÇAIT l'antenne, la
+ * catégorie, l'activité, le type de site, la durée — et le code externe, donc le
+ * rattachement des soumissions à venir. C'est le même défaut que celui corrigé
+ * sur PUT /api/users/:id, sur une table où il fait plus de dégâts encore.
+ *
+ * En partiel, un champ absent reste `undefined` et n'entre pas dans l'UPDATE,
+ * tandis qu'un `null` ENVOYÉ reste un null : effacer volontairement une valeur
+ * reste possible, ce qui n'aurait pas été le cas avec une simple fusion. */
+r.put("/:id", requireCap("edit"), validate(schemas.site.partial()), (req, res) => {
   const cur = db.prepare("SELECT * FROM sites WHERE id=?").get(req.params.id);
   if(!cur) return res.status(404).json({ error:"site introuvable" });
   assertScope(req, cur);
@@ -101,12 +139,23 @@ r.put("/:id", requireCap("edit"), validate(schemas.site), (req, res) => {
       error:"ce site a été modifié pendant votre saisie. Rechargez pour repartir de la version à jour.",
       revEnvoyee:Number(b.rev), revCourante:cur.rev, courant:cur });
   delete b.rev;
-  const dup = db.prepare("SELECT id FROM sites WHERE code=? AND id<>?").get(b.code, cur.id);
+  /* Les contrôles portent sur la valeur qui FERA foi après écriture, donc sur
+     l'existant quand le champ n'est pas envoyé — sinon ils raisonneraient sur
+     un `undefined` et laisseraient passer un doublon de code. */
+  const code = b.code !== undefined ? b.code : cur.code;
+  const nom  = b.name !== undefined ? b.name : cur.name;
+  const dup = db.prepare("SELECT id FROM sites WHERE code=? AND id<>?").get(code, cur.id);
   if(dup) return res.status(409).json({ error:"un autre site porte déjà ce code" });
-  const cols = Object.keys(b).filter(k=>k!=="id");
+  const cols = Object.keys(b).filter(k => k !== "id" && b[k] !== undefined);
+  if(!cols.length) return res.json({ site: cur });   /* rien à écrire, rien à incrémenter */
   db.prepare(`UPDATE sites SET ${cols.map(k=>k+"=?").join(",")}, rev=rev+1, updated_at=datetime('now') WHERE id=?`)
     .run(...cols.map(k=>b[k]), cur.id);
-  audit(req, "update", cur.id, `Site modifié — ${b.name}`);
+  /* Seulement si le code par défaut est ENVOYÉ : un PUT partiel qui ne le
+     mentionne pas n'a pas à toucher aux codes du site. Et corriger ce code
+     retire l'ancien du jeu — un code désavoué ne doit pas continuer à rattacher
+     des soumissions en douce. Les alias importés, eux, ne bougent pas. */
+  if(b.external_code !== undefined) synchroniserCodeParDefaut(cur.id, b.external_code);
+  audit(req, "update", cur.id, `Site modifié — ${nom}`);
   res.json({ site: db.prepare("SELECT * FROM sites WHERE id=?").get(cur.id) });
 });
 

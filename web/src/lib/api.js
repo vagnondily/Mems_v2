@@ -62,6 +62,10 @@ async function postFile(path, file, field = "file"){
   return payload;
 }
 
+/* Point de montage des routes d'administration de l'instance. Une seule
+   constante : les onze appels ci-dessous ne connaissent pas le préfixe. */
+const ADMIN = "/admin";
+
 export const api = {
   get:  (p, o)    => call("GET", p, undefined, o),
   post: (p, b, o) => call("POST", p, b ?? {}, o),
@@ -100,6 +104,12 @@ export const api = {
   importKinds:    ()              => call("GET", "/import/kinds"),
   importTemplate: (kind, year)    => fetchBlob(`/import/${encodeURIComponent(kind)}/template?year=${year}`),
   importUpload:   (kind, file)    => postFile(`/import/${encodeURIComponent(kind)}`, file),
+  /* Le XLSForm est lu par le serveur, qui a déjà exceljs. Le navigateur
+     embarquait SheetJS pour le faire lui-même : deux failles connues, aucun
+     correctif au registre npm, et un lecteur de classeurs livré à chaque
+     utilisateur pour une fenêtre de configuration ouverte par les seuls
+     administrateurs. */
+  xlsformParse:   (file)          => postFile("/xlsform/parse", file),
   importBatches:  ()              => call("GET", "/import/batches"),
   importBatch:    (id)            => call("GET", `/import/batches/${encodeURIComponent(id)}`),
   importCommit:   (id)            => call("POST", `/import/batches/${encodeURIComponent(id)}/commit`, {}),
@@ -156,6 +166,53 @@ export const api = {
   setCountry:     (code)         => call("PUT", `/country/${encodeURIComponent(code)}/current`),
   deleteCountry:  (code)         => call("DELETE", `/country/${encodeURIComponent(code)}`),
 
+  /* Connecteurs et correspondance des variables.
+
+     `connectorChamps` rend le registre des champs MEMS et le jeu fermé des
+     transformations. L'écran n'en tient AUCUNE copie : une seconde liste dans le
+     navigateur divergerait de celle que le serveur valide, et l'utilisateur
+     verrait des champs que l'enregistrement refuse. */
+  connectors:         ()             => call("GET", "/connectors"),
+  connectorChamps:    ()             => call("GET", "/connectors/champs"),
+  createConnector:    (c)            => call("POST", "/connectors", c),
+  updateConnector:    (id, c)        => call("PUT", `/connectors/${encodeURIComponent(id)}`, c),
+  deleteConnector:    (id)           => call("DELETE", `/connectors/${encodeURIComponent(id)}`),
+  connectorMappings:  (id, entity)   => call("GET", `/connectors/${encodeURIComponent(id)}/mappings`
+                                          + (entity ? `?entity=${encodeURIComponent(entity)}` : "")),
+  saveConnectorMappings: (id, entity, mappings) =>
+                                        call("PUT", `/connectors/${encodeURIComponent(id)}/mappings`,
+                                          { entity, mappings }),
+  /* L'aperçu accepte des correspondances non encore enregistrées : on vérifie
+     avant d'écrire, jamais l'inverse. */
+  connectorApercu:    (id, corps)    => call("POST", `/connectors/${encodeURIComponent(id)}/apercu`, corps),
+  connectorSuggestions:(id, corps)   => call("POST", `/connectors/${encodeURIComponent(id)}/suggestions`, corps),
+
+  /* Chaîne ODK : verser, puis rattacher. Les deux sont réservés à
+     l'administration côté serveur — ils écrivent dans le référentiel
+     opérationnel — et sont volontairement séparés : on doit pouvoir rejouer un
+     rattachement après avoir corrigé un code externe, sans rien re-tirer. */
+  submissions:          (q="")    => call("GET", `/submissions${q}`),
+  ingestSubmissions:    (corps)   => call("POST", "/submissions/ingest", corps),
+  rattacherSubmissions: (corps)   => call("POST", "/submissions/rattacher", corps),
+
+  /* Le rattachement décidé par un humain, soumission par soumission — ce que le
+     résolveur refuse de deviner et qu'aucun code externe ne tranchera.
+
+     `creer_alias` demande en plus que le code brut de la soumission soit retenu
+     comme code de reconnaissance du site : sans lui, la décision ne vaut que
+     pour cette ligne et le geste est à refaire à chaque collecte du même site.
+
+     Le détachement a sa propre route plutôt qu'un `site_id` nul sur celle-ci :
+     les deux gestes ne conservent pas la même chose. Rattacher pose une passe
+     « manuel » qui résiste au rejeu ; détacher la retire et rend la question au
+     résolveur. Un seul point d'entrée pour deux effets contraires obligerait à
+     lire le corps de la requête pour savoir laquelle des deux on a demandée. */
+  rattacherSubmissionA: (id, { site_id, creer_alias = false } = {}) =>
+    call("POST", `/submissions/${encodeURIComponent(id)}/rattacher-a`,
+         { site_id, creer_alias: !!creer_alias }),
+  detacherSubmission:   (id) =>
+    call("POST", `/submissions/${encodeURIComponent(id)}/detacher`, {}),
+
   offices:      ()           => call("GET", "/offices"),
   createOffice: (o)          => call("POST", "/offices", o),
   updateOffice: (id, o)      => call("PUT", `/offices/${encodeURIComponent(id)}`, o),
@@ -170,6 +227,54 @@ export const api = {
   coverage:   (q="")         => call("GET", `/analytics/coverage${q}`),
   summary:    (q="")         => call("GET", `/analytics/summary${q}`),
   audit:      (limit=100)    => call("GET", `/audit?limit=${limit}`),
+
+  /* ── Exécution des scripts d'analyse sur le serveur ────────────────────
+     Tout ce routeur est réservé au super-utilisateur : l'appeler avec un autre
+     compte rend 403. L'interface ne doit donc l'interroger que pour ce rôle,
+     sinon elle fabrique une erreur pour apprendre ce qu'elle savait déjà. */
+  scriptMoteurs:   ()           => call("GET", "/scripts/moteurs"),
+  /* `lignes` porte le jeu de données APURÉ par le navigateur. Sans lui le
+     serveur relit les lignes brutes enregistrées avec le jeu de données : il ne
+     rejoue pas les règles d'apurement et ne prétend pas le faire. */
+  executerScript:  (id, lignes) => call("POST", `/scripts/${encodeURIComponent(id)}/executer`,
+                                        lignes ? { lignes } : {}),
+  /* Le manifeste d'exécution porte déjà une `url` toute faite, mais elle
+     contient le préfixe « /api » en dur alors que VITE_API_URL peut le
+     déplacer. On rebâtit donc le chemin depuis l'identifiant et le nom, qui
+     figurent tous deux au manifeste. */
+  fichierExecution: (execId, nom) => fetchBlob(
+    `/scripts/executions/${encodeURIComponent(execId)}/fichiers/${encodeURIComponent(nom)}`),
+
+  /* ── Sessions ──────────────────────────────────────────────────────────
+     Lire les SIENNES est ouvert à tous ; tout le reste — celles d'autrui,
+     révocation, purge — est réservé au super-utilisateur côté serveur. */
+  sessions:           (q="")    => call("GET", `/auth/sessions${q}`),
+  /* Le serveur refuse (409) de couper la session de l'appelant sans une
+     confirmation explicite : ce n'est pas un effet de bord acceptable pour un
+     geste de ménage. `confirmer` la porte. */
+  revoquerSession:    (id, confirmer=false) => call("DELETE",
+                          `/auth/sessions/${encodeURIComponent(id)}${confirmer ? "?confirmer=1" : ""}`),
+  revoquerSessionsDe: (userId, inclureCourante=false) => call("DELETE",
+                          `/auth/users/${encodeURIComponent(userId)}/sessions`
+                          + (inclureCourante ? "?inclure_courante=1" : "")),
+  purgerSessions:     (jours=0) => call("POST", `/auth/sessions/purge?jours=${jours}`, {}),
+
+  journal:            (q="")    => call("GET", `${ADMIN}/journal${q}`),
+  journalFacettes:    ()        => call("GET", `${ADMIN}/journal/facettes`),
+
+  baseEtat:           ()        => call("GET", `${ADMIN}/base`),
+  baseCheckpoint:     ()        => call("POST", `${ADMIN}/base/checkpoint`, {}),
+  baseVacuum:         ()        => call("POST", `${ADMIN}/base/vacuum`, {}),
+
+  sauvegardes:          ()      => call("GET", `${ADMIN}/sauvegardes`),
+  creerSauvegarde:      ()      => call("POST", `${ADMIN}/sauvegarde`, {}),
+  controlerSauvegarde:  (nom)   => call("GET", `${ADMIN}/sauvegardes/${encodeURIComponent(nom)}/controle`),
+  supprimerSauvegarde:  (nom)   => call("DELETE", `${ADMIN}/sauvegardes/${encodeURIComponent(nom)}`),
+  telechargerSauvegarde:(nom)   => fetchBlob(`${ADMIN}/sauvegardes/${encodeURIComponent(nom)}`),
+  /* `confirmation` est un mot à recopier, exigé par le serveur : une case à
+     cocher se coche par réflexe, un mot ne s'écrit pas par accident. */
+  restaurerBase:        (fichier, confirmation) =>
+                                   call("POST", `${ADMIN}/restauration`, { fichier, confirmation }),
 };
 
 /* Un navigateur ne rend jamais ce minuteur — seul Node (tests, rendu serveur) expose

@@ -916,13 +916,23 @@ s'est réparti entre eux, restreindre serait retirer un accès.
 
 ### Rôles
 
-| Rôle | Onglets | Modifier | Supprimer | Valider | Administrer |
-|---|---|---|---|---|---|
-| `super` | tous | ✅ | ✅ | ✅ | ✅ |
-| `admin` | tous | ✅ | ✅ | ✅ | ✅ |
-| `validator` | hors paramètres | ✅ | ❌ | ✅ | ❌ |
-| `editor` | hors paramètres | ✅ | ❌ | ❌ | ❌ |
-| `viewer` | consultation | ❌ | ❌ | ❌ | ❌ |
+| Rôle | Onglets | Modifier | Supprimer | Valider | Administrer | Exploiter l'instance |
+|---|---|---|---|---|---|---|
+| `super` | tous | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `admin` | tous | ✅ | ✅ | ✅ | ✅ | ❌ |
+| `validator` | hors paramètres | ✅ | ❌ | ✅ | ❌ | ❌ |
+| `editor` | hors paramètres | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `viewer` | consultation | ❌ | ❌ | ❌ | ❌ | ❌ |
+
+La dernière colonne est ce qui sépare `super` d'`admin`, et c'est tout ce qui les sépare :
+sur la **donnée métier** les deux rôles ont exactement les mêmes droits. « Exploiter
+l'instance », c'est un objet différent — l'installation elle-même, pas ce qu'elle contient :
+fermer la session d'un autre compte, lire le journal de sécurité, examiner et compacter le
+fichier de base, produire et restaurer une sauvegarde, exécuter un script R ou SPSS sur le
+serveur. Un administrateur gère des comptes, des bureaux et des référentiels ; il n'a pas à
+obtenir un interpréteur de commandes sur le serveur en écrivant trois lignes de R. Ces
+routes vivent sous `/api/admin` et `/api/scripts`, chacune fermée par un garde unique posé
+sur le routeur entier (`requireSuper`, `server/src/lib/auth.js`).
 
 Un compte rattaché à un bureau (`office_id`) ne voit et ne modifie **que** les données de
 ce bureau, sauf s'il est administrateur. Le filtrage est appliqué **côté serveur**, jamais
@@ -1084,9 +1094,30 @@ processus suffit.
 
 ## 8. Exploitation
 
+### Console d'administration
+
+Un compte `super` dispose d'une destination **Administration** qui couvre l'exploitation
+courante sans accès au serveur : sessions ouvertes et révocables (les siennes, celles d'un
+autre compte, ou toutes), **journal de sécurité** consultable et filtrable, état du fichier
+de base, sauvegarde et restauration. Les routes sont sous `/api/admin`.
+
+Le journal mérite un mot : la table `audit` est écrite par une vingtaine de routes depuis
+l'origine, mais `/api/state` en sert soixante lignes en masquant le genre `securite` — donc
+les connexions, les échecs de connexion et les changements de mot de passe. La partie du
+journal qui sert à une enquête était la seule que personne ne pouvait lire. Elle l'est
+désormais, par le seul rôle qui a de bonnes raisons de le faire.
+
 ### Sauvegarde
 
 SQLite en mode WAL ne se sauvegarde pas en copiant le fichier pendant l'écriture.
+
+Le plus simple est de passer par **Administration → Sauvegarde** : la copie utilise l'API de
+copie à chaud de SQLite, le fichier produit est vérifié (`integrity_check` et contrôle des
+clés étrangères) et téléchargeable. La restauration prend d'abord une sauvegarde de filet,
+s'exécute dans une transaction, vérifie l'intégrité et les clés étrangères, et n'est validée
+qu'ensuite — un fichier corrompu laisse la base en place.
+
+En ligne de commande :
 
 ```bash
 # Sauvegarde cohérente, à chaud
@@ -1097,8 +1128,56 @@ docker compose exec mems sh -c "sqlite3 /app/server/data/mems.db \
   \".backup '/app/server/data/backup-\$(date +%F).db'\""
 ```
 
-Restauration : arrêtez le service, remplacez `mems.db`, supprimez `mems.db-wal` et
+Restauration à la main : arrêtez le service, remplacez `mems.db`, supprimez `mems.db-wal` et
 `mems.db-shm`, redémarrez.
+
+### Exécution de scripts R et SPSS
+
+**Lisez cette section entière avant d'activer la fonction.**
+
+Les scripts rédigés dans Analyses → Scripts d'analyse peuvent être exécutés sur le serveur.
+La fonction est **absente tant qu'aucun interpréteur n'est nommément déclaré** : sans
+`ANALYSIS_R` ni `ANALYSIS_SPSS`, les routes répondent 503 et aucun script n'est lancé. Une
+instance qui ne s'en sert pas ne peut donc pas exécuter de code par accident, même si un
+compte est compromis. Elle est en outre réservée au rôle `super`.
+
+Ce que MEMS garantit :
+
+- l'enfant ne reçoit **aucune** variable d'environnement de l'application — ni `JWT_SECRET`,
+  ni `DATA_KEY`, ni `DB_FILE` ; son environnement est construit à la main (`ANALYSIS_PATH`,
+  `ANALYSIS_LANG`, `HOME` sur le répertoire de travail) ;
+- il travaille dans un répertoire neuf, détruit dans tous les cas ;
+- il est tué par son **groupe** de processus au bout d'un délai borné — tuer le seul PID
+  laisserait vivre ce que le script a lancé ;
+- ses sorties, ses fichiers produits et le jeu de données transmis sont plafonnés ;
+- chaque exécution est journalisée.
+
+Ce que MEMS **ne** garantit **pas**, et qui décide de l'opportunité d'activer la fonction :
+
+- l'enfant tourne sous **l'utilisateur du processus MEMS**. Il lit donc tout ce que cet
+  utilisateur lit : le fichier `.env`, la base SQLite, les sauvegardes. Purger
+  l'environnement ferme le raccourci le plus court, pas l'accès au disque ;
+- le **réseau** lui est ouvert ;
+- ni processeur, ni mémoire, ni écritures hors du répertoire de travail ne sont limités —
+  Node ne sait pas le faire, cela relève de l'hôte (conteneur dédié, compte sans privilèges,
+  cgroups, seccomp).
+
+Autrement dit : **ce n'est pas un bac à sable**, c'est une exécution tracée et bornée dans
+le temps. N'activez la fonction que si MEMS tourne dans un conteneur dont la perte est
+acceptable.
+
+```bash
+# Chemins absolus, et seulement l'interpréteur que vous voulez ouvrir
+ANALYSIS_R=/usr/bin/Rscript
+ANALYSIS_SPSS=/usr/bin/pspp      # pspp est l'implémentation libre du langage SPSS
+```
+
+L'image Docker **n'embarque ni l'un ni l'autre** : les installer est une décision
+d'exploitation, prise sciemment. Les garde-fous (`ANALYSIS_TIMEOUT_S`,
+`ANALYSIS_MAX_OUTPUT_KB`, `ANALYSIS_MAX_CONCURRENT`…) sont tous documentés dans
+`.env.example`. Le jeu de données est écrit dans `donnees.csv` à côté du script ; les
+fichiers que le script produit (graphiques, CSV) sont récupérés et téléchargeables pendant
+`ANALYSIS_RESULT_TTL_MIN`.
 
 ### Mise à jour
 
@@ -1117,10 +1196,14 @@ jamais un fichier déjà appliqué en production.
 ### Tests
 
 ```bash
-npm test              # 96 tests d'API puis 12 tests de bout en bout
+npm test              # 155 tests d'API puis 34 tests de bout en bout
 cd server && npm test # API seule
 cd web && npm test    # interface seule, contre un serveur réellement démarré
 ```
+
+Les deux suites ne peuvent pas tourner **en même temps** : elles se partagent
+`server/data/test.db`, `server/data/e2e.db` et le port 4187. `npm test` à la racine les
+enchaîne, c'est la bonne façon de les lancer toutes les deux.
 
 Le test de bout en bout démarre un vrai serveur, amorce une vraie base, empaquette le code
 de l'application tel qu'il est livré, le rend dans un DOM simulé et le pilote : connexion,

@@ -1,21 +1,31 @@
 import { useEffect, useMemo, useState } from "react";
-import { Activity, AlertTriangle, BarChart3, Code2, Database, Download, Filter, Pencil, Plus, Save, Sigma, Trash2, Upload } from "lucide-react";
+import { Activity, AlertTriangle, BarChart3, Code2, Database, Download, FileDown, Filter, Pencil, Play, Plus, Save, Sigma, Trash2, Upload } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
+import { api } from "../lib/api.js";
 import { RULE_TYPES, applyFormulas, applyRules, fmt, n, pct, profileColumn, r1, siteScore, uid } from "../lib/calc.js";
 import { C, MONTHS, SERIES } from "../lib/constants.js";
+import { anneeMoisDe, dateDansPeriode, libelleCourtPeriode, moisDansPeriode,
+  normalisePeriode, periodeAnnee } from "../lib/periode.js";
+import { BarrePeriode } from "./Reports.jsx";
 import { PageHead } from "./Shell.jsx";
 
 /* ══════════════════ Analyses ══════════════════ */
-function Analytics({ db, set, sub, setSub, notify, can }){
+function Analytics({ db, set, me, sub, setSub, notify, can }){
   const items = [["datasets","Jeux de données"],["scripts","Scripts d'analyse"],["viz","Visualisations"]];
+  const [periode,setPeriode] = useState(() => periodeAnnee(db.year));
   return (
     <div className="space-y-4">
       <PageHead title="Analyses" text="Constitution des jeux de données à partir d'ODK Central, apurement, scripts R ou SPSS et visualisations." />
       <Tabs items={items} value={sub} onChange={setSub} />
+      {/* La barre ne sort que sur les visualisations. Les jeux de données et les
+          scripts portent des colonnes ODK quelconques, sans date garantie ni
+          nommée : y poser un filtre de période afficherait un réglage qui ne
+          filtrerait rien. */}
+      {sub==="viz" && <BarrePeriode db={db} periode={periode} onChange={setPeriode} />}
       {sub==="datasets" && <Datasets db={db} set={set} notify={notify} can={can} />}
-      {sub==="scripts" && <Scripts db={db} set={set} notify={notify} can={can} />}
-      {sub==="viz" && <Viz db={db} set={set} notify={notify} can={can} />}
+      {sub==="scripts" && <Scripts db={db} set={set} me={me} notify={notify} can={can} />}
+      {sub==="viz" && <Viz db={db} set={set} periode={periode} notify={notify} can={can} />}
     </div>);
 }
 
@@ -210,20 +220,118 @@ MEANS TABLES=q_score BY site_id
   /CELLS MEAN COUNT STDDEV.
 `,
 };
-function Scripts({ db, set, notify, can }){
+/* Deux mesures qu'on ne lit pas en brut : 12345 ms et 1048576 octets ne disent
+   rien, « 12,3 s » et « 1,0 Mo » se lisent d'un coup d'œil. */
+const dureeLisible = (ms) => ms == null ? "—" : `${(ms/1000).toFixed(1)} s`;
+const poidsLisible = (o) => o == null ? "—"
+  : o < 1024 ? `${o} o` : o < 1048576 ? `${(o/1024).toFixed(1)} Ko` : `${(o/1048576).toFixed(1)} Mo`;
+
+/* État des interpréteurs du serveur, dit à l'exploitant.
+
+   Masquer « Exécuter » sans un mot laisserait croire à une panne ou à un droit
+   manquant, alors que la fonction est simplement FERMÉE PAR DÉFAUT : l'ouvrir
+   revient à autoriser l'exécution de code arbitraire sur le serveur, et c'est
+   une décision d'exploitant. On dit donc ce qui manque, pourquoi, et quoi faire.
+   Les noms de variables viennent de la réponse du serveur et ne sont pas
+   recopiés ici : ajouter un interpréteur côté serveur n'a pas à toucher
+   l'interface. */
+function EtatMoteurs({ etat }){
+  if(!etat) return <Note>Interrogation du serveur sur les interpréteurs disponibles…</Note>;
+  if(etat.erreur) return (
+    <Note tone="err"><b>Impossible de savoir si l'exécution sur le serveur est possible.</b> {etat.erreur}.
+      Le téléchargement du script et des données reste disponible.</Note>);
+
+  const liste = etat.moteurs || [];
+  const dispo = liste.filter(m => m.disponible);
+  const detail = (
+    <ul className="mt-1.5 pl18 list-disc">
+      {liste.map(m => (
+        <li key={m.lang}><b>{m.libelle}</b> — {m.disponible ? "disponible" : m.raison}</li>))}
+    </ul>);
+
+  if(!dispo.length) return (
+    <Note tone="warn">
+      <b>L'exécution des scripts sur le serveur est désactivée sur cette instance.</b> Aucun interpréteur
+      n'y est utilisable : les scripts se rédigent et se téléchargent ici, puis s'exécutent ailleurs — le
+      fonctionnement décrit ci-dessous, inchangé.
+      {detail}
+      <div className="mt-1.5">Pour l'activer, déclarez le chemin absolu de l'interpréteur dans{" "}
+        {liste.map(m => m.variable).filter(Boolean).join(" ou ") || "la variable prévue"} du fichier
+        <b> .env</b> du serveur, puis redémarrez-le. Exécuter un script, c'est exécuter du code sur le
+        serveur avec les droits du processus MEMS : ne l'ouvrez que sur une instance dont la perte est
+        acceptable.</div>
+    </Note>);
+
+  return (
+    <Note tone="ok">
+      <b>L'exécution sur le serveur est disponible.</b> Le script reçoit le jeu de données apuré par ce
+      navigateur, s'exécute sous un délai borné, et rend son code de sortie, ses sorties et les fichiers
+      qu'il a produits. Chaque exécution est journalisée au registre de sécurité.
+      {detail}
+    </Note>);
+}
+
+function Scripts({ db, set, me, notify, can }){
   const [edit,setEdit] = useState(null);
+  /* `null` tant que le serveur n'a pas répondu : « on ne sait pas encore » et
+     « aucun interpréteur » n'ont pas à produire le même écran. */
+  const [moteurs,setMoteurs] = useState(null);
+  const [execution,setExecution] = useState(null);
+  const [encours,setEncours] = useState("");
+  /* Le rôle, et non la capacité « admin » : le serveur réserve tout ce routeur
+     au super-utilisateur, un administrateur y recevrait 403. */
+  const superUtilisateur = me?.role === "super";
+
+  /* L'état des interpréteurs vient du serveur et de nulle part ailleurs : lui
+     seul sait ce qui est installé sur SA machine. Le déduire du langage du
+     script afficherait un bouton qui échoue une fois sur deux. */
+  useEffect(() => {
+    if(!superUtilisateur) return undefined;
+    let vivant = true;
+    api.scriptMoteurs()
+      .then(m => { if(vivant) setMoteurs(m); })
+      .catch(e => { if(vivant) setMoteurs({ actif:false, moteurs:[], erreur:e.message }); });
+    return () => { vivant = false; };
+  }, [superUtilisateur]);
+
+  const moteurDe = (lang) => (moteurs?.moteurs || []).find(m => m.lang === lang);
+
   const add = () => setEdit({ id:null, name:"Nouvelle analyse", lang:"R", datasetId:db.datasets[0]?.id||"",
     stage:"analysis", code:SCRIPT_TPL.R, notes:"", runs:[] });
   const save = (s) => { set(d => { const i=d.scripts.findIndex(x=>x.id===s.id);
       if(i>=0) d.scripts[i]=s; else d.scripts.push({ ...s, id:uid("sc"), createdAt:new Date().toISOString() });
       return d; }); setEdit(null); notify("Script enregistré","ok"); };
+  /* Les lignes que le script doit voir, apurement compris. C'est la même
+     sélection pour le téléchargement et pour l'exécution serveur : les deux
+     chemins doivent porter exactement le même jeu de données, sans quoi le
+     script rendrait deux résultats différents selon l'endroit où il tourne. */
+  const lignesDe = (s) => { const ds = db.datasets.find(d=>d.id===s.datasetId);
+    return ds ? (s.stage==="cleaning" ? ds.raw : applyRules(ds.raw, ds.rules).rows) : null; };
   const bundle = (s) => {
-    const ds = db.datasets.find(d=>d.id===s.datasetId);
-    if(!ds){ notify("Ce script n'est relié à aucun jeu de données","warn"); return; }
-    const rows = s.stage==="cleaning" ? ds.raw : applyRules(ds.raw, ds.rules).rows;
+    const rows = lignesDe(s);
+    if(!rows){ notify("Ce script n'est relié à aucun jeu de données","warn"); return; }
     download(`${s.name.replace(/\W+/g,"_")}_donnees.csv`, toCSV(rows, Object.keys(rows[0]||{})), "text/csv");
     download(`${s.name.replace(/\W+/g,"_")}.${s.lang==="R"?"R":"sps"}`, s.code, "text/plain");
     notify("Script et données téléchargés","ok"); };
+
+  const executer = async (s) => {
+    setEncours(s.id);
+    setExecution({ script:s, resultat:null, erreur:null });
+    try{
+      /* Les règles d'apurement s'appliquent dans le navigateur ; le serveur ne
+         les rejoue pas. Transmettre les lignes déjà apurées est donc la seule
+         façon d'exécuter le script sur les données qu'il attend. */
+      const rep = await api.executerScript(s.id, lignesDe(s));
+      setExecution({ script:s, resultat:rep.execution, erreur:null });
+      const ok = rep.execution.statut === "ok";
+      notify(ok ? `Script « ${s.name} » exécuté` : `Le script « ${s.name} » s'est terminé en échec`,
+        ok ? "ok" : "warn");
+    }catch(e){
+      setExecution({ script:s, resultat:null, erreur:e.message });
+      notify(e.message, "err");
+    }finally{ setEncours(""); }
+  };
+
   return (
     <>
       <Note tone="warn"><b>Ce que fait l'application, et ce qu'elle ne fait pas.</b> Les scripts R et SPSS sont
@@ -231,12 +339,18 @@ function Scripts({ db, set, notify, can }){
         exécutés dans R ou SPSS. Un navigateur ne peut pas faire tourner ces moteurs. En revanche, les
         <b> règles d'apurement</b> de l'onglet Jeux de données s'exécutent réellement ici, et les résultats
         d'analyse produits à l'extérieur peuvent être réimportés en pièce jointe du script.</Note>
+      {/* L'exécution sur le serveur s'AJOUTE au travail hors ligne, elle ne le
+          remplace pas : le téléchargement reste offert sur chaque ligne, y
+          compris quand un interpréteur est disponible. Une analyse se refait
+          souvent sur le poste de l'analyste, avec ses propres bibliothèques. */}
+      {superUtilisateur && <EtatMoteurs etat={moteurs} />}
       <Card flush title="Scripts d'apurement et d'analyse" subtitle={`${db.scripts.length} scripts`}
         right={can("edit") && <Btn size="sm" icon={Plus} onClick={add}>Nouveau script</Btn>}>
         {db.scripts.length ? (
           <TableWrap max="mh420">
             <thead><tr><Th>Nom</Th><Th>Langage</Th><Th>Étape</Th><Th>Jeu de données</Th><Th num>Lignes</Th><Th num>Exécutions</Th><Th /></tr></thead>
             <tbody>{db.scripts.map(s=>{ const ds=db.datasets.find(d=>d.id===s.datasetId);
+              const moteur = moteurDe(s.lang);
               return (<tr key={s.id} className="hover:bg-sky-50">
                 <Td className="font-medium">{s.name}</Td>
                 <Td><Badge tone={s.lang==="R"?"b":"n"}>{s.lang}</Badge></Td>
@@ -245,6 +359,16 @@ function Scripts({ db, set, notify, can }){
                 <Td num>{ds?fmt(s.stage==="cleaning"?ds.raw.length:applyRules(ds.raw,ds.rules).rows.length):"—"}</Td>
                 <Td num>{(s.runs||[]).length}</Td>
                 <Td className="text-right">
+                  {superUtilisateur && (moteur?.disponible
+                    ? <Btn size="sm" kind="ghost" icon={Play} data-executer={s.id}
+                        disabled={!!encours} onClick={()=>executer(s)}>
+                        {encours===s.id ? "Exécution…" : "Exécuter"}</Btn>
+                    /* Pas de bouton désactivé : il inviterait à cliquer sur ce
+                       qui ne peut pas aboutir. Le motif exact est au survol, et
+                       la marche à suivre au-dessus du tableau. */
+                    : moteurs && <span className="f105 text-slate-400 mr-2"
+                        title={moteur?.raison || "interpréteur inconnu du serveur"}>
+                        {s.lang} non exécutable ici</span>)}
                   <Btn size="sm" kind="ghost" icon={Download} onClick={()=>bundle(s)}>Exporter</Btn>
                   <Btn size="sm" kind="ghost" icon={Pencil} onClick={()=>setEdit(s)}>Ouvrir</Btn></Td>
               </tr>); })}</tbody>
@@ -253,7 +377,97 @@ function Scripts({ db, set, notify, can }){
               action={can("edit") && <Btn icon={Plus} onClick={add}>Nouveau script</Btn>} />}
       </Card>
       <ScriptModal open={!!edit} s={edit} db={db} onClose={()=>setEdit(null)} onSave={save} notify={notify} />
+      <ResultatExecution etat={execution} onClose={()=>setExecution(null)} notify={notify} />
     </>);
+}
+
+/* Compte rendu d'une exécution : code de sortie, durée, les deux sorties, et
+   les fichiers produits. Un script faux est un résultat d'analyse et non une
+   panne — l'échec s'affiche donc avec le même soin que la réussite. */
+function ResultatExecution({ etat, onClose, notify }){
+  const [charge,setCharge] = useState("");
+  if(!etat) return null;
+  const { script, resultat, erreur } = etat;
+
+  const telecharger = async (f) => {
+    setCharge(f.nom);
+    try{
+      const b = await api.fichierExecution(resultat.id, f.nom);
+      download(f.nom, b, b.type || "application/octet-stream");
+    }catch(e){ notify(`Téléchargement impossible : ${e.message}`, "err"); }
+    finally{ setCharge(""); }
+  };
+
+  const STATUTS = { ok:["Réussite","g"], echec:["Échec","r"], delai:["Délai dépassé","r"] };
+  const [libelle,tone] = STATUTS[resultat?.statut] || ["—","n"];
+
+  return (
+    <Modal open wide onClose={onClose} title={`Exécution — ${script.name}`}
+      subtitle="Exécution sur le serveur, journalisée au registre de sécurité"
+      footer={<Btn kind="sec" onClick={onClose}>Fermer</Btn>}>
+      {!resultat && !erreur && (
+        <div className="py-10 text-center f13 text-slate-500">
+          <div className="w-9 h-9 rounded-full bd3 border-slate-200 bdt-brand animate-spin mx-auto mb-3" />
+          Exécution en cours sur le serveur…</div>)}
+
+      {erreur && <Note tone="err"><b>Le script n'a pas été exécuté.</b> {erreur}</Note>}
+
+      {resultat && (<>
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <Badge tone={tone}>{libelle}</Badge>
+          <Badge>{resultat.moteur}</Badge>
+          <span className="f115 text-slate-500">
+            code de sortie <b className="tabular-nums">{resultat.code === null ? "aucun" : resultat.code}</b>
+            {resultat.signal ? ` (signal ${resultat.signal})` : ""}
+            {" · "}durée <b className="tabular-nums">{dureeLisible(resultat.dureeMs)}</b>
+            {" · "}<b className="tabular-nums">{fmt(resultat.lignes)}</b> lignes transmises</span>
+        </div>
+
+        {resultat.message && <Note tone="warn">{resultat.message}</Note>}
+        {/* Une conclusion tirée d'un tableau coupé sans le savoir est une
+            conclusion fausse : la troncature se dit, elle ne se devine pas. */}
+        {resultat.tronque && <Note tone="warn"><b>Sortie tronquée.</b> Le serveur plafonne ce qu'il
+          conserve de la sortie d'un script. Ce qui suit est incomplet — écrivez les résultats volumineux
+          dans un fichier, il sera récupérable ci-dessous.</Note>}
+
+        <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-1">
+          Sortie standard{resultat.sortieTronquee && <span className="text-amber-700"> — tronquée</span>}</div>
+        <pre className="m-code overflow-auto mh240 mb-3">{resultat.sortie
+          || "(aucune sortie standard)"}</pre>
+
+        <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-1">
+          Sortie d'erreur{resultat.erreurTronquee && <span className="text-amber-700"> — tronquée</span>}</div>
+        <pre className="m-code overflow-auto mh240 mb-3">{resultat.erreur
+          || "(aucune sortie d'erreur)"}</pre>
+
+        <div className="border-t border-slate-200 pt-3">
+          <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-1.5">
+            Fichiers produits par le script</div>
+          {(resultat.fichiers||[]).length ? (
+            <TableWrap max="mh240">
+              <thead><tr><Th>Fichier</Th><Th num>Taille</Th><Th /></tr></thead>
+              <tbody>{resultat.fichiers.map(f=>(
+                <tr key={f.nom} className="hover:bg-sky-50">
+                  <Td className="f115">{f.nom}</Td>
+                  <Td num>{poidsLisible(f.octets)}</Td>
+                  <Td className="text-right">
+                    <Btn size="sm" kind="ghost" icon={FileDown} disabled={!!charge}
+                      onClick={()=>telecharger(f)}>
+                      {charge===f.nom ? "Téléchargement…" : "Télécharger"}</Btn></Td>
+                </tr>))}</tbody>
+            </TableWrap>
+          ) : <p className="f115 text-slate-400">Le script n'a produit aucun fichier. Écrivez vos
+                résultats dans le répertoire courant — un CSV, un graphique — pour les récupérer ici.</p>}
+          {/* Ce que le serveur a refusé de rendre, et pourquoi : sans cette
+              liste, un fichier attendu manquerait sans explication. */}
+          {(resultat.fichiersEcartes||[]).length > 0 && (
+            <div className="mt-2 f105 text-amber-700">
+              Écartés : {resultat.fichiersEcartes.join(" · ")}</div>)}
+          <p className="f105 text-slate-400 mt-2">Ces fichiers sont conservés un temps limité par le
+            serveur, puis effacés : téléchargez ce que vous voulez garder.</p>
+        </div>
+      </>)}
+    </Modal>);
 }
 function ScriptModal({ open, s, db, onClose, onSave, notify }){
   const [f,setF] = useState({});
@@ -327,24 +541,45 @@ const SOURCES = {
   outcomes:{ label:"Outcomes", dims:[["indicator","Indicateur"],["adm1","Zone"],["round","Ronde"]],
              measures:[["value","Valeur moyenne"],["planned","Valeur planifiée moyenne"],["sample","Échantillon"]] },
 };
-function aggregate(db, source, dim, measure){
+/* Où la période mord réellement. Les sites sont un registre : leur nombre, leurs
+   bénéficiaires et leur score de risque sont l'état du jour, pas une série
+   mensuelle — seules les colonnes du plan de suivi en ont une. Annoncer « T2 »
+   au-dessus d'un décompte de sites serait un décor, et un décor sur un chiffre
+   se prend pour une mesure. */
+const temporel = (source, measure) =>
+  source==="sites" ? (measure==="planned" || measure==="done") : true;
+
+function aggregate(db, source, dim, measure, periode){
   if(!SOURCES[source]) source = "sites";
+  const p = normalisePeriode(periode, db.year);
+  /* La grille mensuelle et les outputs ne descendent du serveur que pour
+     l'exercice chargé : sur une autre année il n'y a rien à agréger, et
+     réutiliser les chiffres de l'exercice sous une autre étiquette serait faux. */
+  const grille = p.annee === db.year;
+  const dansP = (mi) => moisDansPeriode(mi+1, p);   /* le magasin indexe les mois de 0 à 11 */
   const map = {};
   const push = (k,v) => { k = (k===undefined||k===null||k==="") ? "—" : k;
     map[k] = map[k] || { key:k, sum:0, n:0 }; map[k].sum += v; map[k].n++; };
+  const surPeriode = (s,champ) => grille ? s.plan.filter((x,i)=>x[champ] && dansP(i)).length : 0;
   if(source==="sites") db.sites.forEach(s => {
     const v = measure==="count" ? 1 : measure==="beneficiaries" ? n(s.beneficiaries)
-      : measure==="planned" ? s.plan.filter(p=>p.planned).length
-      : measure==="done" ? s.plan.filter(p=>p.done).length : siteScore(s, db.weights, db).pct;
+      : measure==="planned" ? surPeriode(s,"planned")
+      : measure==="done" ? surPeriode(s,"done") : siteScore(s, db.weights, db).pct;
     push(s[dim], v); });
-  else if(source==="visits") db.visits.forEach(v => push(dim==="month" ? MONTHS[new Date(v.date).getMonth()] : v[dim], 1));
-  else if(source==="outputs") db.outputs.forEach(o => push(dim==="month" ? MONTHS[o.month] : o[dim], n(o[measure])));
-  else db.outcomes.forEach(o => push(o[dim], n(o[measure])));
+  else if(source==="visits") db.visits.forEach(v => {
+    if(!dateDansPeriode(v.date, p)) return;
+    push(dim==="month" ? MONTHS[anneeMoisDe(v.date).mois-1] : v[dim], 1); });
+  else if(source==="outputs") db.outputs.forEach(o => {
+    if(!grille || !dansP(o.month)) return;
+    push(dim==="month" ? MONTHS[o.month] : o[dim], n(o[measure])); });
+  else db.outcomes.forEach(o => {
+    if(!dateDansPeriode(o.date, p)) return;
+    push(o[dim], n(o[measure])); });
   return Object.values(map).map(x => ({ name:String(x.key),
     value: (measure==="score"||measure==="value"||measure==="planned"&&source==="outcomes") ? r1(x.sum/x.n) : x.sum }))
     .sort((a,b)=>b.value-a.value).slice(0,14);
 }
-function Viz({ db, set, notify, can }){
+function Viz({ db, set, periode, notify, can }){
   const [active,setActive] = useState(db.dashboards[0]?.id); const [edit,setEdit] = useState(null);
   const dash = db.dashboards.find(d=>d.id===active) || db.dashboards[0];
   const addDash = () => { const d = { id:uid("db"), name:"Nouvel onglet", widgets:[] };
@@ -362,26 +597,32 @@ function Viz({ db, set, notify, can }){
       </div>
       {dash?.widgets?.length ? (
         <div className="grid gap-4" style={{gridTemplateColumns:"repeat(auto-fit,minmax(400px,1fr))"}}>
-          {dash.widgets.map(w=><Widget key={w.id} w={w} db={db}
+          {dash.widgets.map(w=><Widget key={w.id} w={w} db={db} periode={periode}
             onEdit={can("edit")?()=>setEdit(w):null}
             onDelete={can("edit")?()=>set(x=>{ const d=x.dashboards.find(y=>y.id===active);
               d.widgets=d.widgets.filter(y=>y.id!==w.id); return x; }):null} />)}
         </div>
       ) : <Card><Empty icon={BarChart3} title="Onglet vide" text="Ajoutez une visualisation en choisissant une source, une dimension et une mesure."
             action={can("edit") && <Btn icon={Plus} onClick={()=>setEdit({ type:"bar", source:"sites", dim:"subOffice", measure:"count", title:"" })}>Ajouter</Btn>} /></Card>}
-      <WidgetModal open={!!edit} w={edit} db={db} onClose={()=>setEdit(null)} onSave={saveW} />
+      <WidgetModal open={!!edit} w={edit} db={db} periode={periode} onClose={()=>setEdit(null)} onSave={saveW} />
     </>);
 }
-function Widget({ w, db, onEdit, onDelete }){
+function Widget({ w, db, periode, onEdit, onDelete }){
   const src = SOURCES[w.source] ? w.source : "sites";
   const SRC = SOURCES[src];
   const dim = SRC.dims.some(d=>d[0]===w.dim) ? w.dim : SRC.dims[0][0];
   const measure = SRC.measures.some(m=>m[0]===w.measure) ? w.measure : SRC.measures[0][0];
-  const data = useMemo(()=>aggregate(db, src, dim, measure), [db,src,dim,measure]);
+  const p = normalisePeriode(periode, db.year);
+  const data = useMemo(()=>aggregate(db, src, dim, measure, p),
+    [db,src,dim,measure,p.annee,p.gran,p.valeur]);
   const dimLabel = (SRC.dims.find(d=>d[0]===dim)||[])[1] || dim;
   const mLabel = (SRC.measures.find(m=>m[0]===measure)||[])[1] || measure;
+  /* Le sous-titre ne mentionne la période que là où elle a servi à restreindre :
+     ailleurs, il dirait à l'utilisateur qu'il regarde un trimestre alors qu'il
+     regarde tout. */
+  const portee = temporel(src, measure) ? `${SRC.label} · ${libelleCourtPeriode(p)}` : SRC.label;
   return (
-    <Card title={w.title || `${mLabel} par ${dimLabel.toLowerCase()}`} subtitle={SRC.label}
+    <Card title={w.title || `${mLabel} par ${dimLabel.toLowerCase()}`} subtitle={portee}
       right={<>{onEdit && <button onClick={onEdit} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
         {onDelete && <button onClick={onDelete} className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</>}>
       {w.type==="table" ? (
@@ -416,7 +657,7 @@ function Widget({ w, db, onEdit, onDelete }){
           </BarChart></ResponsiveContainer>)}
     </Card>);
 }
-function WidgetModal({ open, w, db, onClose, onSave }){
+function WidgetModal({ open, w, db, periode, onClose, onSave }){
   const [f,setF] = useState({});
   useEffect(()=>{ setF(w||{}); },[w]);
   if(!open) return null;
@@ -438,9 +679,9 @@ function WidgetModal({ open, w, db, onClose, onSave }){
       </div>
       <div className="border border-slate-200 rounded p-3 bg-slate-50">
         <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">Aperçu</div>
-        <div className="bg-white rounded border border-slate-200"><Widget w={{...f,id:"prev"}} db={db} /></div>
+        <div className="bg-white rounded border border-slate-200"><Widget w={{...f,id:"prev"}} db={db} periode={periode} /></div>
       </div>
     </Modal>);
 }
 
-export { Analytics, CleanModal, Datasets, SCRIPT_TPL, SOURCES, ScriptModal, Scripts, Viz, Widget, WidgetModal, aggregate };
+export { Analytics, CleanModal, Datasets, EtatMoteurs, ResultatExecution, SCRIPT_TPL, SOURCES, ScriptModal, Scripts, Viz, Widget, WidgetModal, aggregate, temporel };

@@ -1,19 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140">
+  <!-- Même signe que BrandMark (web/src/components/ui.jsx) : les deux doivent
+       rester identiques, sinon l'onglet du navigateur et l'en-tête de
+       l'application montrent deux marques différentes. -->
   <defs>
-    <linearGradient id="humGrad" x1="0%" y1="100%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#0284C7"/>
-      <stop offset="60%" stop-color="#059669"/>
-      <stop offset="100%" stop-color="#10B981"/>
-    </linearGradient>
-    <linearGradient id="targetGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#F59E0B"/>
-      <stop offset="100%" stop-color="#D97706"/>
+    <linearGradient id="tuile" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="55%" stop-color="#0B77C2"/>
+      <stop offset="100%" stop-color="#075E93"/>
     </linearGradient>
   </defs>
-  <path d="M 20 80 A 40 40 0 1 1 100 80" fill="none" stroke="url(#humGrad)" stroke-width="10" stroke-linecap="round"/>
-  <path d="M 40 75 Q 40 50 50 40 Q 50 65 40 75 Z" fill="#0284C7"/>
-  <path d="M 76 75 Q 76 40 66 30 Q 66 60 76 75 Z" fill="#059669"/>
-  <rect x="55" y="25" width="6" height="40" rx="3" fill="url(#humGrad)"/>
-  <circle cx="63" cy="15" r="8" fill="url(#targetGrad)"/>
-  <circle cx="63" cy="15" r="3" fill="#FFFFFF"/>
+  <rect x="6" y="6" width="128" height="128" rx="34" fill="url(#tuile)"/>
+  <path d="M 40 101 L 40 45 L 70 82 L 100 45 L 100 101" fill="none" stroke="#FFFFFF"
+        stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="104" cy="40" r="13" fill="#84CC16" stroke="#FFFFFF" stroke-width="4"/>
 </svg>

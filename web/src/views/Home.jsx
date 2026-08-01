@@ -1,55 +1,27 @@
 import { useMemo, useState } from "react";
-import { Activity, CalendarRange, Check, ClipboardList, Database, Download, FileText, Target, Users } from "lucide-react";
+import { Activity, CalendarRange, ClipboardList, Database, Download, FileText, Target, Users } from "lucide-react";
 import { PolarAngleAxis, Area, AreaChart, Bar, BarChart, CartesianGrid, ComposedChart, Legend, Line, LineChart, RadialBar, RadialBarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Badge, Bar2, Btn, Card, Empty, Select, Stat, TableWrap, Td, Th } from "../components/ui.jsx";
-import { computeMMR, fmt, monthsSince, n, pct, r1, r2, siteRequirement } from "../lib/calc.js";
+import { Badge, Bar2, Btn, Card, Empty, Select, Stat } from "../components/ui.jsx";
+import { computeMMR, fmt, n, pct, r2 } from "../lib/calc.js";
 import { C, D_TAGS, MONTHS, MONTHS_L, SERIES } from "../lib/constants.js";
-import { pddAgg, pddRates, rate } from "./Planning.jsx";
+import { tachesUtilisateur } from "../lib/taches.js";
+import { pddAgg, rate } from "./Planning.jsx";
 import { PageHead } from "./Shell.jsx";
 
 /* ══════════════════ Accueil ══════════════════ */
-function urgentTasks(db){
-  const t = []; const nowM = new Date().getMonth();
-  db.sites.filter(s=>s.status!=="Inactive").forEach(s => {
-    const missed = s.plan.filter((p,i)=>p.planned && !p.done && i<nowM).length;
-    if(missed) t.push({ id:"m"+s.id, prio:"haute", kind:"Visite en retard",
-      text:`${s.poi} — ${missed} échéance(s) de visite non honorée(s)`,
-      ctx:`${s.subOffice} · ${s.adm3}`, go:["suivi","monitoring"] });
-    const ms = monthsSince(s.lastVisit); const req = siteRequirement(db, s);
-    if(req.interval && (ms===null || ms > req.interval*1.5))
-      t.push({ id:"i"+s.id, prio: ms===null?"haute":"moyenne", kind:"Intervalle dépassé",
-        text:`${s.poi} — ${ms===null?"jamais visité":r1(ms)+" mois depuis la dernière visite"}, intervalle requis ${req.interval} mois`,
-        ctx:`${s.subOffice} · ${s.adm3}`, go:["suivi","monitoring"] });
-  });
-  (db.pdd||[]).forEach(l => {
-    if(l.month < nowM && !n(l.distributed) && l.status!=="cancelled")
-      t.push({ id:"pdd"+l.id, prio: l.month < nowM-1 ? "haute" : "moyenne", kind:"Distribution non renseignée",
-        text:`${l.commune} — ${MONTHS_L[l.month]}, ${l.actType} ${l.modality} : aucune quantité distribuée saisie`,
-        ctx:l.bureau, go:["programme","distribution"] });
-    { const r = pddRates(l);
-      if(n(l.distributed) && r.distribution !== null && r.distribution < 0.5 && l.month <= nowM)
-        t.push({ id:"pddlow"+l.id, prio:"moyenne", kind:"Taux de distribution faible",
-          text:`${l.commune} — ${MONTHS_L[l.month]}, ${l.actType} : ${rate(r.distribution)} du planifié distribué`,
-          ctx:l.bureau, go:["programme","distribution"] }); } });
-  const pending = db.visits.filter(v=>v.status==="À valider").length;
-  if(pending) t.push({ id:"val", prio:"moyenne", kind:"Validation en attente",
-    text:`${pending} soumission(s) de suivi de processus attendent une validation`, ctx:"visites en attente", go:["suivi","monitoring"] });
-  db.params.filter(p=>!n(p.feasiblePerMonth)).forEach(p =>
-    t.push({ id:"p"+p.id, prio:"moyenne", kind:"Paramètre incomplet",
-      text:`Capacité mensuelle non renseignée — ${p.office} / ${p.tag}`, ctx:"paramétrage", go:["suivi","params"] }));
-  db.indicators.forEach(ind => { if(!db.outcomes.some(o=>o.indicator===ind.id))
-    t.push({ id:"o"+ind.id, prio:"basse", kind:"Indicateur sans valeur",
-      text:`${ind.name.slice(0,60)} — aucune mesure enregistrée`, ctx:"indicateurs", go:["programme","results"] }); });
-  const order = { haute:0, moyenne:1, basse:2 };
-  return t.sort((a,b)=>order[a.prio]-order[b.prio]);
-}
+/* Forme héritée des tâches, conservée pour le générateur de rapports qui la
+   consomme telle quelle (views/Reports.jsx). La dérivation, elle, a rejoint
+   lib/taches.js : l'accueil n'en est plus propriétaire depuis que la cloche de
+   la barre du haut s'en sert aussi. Sans compte, la vue est nationale — un
+   rapport décrit la situation du pays, pas celle d'un poste de travail. */
+const PRIO = { urgent:"haute", a_surveiller:"moyenne", information:"basse" };
+const urgentTasks = (db) => tachesUtilisateur(db).map(t => ({
+  id:t.id, prio:PRIO[t.severite], kind:t.titre, text:t.detail, ctx:t.contexte, go:t.vers }));
 
 function Home({ db, me, go }){
-  const [mFilter,setMFilter] = useState("all"); const [prio,setPrio] = useState("");
+  const [mFilter,setMFilter] = useState("all");
   const mmr = useMemo(()=>computeMMR(db, db.year), [db]);
-  const tasks = useMemo(()=>urgentTasks(db), [db]);
   const nowM = new Date().getMonth();
-  const shown = tasks.filter(t=>!prio||t.prio===prio).slice(0,40);
 
   const last3 = useMemo(()=>{ const out=[];
     for(let k=2;k>=0;k--){ const m=nowM-k; if(m<0) continue;
@@ -91,7 +63,8 @@ function Home({ db, me, go }){
   const recent = db.audit.slice().sort((a,b)=>b.at.localeCompare(a.at));
   return (
     <div className="space-y-4">
-      <PageHead title="Accueil" text={`Bonjour ${me.firstName}. Situation consolidée du suivi au ${new Date().toLocaleDateString("fr-FR")}.`}>
+      <PageHead title="Accueil" text={`Bonjour ${me.firstName}. Situation consolidée du suivi au ${new Date().toLocaleDateString("fr-FR")}. `
+        + "Les échéances à traiter sont signalées par la cloche, en haut de l'écran."}>
         <Btn kind="sec" icon={CalendarRange} onClick={()=>go("suivi","monitoring")}>Plan de suivi</Btn>
         <Btn icon={FileText} onClick={()=>go("reports","build")}>Générer un rapport</Btn>
       </PageHead>
@@ -139,29 +112,10 @@ function Home({ db, me, go }){
         </Card>
       </div>
 
-      <Card flush title="Tâches urgentes et actions à mener"
-        subtitle={`${tasks.filter(t=>t.prio==="haute").length} priorité haute · ${tasks.filter(t=>t.prio==="moyenne").length} moyenne · ${tasks.filter(t=>t.prio==="basse").length} basse`}
-        right={<Select value={prio} onChange={e=>setPrio(e.target.value)} empty="Toutes priorités"
-          options={[["haute","Haute"],["moyenne","Moyenne"],["basse","Basse"]]} className="mi-py1 mi-xs mi-wauto" />}>
-        {shown.length ? (
-          <TableWrap max="mh340">
-            <thead><tr><Th className="w-24">Priorité</Th><Th>Nature</Th><Th>Détail</Th><Th>Contexte</Th></tr></thead>
-            <tbody>{shown.map(t=>(
-              <tr key={t.id} className="hover:bg-sky-50">
-                <Td><Badge tone={t.prio==="haute"?"r":t.prio==="moyenne"?"y":"n"}>{t.prio}</Badge></Td>
-                <Td className="font-medium text-slate-700">{t.kind}</Td>
-                <Td className="text-slate-700">{t.text}</Td>
-                {/* La tâche mène à l'écran qui la résout : le chemin n'a plus à être
-                    écrit en toutes lettres, ce qui était le symptôme d'une navigation
-                    qu'on ne devinait pas. */}
-                <Td>{t.go
-                  ? <button onClick={()=>go(...t.go)}
-                      className="c-bd hover:underline text-left">{t.ctx} →</button>
-                  : <span className="text-slate-500">{t.ctx}</span>}</Td></tr>))}
-            </tbody></TableWrap>
-        ) : <Empty icon={Check} title="Aucune action en attente" text="Toutes les échéances de suivi sont honorées." />}
-      </Card>
-
+      {/* Le tableau des tâches urgentes tenait ici toute la largeur. Il n'était lisible
+          que depuis l'accueil, alors qu'une échéance manquée doit se signaler d'où
+          qu'on soit : il est devenu la cloche de la barre du haut. L'accueil garde ce
+          pour quoi on l'ouvre — l'état d'ensemble, pas la liste des corvées. */}
       <div className="grid gap-4" style={{gridTemplateColumns:"1fr 1fr"}}>
         <Card title="Plan et réalisé par catégorie d'activité"
           right={<Select value={mFilter} onChange={e=>setMFilter(e.target.value)} className="mi-py1 mi-xs mi-wauto"

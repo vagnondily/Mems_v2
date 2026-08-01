@@ -1,5 +1,9 @@
 import { z } from "zod";
 import ExcelJS from "exceljs";
+/* JSZip est la bibliothèque d'archives d'ExcelJS lui-même : l'importer ici
+   n'ajoute aucune dépendance, et garantit qu'on lit l'archive exactement comme
+   la lira ExcelJS un instant plus tard. */
+import JSZip from "jszip";
 import { db, tx } from "../db.js";
 import { newId } from "./crypto.js";
 import { currentVersion, resolveUnit, labelsFor } from "./geo.js";
@@ -318,9 +322,61 @@ export async function buildTemplate(kind, ctx){
   return wb;
 }
 
+/* ── Garde-fou avant toute décompression ─────────────────────────────
+   `wb.xlsx.load()` inflate intégralement chaque entrée de l'archive, sans plafond
+   et sans vérifier que l'entrée appartient au paquet OOXML. Un .xlsx de 300 Ko
+   contenant une entrée de 300 Mo de zéros — une archive parfaitement valide, que
+   n'importe quel outil de compression produit — fait donc gonfler le processus
+   jusqu'à sa mort. À la limite de téléversement (MAX_BODY_MB, 25 Mo), l'expansion
+   se compte en gigaoctets : une seule requête suffit, le limiteur de débit n'y
+   change rien, et `restart: unless-stopped` relance le serveur pour la suivante.
+   Le droit exigé est « edit », c'est-à-dire le rôle le plus distribué du terrain.
+
+   Deux contrôles, sur ce que l'archive ANNONCE — donc sans rien décompresser :
+
+   — le nom de chaque entrée doit appartenir au paquet OOXML. Un classeur Excel ne
+     contient rien d'autre ; le reste est un passager clandestin ;
+   — la somme des tailles décompressées reste sous le plus petit de 200 Mo et de
+     100 fois la taille du fichier reçu. Le facteur laisse largement passer un vrai
+     classeur — du XML, qui se comprime autour de 10:1 — tout en fermant la porte
+     aux rapports de 1000:1 dont vit l'attaque.
+
+   Limite assumée : un en-tête peut mentir sur la taille inflatée. S'en prémunir
+   vraiment supposerait d'inflater soi-même chaque entrée derrière un compteur,
+   donc de réécrire la lecture d'ExcelJS. Ce contrôle-ci arrête l'attaque telle
+   qu'elle se monte en pratique, en quinze lignes et sans dépendance nouvelle. */
+const ENTREES_OOXML = /^(\[Content_Types\]\.xml|_rels\/|docProps\/|xl\/)/;
+const INFLATION_MAX_ABSOLUE = 200 * 1024 * 1024;
+const INFLATION_MAX_FACTEUR = 100;
+
+const refusArchive = (message) => { const e = new Error(message); e.code = "ARCHIVE"; return e; };
+
+export async function verifierArchiveXlsx(buffer){
+  let zip;
+  try{ zip = await JSZip.loadAsync(buffer); }
+  catch(e){ throw refusArchive("Fichier illisible : ce n'est pas une archive .xlsx valide."); }
+
+  const plafond = Math.min(INFLATION_MAX_ABSOLUE, buffer.length * INFLATION_MAX_FACTEUR);
+  let total = 0;
+  for(const [nom, entree] of Object.entries(zip.files)){
+    if(!ENTREES_OOXML.test(nom)) throw refusArchive(
+      `Ce fichier contient une entrée étrangère au format Excel (« ${nom.slice(0,80)} ») : `
+      + "il a été fabriqué ou modifié en dehors d'un tableur. "
+      + "Téléchargez le modèle et remplissez-le sans le reconstruire.");
+    if(entree.dir) continue;
+    total += entree._data?.uncompressedSize || 0;
+    if(total > plafond) throw refusArchive(
+      `Ce fichier annonce au moins ${Math.round(total / 1048576)} Mo une fois décompressé pour `
+      + `${Math.round(buffer.length / 1024)} Ko reçus : le rapport est trop grand pour un classeur `
+      + "réel. Il est refusé sans être ouvert.");
+  }
+}
+
 /* ── Lecture d'un fichier téléversé ────────────────────────────────── */
 export async function readUpload(kind, buffer){
   const def = KINDS[kind];
+  /* Avant tout le reste : rien n'est inflaté tant que l'archive n'est pas jugée sûre. */
+  await verifierArchiveXlsx(buffer);
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buffer);
 

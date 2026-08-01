@@ -184,11 +184,35 @@ r.put("/", requireCap("edit"), (req, res) => {
   const v = currentVersion();
   if(!v) return res.status(409).json({ error:"aucun référentiel courant : chargez un millésime d'abord" });
 
-  const known = new Set(db.prepare("SELECT pcode FROM geo_unit WHERE version_id=?").all(v.id).map(x=>x.pcode));
+  /* Le chemin de l'unité, pas seulement son existence : il faut pouvoir dire si
+     elle tombe dans le périmètre du bureau de l'appelant. */
+  const chemins = Object.fromEntries(db.prepare(
+    "SELECT pcode, path FROM geo_unit WHERE version_id=?").all(v.id).map(x => [x.pcode, x.path]));
+
+  /* Le même contrôle de portée que l'import Excel (lib/import.js) : ce flux-ci
+     l'avait perdu en route — `scopeOf` était importé mais ne servait qu'en lecture,
+     si bien qu'un compte cloisonné écrivait la population et le ciblage de
+     n'importe quelle commune du pays par un simple appel direct.
+
+     L'appartenance exigée est stricte, à la différence de `covers` qui retient aussi
+     les ancêtres : voir une région parce qu'on en couvre un district est légitime,
+     écrire la ligne de la région entière ne l'est pas. */
+  const scope = scopeOf(req.user);
+  const dansPerimetre = (pcode) => {
+    if(scope.unbounded) return true;
+    const path = chemins[pcode]; if(!path) return false;
+    return scope.paths.some(p => path === p || path.startsWith(p + "/"));
+  };
+
   const rejets = [];
   const ok = parsed.data.rows.filter((r0, i) => {
-    if(!known.has(r0.geo_pcode)){
+    if(!chemins[r0.geo_pcode]){
       rejets.push({ ligne:i+1, pcode:r0.geo_pcode, message:"p-code absent du référentiel courant" });
+      return false;
+    }
+    if(!dansPerimetre(r0.geo_pcode)){
+      rejets.push({ ligne:i+1, pcode:r0.geo_pcode,
+        message:"hors du périmètre de votre bureau" });
       return false;
     }
     if(r0.targeted > r0.population && r0.population > 0){

@@ -22,6 +22,22 @@ function tpmInterdit(b){
   return null;
 }
 
+/* ── Modifier n'est pas recréer ──────────────────────────────────────
+   `PUT /api/users/:id` réutilisait le schéma de création. Or ce schéma a des
+   défauts — `role="viewer"`, `tabs=[]`, `active=true` — et des transformations qui
+   ramènent l'absence à `null`. Conséquence : un enregistrement partiel, celui que
+   fait tout écran qui ne connaît qu'une partie du compte, rétrogradait le rôle,
+   effaçait le rattachement au prestataire et au bureau, et surtout RÉACTIVAIT un
+   compte désactivé — sans un mot d'erreur, puisque rien n'était invalide.
+
+   Le schéma de création reste intact : il a raison d'exiger un compte complet.
+   C'est la modification qui doit accepter le partiel, et fusionner avec l'existant. */
+const userPatch = schemas.user.partial();
+
+/* Ce qui n'est pas envoyé n'est pas modifié. Seul `undefined` vaut absence : un
+   `null` explicite reste une valeur, c'est ainsi qu'on détache un bureau. */
+const fusion = (envoye, actuel) => envoye === undefined ? actuel : envoye;
+
 r.use(requireCap("admin"));
 
 r.get("/", (req, res) => res.json({ users:
@@ -48,19 +64,33 @@ r.post("/", validate(schemas.user), async (req, res) => {
   res.status(201).json({ user: shape(db.prepare("SELECT * FROM users WHERE id=?").get(id)) });
 });
 
-r.put("/:id", validate(schemas.user), async (req, res) => {
+r.put("/:id", validate(userPatch), async (req, res) => {
   const cur = db.prepare("SELECT * FROM users WHERE id=?").get(req.params.id);
   if(!cur) return res.status(404).json({ error:"compte introuvable" });
   const b = req.body;
+  /* Le compte tel qu'il sera : l'envoi par-dessus l'existant. Tous les contrôles
+     ci-dessous portent sur ce résultat, jamais sur le seul corps de la requête —
+     sans quoi ils raisonneraient sur des champs que l'appelant n'a pas envoyés. */
+  const m = {
+    email:      fusion(b.email, cur.email),
+    first_name: fusion(b.first_name, cur.first_name),
+    last_name:  fusion(b.last_name, cur.last_name),
+    title:      fusion(b.title, cur.title),
+    office_id:  fusion(b.office_id, cur.office_id),
+    tpm_id:     fusion(b.tpm_id, cur.tpm_id),
+    role:       fusion(b.role, cur.role),
+    tabs:       b.tabs === undefined ? cur.tabs : JSON.stringify(b.tabs),
+    active:     b.active === undefined ? cur.active : (b.active ? 1 : 0),
+  };
   /* Un administrateur ne peut ni se retirer ses propres droits ni se désactiver :
      cela permettrait de fermer l'accès à la configuration sans recours. */
-  if(cur.id === req.user.id && (b.role !== cur.role || !b.active))
+  if(cur.id === req.user.id && (m.role !== cur.role || !m.active))
     return res.status(409).json({ error:"vous ne pouvez pas modifier votre propre rôle ni vous désactiver" });
   if(cur.role === "super" && req.user.role !== "super")
     return res.status(403).json({ error:"seul un super-utilisateur modifie un super-utilisateur" });
-  const dup = db.prepare("SELECT 1 FROM users WHERE email=? AND id<>?").get(b.email, cur.id);
+  const dup = db.prepare("SELECT 1 FROM users WHERE email=? AND id<>?").get(m.email, cur.id);
   if(dup) return res.status(409).json({ error:"cette adresse est déjà utilisée" });
-  const interdit = tpmInterdit(b);
+  const interdit = tpmInterdit(m);
   if(interdit) return res.status(422).json({ error:interdit });
   let pwSql = "", pwArg = [];
   if(b.password){
@@ -72,11 +102,11 @@ r.put("/:id", validate(schemas.user), async (req, res) => {
   }
   db.prepare(`UPDATE users SET email=?, first_name=?, last_name=?, title=?, office_id=?,
               tpm_id=?, role=?, tabs=?, active=?, updated_at=datetime('now') ${pwSql} WHERE id=?`)
-    .run(b.email, b.first_name, b.last_name, b.title, b.office_id, b.tpm_id, b.role,
-         JSON.stringify(b.tabs), b.active?1:0, ...pwArg, cur.id);
+    .run(m.email, m.first_name, m.last_name, m.title, m.office_id, m.tpm_id, m.role,
+         m.tabs, m.active, ...pwArg, cur.id);
   db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'securite','users',?,'update',?)`)
-    .run(newId("aud"), req.user.id, req.user.email, cur.id, `Compte modifié — ${b.email}`);
+    .run(newId("aud"), req.user.id, req.user.email, cur.id, `Compte modifié — ${m.email}`);
   res.json({ user: shape(db.prepare("SELECT * FROM users WHERE id=?").get(cur.id)) });
 });
 

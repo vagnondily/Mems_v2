@@ -25,7 +25,13 @@ import userRoutes from "./routes/users.js";
 import analyticsRoutes from "./routes/analytics.js";
 import caseloadRoutes from "./routes/caseload.js";
 import importRoutes from "./routes/import.js";
+import xlsformRoutes from "./routes/xlsform.js";
 import odkRoutes from "./routes/odk.js";
+import submissionRoutes from "./routes/submissions.js";
+import aliasRoutes from "./routes/aliases.js";
+import connectorRoutes from "./routes/connectors.js";
+import scriptRoutes from "./routes/scripts.js";
+import adminRoutes from "./routes/admin.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 migrate(path.join(here, "..", "migrations"));
@@ -49,8 +55,16 @@ app.use(helmet({
          supprimer, pas à conserver au cas où. */
       styleSrc: ["'self'", "'unsafe-inline'"],
       fontSrc: ["'self'", "data:"],
-      imgSrc: ["'self'", "data:", "blob:"],
+      /* Les tuiles du fond de carte sont des images tierces : elles sont la
+         SEULE exception, et elle est déclarée par une liste d'hôtes explicite
+         (config.tileHosts, réglable par TILE_HOSTS) plutôt que par un joker.
+         Une instance sans fond de carte se configure en vidant cette variable :
+         la carte continue alors d'afficher contours et points. */
+      imgSrc: ["'self'", "data:", "blob:", ...config.tileHosts],
       connectSrc: ["'self'", ...config.corsOrigins],
+      /* Déclarée explicitement : sans elle, worker-src retombe sur default-src
+         et un worker créé depuis un blob: est refusé sans message lisible. */
+      workerSrc: ["'self'", "blob:"],
       frameSrc: ["'self'"],
       objectSrc: ["'none'"],
       baseUri: ["'self'"],
@@ -114,6 +128,27 @@ app.use("/api/analytics", authenticate, analyticsRoutes);
 app.use("/api/caseload", authenticate, caseloadRoutes);
 app.use("/api/import", authenticate, importRoutes);
 app.use("/api", authenticate, odkRoutes);
+/* Suite immédiate du tirage ODK : `odk-forms/:id/pull` remplit le cache,
+   `submissions/ingest` en tire des lignes rattachées à des sites. */
+app.use("/api", authenticate, submissionRoutes);
+/* Les codes externes des sites : monté sous /api et APRÈS le routeur des sites,
+   parce qu'il sert « /sites/:id/aliases » — deux segments, que `/:id` du routeur
+   des sites ne capte pas, et qui lui reviennent donc naturellement. */
+app.use("/api", authenticate, aliasRoutes);
+app.use("/api", authenticate, xlsformRoutes);
+/* Connecteurs et correspondance des variables : monté sous /api comme les deux
+   précédents, dont il prolonge le travail — le XLSForm dit ce que la source
+   contient, le connecteur dit ce que MEMS en retient. */
+app.use("/api", authenticate, connectorRoutes);
+/* Exécution des scripts R et SPSS. Désactivée tant qu'aucun interpréteur n'est
+   déclaré, et réservée au super-utilisateur : le routeur pose lui-même son
+   garde, monter la route ne l'ouvre donc à personne. Voir lib/moteur.js. */
+app.use("/api/scripts", authenticate, scriptRoutes);
+/* Administration de l'INSTANCE — sessions, journal de sécurité, santé du
+   fichier de base, sauvegarde et restauration. Distincte de l'administration
+   du contenu (/api/users, /api/offices…), ouverte aux administrateurs : ce
+   routeur-ci pose lui-même `requireSuper` sur sa totalité. */
+app.use("/api/admin", authenticate, adminRoutes);
 app.use("/api/mre", authenticate, mreRoutes);
 app.use("/api/tpm", authenticate, tpmRoutes);
 app.use("/api", authenticate, collectionRoutes);

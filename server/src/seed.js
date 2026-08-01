@@ -692,7 +692,13 @@ if(info){
                 VALUES (?,?,?,?,?,?,?, 'super', ?, 1, 1)`)
       .run(uid, config.bootstrapEmail, pwHash, "Administrateur", "MEMS",
            "Responsable suivi et évaluation", null,
-           JSON.stringify(["home","suivi","programme","analytics","reports","settings"]));
+           /* Cette liste doit contenir TOUTES les destinations : c'est un
+              droit d'accès, et le compte d'amorçage est un super-utilisateur.
+              Y oublier une destination nouvellement ajoutée la rend invisible
+              sans qu'aucun message ne l'explique — un compte existant, lui,
+              garde la liste enregistrée au moment de sa création et devra la
+              recocher dans Paramètres → Utilisateurs. */
+           JSON.stringify(["home","suivi","programme","map","analytics","reports","settings"]));
   })();
 
   const counts = ["offices","activity_categories","sites","site_months","visits","coverage_params",

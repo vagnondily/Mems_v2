@@ -1,6 +1,6 @@
 import { Activity } from "lucide-react";
 import { Planning } from "../views/Planning.jsx";
-import { monthsSince, n, pct, r1, r2, siteRequirement } from "./calc.js";
+import { derniereVisite, monthsSince, n, pct, r1, r2, siteRequirement } from "./calc.js";
 
 /* ══════════════════════════════════════════════════════════════════════
    MEMS — Monitoring Evaluation Management System
@@ -43,6 +43,20 @@ button,select,textarea{font:inherit;color:inherit}
 .mh340{max-height:340px}.mh420{max-height:420px}.mh440{max-height:440px}
 .mh55{max-height:55vh}.mh62{max-height:62vh}.mh65{max-height:65vh}.mh68{max-height:68vh}
 .mh78{max-height:78vh}
+/* Fiche de site affichée au clic sur un point de la carte. Reprend la forme
+   d'une fiche d'adresse : titre, sous-titre, puis quelques couples clé/valeur
+   qu'on veut lire sans ouvrir la fiche complète du registre. */
+.mems-popup .leaflet-popup-content-wrapper{border-radius:0.6rem;box-shadow:0 6px 22px rgba(2,32,54,.18)}
+.mems-popup .leaflet-popup-content{margin:10px 12px;line-height:1.45}
+.mp-t{font-size:13.5px;font-weight:700;color:#0f172a}
+.mp-s{font-size:11px;color:#64748b;margin-bottom:6px}
+.mp-l{display:flex;gap:8px;font-size:11.5px;padding:1px 0}
+.mp-k{color:#64748b;flex:0 0 88px}
+.mp-v{color:#1e293b;font-weight:500;min-width:0;word-break:break-word}
+/* Leaflet pose ses propres z-index très haut ; les modales de MEMS montent à
+   60 et doivent rester au-dessus de la carte. */
+.leaflet-pane,.leaflet-control{z-index:20 !important}
+.leaflet-container{font:inherit;background:#eef3f7}
 .mw220{max-width:220px}.mw240{max-width:240px}.mw300{max-width:300px}.mw320{max-width:320px}
 .mw420{max-width:420px}.mw1520{max-width:1520px}
 .mnw52{min-width:52px}.mnw260{min-width:260px}.w38{width:38px}.w46{width:46%}.h22{height:22px}
@@ -111,15 +125,51 @@ const D_INDICATORS = [
 
 /* Le prévu et le réalisé ne sont pas deux sujets mais deux vues du même sujet :
    le premier niveau suit désormais les deux métiers réellement distincts. */
+/* La cartographie est sortie de « Suivi-évaluation » : ce n'est pas une vue de
+   plus du suivi, c'est une lecture transversale — elle montre aussi bien le
+   plan de distribution que la couverture. L'enfouir sous un sous-onglet la
+   rendait introuvable à qui n'ouvrait pas ce menu. */
 const TABS_ALL = [["home","Accueil"],["suivi","Suivi-évaluation"],["programme","Programme"],
-  ["analytics","Analyses"],["reports","Rapports"],["settings","Paramètres"]];
+  ["map","Cartographie"],["analytics","Analyses"],["reports","Rapports"],["settings","Paramètres"]];
+
+/* La console d'administration est la seule destination qui ne figure PAS dans
+   TABS_ALL, et c'est délibéré : TABS_ALL est la liste des destinations qu'on
+   coche compte par compte dans Paramètres → Utilisateurs. L'y ajouter poserait
+   une case à cocher qui ne produirait rien — le serveur (routes/admin.js,
+   requireSuper) n'ouvre ces routes qu'au rôle `super`, quelle que soit la liste
+   enregistrée. Cette destination suit donc le RÔLE et non la préférence, comme
+   du côté serveur. */
+const TAB_ADMIN = ["admin","Administration"];
+
 const D_ROLES = {
-  super:  { label:"Super-utilisateur", tabs:TABS_ALL.map(t=>t[0]), edit:true, del:true, validate:true, admin:true, sync:true },
+  /* Première différence réelle entre `super` et `admin` : les quatre capacités
+     (edit, del, validate, admin) restent identiques — un administrateur gère
+     déjà comptes, bureaux et référentiels — mais une destination de plus n'est
+     ouverte qu'au super-utilisateur. Ce qui les sépare n'est pas « plus de
+     droits sur les mêmes objets », c'est un objet différent : l'instance
+     elle-même (sessions, journal de sécurité, base, sauvegardes). */
+  super:  { label:"Super-utilisateur", tabs:[...TABS_ALL.map(t=>t[0]), TAB_ADMIN[0]], edit:true, del:true, validate:true, admin:true, sync:true },
   admin:  { label:"Administrateur",    tabs:TABS_ALL.map(t=>t[0]), edit:true, del:true, validate:true, admin:true, sync:true },
   validator:{label:"Validateur",       tabs:["home","suivi","programme","analytics","reports"], edit:true, del:false, validate:true, admin:false, sync:true },
   editor: { label:"Éditeur",           tabs:["home","suivi","programme","analytics","reports"], edit:true, del:false, validate:false,admin:false, sync:true },
   viewer: { label:"Lecteur",           tabs:["home","suivi","programme","reports"],              edit:false,del:false, validate:false,admin:false, sync:false },
 };
+
+/* Les destinations réellement ouvertes à un compte, règle unique partagée par
+   App et par la coquille.
+
+   `tabs` est une liste figée à la CRÉATION du compte : un super-utilisateur
+   créé avant l'existence de l'administration porte une liste qui ne la contient
+   pas et ne la verrait jamais apparaître, pas même après mise à jour — c'est
+   exactement le cas du compte d'amorçage. On accroche donc l'administration au
+   rôle, et on la retire de la liste de quiconque n'est pas `super` même si elle
+   y a été enregistrée : le serveur refuserait de toute façon, mieux vaut ne pas
+   promettre une porte qui se referme au premier clic. */
+function destinationsAutorisees(u){
+  const base = (u?.tabs?.length ? u.tabs : D_ROLES[u?.role]?.tabs) || ["home"];
+  const sansAdmin = base.filter(t => t !== TAB_ADMIN[0]);
+  return u?.role === "super" ? [...sansAdmin, TAB_ADMIN[0]] : sansAdmin;
+}
 
 const D_WEIGHTS = {
   security:   { label:"Situation sécuritaire",             pts:{0:0,1:2,3:4,99:0} },
@@ -224,7 +274,7 @@ function caseloadScore(benef, sc){
 function sitePriority(s, db){
   const sc = (db && db.scoring) || D_SCORING;
   const req = db ? siteRequirement(db, s) : { interval:0 };
-  const months = monthsSince(s.lastVisit);
+  const months = monthsSince(derniereVisite(s));
   /* 0 si l'intervalle requis n'est pas encore atteint, sinon pénalité */
   const scoreLastVisit = (!s.subOffice || !(s.poi||s.siteName)) ? 0
     : (req.interval && months !== null && req.interval > months) ? 0 : n(sc.overdue.pts);
@@ -270,4 +320,4 @@ function coverageRows(db, category, scope){
     cumul: { active: Math.max(0,...active), plan: plan.reduce((t,x)=>t+x,0), actual: actual.reduce((t,x)=>t+x,0) } };
 }
 
-export { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, CSS, DURATIONS, D_ADJUST, D_FORMULAS, D_INDICATORS, D_MMR, D_MODALITY, D_OFFICES, D_PARTNERS, D_POI_SUB, D_ROLES, D_SCORING, D_SECURITY, D_STATUS, D_TAGS, D_URBAN, D_WEIGHTS, MODALITY_TYPES, MONITORING_TYPES, MONTHS, MONTHS_L, PROG_AREAS, SERIES, SITE_TYPES, TABS_ALL, caseloadScore, coverageRows, siteDerived, sitePriority };
+export { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, CSS, DURATIONS, D_ADJUST, D_FORMULAS, D_INDICATORS, D_MMR, D_MODALITY, D_OFFICES, D_PARTNERS, D_POI_SUB, D_ROLES, D_SCORING, D_SECURITY, D_STATUS, D_TAGS, D_URBAN, D_WEIGHTS, MODALITY_TYPES, MONITORING_TYPES, MONTHS, MONTHS_L, PROG_AREAS, SERIES, SITE_TYPES, TABS_ALL, TAB_ADMIN, caseloadScore, coverageRows, destinationsAutorisees, siteDerived, sitePriority };

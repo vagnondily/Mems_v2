@@ -2,12 +2,15 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Boundary } from "./components/Boundary.jsx";
 import { Toast, Btn } from "./components/ui.jsx";
 import { uid } from "./lib/calc.js";
-import { ACT_CATEGORIES, C, D_MMR, D_SCORING, D_ROLES, D_FORMULAS, D_WEIGHTS } from "./lib/constants.js";
+import { ACT_CATEGORIES, C, D_MMR, D_SCORING, D_ROLES, D_FORMULAS, D_WEIGHTS,
+         destinationsAutorisees } from "./lib/constants.js";
 import { api, setToken, setUnauthorizedHandler, createSyncQueue } from "./lib/api.js";
+import { Admin } from "./views/Admin.jsx";
 import { Analytics } from "./views/Analytics.jsx";
 import { Home } from "./views/Home.jsx";
 import { Login } from "./views/Login.jsx";
 import { Programme, Suivi } from "./views/Merged.jsx";
+import MapView from "./views/MapView.jsx";
 import { Reports } from "./views/Reports.jsx";
 import { SettingsView } from "./views/Settings.jsx";
 import { Shell } from "./views/Shell.jsx";
@@ -56,17 +59,17 @@ const normalizeMe = (u) => u && ({
 });
 
 /* Onglets autorisés : une seule règle, partagée par App et par la coquille.
-   `tabs` vaut [] par défaut côté serveur ; il faut donc retomber sur le rôle,
-   sinon un compte se retrouve avec une navigation vide. */
-const resolveTabs = (u) =>
-  (u?.tabs?.length ? u.tabs : D_ROLES[u?.role]?.tabs) || ["home"];
+   Elle vit dans lib/constants.js, aux côtés de D_ROLES : la destination
+   « Administration » suit le rôle et non la liste enregistrée, et cette nuance
+   se lit mieux à côté de la matrice qu'ici. */
+const resolveTabs = destinationsAutorisees;
 
 export default function App(){
   const [db, setDb] = useState(null);
   const [me, setMe] = useState(null);
   const [tab, setTabState] = useState("home");
   const [subs, setSubs] = useState({ suivi:"summary", programme:"distribution",
-    analytics:"datasets", reports:"extract", settings:"general" });
+    analytics:"datasets", reports:"extract", settings:"general", admin:"sessions" });
   const [toasts, setToasts] = useState([]);
   const [phase, setPhase] = useState("boot");
   const [fatal, setFatal] = useState("");
@@ -217,12 +220,17 @@ export default function App(){
           setSub={setSub("suivi")} notify={notify} can={can} go={setTab} />}
         {view==="programme" && <Programme db={db} set={set} me={me} sub={subs.programme}
           setSub={setSub("programme")} notify={notify} can={can} go={setTab} />}
-        {view==="analytics" && <Analytics db={db} set={set} sub={subs.analytics}
+        {view==="map" && <MapView db={db} me={me} notify={notify} go={setTab} />}
+        {/* `me` sert à l'exécution des scripts sur le serveur : elle est
+            réservée au rôle `super` et non à la capacité « admin ». */}
+        {view==="analytics" && <Analytics db={db} set={set} me={me} sub={subs.analytics}
           setSub={setSub("analytics")} notify={notify} can={can} />}
         {view==="reports" && <Reports db={db} set={set} sub={subs.reports}
           setSub={setSub("reports")} notify={notify} can={can} />}
         {view==="settings" && <SettingsView db={db} set={set} me={me} sub={subs.settings}
           setSub={setSub("settings")} notify={notify} can={can} reload={loadState} />}
+        {view==="admin" && <Admin me={me} sub={subs.admin}
+          setSub={setSub("admin")} notify={notify} />}
       </Boundary>
     </Shell>
     <Toast list={toasts} />

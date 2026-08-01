@@ -121,6 +121,10 @@ r.post("/:kind", (req, res, next) => {
           ? `Rien n'a encore été enregistré. Confirmez pour appliquer ${summary.crees + summary.modifies} ligne(s).`
           : "Rien à appliquer : aucune ligne ne change." });
     }catch(e){
+      /* Archive refusée avant décompression (entrée étrangère au format, ou taille
+         inflatée disproportionnée) : c'est un fichier fautif, pas une panne — et son
+         motif exact doit remonter à l'utilisateur, qui seul peut le corriger. */
+      if(e.code === "ARCHIVE") return res.status(422).json({ error:e.message });
       if(/zip|corrupt|End of (central|data)/i.test(e.message))
         return res.status(422).json({ error:"fichier illisible : est-ce bien un .xlsx ?" });
       if(e.code === "WRONG_KIND") return res.status(422).json({ error:e.message });
