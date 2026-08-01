@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api.js";
 import { useGeoCascade, resetGeoCache } from "../lib/geo.js";
 import { Activity, ArrowRightLeft, Building2, CalendarRange, Check, ChevronDown, ChevronUp, ClipboardList, Copy, Download, FileText, HelpCircle, KeyRound, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
@@ -2722,6 +2722,11 @@ const NOM_NATURE = Object.fromEntries(NATURES_CONNECTEUR);
    épreuve de connexion puisse éprouver. Le serveur applique la même règle et
    refuse les autres : cette constante ne fait que masquer un bouton inutile. */
 const RESEAU_CONNECTEUR = new Set(["odk","kobo","foundry","http"]);
+/* Les natures que le SERVEUR sait aller lire tout seul — celles pour lesquelles,
+   l'épreuve passée, on peut découvrir les colonnes et pré-remplir la table sans
+   rien coller. Doit rester le miroir de NATURES_LUES côté serveur : « odk » en
+   est dehors (son tirage a son propre écran et son cache). */
+const LUES_CONNECTEUR = new Set(["foundry","kobo","http"]);
 
 /* Ni `db` ni `set` : cet écran ne passe pas par l'état global. Les connecteurs
    ont leurs propres routes, et les faire transiter par la file de synchronisation
@@ -2739,6 +2744,11 @@ function SetConnectors({ notify, can }){
   const [apercu,setApercu]     = useState(null);
   const [epreuve,setEpreuve]   = useState(null);   /* diagnostic de « tester cette source » */
   const [busy,setBusy]         = useState(false);
+  /* Correspondances pré-remplies par le peuplement automatique, en attente que le
+     connecteur fraîchement enregistré soit sélectionné. Un ref et non un état :
+     l'effet de chargement des correspondances les fusionne au vol, sans re-render
+     supplémentaire ni course avec le setLignes qui suit setSel. */
+  const autoFill = useRef(null);   /* { id, entity, lignes } */
 
   const tester = async (c) => {
     setBusy(true);
@@ -2761,17 +2771,30 @@ function SetConnectors({ notify, can }){
   const conn = (rows||[]).find(x=>x.id===sel) || null;
   const ent  = (registre?.entites||[]).find(e=>e.cle===entity) || null;
 
-  /* Les correspondances déjà enregistrées pour ce connecteur et cette entité. */
-  useEffect(()=>{
+  /* Charge les correspondances enregistrées pour (connecteur, entité), puis
+     fusionne le peuplement automatique en attente. Extraite de l'effet pour être
+     rejouable à la main : réenregistrer le connecteur DÉJÀ sélectionné ne change
+     pas `sel`, donc l'effet ne se redéclenche pas — il faut alors l'appeler. */
+  const chargerMappings = (id, ent) => {
     setApercu(null);
-    if(!sel || !entity){ setLignes({}); return; }
-    api.connectorMappings(sel, entity).then(r=>{
+    if(!id || !ent){ setLignes({}); return Promise.resolve(); }
+    return api.connectorMappings(id, ent).then(r=>{
       const m = {};
       for(const x of r.rows||[]) m[x.mems_field] = { source_path:x.source_path||"",
         transform:x.transform||"brut", required:!!x.required, default_value:x.default_value||"" };
+      /* Peuplement automatique après enregistrement : les propositions ne
+         garnissent que les champs ENCORE VIDES — jamais par-dessus une
+         correspondance déjà déclarée, qu'un rapprochement de noms n'a pas à
+         écraser. Elles portent leur score, pour que chaque ligne se relise. */
+      if(autoFill.current && autoFill.current.id===id && autoFill.current.entity===ent){
+        for(const [f,v] of Object.entries(autoFill.current.lignes))
+          if(!m[f]?.source_path) m[f] = v;
+        autoFill.current = null;
+      }
       setLignes(m);
     }).catch(e=>notify(e.message,"err"));
-  },[sel,entity]);
+  };
+  useEffect(()=>{ chargerMappings(sel, entity); },[sel,entity]);
 
   /* L'échantillon collé sert deux fois : à proposer des correspondances, et à
      montrer l'aperçu. Une saisie encore incomplète ne doit pas crier à l'erreur :
@@ -2887,12 +2910,70 @@ function SetConnectors({ notify, can }){
        n'est pas un secret : il part à chaque fois, sinon l'effacer serait impossible. */
     if((f.secret||"").trim()) payload.secret = f.secret.trim();
     if(f.id) payload.rev = f.rev;
+    let c2;
     try{
       const r = f.id ? await api.updateConnector(f.id, payload) : await api.createConnector(payload);
+      c2 = r.connector;
       setEdit(null); await charger();
-      setSel(r.connector.id);
-      notify("Connecteur enregistré","ok");
-    }catch(e){ notify(e.message,"err"); }
+    }catch(e){ notify(e.message,"err"); setBusy(false); return; }
+
+    /* « Quand on l'enregistre, tester d'abord la connexion et, si ok, peupler
+       automatiquement la table de correspondance. » L'enchaînement littéral :
+       enregistrer → éprouver → lire les colonnes → proposer. Chaque étape peut
+       échouer sans compromettre la précédente — le connecteur, lui, est écrit. */
+    if(!RESEAU_CONNECTEUR.has(c2.kind)){
+      setSel(c2.id); notify("Connecteur enregistré","ok"); setBusy(false); return;
+    }
+    let ep;
+    try{ ep = await api.connectorTest(c2.id); setEpreuve(ep); }
+    catch(e){ setSel(c2.id); notify("Connecteur enregistré. Épreuve de connexion impossible : "+e.message,"warn");
+      setBusy(false); return; }
+    if(!ep.ok){
+      setSel(c2.id);
+      notify("Connecteur enregistré — la connexion n'a pas abouti. Voir le détail de l'épreuve.","warn");
+      setBusy(false); return;
+    }
+    /* Connexion prouvée. Pour les natures que le serveur sait lire, on découvre
+       les colonnes et on pré-remplit la table via l'appariement de noms — sans
+       coller quoi que ce soit. Les autres (ODK) : test seul, l'écran attend leur
+       XLSForm. */
+    if(!LUES_CONNECTEUR.has(c2.kind)){
+      setSel(c2.id); notify("Connexion réussie. Joignez le XLSForm pour proposer les correspondances.","ok");
+      setBusy(false); return;
+    }
+    try{
+      const rv = await api.connectorVariables(c2.id);
+      const cles = (rv.variables||[]).map(v=>v.name);
+      if(!cles.length){
+        setSel(c2.id); notify("Connexion réussie, mais la source n'a renvoyé aucune colonne à rapprocher.","warn");
+        setBusy(false); return;
+      }
+      /* L'échantillon lu alimente les listes déroulantes et l'aperçu, et les
+         suggestions garnissent la table. On passe par le ref pour survivre au
+         rechargement des correspondances déclenché par setSel. */
+      if(rv.lignes?.length) setEch(JSON.stringify(rv.lignes));
+      setVars([]);
+      const rs = await api.connectorSuggestions(c2.id, { entity, cles });
+      const lignesProposees = {};
+      for(const s of rs.suggestions||[]){
+        if(!s.source_path) continue;
+        lignesProposees[s.mems_field] = { source_path:s.source_path, transform:s.transform,
+          required:false, default_value:"", score:s.score, motif:s.motif };
+      }
+      autoFill.current = { id:c2.id, entity, lignes:lignesProposees };
+      /* Si le connecteur était DÉJÀ sélectionné, changer `sel` pour la même
+         valeur ne redéclenche pas l'effet : on applique la fusion à la main. */
+      if(sel===c2.id) await chargerMappings(c2.id, entity); else setSel(c2.id);
+      const n = Object.keys(lignesProposees).length;
+      notify(n
+        ? `Connexion réussie — ${n} correspondance(s) pré-remplie(s) depuis ${rv.lignesLues} ligne(s). `
+          + "Vérifiez chaque ligne, puis Enregistrer."
+        : "Connexion réussie, mais aucun nom de colonne ne s'est rapproché d'un champ MEMS : à faire à la main.",
+        n ? "ok" : "warn");
+    }catch(e){
+      setSel(c2.id);
+      notify("Connexion réussie, mais la lecture des variables a échoué : "+e.message,"warn");
+    }
     setBusy(false);
   };
 
@@ -2906,10 +2987,12 @@ function SetConnectors({ notify, can }){
       <Note tool>
         <b>Une correspondance, pas du code.</b> Un connecteur dit <b>où</b> lire ; les correspondances
         disent <b>quelle variable de la source alimente quel champ MEMS</b>, et par quelle transformation.
-        Brancher une source de plus est alors un acte de configuration. La liste des champs et celle des
-        transformations viennent du serveur : c'est exactement celle contre laquelle l'enregistrement est
-        vérifié. Le bouton <b>Proposer</b> rapproche les noms et donne un score — il ne décide rien,
-        chaque ligne se relit. Le jeton d'accès est chiffré côté serveur et n'est jamais renvoyé.
+        À l'<b>enregistrement d'une source réseau</b>, MEMS <b>éprouve d'abord la connexion</b> ; si elle
+        passe et que la source est lisible (Foundry, Kobo, HTTP), il <b>lit ses colonnes et pré-remplit
+        la table</b> tout seul. Le rapprochement de noms donne un score — il ne décide rien, chaque ligne
+        se relit avant d'enregistrer. La liste des champs et celle des transformations viennent du serveur :
+        c'est exactement celle contre laquelle l'enregistrement est vérifié. Le jeton d'accès est chiffré
+        côté serveur et n'est jamais renvoyé.
       </Note>
       <div className="grid gap-4" style={{gridTemplateColumns:"320px 1fr"}}>
         <Card flush title="Connecteurs" subtitle={`${rows.length} source(s) déclarée(s)`}

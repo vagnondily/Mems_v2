@@ -3225,6 +3225,36 @@ test("connecteur Foundry : le dataset est lu, mappé, et les chiffres arrivent e
   assert.match(rr.body.error, /refusé/);
 });
 
+test("connecteur : /variables lit la source et rend ses colonnes pour le pré-remplissage", async () => {
+  /* Le maillon du peuplement automatique : à l'enregistrement, l'écran teste la
+     connexion puis découvre les colonnes SANS qu'on colle quoi que ce soit. */
+  const c = (await creerConnecteur({ name: "Foundry — découverte", kind: "foundry",
+    base_url: foundryUrl, config: { datasetRid: "ri.foundry.main.dataset.chiffres", branche: "master" },
+    secret: "jeton-foundry-lecture" })).body.connector;
+
+  const r = await request(app).post(`/api/connectors/${c.id}/variables`)
+    .set("Authorization", `Bearer ${adminToken}`).send({});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.match(r.body.provenance, /lecture distante/);
+  assert.ok(r.body.lignesLues > 0, "des lignes ont été lues");
+  const noms = r.body.variables.map(v => v.name);
+  /* Les colonnes du dataset simulé — celles que les listes déroulantes offriront. */
+  for(const col of ["pcode", "annee", "mois", "planifie", "atteint"])
+    assert.ok(noms.includes(col), `la colonne « ${col} » figure dans les variables : ${noms.join(", ")}`);
+
+  /* Une nature que le serveur ne sait pas lire seul (csv) refuse, avec le geste. */
+  const csv = (await creerConnecteur({ name: "Collé", kind: "csv", config: {} })).body.connector;
+  const rc = await request(app).post(`/api/connectors/${csv.id}/variables`)
+    .set("Authorization", `Bearer ${adminToken}`).send({});
+  assert.equal(rc.status, 422);
+  assert.match(rc.body.error, /XLSForm|échantillon/);
+
+  /* Réservé à l'administration comme l'aperçu : elle déchiffre un jeton. */
+  const te = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
+  assert.equal((await request(app).post(`/api/connectors/${c.id}/variables`)
+    .set("Authorization", `Bearer ${te}`).send({})).status, 403);
+});
+
 test("connecteurs : une adresse hors liste blanche n'est jamais appelée (SSRF)", async () => {
   const c = (await creerConnecteur({ name: "Métadonnées de l'hébergeur", kind: "foundry",
     base_url: "http://169.254.169.254", config: { datasetRid: "peu-importe" },
