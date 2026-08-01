@@ -1,5 +1,5 @@
-import { useEffect, useId } from "react";
-import { Layers, X } from "lucide-react";
+import { useEffect, useId, useState } from "react";
+import { ChevronDown, ChevronUp, HelpCircle, Layers, X } from "lucide-react";
 import { clsx, n } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
 
@@ -188,8 +188,52 @@ const TableWrap = ({ children, max="mh65", className }) => (
   <div className={clsx("tbl-wrap", max, className)}><table className="w-full border-collapse">{children}</table></div>);
 const Note = ({ tone="info", children }) => {
   const t = { info:"bg-sky-50 bl3 bd-brand text-sky-900", warn:"bg-amber-50 bl3 bd-warn text-amber-900",
-    ok:"bg-lime-50 bl3 border-lime-500 text-lime-900", err:"bg-rose-50 bl3 border-rose-500 text-rose-900" }[tone];
+    ok:"bg-lime-50 bl3 border-lime-500 text-lime-900", err:"bg-rose-50 bl3 border-rose-500 text-rose-900",
+    tool:"bg-slate-50 bl3 border-slate-300 text-slate-700" }[tone] || "bg-sky-50 bl3 bd-brand text-sky-900";
   return <div className={clsx("px-4 py-3 rounded f125 leading-relaxed mb-4", t)}>{children}</div>;
+};
+/* Aide repliable — « cache les commentaires en hide/show, ils occupent trop de
+   place ». Une longue note explicative ne s'impose plus à l'écran : elle se
+   dévoile d'un clic pour qui la veut, et reste repliée par défaut. */
+const Aide = ({ children, titre = "À quoi sert cet écran ?", tone, ouvert = false }) => {
+  const [open, setOpen] = useState(ouvert);
+  return (
+    <div className="mb-3">
+      <button onClick={()=>setOpen(o=>!o)}
+        className="inline-flex items-center gap-1.5 f11 font-semibold text-slate-500 hover:text-slate-800">
+        <HelpCircle size={13}/> {titre} {open ? <ChevronUp size={12}/> : <ChevronDown size={12}/>}
+      </button>
+      {open && <div className="mt-2"><Note tone={tone}>{children}</Note></div>}
+    </div>);
+};
+/* Sous-navigation d'écran EN HAUT — le rail des catégories reste seul à gauche ;
+   la sous-navigation propre à un écran passe en barre horizontale de pastilles,
+   et la configuration vient juste en dessous, à bords égaux. Une seule
+   implémentation, réutilisée par tous les écrans de paramètres. */
+const SideRail = ({ groups, active, onPick, right }) => {
+  /* La barre de pastilles ne se dessine que si elle a quelque chose à porter :
+     un écran encore vide (aucune source, aucun modèle) ne montre pas une barre
+     blanche fantôme, seulement sa zone de configuration. */
+  const hasItems = (groups || []).some(g => (g.items || []).length);
+  return (
+  <div className="space-y-4">
+    {hasItems && <div className="bg-white border border-slate-200 rounded-2xl shadow-sm px-3 py-2.5
+                    flex items-center gap-x-5 gap-y-2 flex-wrap">
+      {groups.map((g, gi) => (
+        <div key={g.label || gi} className="flex items-center gap-2 flex-wrap">
+          {g.label && <span className="f10 font-bold uppercase tracking-wider text-slate-400 shrink-0">{g.label}</span>}
+          {g.items.map(it => (
+            <button key={it.value} onClick={()=>onPick(it.value)}
+              className={clsx("px-3 py-1.5 rounded-full f125 font-semibold transition-colors flex items-center gap-1.5",
+                active===it.value ? "bg-brand text-white shadow-sm" : "bg-slate-100 text-slate-600 hover:bg-slate-200")}>
+              <span>{it.label}</span>
+              {it.count != null && <span className={clsx("f10 tabular-nums px-1.5 rounded-full",
+                active===it.value ? "bg-white/25" : "bg-white text-slate-500")}>{it.count}</span>}
+            </button>))}
+        </div>))}
+    </div>}
+    <div className="min-w-0 space-y-4">{right}</div>
+  </div>);
 };
 /* `disabled` sert quand le serveur refusera le geste de toute façon — une visite
    issue d'un formulaire ne se décoche pas depuis le plan. Proposer l'interrupteur
@@ -231,4 +275,4 @@ function parseCSV(txt){
   return rows.filter(r=>r.some(c=>c!=="")).map(r=>Object.fromEntries(head.map((h,i)=>[h,(r[i]??"").trim()])));
 }
 
-export { Badge, Bar2, BrandMark, Btn, Card, Empty, Field, Input, Logo, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, Toast, download, inputCls, parseCSV, toCSV };
+export { Aide, Badge, Bar2, BrandMark, Btn, Card, Empty, Field, Input, Logo, Modal, Note, Select, SideRail, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, Toast, download, inputCls, parseCSV, toCSV };

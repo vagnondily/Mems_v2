@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api.js";
 import { useGeoCascade, resetGeoCache } from "../lib/geo.js";
-import { Activity, ArrowRightLeft, Building2, CalendarRange, Check, ChevronDown, ChevronUp, ClipboardList, Copy, Download, FileText, HelpCircle, KeyRound, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
+import { Activity, ArrowRightLeft, Building2, CalendarRange, Check, ClipboardList, Copy, Download, FileText, KeyRound, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
 import { Area, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
+import { Aide, Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, SideRail, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, motifLisible, n, pct, r2, r5, siteRequirement, siteScore, uid, visiteOdk } from "../lib/calc.js";
 import { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, DURATIONS, D_FORMULAS, D_SECURITY, D_STATUS, D_URBAN, MONITORING_TYPES, PROG_AREAS, SITE_TYPES, TABS_ALL, siteDerived, sitePriority } from "../lib/constants.js";
 import { collecterLocalites, csvLocalites } from "../lib/exportGeo.js";
@@ -185,51 +185,10 @@ function SetGuided({ db, setSub }){
     </div>);
 }
 
-/* ══════════════════ Sous-navigation d'écran, EN HAUT ══════════════════
-   Le rail des CATÉGORIES (Configuration, Référentiels…) reste seul à gauche.
-   La sous-navigation propre à un écran — les sections de Général, les niveaux
-   d'indicateurs, les calculs — n'est PLUS une seconde colonne (« trois écrans,
-   c'est trop ») : elle passe en une barre horizontale EN HAUT, et la
-   configuration vient juste en dessous, à bords égaux. Une seule
-   implémentation, réutilisée par les trois écrans. */
-/* Aide repliable : « enlève les commentaires inutiles ou cache-les en
-   hide/show ». Les longues notes explicatives ne s'imposent plus à l'écran ;
-   elles se dévoilent d'un clic pour qui les veut, et se replient sinon. */
-function Aide({ children, titre = "À quoi sert cet écran ?", ouvert = false }){
-  const [open,setOpen] = useState(ouvert);
-  return (
-    <div className="mb-1">
-      <button onClick={()=>setOpen(o=>!o)}
-        className="inline-flex items-center gap-1.5 f11 font-semibold text-slate-500 hover:text-slate-800">
-        <HelpCircle size={13}/> {titre} {open ? <ChevronUp size={12}/> : <ChevronDown size={12}/>}
-      </button>
-      {open && <div className="mt-2"><Note>{children}</Note></div>}
-    </div>);
-}
-
-function SideRail({ groups, active, onPick, right }){
-  return (
-    <div className="space-y-4">
-      <div className="bg-white border border-slate-200 rounded-2xl shadow-sm px-3 py-2.5
-                      flex items-center gap-x-5 gap-y-2 flex-wrap">
-        {groups.map((g,gi) => (
-          <div key={g.label || gi} className="flex items-center gap-2 flex-wrap">
-            {g.label && <span className="f10 font-bold uppercase tracking-wider text-slate-400 shrink-0">{g.label}</span>}
-            {g.items.map(it => (
-              <button key={it.value} onClick={()=>onPick(it.value)}
-                className={clsx("px-3 py-1.5 rounded-full f125 font-semibold transition-colors flex items-center gap-1.5",
-                  active===it.value
-                    ? "bg-brand text-white shadow-sm"
-                    : "bg-slate-100 text-slate-600 hover:bg-slate-200")}>
-                <span>{it.label}</span>
-                {it.count != null && <span className={clsx("f10 tabular-nums px-1.5 rounded-full",
-                  active===it.value ? "bg-white/25" : "bg-white text-slate-500")}>{it.count}</span>}
-              </button>))}
-          </div>))}
-      </div>
-      <div className="min-w-0 space-y-4">{right}</div>
-    </div>);
-}
+/* `Aide` (aide repliable) et `SideRail` (sous-navigation EN HAUT) vivent
+   désormais dans components/ui.jsx : tous les écrans de paramètres — y compris
+   Listes et Référentiels, dans leurs propres fichiers — s'en servent, et un
+   composant partagé ne peut pas rester enfermé dans un seul écran. */
 
 /* Général — désormais en maître-détail, et débarrassé de ses éditeurs de
    listes : partenaires, modalités, sous-types de PI et activity tags étaient
@@ -911,7 +870,7 @@ function SetCountry({ db, notify, can, reload }){
 
   return (
     <>
-      <Note>Le découpage administratif du schéma est neutre : <code className="bg-white px-1 rounded">adm0</code>
+      <Aide>Le découpage administratif du schéma est neutre : <code className="bg-white px-1 rounded">adm0</code>
         {" "}à <code className="bg-white px-1 rounded">adm4</code>. Ce sont les <b>libellés</b> qui sont propres à
         un pays — région, district, commune, fokontany à Madagascar ; province, territoire, secteur,
         groupement en RDC. Ils sont configurés ici et utilisés partout, plutôt que réécrits écran par écran.
@@ -919,7 +878,7 @@ function SetCountry({ db, notify, can, reload }){
         <b>Un seul pays est courant à la fois.</b> C'est ce qui correspond à un déploiement par bureau
         pays. Servir plusieurs pays depuis une même instance supposerait de rattacher les sites, les
         bureaux et les comptes à un pays — une autre décision, celle de savoir si un utilisateur
-        traverse les frontières.</Note>
+        traverse les frontières.</Aide>
 
       <Card flush title="Pays configurés"
         subtitle={`${data.rows.length} pays · courant : ${data.current?.name || "aucun"}`}
@@ -1154,11 +1113,11 @@ function SetOffices({ db, notify, can, reload }){
 
   return (
     <>
-      <Note>Un bureau est une entité de la base : il porte les sites, les comptes, les
+      <Aide>Un bureau est une entité de la base : il porte les sites, les comptes, les
         paramètres de couverture et le plan de distribution. Son <b>mode de périmètre</b>{" "}
         décide de ce que ses comptes non administrateurs peuvent voir —
         soit les unités qui lui sont attribuées (Paramètres → Périmètre des bureaux),
-        soit <b>tout le pays</b> pour le bureau central.</Note>
+        soit <b>tout le pays</b> pour le bureau central.</Aide>
 
       <Card flush title="Bureaux et antennes"
         subtitle={`${rows.length} bureau(x) · ${rows.filter(o=>o.active).length} actifs · ${nat} à périmètre national`}
@@ -1301,14 +1260,14 @@ function SetScope({ db, notify, can }){
 
   return (
     <>
-      <Note>Un bureau couvre les unités qui lui sont <b>attribuées</b>, à n'importe quel
+      <Aide>Un bureau couvre les unités qui lui sont <b>attribuées</b>, à n'importe quel
         niveau — le plus souvent un district. Le périmètre effectif est tout ce qui en
         descend. Tant qu'aucune unité n'est attribuée, il est <b>déduit</b> des sites et
         du plan de distribution du bureau : c'est un repli, pas une intention.
         <br /><br />
         Ce périmètre borne ce qu'un compte rattaché à ce bureau peut lire et écrire —
         population, ciblage, couverture géographique, et les lignes que ses modèles
-        d'import contiennent.</Note>
+        d'import contiennent.</Aide>
 
       <Card flush title="Périmètre par bureau"
         subtitle={`${rows.length} bureau(x) · ${rows.filter(r=>r.source==="déclaré").length} avec un périmètre déclaré`}>
@@ -1835,7 +1794,7 @@ function SetLocations({ db, notify, can, reload }){
   const pages = Math.ceil(dir.total / PER);
   return (
     <>
-      <Note>Le découpage administratif se configure désormais dans l'onglet <b>Pays</b> : on y dépose
+      <Aide>Le découpage administratif se configure désormais dans l'onglet <b>Pays</b> : on y dépose
         le shapefile (un <b>.zip</b>, ou le <b>.shp</b> avec son <b>.dbf</b> et son <b>.prj</b>), lu
         <b> par le serveur</b>, qui reconstruit le découpage ET ses contours et rattache le millésime au
         pays courant. Cet écran-ci sert à <b>consulter</b> le référentiel courant, ses millésimes et le
@@ -1844,7 +1803,7 @@ function SetLocations({ db, notify, can, reload }){
         Pour le référentiel complet de Madagascar — environ 18 000 fokontany — la ligne de commande lit le
         fichier sans le charger en mémoire :
         <code className="bg-white px-1 rounded mx-1">node src/import-geo.js fichier.csv --label "COD-AB v2023.1"</code>
-      </Note>
+      </Aide>
 
       {cur ? (
         <Card title="Référentiel courant" subtitle={`« ${cur.label} » — importé le ${String(cur.importedAt||"").slice(0,10)}`}>
@@ -1987,19 +1946,21 @@ function SetActivities({ db, notify, can, reload, me }){
   };
   return (
     <>
-      <Note>Le référentiel des <b>activités</b> du programme — une activité, une ligne : son code (tag),
+      <Aide>
+        <p>Le référentiel des <b>activités</b> du programme — une activité, une ligne : son code (tag),
         son intitulé et son domaine. C'est la source unique réutilisée pour rattacher un site, suivre un
         indicateur de processus et planifier. Désactiver une activité la retire des choix sans effacer
-        l'historique.</Note>
-      <Note>La liste des activités <b>est</b> la liste des <b>tags</b> : un tag désigne une activité et
+        l'historique.</p>
+        <p className="mt-2">La liste des activités <b>est</b> la liste des <b>tags</b> : un tag désigne une activité et
         une seule. Le référentiel chargé depuis le classeur du PAM en compte 58 (onglet
         « Annex 5 Activity tags ») ; les espaces intérieurs sont retirés à la saisie, et un tag déjà
-        pris est refusé en nommant l'activité qui le porte.</Note>
-      <Note tone="warn">Le <b>tag</b> est le code d'identification : dix tables le portent en texte
+        pris est refusé en nommant l'activité qui le porte.</p>
+        <p className="mt-2">Le <b>tag</b> est le code d'identification : dix tables le portent en texte
         (sites, couverture, plan de distribution, produits, visites, formulaires ODK, caseload,
         zones TPM, soumissions, indicateurs). Il ne se modifie donc pas à l'édition — un
         super-utilisateur le renomme <b>en cascade</b> (bouton dédié, ci-dessous), ce qui
-        réécrit du même coup toutes les lignes qui le portent.</Note>
+        réécrit du même coup toutes les lignes qui le portent.</p>
+      </Aide>
       <Card flush title="Activités du programme" subtitle={`${liste.length} activité${liste.length>1?"s":""}`}
         right={can("admin") && <Btn size="sm" icon={Plus}
           onClick={()=>setEdit({ id:"", name:"", tag:"", programArea:"", active:true })}>Ajouter</Btn>}>
@@ -2643,13 +2604,13 @@ function SetOdk({ db, set, notify, can, reload }){
   };
   return (
     <>
-      <Note tool><b>Adresse d'appel.</b> Un formulaire ODK Central est lu à l'adresse
+      <Aide tone="tool" titre="Comment sont lues les sources ODK ?"><b>Adresse d'appel.</b> Un formulaire ODK Central est lu à l'adresse
         <code className="bg-white px-1.5 py-0.5 rounded mx-1 f115">{s.odkBase}/v1/projects/&#123;projet&#125;/forms/&#123;formulaire&#125;.svc/Submissions</code>
         avec un justificatif dans l'en-tête d'autorisation. Chaque source déclare le type de données qu'elle
         apporte, le champ qui identifie le site, et peut recevoir son XLSForm pour restituer les libellés des
         questions à la place des noms techniques. Le bouton <RefreshCw size={11} className="inline align-text-top" /> tire
         les soumissions réelles depuis le serveur : il exige un <b>justificatif propre à cette source</b>,
-        chiffré côté serveur, qu'aucune autre source n'emprunte.</Note>
+        chiffré côté serveur, qu'aucune autre source n'emprunte.</Aide>
       {!can("admin") && <Note tone="warn">La configuration des sources ODK Central est réservée aux
         administrateurs : cet écran est ici en lecture seule.</Note>}
       <div className="grid gap-4" style={{gridTemplateColumns:"340px 1fr"}}>
@@ -3187,9 +3148,18 @@ function SetConnectors({ notify, can }){
   const transformations = registre.transformations || [];
   const apres0 = apercu?.lignes?.[0]?.apres || null;
 
+  /* La liste des connecteurs devient la sous-navigation EN HAUT (pastilles),
+     comme les autres écrans ; le connecteur choisi et sa table de correspondance
+     s'affichent EN DESSOUS. Les actions propres à une source (éprouver, modifier,
+     supprimer) suivent la sélection dans la barre d'actions du détail. */
+  const railGroups = [{
+    label: "Sources",
+    items: rows.map(c => ({ value:c.id, label:c.name, count:c.mappings || 0 })),
+  }];
+
   return (
     <>
-      <Note tool>
+      <Aide tone="tool" titre="Comment marchent les connecteurs ?">
         <b>Une correspondance, pas du code.</b> Un connecteur dit <b>où</b> lire ; les correspondances
         disent <b>quelle variable de la source alimente quel champ MEMS</b>, et par quelle transformation.
         À l'<b>enregistrement d'une source réseau</b>, MEMS <b>éprouve d'abord la connexion</b> ; si elle
@@ -3198,44 +3168,38 @@ function SetConnectors({ notify, can }){
         se relit avant d'enregistrer. La liste des champs et celle des transformations viennent du serveur :
         c'est exactement celle contre laquelle l'enregistrement est vérifié. Le jeton d'accès est chiffré
         côté serveur et n'est jamais renvoyé.
-      </Note>
-      <div className="grid gap-4" style={{gridTemplateColumns:"320px 1fr"}}>
-        <Card flush title="Connecteurs" subtitle={`${rows.length} source(s) déclarée(s)`}
-          right={can("admin") && <Btn size="sm" icon={Plus}
-            onClick={()=>setEdit({ name:"", kind:"csv", base_url:"", config:{}, office_id:"", active:true, secret:"" })}>
-            Nouveau</Btn>}>
-          {rows.length ? (
-            <div className="divide-y divide-slate-100">
-              {rows.map(c=>(
-                <div key={c.id} className={clsx("px-4 py-3 hover:bg-slate-50 flex items-start gap-2", sel===c.id&&"bg-sky-50")}>
-                  <button onClick={()=>setSel(c.id)} className="text-left min-w-0 flex-1">
-                    <div className="f13 font-semibold text-slate-800 truncate">{c.name}</div>
-                    <div className="f115 text-slate-500 truncate">{NOM_NATURE[c.kind]||c.kind}
-                      {c.base_url ? ` — ${c.base_url.replace(/^https?:\/\//,"")}` : ""}</div>
-                    <div className="flex gap-1 mt-1.5 flex-wrap">
-                      <Badge tone={c.mappings?"g":"y"}>{c.mappings} correspondance(s)</Badge>
-                      <Badge tone={c.hasSecret?"g":"n"}>{c.hasSecret
-                        ? nomSchemaAuth(registre, c.auth_schema) : "sans justificatif"}</Badge>
-                      {!c.active && <Badge tone="r">inactif</Badge>}
-                    </div>
-                  </button>
-                  {can("admin") && <div className="shrink-0">
-                    {RESEAU_CONNECTEUR.has(c.kind) && <button title="Éprouver la connexion à cette source"
-                      disabled={busy} onClick={()=>tester(c)}
-                      className="text-slate-400 hover:text-sky-600 p-1 disabled:opacity-40"><Link2 size={13}/></button>}
-                    <button onClick={()=>setEdit({ ...c, secret:"" })} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>
-                    <button onClick={()=>supprimer(c)} className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>
-                  </div>}
-                </div>))}
-            </div>
-          ) : <Empty icon={Link2} title="Aucun connecteur"
-                text="Déclarez une source — ODK Central, KoboToolbox, un dataset Foundry, un export CSV — puis mettez ses variables en face des champs MEMS." />}
-        </Card>
+      </Aide>
+      <SideRail groups={rows.length ? railGroups : []} active={sel} onPick={setSel} right={<>
+        {/* Barre d'actions : créer une source, et — si l'une est choisie — l'éprouver,
+            la modifier ou la supprimer. Elle remplace les icônes par ligne de l'ancien
+            volet de gauche. */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {conn ? <div className="min-w-0">
+            <span className="f13 font-semibold text-slate-800">{conn.name}</span>
+            <span className="f115 text-slate-500"> · {NOM_NATURE[conn.kind]||conn.kind}
+              {conn.base_url ? ` — ${conn.base_url.replace(/^https?:\/\//,"")}` : ""}</span>
+            <span className="ml-2 inline-flex gap-1 align-middle">
+              <Badge tone={conn.hasSecret?"g":"n"}>{conn.hasSecret ? nomSchemaAuth(registre, conn.auth_schema) : "sans justificatif"}</Badge>
+              {!conn.active && <Badge tone="r">inactif</Badge>}
+            </span>
+          </div> : <span className="f125 text-slate-500">Choisissez une source ci-dessus, ou créez-en une.</span>}
+          {can("admin") && <div className="ml-auto flex items-center gap-2">
+            {conn && RESEAU_CONNECTEUR.has(conn.kind) && <Btn size="sm" kind="sec" icon={Link2}
+              disabled={busy} onClick={()=>tester(conn)}>Tester</Btn>}
+            {conn && <Btn size="sm" kind="sec" icon={Pencil} onClick={()=>setEdit({ ...conn, secret:"" })}>Modifier</Btn>}
+            {conn && <Btn size="sm" kind="ghost" icon={Trash2} onClick={()=>supprimer(conn)}>Supprimer</Btn>}
+            <Btn size="sm" icon={Plus}
+              onClick={()=>setEdit({ name:"", kind:"csv", base_url:"", config:{}, office_id:"", active:true, secret:"" })}>
+              Nouveau</Btn>
+          </div>}
+        </div>
 
         {!conn ? (
           <Card title="Correspondance des variables">
-            <Empty icon={Link2} title="Choisissez un connecteur"
-              text="La table de correspondance s'affiche ici : une ligne par champ MEMS, avec en face la variable de la source." />
+            <Empty icon={Link2} title={rows.length ? "Choisissez un connecteur" : "Aucun connecteur"}
+              text={rows.length
+                ? "La table de correspondance s'affiche ici : une ligne par champ MEMS, avec en face la variable de la source."
+                : "Déclarez une source — ODK Central, KoboToolbox, un dataset Foundry, un export CSV — puis mettez ses variables en face des champs MEMS."} />
           </Card>
         ) : (
           <div className="space-y-4">
@@ -3338,7 +3302,7 @@ function SetConnectors({ notify, can }){
                 </TableWrap>
               </Card>)}
           </div>)}
-      </div>
+      </>} />
       <Epreuve resultat={epreuve} causes={registre?.causesAuth} onClose={()=>setEpreuve(null)} />
       <ConnectorModal open={!!edit} c={edit} offices={offices} busy={busy} registre={registre}
         onClose={()=>setEdit(null)} onSave={enregistrerConnecteur} />
@@ -3452,23 +3416,22 @@ function SetTemplates({ db, set, notify, can }){
   const [sel,setSel] = useState(db.reportTemplates[0]?.id || "");
   const t = db.reportTemplates.find(x=>x.id===sel);
   const upd = (fn) => set(d => { const x=d.reportTemplates.find(y=>y.id===sel); if(x) fn(x); return d; });
+  /* Les modèles deviennent la sous-navigation EN HAUT (pastilles) ; la
+     configuration du modèle choisi s'affiche EN DESSOUS, comme les autres écrans. */
+  const groups = [{ label:"Modèles",
+    items: db.reportTemplates.map(x => ({ value:x.id, label:x.name, count:x.blocks.length })) }];
   return (
-    <div className="grid gap-4" style={{gridTemplateColumns:"300px 1fr"}}>
-      <Card flush title="Modèles" right={can("edit") && <Btn size="sm" icon={Plus}
-        onClick={()=>{ const nt={ id:uid("t"), name:"Nouveau modèle", blocks:["kpi"], intro:"" };
-          set(d=>{ d.reportTemplates.push(nt); return d; }); setSel(nt.id); }}>Ajouter</Btn>}>
-        <div className="divide-y divide-slate-100">
-          {db.reportTemplates.map(x=>(
-            <button key={x.id} onClick={()=>setSel(x.id)}
-              className={clsx("block w-full text-left px-4 py-3 hover:bg-slate-50", sel===x.id&&"bg-sky-50")}>
-              <div className="f13 font-semibold text-slate-800">{x.name}</div>
-              <div className="f115 text-slate-500">{x.blocks.length} section(s)</div></button>))}
-        </div>
-      </Card>
-      {t ? (
-        <Card title="Configuration du modèle" right={can("del") && db.reportTemplates.length>1 &&
+    <SideRail groups={groups} active={sel} onPick={setSel} right={<>
+      {can("edit") && <div className="flex items-center gap-2">
+        <Btn size="sm" icon={Plus}
+          onClick={()=>{ const nt={ id:uid("t"), name:"Nouveau modèle", blocks:["kpi"], intro:"" };
+            set(d=>{ d.reportTemplates.push(nt); return d; }); setSel(nt.id); }}>Ajouter un modèle</Btn>
+        {t && can("del") && db.reportTemplates.length>1 &&
           <Btn size="sm" kind="ghost" icon={Trash2} onClick={()=>{ set(d=>{ d.reportTemplates=d.reportTemplates.filter(x=>x.id!==sel); return d; });
-            setSel(db.reportTemplates.find(x=>x.id!==sel)?.id||""); }}>Supprimer</Btn>}>
+            setSel(db.reportTemplates.find(x=>x.id!==sel)?.id||""); }}>Supprimer</Btn>}
+      </div>}
+      {t ? (
+        <Card title="Configuration du modèle" subtitle={t.name}>
           <Field label="Nom du modèle"><Input value={t.name} disabled={!can("edit")} onChange={e=>upd(x=>{x.name=e.target.value;})} /></Field>
           <Field label="Texte d'introduction" hint="Champs disponibles : {org} {unite} {periode} {annee}">
             <textarea value={t.intro||""} disabled={!can("edit")} rows={5} className={inputCls}
@@ -3481,8 +3444,8 @@ function SetTemplates({ db, set, notify, can }){
               <span><span className="f13 font-medium text-slate-800 block">{l}</span>
                 <span className="f115 text-slate-500">{d2}</span></span></label>))}
         </Card>
-      ) : <Card><Empty icon={FileText} title="Aucun modèle" /></Card>}
-    </div>);
+      ) : <Card><Empty icon={FileText} title="Aucun modèle" text="Ajoutez un modèle de rapport pour commencer." /></Card>}
+    </>} />);
 }
 
 /* ── API ── */
