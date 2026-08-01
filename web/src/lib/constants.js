@@ -40,9 +40,16 @@ button,select,textarea{font:inherit;color:inherit}
 .bg-brand{background-color:#007DBC}.bg-bd{background-color:#085387}.bg-ok{background-color:#689e18}
 .bl3{border-left-width:3px}.bb3{border-bottom-width:3px}.bd3{border-width:3px}
 .mh190{max-height:190px}.mh240{max-height:240px}.mh280{max-height:280px}.mh300{max-height:300px}
-.mh340{max-height:340px}.mh420{max-height:420px}.mh440{max-height:440px}
+.mh320{max-height:320px}.mh340{max-height:340px}.mh420{max-height:420px}.mh440{max-height:440px}
+.mh480{max-height:480px}.mh520{max-height:520px}
 .mh55{max-height:55vh}.mh62{max-height:62vh}.mh65{max-height:65vh}.mh68{max-height:68vh}
-.mh78{max-height:78vh}
+.mh72{max-height:72vh}.mh78{max-height:78vh}
+/* En-tête de tableau collant : il reste visible quand on fait défiler les lignes.
+   Le fond opaque et l'ombre douce le détachent des lignes qui glissent dessous —
+   sans quoi le texte de l'en-tête et celui de la première ligne se superposent. */
+thead th{position:sticky;top:0;z-index:5}
+.tbl-wrap{overflow:auto}
+.tbl-wrap thead th{box-shadow:0 1px 0 #e2e8f0}
 /* Fiche de site affichée au clic sur un point de la carte. Reprend la forme
    d'une fiche d'adresse : titre, sous-titre, puis quelques couples clé/valeur
    qu'on veut lire sans ouvrir la fiche complète du registre. */

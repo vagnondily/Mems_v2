@@ -179,8 +179,13 @@ const Th = ({ children, num, className }) => (
     num?"text-right":"text-left", className)}>{children}</th>);
 const Td = ({ children, num, className, ...p }) => (
   <td {...p} className={clsx("px-3 h-9 border-b border-slate-100 whitespace-nowrap f125", num?"text-right tabular-nums":"", className)}>{children}</td>);
-const TableWrap = ({ children, max="mh65" }) => (
-  <div className={clsx("overflow-auto", max)}><table className="w-full border-collapse">{children}</table></div>);
+/* Le conteneur d'un tableau. `overflow-auto` fait défiler DANS le cadre — vers
+   le bas quand il y a trop de lignes (l'en-tête collant reste alors visible), et
+   vers la droite quand le tableau est plus large que l'écran, sans jamais pousser
+   la page entière de côté. `max` borne la hauteur : sans borne, rien ne défile à
+   l'intérieur et l'en-tête collant n'a pas de cadre où se coller. */
+const TableWrap = ({ children, max="mh65", className }) => (
+  <div className={clsx("tbl-wrap", max, className)}><table className="w-full border-collapse">{children}</table></div>);
 const Note = ({ tone="info", children }) => {
   const t = { info:"bg-sky-50 bl3 bd-brand text-sky-900", warn:"bg-amber-50 bl3 bd-warn text-amber-900",
     ok:"bg-lime-50 bl3 border-lime-500 text-lime-900", err:"bg-rose-50 bl3 border-rose-500 text-rose-900" }[tone];
