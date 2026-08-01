@@ -1206,11 +1206,22 @@ contenu à droite :**
 | Référentiels M&E | **Activités** · Indicateurs · Calculs · Rations · Codes d'identification |
 | Sources de données | ODK Central · Connecteurs |
 | Rapports | Modèles de rapport |
-| Système | API · Utilisateurs · À propos |
+| Système | **Mon compte** · API · Utilisateurs · À propos |
 
 Même principe pour la gestion des listes : des sous-catégories plutôt qu'un écran surchargé.
 Chaque onglet est parcouru, testé et corrigé un par un — l'objectif est que TOUT fonctionne,
 pas seulement que ce soit mieux rangé.
+
+**« Mon compte » (demande du 01/08) — self-service du compte, distinct de l'administration
+des utilisateurs.** Aujourd'hui l'écran Utilisateurs est réservé aux administrateurs, et un
+compte ne peut changer son mot de passe qu'à la première connexion (parcours imposé). Il faut
+un écran où N'IMPORTE QUEL utilisateur voit et gère SON compte : consulter ses infos (nom,
+courriel, rôle, bureau), **changer son mot de passe à tout moment** (route
+`POST /api/auth/password` — elle existe, il manque l'entrée hors premier accès), et **définir
+un identifiant (username)**. Le username est nouveau : décider s'il devient un second
+identifiant de connexion (en plus du courriel) ou seulement un nom affiché — à trancher, mais
+au minimum le champ et son unicité. Accessible depuis le menu du compte (l'en-tête), pas
+seulement depuis Paramètres.
 
 ### S4 — La passe de cohérence transversale
 
@@ -1263,6 +1274,36 @@ Le flux, précisé par le propriétaire le 01/08 (une base par activité, en tem
 4. Les **activités elles-mêmes se paramètrent dans Paramètres** (référentiel d'activités) :
    c'est la colonne vertébrale, tout le reste (indicateurs, dashboards, données MoDa) s'y
    accroche. À poser dès la passe Paramètres (chantier S3).
+
+### Natures de source à proposer (demande du 01/08/2026)
+
+La liste `NATURES` des connecteurs (aujourd'hui `odk, kobo, foundry, csv, http`) devient, au
+format demandé par le propriétaire :
+
+| Nature | Ce que c'est | Chemin / auth |
+|---|---|---|
+| `kobo_v1` | **kobocat v1** — c'est MoDa | `GET {base}/api/v1/data/{id numérique}`, en-tête `Token` |
+| `kobo_v2` | **KPI v2** | `GET {base}/api/v2/assets/{uid}/data`, en-tête `Token` |
+| `ona` | Ona (plateforme ODK, API proche de kobocat) | `GET {base}/api/v1/data/{id}`, `Token` |
+| `foundry` | Palantir Foundry | voir ci-dessous |
+| `excel` | Téléversement seul, **puis** mapping (pas de lien réseau) | fichier + correspondance |
+| `http` | API HTTP générique rendant du JSON/CSV | chemin libre, schéma d'auth au choix |
+| `jdbc` | Base de données (JDBC) | à cadrer — driver, chaîne de connexion, requête |
+
+Le **schéma d'authentification** (livré au lot d'authentification) reste indépendant de la
+nature : `Token` pour kobo/ona, `Bearer` pour Foundry, `Basic`/`Bearer`/session pour http.
+
+**Foundry — établi d'après la doc officielle (lue le 01/08 via recherche ; le sandbox bloque
+le fetch direct).** API v2, OAuth 2.0, en-tête `Authorization: Bearer <jeton>` — **c'est déjà
+le schéma de `lib/foundry.js`, rien à corriger côté auth.** Ce qu'il faut rendre configurable,
+c'est le CHEMIN de lecture :
+- dataset : `GET /api/v2/datasets/{datasetRid}/readTable` — params `format` (CSV/ARROW),
+  `columns`, `rowLimit`, `branchName` ; scope `api:datasets-read` ;
+- objets d'ontologie : `GET /api/v2/ontologies/{ontology}/objects/{objectType}` — paginé
+  (max 10 000 objets en Object Storage V1) ; scope `api:ontologies-read`.
+Un utilisateur Foundry génère un jeton d'API temporaire portant ses propres droits. Pour les
+chiffres de bénéficiaires/réceptions, l'un ou l'autre chemin convient selon la modélisation du
+bureau — d'où le chemin configurable.
 
 Séquence : après Paramètres et le module Suivi-évaluation (voir la feuille de route en tête).
 
