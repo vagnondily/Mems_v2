@@ -33,7 +33,13 @@ const SHAPERS = {
   params: (rows) => rows.map(p => ({ id:p.id, rev:p.rev, csp:p.csp, office_id:p.office_id,
     category_id:p.category_id, tag:p.tag, duration:p.duration,
     riskLevel:p.riskLevel, feasiblePerMonth:p.feasiblePerMonth })).filter(p => p.office_id),
-  pdd: (rows, db) => rows.map(p => ({ ...p, year: p.year || db.year })),
+  /* `partner_id` était laissé vide sur toute ligne créée côté client (formulaire
+     manuel, génération par commune) : seul le nom (`partner`) y était saisi, et
+     la clé étrangère ne se remplissait qu'au rechargement suivant depuis le
+     serveur. Résolue ici, au même point que le rattachement d'indicateur
+     ci-dessus, pour que toute nouvelle ligne l'emporte dès son premier envoi. */
+  pdd: (rows, db) => rows.map(p => ({ ...p, year: p.year || db.year,
+    partner_id: p.partner_id || (db.partners.find(x=>x.name===p.partner)||{}).id || null })),
 };
 
 /* Les identifiants d'une collection, tels que le serveur les connaît. La projection
@@ -96,7 +102,12 @@ export default function App(){
         code:t, label:(state.categories.find(c=>c.tag===t)||{}).name || t })),
     },
     actCategories: state.categories.length ? state.categories.map(c => c.name) : [...ACT_CATEGORIES],
-    roles: D_ROLES, weights: D_WEIGHTS, scoring: D_SCORING, formulas: D_FORMULAS, mmr: D_MMR,
+    roles: D_ROLES, weights: D_WEIGHTS, scoring: D_SCORING,
+    /* `db.formulas` n'a pas de collection serveur propre : il vit en miroir dans
+       `settings.formulas` (voir SetCalc, Settings.jsx) — settings, elle, est
+       synchronisée. Sans ce miroir, un calcul personnalisé se perdait au premier
+       rechargement, y compris après « Enregistrer ». */
+    formulas: (state.settings && state.settings.formulas) || D_FORMULAS, mmr: D_MMR,
     settings: { org:"Bureau pays", unit:"Unité suivi et évaluation", logo:"", currency:"MGA",
       dateFmt:"DD/MM/YYYY", pageSize:25, syncInterval:30, notifications:true,
       odkBase:"https://odk-central.example.org", apiEnabled:false, opSize:"Large",

@@ -37,19 +37,26 @@ d'une ration, génération d'un plan pour une commune, ligne(s) bien créée(s)
 et persistée(s) côté serveur avec le tonnage attendu (bénéficiaires × jours ×
 ration ÷ 1 000 000).
 
-**Remarque relevée en marge** : `db.formulas` (Paramètres → Calculs) n'est pas
-dans la liste `SYNCED` de `App.jsx` — un administrateur qui modifie un calcul
-le perd au rechargement. Peut-être volontaire (un bac à sable d'essai plutôt
-qu'un réglage), à confirmer ; le `rationTable` ne reproduit pas ce
-comportement et persiste réellement.
+**Remarque relevée en marge — CORRIGÉE** : `db.formulas` (Paramètres → Calculs)
+n'était dans aucune collection serveur — un administrateur qui modifiait un
+calcul le perdait au rechargement, y compris juste après « Enregistrer ».
+Confirmé non volontaire. Corrigé en le faisant vivre en miroir dans
+`settings.formulas` (`App.jsx`, `hydrate` ; `Settings.jsx`, `SetCalc` — chaque
+mutation de `d.formulas` recopie aussi `d.settings.formulas`, qui lui est
+réellement synchronisé) : même mécanisme que `rationTable`/`siteIndicators`,
+sans nouvelle route serveur. Vérifié : un calcul personnalisé créé survit à un
+rechargement complet (relu directement en base, `settings.formulas`).
 
-**Autre remarque relevée en testant** : une ligne de PDD nouvellement créée
-(que ce soit via « Ajouter une ligne » ou « Générer par commune ») ne renseigne
-que `partner` (le nom du partenaire) et pas `partner_id` — le serveur accepte
-la ligne (le champ est optionnel) mais la clé étrangère reste vide tant que la
-ligne n'a pas été rechargée depuis le serveur. Pré-existant, pas propre au
-chantier 1 ; à corriger séparément si l'on a besoin de `partner_id` fiable
-immédiatement après création (jointures, rapports).
+**Autre remarque relevée en testant — CORRIGÉE** : une ligne de PDD nouvellement
+créée (que ce soit via « Ajouter une ligne » ou « Générer par commune ») ne
+renseignait que `partner` (le nom du partenaire) et pas `partner_id` — le
+serveur acceptait la ligne (le champ est optionnel) mais la clé étrangère
+restait vide tant que la ligne n'avait pas été rechargée depuis le serveur.
+Corrigé au même point que la résolution `indicator_id` des outcomes
+(`App.jsx`, `SHAPERS.pdd`) : `partner_id` est maintenant résolu depuis le nom
+au moment de l'envoi, pour toute ligne créée par n'importe quel écran.
+Vérifié : une ligne créée porte son `partner_id` dès sa première écriture en
+base, sans attendre un rechargement.
 
 ## Chantier 2 — Revue des écrans « budget » comme utilisateur final — FAIT
 

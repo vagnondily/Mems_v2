@@ -1583,8 +1583,14 @@ function SetCalc({ db, set, notify, can }){
   const TEST = { duration:12, riskLevel:2, nbSites:24, feasiblePerMonth:8, minInterval:6, minFreq:2,
     targetPerMonth:4, feasibilityRatio:2, adjustedFreq:4, adjustedInterval:3, beneficiaries:1500,
     population:85000, visitsDone:3, visitsPlanned:4, score:52 };
+  /* `db.formulas` n'a pas de collection serveur propre — il se synchronise en
+     miroir dans `settings.formulas`, seule à être réellement persistée (voir
+     App.jsx, hydrate). D'où ce `d.settings.formulas = d.formulas` répété après
+     chaque mutation plutôt qu'à un seul endroit : sans lui, un calcul modifié
+     ici survivait à l'écran mais pas au rechargement. */
   const save = (fm) => { set(d => { const i=d.formulas.findIndex(x=>x.id===fm.id);
-      if(i>=0) d.formulas[i]=fm; else d.formulas.push({ ...fm, id:fm.id||uid("f"), core:false }); return d; });
+      if(i>=0) d.formulas[i]=fm; else d.formulas.push({ ...fm, id:fm.id||uid("f"), core:false });
+      d.settings.formulas = d.formulas; return d; });
     setEdit(null); notify("Calcul enregistré","ok"); };
   return (
     <>
@@ -1600,10 +1606,11 @@ function SetCalc({ db, set, notify, can }){
                 {t.ok ? <Badge tone="g">valide</Badge> : <Badge tone="r">erreur</Badge>}</>}>
               <Field label="Expression">
                 <Input value={fm.expr} disabled={!can("edit")}
-                  onChange={e=>set(d=>{ d.formulas[i].expr=e.target.value; return d; })} className="f12" /></Field>
+                  onChange={e=>set(d=>{ d.formulas[i].expr=e.target.value; d.settings.formulas=d.formulas; return d; })} className="f12" /></Field>
               <div className="flex flex-wrap gap-1.5 mb-2">
                 {(fm.vars||[]).map(v=>(
-                  <button key={v} onClick={()=>set(d=>{ d.formulas[i].expr += (d.formulas[i].expr?" ":"")+v; return d; })}
+                  <button key={v} onClick={()=>set(d=>{ d.formulas[i].expr += (d.formulas[i].expr?" ":"")+v;
+                    d.settings.formulas=d.formulas; return d; })}
                     className="px-2 py-0.5 rounded bg-slate-100 hover:bg-sky-100 f11 text-slate-600 border border-slate-200">{v}</button>))}
               </div>
               <div className={clsx("f115 px-2.5 py-1.5 rounded", t.ok?"bg-lime-50 text-lime-800":"bg-rose-50 text-rose-800")}>
@@ -1611,13 +1618,15 @@ function SetCalc({ db, set, notify, can }){
               {!fm.core && can("edit") && (
                 <div className="flex gap-2 mt-3">
                   <Btn size="sm" kind="sec" icon={Pencil} onClick={()=>setEdit(fm)}>Modifier</Btn>
-                  <Btn size="sm" kind="ghost" icon={Trash2} onClick={()=>set(d=>{ d.formulas=d.formulas.filter(x=>x.id!==fm.id); return d; })}>Supprimer</Btn></div>)}
+                  <Btn size="sm" kind="ghost" icon={Trash2} onClick={()=>set(d=>{ d.formulas=d.formulas.filter(x=>x.id!==fm.id);
+                    d.settings.formulas=d.formulas; return d; })}>Supprimer</Btn></div>)}
             </Card>); })}
       </div>
       <div className="flex gap-2 mb-4">
         {can("edit") && <Btn icon={Plus} onClick={()=>setEdit({ id:"", label:"", desc:"", expr:"", vars:[] })}>Créer un calcul</Btn>}
         {can("edit") && <Btn kind="sec" icon={RefreshCw}
-          onClick={()=>{ set(d=>{ d.formulas = JSON.parse(JSON.stringify(D_FORMULAS)); return d; }); notify("Calculs de base rétablis","ok"); }}>Rétablir les calculs de base</Btn>}
+          onClick={()=>{ set(d=>{ d.formulas = JSON.parse(JSON.stringify(D_FORMULAS)); d.settings.formulas=d.formulas; return d; });
+            notify("Calculs de base rétablis","ok"); }}>Rétablir les calculs de base</Btn>}
       </div>
       <Card flush title="Variables utilisables" subtitle="Liste complète des variables acceptées dans les expressions">
         <TableWrap max="mh340">
