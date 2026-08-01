@@ -1,5 +1,6 @@
 import { db, tx } from "../db.js";
-import { resolveUnit } from "./geo.js";
+import { resolveUnit, LEVELS } from "./geo.js";
+import { dissoudre } from "./dissoudre.js";
 
 /* ═══════════════════════════════════════════════════════════════════════
    Géométries administratives — simplification et service.
@@ -272,6 +273,82 @@ export function extent({ versionId, level, parent }){
     JOIN geo_unit u ON u.pcode=g.pcode AND u.version_id=g.version_id
     WHERE ${where.join(" AND ")}`).get(...args);
   return b?.c ? { west:b.w, south:b.s, east:b.e, north:b.n, units:b.c } : null;
+}
+
+/* ── Dériver les niveaux supérieurs ──────────────────────────────────
+   Les contours d'un district sont ceux de ses communes RÉUNIES. Un seul
+   fichier — le plus fin — suffit donc à donner tous les niveaux au-dessus,
+   ce qui est exactement la situation : le bureau a le découpage aux
+   communes, pas celui des districts ni des régions.
+
+   La dérivation remonte de proche en proche, et chaque étage part de celui
+   qu'on vient de calculer : dix fois moins de sommets à coudre qu'en
+   repartant du plus fin, pour un résultat identique — les frontières
+   intérieures sont déjà tombées à l'étage d'avant.
+
+   Un parent à la fois : ses enfants sont lus, dissous, écrits, relâchés.
+   Tenir les 1 701 communes d'un pays en mémoire pour en faire 119 districts
+   n'apporterait rien qu'un pic de mémoire.
+
+   Vit ici et non dans la route, parce que le semis des données réelles
+   (`seed-reel.js`) en a besoin autant qu'elle : deux implémentations de la
+   même remontée finiraient par diverger. */
+export function deriverNiveaux({ versionId, source = null, remplacerExistants = false }){
+  const porte = Object.fromEntries(geomSummary(versionId).map(x => [x.level, x.units]));
+  const depart = source || [...LEVELS].reverse().find(l => porte[l] > 0);
+  if(!depart) return { erreur:"aucun contour dans ce millésime", statut:409 };
+  if(!porte[depart]) return { erreur:`le niveau ${depart} ne porte aucun contour`, statut:409 };
+  const i0 = LEVELS.indexOf(depart);
+  if(i0 <= 0) return { erreur:`${depart} est le niveau le plus haut : rien à dériver au-dessus`,
+                       statut:409 };
+
+  const enfantsDe = db.prepare(
+    `SELECT g.geometry FROM geo_geom g
+     JOIN geo_unit u ON u.pcode=g.pcode AND u.version_id=g.version_id
+     WHERE g.version_id=? AND g.level=? AND u.parent_pcode=?`);
+
+  const etapes = [];
+  for(let i = i0; i > 0; i--){
+    const enfant = LEVELS[i], parent = LEVELS[i - 1];
+    const parents = db.prepare("SELECT pcode FROM geo_unit WHERE version_id=? AND level=?")
+      .all(versionId, parent);
+    if(!parents.length){ etapes.push({ niveau:parent, saute:"aucune unité à ce niveau" }); continue; }
+    /* Un contour officiel vaut mieux qu'un contour calculé : un niveau déjà
+       pourvu n'est pas écrasé sans qu'on le demande. */
+    if(porte[parent] && !remplacerExistants){
+      etapes.push({ niveau:parent,
+        saute:`${porte[parent]} contour(s) déjà présents — cochez le remplacement pour recalculer` });
+      continue;
+    }
+
+    let ecrites = 0, approximatifs = 0, sansEnfant = 0, premier = true, lot = [];
+    const motifs = [];
+    const vider = () => {
+      if(!lot.length) return;
+      const b = writeGeometries({ versionId, features:lot, reset:premier,
+        source:`dérivé de ${enfant}`, niveau:parent });
+      premier = false; ecrites += b.écrites; lot = [];
+    };
+    for(const p of parents){
+      const geoms = enfantsDe.all(versionId, enfant, p.pcode)
+        .map(x => { try{ return JSON.parse(x.geometry); }catch(e){ return null; } })
+        .filter(Boolean);
+      if(!geoms.length){ sansEnfant++; continue; }
+      const d = dissoudre(geoms);
+      if(!d.geometry){ sansEnfant++; continue; }
+      if(d.approximatif){ approximatifs++;
+        if(motifs.length < 5) motifs.push({ pcode:p.pcode, motif:d.motif }); }
+      lot.push({ pcode:p.pcode, geometry:d.geometry });
+      if(lot.length >= 20) vider();
+    }
+    vider();
+    porte[parent] = ecrites;
+    etapes.push({ niveau:parent, depuis:enfant, unites:parents.length, ecrites,
+      approximatifs, sansEnfant, motifs });
+  }
+  return { source:depart, etapes,
+    total: etapes.reduce((a, e) => a + (e.ecrites || 0), 0),
+    approximatifs: etapes.reduce((a, e) => a + (e.approximatifs || 0), 0) };
 }
 
 /* Ce que le millésime porte, par niveau. L'écran de configuration doit pouvoir

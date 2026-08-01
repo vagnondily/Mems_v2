@@ -1466,6 +1466,20 @@ function SetContoursNiveaux({ db, notify, can, onCommitted }){
     setBusy("");
   };
 
+  /* Dériver : les niveaux supérieurs sont les mêmes polygones réunis par
+     parent. Un seul fichier — les communes — suffit donc à donner districts,
+     régions et pays, et c'est la réponse au fait que seul adm3 est fourni. */
+  const deriver = async (remplacer) => {
+    setBusy("deriver"); setBilan(null);
+    try{
+      const r = await api.deriverContours(null, remplacer);
+      setBilan({ derivation:r });
+      notify(r.message, r.total ? "ok" : "warn");
+      if(onCommitted) await onCommitted();
+    }catch(e){ notify(e.message, "err"); setBilan({ erreur:e.message }); }
+    setBusy("");
+  };
+
   const retirer = async (niveau, libelle) => {
     if(!confirm(`Retirer les contours « ${libelle} » du millésime courant ?`)) return;
     setBusy(niveau);
@@ -1521,7 +1535,49 @@ function SetContoursNiveaux({ db, notify, can, onCommitted }){
         })}</tbody>
       </TableWrap>
 
-      {bilan && !bilan.erreur && (
+      {/* La dérivation, sous le tableau : elle ne remplace pas un dépôt, elle
+          évite d'en attendre un. */}
+      {can("admin") && (
+        <div className="mt-3 pt-3 border-t border-slate-100">
+          <Note>Un seul fichier suffit : les contours d'un district sont ceux de ses communes
+            <b> réunies</b>, ceux d'une région ceux de ses districts. MEMS peut donc
+            <b> dériver les niveaux supérieurs</b> à partir du niveau le plus fin déjà chargé —
+            les frontières intérieures sont dissoutes, pas empilées. Un niveau qui porte déjà ses
+            propres contours n'est pas touché : un fichier officiel vaut mieux qu'un calcul.</Note>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Btn kind="sec" icon={Layers} disabled={!!busy || !gv.geom?.units}
+              onClick={()=>deriver(false)}>
+              {busy==="deriver" ? "Dissolution…" : "Dériver les niveaux supérieurs"}</Btn>
+            <Btn kind="ghost" disabled={!!busy || !gv.geom?.units}
+              onClick={()=>{ if(confirm("Recalculer AUSSI les niveaux qui portent déjà des contours ?"
+                + "\n\nLes contours déposés à ces niveaux seront remplacés par des contours dérivés."))
+                deriver(true); }}>Recalculer tout</Btn>
+          </div>
+        </div>)}
+
+      {bilan?.derivation && (
+        <div className="mt-3">
+          <Note tone={bilan.derivation.total ? "ok" : "warn"}>{bilan.derivation.message}</Note>
+          <TableWrap max="mh240">
+            <thead><tr><Th>Niveau</Th><Th>Dérivé de</Th><Th num>Unités</Th><Th num>Contours</Th>
+              <Th>Remarque</Th></tr></thead>
+            <tbody>{bilan.derivation.etapes.map(e=>(
+              <tr key={e.niveau}>
+                <Td className="font-medium text-slate-800">{niveau(db, e.niveau, true)}
+                  <span className="text-slate-400 f11"> {e.niveau}</span></Td>
+                <Td className="text-slate-500">{e.depuis || "—"}</Td>
+                <Td num className="text-slate-500">{e.unites ? fmt(e.unites) : "—"}</Td>
+                <Td num className={e.ecrites ? "font-semibold" : "text-slate-400"}>
+                  {e.ecrites ? fmt(e.ecrites) : "—"}</Td>
+                <Td className="text-slate-600 f11" style={{whiteSpace:"normal"}}>
+                  {e.saute || (e.approximatifs
+                    ? `${e.approximatifs} unité(s) non dissoutes — rendues comme assemblage`
+                    : e.ecrites ? "frontières intérieures dissoutes" : "")}</Td>
+              </tr>))}</tbody>
+          </TableWrap>
+        </div>)}
+
+      {bilan && !bilan.erreur && !bilan.derivation && (
         <div className="mt-3">
           <Note tone={bilan.écrites ? (bilan.rejetes ? "warn" : "ok") : "err"}>{bilan.message}</Note>
           {!!bilan.rejets?.length && (

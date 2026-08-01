@@ -8,7 +8,7 @@ import { requireCap } from "../lib/auth.js";
 import { validate, schemas } from "../lib/validate.js";
 import { buildUnits, writeVersion, currentVersion, LEVELS } from "../lib/geo.js";
 import { scopeOf, declaredFor, unitsIn, outsideDeclared } from "../lib/scope.js";
-import { extent, geomSummary, readGeometries, writeGeometries } from "../lib/geom.js";
+import { deriverNiveaux, extent, geomSummary, readGeometries, writeGeometries } from "../lib/geom.js";
 import { construire, lireTable, tableProvisoire, attributsContour,
          parcourirGeometriesShp, extraireArchiveGeo } from "../lib/shapefile.js";
 
@@ -675,6 +675,59 @@ r.get("/geometry", (req, res) => {
     extent: extent({ versionId:v.id, level:q.data.level, parent:q.data.parent }),
     tronque, version:{ id:v.id, label:v.label },
   });
+});
+
+/* ── Dériver les niveaux supérieurs par dissolution ──────────────────
+   « Pour le découpage géographique tu peux utiliser le dbf de adm3 ou adm4
+   pour les dériver. »
+
+   Un seul fichier est fourni — les communes —, mais sa table attributaire
+   porte l'arbre entier : chaque commune sait son district et sa région.
+   Les contours des niveaux supérieurs sont donc les mêmes polygones réunis
+   par parent, et non une donnée manquante.
+
+   La dérivation remonte de proche en proche : les districts naissent des
+   communes, les régions des districts, le pays des régions. À chaque étage
+   on part du niveau qu'on VIENT de calculer, pas du plus fin — c'est dix
+   fois moins de sommets à coudre, et le résultat est identique puisque les
+   frontières intérieures sont déjà tombées à l'étage précédent. */
+r.post("/geometry/deriver", requireCap("admin"), (req, res, next) => {
+  const p = z.object({
+    /* Le niveau de départ. Par défaut le plus PROFOND qui porte des
+       contours : c'est celui qui décrit le mieux le pays. */
+    source: z.enum(LEVELS).nullish().transform(v => v ?? undefined),
+    /* Écraser un niveau déjà déposé n'est pas anodin : un contour officiel
+       vaut mieux qu'un contour dérivé. Par défaut, on ne remplace pas. */
+    remplacerExistants: z.boolean().default(false),
+  }).safeParse(req.body || {});
+  if(!p.success) return res.status(422).json({ error:"paramètres de dérivation invalides" });
+
+  const v = version();
+  if(!v) return res.status(409).json({ error:"aucun découpage courant" });
+
+  try{
+    const bilan = deriverNiveaux({ versionId:v.id, source:p.data.source,
+      remplacerExistants:p.data.remplacerExistants });
+    if(bilan.erreur) return res.status(bilan.statut || 409).json({ error:bilan.erreur });
+
+    db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+                VALUES (?,?,?,'plan','geo_geom',?,'derive',?)`)
+      .run(newId("aud"), req.user.id, req.user.first_name, v.id,
+        `Contours dérivés depuis ${bilan.source} — `
+        + (bilan.etapes.filter(e => e.ecrites).map(e => `${e.niveau}: ${e.ecrites}`).join(", ")
+           || "aucun niveau recalculé"));
+
+    res.json({
+      ...bilan, parNiveau: geomSummary(v.id),
+      message: bilan.total
+        ? `${bilan.total} contour(s) dérivés depuis ${bilan.source}.`
+          + (bilan.approximatifs ? ` ${bilan.approximatifs} n'ont pas pu être dissous et sont rendus `
+            + "comme assemblage des unités filles : leur remplissage est juste, mais leur trait "
+            + "montre les limites intérieures." : "")
+        : "Rien à dériver : les niveaux supérieurs portent déjà leurs contours "
+          + "(cochez le remplacement pour les recalculer).",
+    });
+  }catch(e){ next(e); }
 });
 
 /* Retrait des contours. `?level=adm1` n'en retire qu'un niveau : depuis que les

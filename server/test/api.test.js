@@ -8175,3 +8175,129 @@ test("contours par niveau : le retrait ne vise qu'une maille, et recompte le mil
   assert.equal(tout.body.reste, 0);
   assert.equal(db.prepare("SELECT geom_units FROM geo_version WHERE id=?").get(v.id).geom_units, 0);
 });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Dérivation des niveaux supérieurs par dissolution.
+
+   « Pour le découpage géographique tu peux utiliser le dbf de adm3 ou adm4
+   pour les dériver. » Un seul fichier — les communes — porte l'arbre
+   entier dans sa table attributaire : les contours des districts et des
+   régions sont ces mêmes polygones réunis par parent.
+   ═══════════════════════════════════════════════════════════════════════ */
+test("dissolution : deux carrés mitoyens n'en font qu'un, sans la frontière intérieure", async () => {
+  const { dissoudre, sommets } = await import("../src/lib/dissoudre.js");
+  /* Deux carrés qui partagent exactement l'arête x=1. Réunis, ils forment un
+     rectangle de quatre coins — pas un assemblage de huit. */
+  const gauche = { type:"Polygon", coordinates:[[[0,0],[0,1],[1,1],[1,0],[0,0]]] };
+  const droite = { type:"Polygon", coordinates:[[[1,0],[1,1],[2,1],[2,0],[1,0]]] };
+  const d = dissoudre([gauche, droite]);
+  assert.equal(d.approximatif, false, d.motif);
+  assert.equal(d.geometry.type, "Polygon");
+  assert.equal(sommets(d.geometry), 5, "quatre coins et la fermeture");
+  const xs = d.geometry.coordinates[0].map(p => p[0]);
+  assert.equal(Math.min(...xs), 0);
+  assert.equal(Math.max(...xs), 2);
+  /* Le point (1,0) intérieur à l'arête disparue ne subsiste pas comme sommet
+     isolé : la frontière est bien tombée. */
+  assert.ok(!d.geometry.coordinates[0].some(p => p[0] === 1),
+    JSON.stringify(d.geometry.coordinates[0]));
+});
+
+test("dissolution : deux carrés disjoints restent deux, et une enclave devient un trou", async () => {
+  const { dissoudre } = await import("../src/lib/dissoudre.js");
+  const a = { type:"Polygon", coordinates:[[[0,0],[0,1],[1,1],[1,0],[0,0]]] };
+  const loin = { type:"Polygon", coordinates:[[[5,5],[5,6],[6,6],[6,5],[5,5]]] };
+  const separes = dissoudre([a, loin]);
+  assert.equal(separes.approximatif, false);
+  assert.equal(separes.geometry.type, "MultiPolygon");
+  assert.equal(separes.geometry.coordinates.length, 2);
+
+  /* Un anneau carré (extérieur + trou) : le trou survit à la dissolution —
+     c'est le cas de l'enclave appartenant à un autre parent. */
+  const anneau = { type:"Polygon", coordinates:[
+    [[0,0],[0,10],[10,10],[10,0],[0,0]],
+    [[4,4],[6,4],[6,6],[4,6],[4,4]] ] };
+  const d = dissoudre([anneau]);
+  assert.equal(d.approximatif, false, d.motif);
+  assert.equal(d.geometry.coordinates.length, 2, "l'extérieur et son trou");
+});
+
+test("dissolution : deux voisins qui ne partagent pas leurs sommets ne sont pas fusionnés d'office",
+  async () => {
+    const { dissoudre } = await import("../src/lib/dissoudre.js");
+    /* Décalage de trois dix-millièmes de degré — une trentaine de mètres : les
+       deux carrés se jouxtent à l'œil mais ne se touchent pas dans les données.
+       La dissolution ne les recolle PAS : elle réunit ce qui est topologiquement
+       adjacent, elle n'invente pas l'adjacence. La couture, elle, se referme
+       parfaitement — chacun de son côté. */
+    const a = { type:"Polygon", coordinates:[[[0,0],[0,1],[1,1],[1,0],[0,0]]] };
+    const b = { type:"Polygon", coordinates:[[[1,0.0003],[1,1.0003],[2,1.0003],[2,0.0003],[1,0.0003]]] };
+    const d = dissoudre([a, b]);
+    assert.equal(d.approximatif, false, d.motif);
+    assert.equal(d.geometry.type, "MultiPolygon");
+    assert.equal(d.geometry.coordinates.length, 2, "les deux contours restent distincts");
+  });
+
+test("dérivation : les districts et la région naissent des communes du millésime", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  /* On repart du jeu COD-AB à trois communes : elles partagent une région et
+     un district, l'arbre est donc adm1 → adm2 → adm3. */
+  const commit = await commitShp(t, { label:"Millésime pour dérivation" });
+  assert.equal(commit.status, 200, JSON.stringify(commit.body));
+  const vid = commit.body.versionId;
+  const compte = (l) => db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level=?").get(vid, l).c;
+  assert.equal(compte("adm3"), 3);
+  assert.equal(compte("adm2"), 0, "rien au-dessus avant la dérivation");
+
+  const r = await request(app).post("/api/geo/geometry/deriver")
+    .set("Authorization", `Bearer ${t}`).send({});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.source, "adm3", "le niveau le plus fin sert de départ");
+  assert.equal(compte("adm2"), 1, "le district est dérivé");
+  assert.equal(compte("adm1"), 1, "la région aussi");
+  assert.equal(compte("adm3"), 3, "et les communes sont intactes");
+
+  /* Le cadre d'un parent dérivé est exactement celui de ses enfants réunis :
+     c'est ce qui dit que rien n'a été perdu ni ajouté. */
+  const cadre = db.prepare(`SELECT p.min_lon pl, p.min_lat pb, p.max_lon pr, p.max_lat pt,
+      MIN(c.min_lon) cl, MIN(c.min_lat) cb, MAX(c.max_lon) cr, MAX(c.max_lat) ct
+    FROM geo_geom p
+    JOIN geo_unit u  ON u.pcode=p.pcode AND u.version_id=p.version_id
+    JOIN geo_unit uc ON uc.parent_pcode=u.pcode AND uc.version_id=u.version_id
+    JOIN geo_geom c  ON c.pcode=uc.pcode AND c.version_id=uc.version_id
+    WHERE p.version_id=? AND p.level='adm2' GROUP BY p.pcode`).get(vid);
+  assert.equal(cadre.pl, cadre.cl); assert.equal(cadre.pb, cadre.cb);
+  assert.equal(cadre.pr, cadre.cr); assert.equal(cadre.pt, cadre.ct);
+
+  /* Deuxième passage : un niveau déjà pourvu n'est pas recalculé en silence. */
+  const encore = await request(app).post("/api/geo/geometry/deriver")
+    .set("Authorization", `Bearer ${t}`).send({});
+  assert.equal(encore.body.total, 0, JSON.stringify(encore.body.etapes));
+  assert.ok(encore.body.etapes.some(e => /déjà présents/.test(e.saute || "")),
+    JSON.stringify(encore.body.etapes));
+  /* Sauf demande explicite. */
+  const force = await request(app).post("/api/geo/geometry/deriver")
+    .set("Authorization", `Bearer ${t}`).send({ remplacerExistants:true });
+  assert.ok(force.body.total > 0, JSON.stringify(force.body));
+
+  /* Et la carte sert désormais les trois mailles. */
+  for(const [niv, n] of [["adm1",1],["adm2",1],["adm3",3]]){
+    const c = await request(app).get(`/api/geo/geometry?level=${niv}`)
+      .set("Authorization", `Bearer ${t}`);
+    assert.equal(c.body.features.length, n, `la carte sert ${niv}`);
+  }
+});
+
+test("dérivation : refusée sans contours, et réservée à l'administration", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await request(app).delete("/api/geo/geometry").set("Authorization", `Bearer ${t}`);
+  const vide = await request(app).post("/api/geo/geometry/deriver")
+    .set("Authorization", `Bearer ${t}`).send({});
+  assert.equal(vide.status, 409, JSON.stringify(vide.body));
+  assert.ok(/aucun contour/.test(vide.body.error), vide.body.error);
+
+  const te = (await login("listedit@test.local", "ListEditMotDePasse1")).body.token;
+  assert.equal((await request(app).post("/api/geo/geometry/deriver")
+    .set("Authorization", `Bearer ${te}`).send({})).status, 403);
+});

@@ -172,6 +172,10 @@ export const api = {
     postFiles("/geo/shapefile/contours", files,
       { niveau, mapping: JSON.stringify(mapping || {}), source: source || "",
         remplacer: remplacer ? "true" : "false" }),
+  /* Dériver les niveaux supérieurs en réunissant les contours du dessous : un
+     seul fichier (les communes) suffit à donner districts, régions et pays. */
+  deriverContours:  (source = null, remplacerExistants = false) =>
+    call("POST", "/geo/geometry/deriver", { source, remplacerExistants }),
   geoGeometry:      (q="")                => call("GET", `/geo/geometry${q}`),
   /* Sans niveau : tous les contours. Avec : cette maille seulement — corriger
      les régions ne doit pas obliger à redéposer les quatre fichiers. */

@@ -6,7 +6,7 @@ import { db, migrate, tx } from "./db.js";
 import { log } from "./lib/logger.js";
 import { newId } from "./lib/crypto.js";
 import { buildUnits, writeVersion } from "./lib/geo.js";
-import { writeGeometries } from "./lib/geom.js";
+import { deriverNiveaux, writeGeometries } from "./lib/geom.js";
 import { lireTable, parcourirGeometriesShp, attributsContour } from "./lib/shapefile.js";
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -284,8 +284,16 @@ function semerDecoupage(){
     });
     vider();
   })();
+  /* Le fichier ne porte QUE les communes, mais sa table attributaire porte
+     l'arbre entier : districts, régions et pays sont les mêmes polygones
+     réunis par parent. On les dérive donc dans la foulée, sans quoi la carte
+     n'aurait qu'un seul niveau de breakdown alors que la donnée en permet
+     quatre. */
+  const derive = deriverNiveaux({ versionId });
+
   return { versionId, unites:units.length, counts, contours:ecrites, rejetes,
-           collisions:collisions.length };
+           collisions:collisions.length,
+           derives: derive.erreur ? null : derive };
 }
 
 /* ── Exécution ───────────────────────────────────────────────────── */
@@ -314,8 +322,12 @@ if(SANS_GEO){
   bilan.geo = semerDecoupage();
   if(bilan.geo.saute) log.warn("découpage non chargé", { raison:bilan.geo.saute });
   else if(bilan.geo.erreur) log.error("découpage refusé", { raison:bilan.geo.erreur });
-  else log.info("découpage chargé", { unites:bilan.geo.unites, communes:bilan.geo.counts?.adm3,
-    contours:bilan.geo.contours });
+  else {
+    log.info("découpage chargé", { unites:bilan.geo.unites, communes:bilan.geo.counts?.adm3,
+      contours:bilan.geo.contours });
+    if(bilan.geo.derives?.total) log.info("niveaux supérieurs dérivés", Object.fromEntries(
+      bilan.geo.derives.etapes.filter(e => e.ecrites).map(e => [e.niveau, e.ecrites])));
+  }
 }
 
 /* Le journal d'audit garde trace du chargement : c'est une écriture massive
