@@ -161,6 +161,24 @@ r.put("/:cle/:id", garde, (req, res, next) => {
   if(b.rev && b.rev !== (cur[def.cols.rev] || 1))
     return res.status(409).json({ error:"cet item a été modifié entre-temps", courant: forme(def, cur) });
 
+  /* ── LE CODE D'IDENTIFICATION EST PRÉSERVÉ ────────────────────────
+     « Possibilité de mettre à jour mais le code d'identification reste
+     pour ne pas perdre les données. » Le code est la clé de jointure :
+     `pdd.commodity`, `sites.activity_tag`, `sites.site_type` le portent en
+     texte, sans contrainte de clé étrangère pour les retenir. Le changer
+     ici laisserait toutes ces lignes désigner un code qui n'existe plus —
+     silencieusement, et sans qu'aucune requête n'échoue.
+
+     Le REFUS vaut mieux que l'ignorance polie : accepter la requête en
+     écrivant tout SAUF le code laisserait croire au renommage. La réponse
+     nomme donc la seule voie qui rende le geste sûr — le renommage en
+     cascade, réservé au super-utilisateur. */
+  if(b.code !== cur[def.cols.code]) return res.status(409).json({
+    error: `le code d'identification ne se modifie pas ici : « ${cur[def.cols.code]} » est la clé `
+      + "de jointure des données déjà saisies. Un super-utilisateur peut le renommer en cascade, "
+      + "ce qui réécrit du même coup toutes les lignes qui le portent.",
+    code: cur[def.cols.code], voie: `POST /api/listes/${def.cle}/${cur.id}/renommer-code` });
+
   if(lignes(def).some(x => x.id !== cur.id
       && (x[def.cols.label] || "").toLowerCase() === b.label.toLowerCase()))
     return res.status(409).json({ error:`le libellé « ${b.label} » est déjà pris dans cette liste` });
@@ -189,6 +207,29 @@ r.put("/:cle/:id", garde, (req, res, next) => {
   invalider(def);
   audit(req, def.cle, "update", cur.id,
     `${def.label} — ${b.label}${chg.length ? ` : ${chg.join(", ")}` : " modifié"}`);
+  res.json({ item: forme(def, ligne(def, cur.id)) });
+});
+
+/* ── Désactiver, l'issue que le refus de suppression propose ─────────
+   Un geste à part, et non un PUT complet : l'écran qui reçoit un 409 n'a
+   qu'une chose à faire — retirer l'item des choix sans toucher au reste.
+   Lui faire renvoyer l'item entier pour cela, c'est lui donner l'occasion
+   d'écraser un libellé ou un champ que quelqu'un vient de corriger. */
+r.put("/:cle/:id/actif", garde, (req, res) => {
+  const def = parCle(req.params.cle);
+  const cur = ligne(def, req.params.id);
+  if(!cur) return res.status(404).json({ error:"item introuvable" });
+  const p = z.object({ active: z.boolean(),
+                       rev: z.coerce.number().int().min(1).optional() }).safeParse(req.body);
+  if(!p.success) return res.status(422).json({ error:"état invalide" });
+  if(p.data.rev && p.data.rev !== (cur[def.cols.rev] || 1))
+    return res.status(409).json({ error:"cet item a été modifié entre-temps", courant: forme(def, cur) });
+
+  db.prepare(`UPDATE ${def.table} SET ${def.cols.active}=?, ${def.cols.rev}=${def.cols.rev}+1
+              WHERE id=?`).run(p.data.active ? 1 : 0, cur.id);
+  invalider(def);
+  audit(req, def.cle, p.data.active ? "enable" : "disable", cur.id,
+    `${def.label} — ${cur[def.cols.label]} ${p.data.active ? "réactivé" : "désactivé"}`);
   res.json({ item: forme(def, ligne(def, cur.id)) });
 });
 

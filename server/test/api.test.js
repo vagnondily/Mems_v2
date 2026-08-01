@@ -7598,3 +7598,111 @@ test("listes typées : le plan de distribution accepte une modalité hors des tr
   for(const n of ["idx_pdd_period","idx_pdd_bureau","idx_pdd_geo_pcode"])
     assert.ok(idx.includes(n), `l'index ${n} a été recréé (${idx.join(", ")})`);
 });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Chantier S8-2 — Intégrité référentielle.
+
+   « Si une liste est enregistrée et a été déjà utilisée, impossible de
+   l'effacer (possibilité de mettre à jour mais le code d'identification
+   reste pour ne pas perdre les données). »
+   ═══════════════════════════════════════════════════════════════════════ */
+test("intégrité : le code d'identification est préservé par la mise à jour", async () => {
+  const lu = await request(app).get("/api/listes/denrees").set("Authorization", `Bearer ${adminToken}`);
+  const riz = lu.body.items.find(x => x.code === "Riz");
+
+  const refus = await request(app).put(`/api/listes/denrees/${riz.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"RIZ_LOCAL", label:riz.label, rev:riz.rev });
+  assert.equal(refus.status, 409, JSON.stringify(refus.body));
+  assert.ok(/clé de jointure/.test(refus.body.error), refus.body.error);
+  assert.ok(/renommer-code/.test(refus.body.voie), "la réponse nomme la voie sûre");
+  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(riz.id).code, "Riz",
+    "rien n'a été écrit");
+
+  /* Le reste de l'item, lui, se met à jour sans réserve. */
+  const maj = await request(app).put(`/api/listes/denrees/${riz.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"Riz", label:"Riz blanc", note:"Denrée principale", rev:riz.rev });
+  assert.equal(maj.status, 200, JSON.stringify(maj.body));
+  assert.equal(maj.body.item.label, "Riz blanc");
+  assert.equal(maj.body.item.code, "Riz", "le code n'a pas bougé");
+  await request(app).put(`/api/listes/denrees/${riz.id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"Riz", label:"Riz", rev:maj.body.item.rev });
+});
+
+test("intégrité : le tag d'une activité ne se renomme pas depuis l'écran des activités", async () => {
+  /* Dix colonnes portent ce tag en texte, sans clé étrangère pour les
+     retenir : le réécrire ici laissait des lignes désigner un code disparu,
+     silencieusement. */
+  const act = db.prepare(
+    "SELECT * FROM activity_categories WHERE tag IN (SELECT activity_tag FROM sites) LIMIT 1").get();
+  assert.ok(act, "une activité du semis est portée par des sites");
+  const avant = db.prepare("SELECT COUNT(*) c FROM sites WHERE activity_tag=?").get(act.tag).c;
+
+  const refus = await request(app).put(`/api/activities/${act.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:act.name, tag:act.tag + "X", rev:act.rev });
+  assert.equal(refus.status, 409, JSON.stringify(refus.body));
+  assert.ok(/clé de jointure/.test(refus.body.error), refus.body.error);
+  assert.equal(db.prepare("SELECT tag FROM activity_categories WHERE id=?").get(act.id).tag, act.tag);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM sites WHERE activity_tag=?").get(act.tag).c, avant,
+    "aucun site n'a perdu son tag");
+
+  /* Le nom, le domaine et le statut se modifient normalement. */
+  const maj = await request(app).put(`/api/activities/${act.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:act.name + " (révisée)", tag:act.tag, program_area:act.program_area, rev:act.rev });
+  assert.equal(maj.status, 200, JSON.stringify(maj.body));
+  await request(app).put(`/api/activities/${act.id}`).set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:act.name, tag:act.tag, program_area:act.program_area, rev:maj.body.activity.rev });
+});
+
+test("intégrité : le refus de suppression d'une activité compte les douze colonnes, pas deux", async () => {
+  /* Une activité dont AUCUN site ne porte la clé étrangère mais dont des
+     lignes portent le tag était supprimable : les deux clés étrangères
+     répondaient zéro, et dix colonnes de texte restaient à désigner un code
+     disparu. */
+  const cree = await request(app).post("/api/activities").set("Authorization", `Bearer ${adminToken}`)
+    .send({ name:"Activité orpheline d'essai", tag:"ORPH" });
+  assert.equal(cree.status, 201);
+  const id = cree.body.activity.id;
+  db.prepare(`INSERT INTO outputs (id,activity_tag,year,month,planned,actual)
+              VALUES ('out_orph','ORPH',2026,0,10,0)`).run();
+
+  const apres = await request(app).get("/api/activities").set("Authorization", `Bearer ${adminToken}`);
+  const vue = apres.body.activities.find(a => a.id === id);
+  assert.equal(vue.usage.sites, 0, "aucune clé étrangère ne la retient");
+  assert.equal(vue.usageTotal, 1, "mais une ligne de produits porte son tag");
+  assert.ok(vue.usageDetail.some(u => u.table === "outputs"), JSON.stringify(vue.usageDetail));
+
+  const refus = await request(app).delete(`/api/activities/${id}`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(refus.status, 409, JSON.stringify(refus.body));
+  assert.equal(refus.body.usageTotal, 1);
+
+  db.prepare("DELETE FROM outputs WHERE id='out_orph'").run();
+  assert.equal((await request(app).delete(`/api/activities/${id}`)
+    .set("Authorization", `Bearer ${adminToken}`)).status, 200);
+});
+
+test("intégrité : désactiver est un geste à part, qui ne touche à rien d'autre", async () => {
+  const lu = await request(app).get("/api/listes/types_suivi").set("Authorization", `Bearer ${adminToken}`);
+  const it = lu.body.items[0];
+
+  const off = await request(app).put(`/api/listes/types_suivi/${it.id}/actif`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ active:false, rev:it.rev });
+  assert.equal(off.status, 200, JSON.stringify(off.body));
+  assert.equal(off.body.item.active, false);
+  assert.equal(off.body.item.label, it.label, "le libellé n'a pas été touché");
+  assert.equal(off.body.item.code, it.code, "le code non plus");
+
+  /* Le verrou optimiste vaut aussi pour ce geste. */
+  const stale = await request(app).put(`/api/listes/types_suivi/${it.id}/actif`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ active:true, rev:it.rev });
+  assert.equal(stale.status, 409, "la révision d'avant la désactivation est refusée");
+
+  const on = await request(app).put(`/api/listes/types_suivi/${it.id}/actif`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ active:true, rev:off.body.item.rev });
+  assert.equal(on.status, 200);
+  assert.equal(on.body.item.active, true);
+});

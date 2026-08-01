@@ -76,12 +76,12 @@ function SetListes({ notify, can, me }){
     }
   };
 
-  const desactiver = async (it) => {
+  const basculer = async (it, active) => {
     setBusy(true);
     try{
-      await api.updateItem(cle, it.id, { code:it.code, label:it.label, note:it.note || null,
-        ordre:it.ordre, active:false, champs:it.champs || {}, rev:it.rev });
-      await recharger(); setRefus(null); notify(`« ${it.label} » désactivé`, "ok");
+      await api.activerItem(cle, it.id, active, it.rev);
+      await recharger(); setRefus(null);
+      notify(`« ${it.label} » ${active ? "réactivé" : "désactivé"}`, "ok");
     }catch(e){ notify(e.message, "err"); }
     setBusy(false);
   };
@@ -169,7 +169,7 @@ function SetListes({ notify, can, me }){
               </div>
 
               {refus && <div className="px-4"><RefusSuppression refus={refus} busy={busy}
-                onClose={()=>setRefus(null)} onDesactiver={()=>desactiver(refus.item)} admin={admin} /></div>}
+                onClose={()=>setRefus(null)} onDesactiver={()=>basculer(refus.item, false)} admin={admin} /></div>}
 
               {!items.length
                 ? <Empty icon={ListChecks} title={q ? "Aucun item ne correspond" : "Liste vide"}
@@ -187,7 +187,14 @@ function SetListes({ notify, can, me }){
                         <Td className="font-medium text-slate-800">{it.label}</Td>
                         {t.champs.map(c => <Td key={c.cle} className="text-slate-600">
                           {it.champs?.[c.cle] || "—"}</Td>)}
-                        <Td>{it.active ? <Badge tone="g">Actif</Badge> : <Badge>Inactif</Badge>}</Td>
+                        {/* Le statut se bascule d'un clic : c'est l'issue proposée
+                            quand la suppression est refusée, elle doit être à
+                            portée de main et non au fond d'une fiche. */}
+                        <Td>{admin
+                          ? <button onClick={()=>basculer(it, !it.active)} disabled={busy}
+                              title={it.active ? "Désactiver" : "Réactiver"}>
+                              {it.active ? <Badge tone="g">Actif</Badge> : <Badge>Inactif</Badge>}</button>
+                          : (it.active ? <Badge tone="g">Actif</Badge> : <Badge>Inactif</Badge>)}</Td>
                         {/* Le nombre de lignes qui référencent l'item, avec le détail
                             au survol : c'est ce qui explique d'avance pourquoi la
                             corbeille refusera. */}

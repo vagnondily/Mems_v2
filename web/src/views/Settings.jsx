@@ -1665,6 +1665,11 @@ function SetActivities({ db, notify, can, reload }){
         son intitulé et son domaine. C'est la source unique réutilisée pour rattacher un site, suivre un
         indicateur de processus et planifier. Désactiver une activité la retire des choix sans effacer
         l'historique.</Note>
+      <Note tone="warn">Le <b>tag</b> est le code d'identification : dix tables le portent en texte
+        (sites, couverture, plan de distribution, produits, visites, formulaires ODK, caseload,
+        zones TPM, soumissions, indicateurs). Il ne se modifie donc pas à l'édition — un
+        super-utilisateur le renomme <b>en cascade</b> depuis Paramètres → Listes paramétrables,
+        ce qui réécrit du même coup toutes les lignes qui le portent.</Note>
       <Card flush title="Activités du programme" subtitle={`${liste.length} activité${liste.length>1?"s":""}`}
         right={can("admin") && <Btn size="sm" icon={Plus}
           onClick={()=>setEdit({ id:"", name:"", tag:"", programArea:"", active:true })}>Ajouter</Btn>}>
@@ -1672,7 +1677,7 @@ function SetActivities({ db, notify, can, reload }){
           ? <Empty>Aucune activité. Ajoutez-en une, ou importez le découpage du pays qui les amorce.</Empty>
           : <TableWrap>
           <thead><tr><Th>Code</Th><Th>Intitulé</Th><Th>Domaine programme</Th><Th>Statut</Th>
-            <Th num>Sites</Th><Th num>Paramètres</Th><Th /></tr></thead>
+            <Th num>Sites</Th><Th num>Paramètres</Th><Th num>Total référencé</Th><Th /></tr></thead>
           <tbody>{liste.map(a=>(
             <tr key={a.id} className="hover:bg-sky-50">
               <Td><Badge tone="b">{a.tag}</Badge></Td>
@@ -1681,9 +1686,18 @@ function SetActivities({ db, notify, can, reload }){
               <Td>{a.active ? <Badge tone="g">Active</Badge> : <Badge>Inactive</Badge>}</Td>
               <Td num className="text-slate-500">{a.usage?.sites ?? "—"}</Td>
               <Td num className="text-slate-500">{a.usage?.params ?? "—"}</Td>
+              {/* Le total sur les DOUZE colonnes qui désignent l'activité, pas
+                  seulement les deux clés étrangères : c'est lui qui décide de la
+                  suppression, il doit donc être celui qu'on lit. */}
+              <Td num className={a.usageTotal ? "font-semibold text-slate-700" : "text-slate-400"}
+                title={(a.usageDetail||[]).map(u=>`${u.label} (${u.table}.${u.colonne}) : ${u.lignes}`).join("\n")}>
+                {a.usageTotal ? fmt(a.usageTotal) : "—"}</Td>
               <Td className="text-right">
                 {can("admin") && <button onClick={()=>setEdit(a)} className="text-slate-400 m-ico p-1"><Pencil size={14}/></button>}
-                {can("admin") && <button onClick={()=>remove(a)} className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={14}/></button>}</Td>
+                {can("admin") && <button onClick={()=>remove(a)}
+                  className={clsx("p-1", a.usageTotal ? "text-slate-300 cursor-help" : "text-slate-400 hover:text-rose-600")}
+                  title={a.usageTotal ? `${a.usageTotal} ligne(s) référencent cette activité` : "Supprimer"}>
+                  <Trash2 size={14}/></button>}</Td>
             </tr>))}</tbody>
         </TableWrap>}
       </Card>
@@ -1700,7 +1714,13 @@ function ActivityModal({ open, act, busy, onClose, onSave }){
       footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
         <Btn icon={Save} disabled={busy || !f.name || !f.tag} onClick={()=>onSave(f)}>Enregistrer</Btn></>}>
       <div className="grid grid-cols-2 gap-x-4">
-        <Field label="Code (tag)" hint="Court, en majuscules — porté par les sources"><Input value={f.tag||""}
+        {/* Le tag est en lecture seule dès que l'activité existe : le serveur
+            refuserait de le changer, et proposer un champ qu'on ne peut pas
+            enregistrer apprend à l'utilisateur que l'écran ment. */}
+        <Field label="Code (tag)" hint={act?.id
+          ? "Non modifiable — clé de jointure ; un super le renomme en cascade (Listes paramétrables)"
+          : "Court, en majuscules — porté par les sources"}><Input value={f.tag||""}
+          readOnly={!!act?.id} disabled={!!act?.id}
           onChange={e=>u("tag",e.target.value.toUpperCase())} placeholder="URT" /></Field>
         <Field label="Domaine programme"><Select value={f.programArea||""} onChange={e=>u("programArea",e.target.value)}
           empty="— aucun —" options={PROG_AREAS.map(p=>p[0])} /></Field>

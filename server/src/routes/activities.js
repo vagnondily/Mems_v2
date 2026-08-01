@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "../db.js";
 import { newId } from "../lib/crypto.js";
 import { requireCap } from "../lib/auth.js";
+import { parCle, usage as usageRegistre, totalUsage } from "../lib/listes.js";
 
 /* ═══════════════════════════════════════════════════════════════════════
    Référentiel des ACTIVITÉS — configuration réelle (chantier S4 / S7).
@@ -40,17 +41,32 @@ const audit = (req, action, id, text) =>
               VALUES (?,?,?,'plan','activities',?,?,?)`)
     .run(newId("aud"), req.user.id, req.user.email || req.user.first_name, id, action, text);
 
-/* Ce qui référence une activité par clé étrangère (category_id). Sert deux
-   fois : informer l'écran, et refuser une suppression destructrice. */
+/* Ce qui référence une activité par clé étrangère (category_id) : les deux
+   colonnes que l'écran affiche en propre.
+
+   Ce n'est PAS tout ce qui la retient. Douze colonnes portent une activité,
+   dont dix par son TAG en texte — sites, couverture, plan de distribution,
+   produits, visites, formulaires ODK, caseload, zones TPM, soumissions,
+   indicateurs de processus. Elles sont déclarées une seule fois, dans le
+   registre des listes typées (`lib/listes.js`), et c'est de là que viennent
+   le total et le détail : deux énumérations parallèles auraient fini par
+   diverger, et la divergence se paierait en lignes orphelines. */
+const DEF = parCle("activites");
 const usage = (id) => ({
   sites:  db.prepare("SELECT COUNT(*) c FROM sites WHERE category_id=?").get(id).c,
   params: db.prepare("SELECT COUNT(*) c FROM coverage_params WHERE category_id=?").get(id).c,
 });
 
-const shape = (a) => ({
-  id:a.id, name:a.name, tag:a.tag, program_area:a.program_area || "",
-  active:!!a.active, rev:a.rev || 1, usage: usage(a.id),
-});
+const shape = (a) => {
+  const detail = usageRegistre(DEF, a);
+  return {
+    id:a.id, name:a.name, tag:a.tag, program_area:a.program_area || "",
+    active:!!a.active, rev:a.rev || 1, usage: usage(a.id),
+    /* Le décompte complet, table par table : c'est lui qui décide de la
+       suppression, et c'est lui que l'écran doit montrer. */
+    usageDetail: detail, usageTotal: totalUsage(detail),
+  };
+};
 
 r.get("/", (req, res) => res.json({ activities:
   db.prepare("SELECT * FROM activity_categories ORDER BY active DESC, name").all().map(shape) }));
@@ -82,11 +98,25 @@ r.put("/:id", requireCap("admin"), (req, res) => {
     return res.status(409).json({ error:"cette activité a été modifiée entre-temps", courant: shape(cur) });
   if(db.prepare("SELECT 1 FROM activity_categories WHERE name=? COLLATE NOCASE AND id<>?").get(b.name, cur.id))
     return res.status(409).json({ error:"une activité porte déjà ce nom" });
-  db.prepare(`UPDATE activity_categories SET name=?, tag=?, program_area=?, active=?, rev=rev+1 WHERE id=?`)
-    .run(b.name, b.tag, b.program_area, b.active?1:0, cur.id);
+
+  /* LE TAG EST PRÉSERVÉ. Il était réécrit ici, et ce n'était pas anodin :
+     dix colonnes le portent en TEXTE, sans clé étrangère pour les retenir.
+     Renommer URT en URT2 laissait donc chaque site, chaque ligne de plan et
+     chaque produit désigner une activité qui n'existe plus — sans qu'aucune
+     requête n'échoue, et sans que rien ne le dise. La règle du chantier S8
+     vaut ici comme pour les autres listes : le code se renomme EN CASCADE,
+     par un super-utilisateur, ou pas du tout. */
+  if(b.tag !== cur.tag) return res.status(409).json({
+    error: `le tag d'identification ne se modifie pas ici : « ${cur.tag} » est la clé de jointure `
+      + "de dix tables (sites, couverture, plan de distribution, produits, visites, formulaires "
+      + "ODK, caseload, zones TPM, soumissions, indicateurs). Un super-utilisateur peut le "
+      + "renommer en cascade, ce qui réécrit du même coup toutes les lignes qui le portent.",
+    code: cur.tag, voie: `POST /api/listes/activites/${cur.id}/renommer-code` });
+
+  db.prepare(`UPDATE activity_categories SET name=?, program_area=?, active=?, rev=rev+1 WHERE id=?`)
+    .run(b.name, b.program_area, b.active?1:0, cur.id);
   const chg = [];
   if(b.name !== cur.name) chg.push(`renommée « ${cur.name} » → « ${b.name} »`);
-  if(b.tag !== cur.tag) chg.push(`tag ${cur.tag} → ${b.tag}`);
   if(b.active !== !!cur.active) chg.push(b.active ? "réactivée" : "désactivée");
   audit(req, "update", cur.id, `Activité ${b.name}${chg.length ? ` — ${chg.join(", ")}` : " modifiée"}`);
   res.json({ activity: shape(db.prepare("SELECT * FROM activity_categories WHERE id=?").get(cur.id)) });
@@ -96,12 +126,17 @@ r.delete("/:id", requireCap("admin"), (req, res) => {
   const cur = db.prepare("SELECT * FROM activity_categories WHERE id=?").get(req.params.id);
   if(!cur) return res.status(404).json({ error:"activité introuvable" });
   const u = usage(cur.id);
-  const total = u.sites + u.params;
-  /* Le schéma détacherait les lignes (ON DELETE SET NULL) : des sites sans
-     activité, invisibles des filtres par activité. On refuse et on propose la
-     désactivation, qui conserve l'historique et le rattachement. */
+  /* Le schéma détacherait les lignes portant `category_id` (ON DELETE SET
+     NULL) : des sites sans activité, invisibles des filtres par activité. Il
+     ne dirait RIEN des dix colonnes qui portent le tag en texte — elles
+     survivraient à l'activité, désignant un code disparu. Le refus se fonde
+     donc sur le décompte complet du registre, pas sur les deux clés
+     étrangères, et il énumère ce qui retient l'activité. */
+  const detail = usageRegistre(DEF, cur);
+  const total = totalUsage(detail);
   if(total) return res.status(409).json({
-    error:"cette activité est encore référencée ; désactivez-la plutôt que de la supprimer", usage:u });
+    error:"cette activité est encore référencée ; désactivez-la plutôt que de la supprimer",
+    usage:u, usageDetail:detail, usageTotal:total });
   db.prepare("DELETE FROM activity_categories WHERE id=?").run(cur.id);
   audit(req, "delete", cur.id, `Activité supprimée — ${cur.name}`);
   res.json({ ok:true });

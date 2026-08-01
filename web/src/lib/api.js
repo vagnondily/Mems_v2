@@ -288,6 +288,10 @@ export const api = {
   createItem:   (cle, it)    => call("POST", `/listes/${encodeURIComponent(cle)}`, it),
   updateItem:   (cle, id, it)=> call("PUT", `/listes/${encodeURIComponent(cle)}/${encodeURIComponent(id)}`, it),
   deleteItem:   (cle, id)    => call("DELETE", `/listes/${encodeURIComponent(cle)}/${encodeURIComponent(id)}`),
+  /* Désactiver : un geste à part, et non un enregistrement complet — l'écran qui
+     vient d'essuyer un refus de suppression n'a rien d'autre à écrire. */
+  activerItem:  (cle, id, active, rev) =>
+    call("PUT", `/listes/${encodeURIComponent(cle)}/${encodeURIComponent(id)}/actif`, { active, rev }),
   validerListe: (cle, note)  => call("POST", `/listes/${encodeURIComponent(cle)}/valider`, { note }),
 
   users:      ()             => call("GET", "/users"),
