@@ -146,7 +146,10 @@ export default function App(){
       programArea:c.program_area || "", active: c.active !== 0, rev:c.rev || 1 })),
     /* `weights` reste codé en dur : D_WEIGHTS n'alimente que le score hérité, que
        plus aucun écran vivant n'atteint (siteScore reçoit toujours `db`). */
-    roles: cfg.roles || D_ROLES, weights: D_WEIGHTS, scoring: cfg.scoring || D_SCORING,
+    /* Fusion et non substitution : un rôle par défaut ajouté après coup (l'écran
+       de supervision) doit apparaître même sur une instance qui a déjà enregistré
+       sa matrice de rôles ; les personnalisations enregistrées priment. */
+    roles: { ...D_ROLES, ...(cfg.roles || {}) }, weights: D_WEIGHTS, scoring: cfg.scoring || D_SCORING,
     formulas: cfg.formulas || D_FORMULAS,
     /* MRE : réglage sans table, écrit désormais par PUT /api/planning-config (droit
        éditeur) sous la clé `mmr` du même dictionnaire settings, d'où on le relit. */
@@ -204,6 +207,12 @@ export default function App(){
     if(!isSandbox()) notify("Mode démonstration quitté — données réelles rétablies", "ok");
     loadState().catch(()=>{});
   }), [loadState, notify]);
+
+  /* L'écran de supervision ouvre directement sur le tableau de bord — c'est sa
+     seule raison d'être (affichage mural permanent). */
+  useEffect(() => { if(me?.role === "dashboard"){
+    setTabState("suivi"); setSubs(s => ({ ...s, suivi:"dashboard" }));
+  } }, [me?.role]);
 
   const onLogin = async (user, token) => {
     setToken(token); setMe(normalizeMe(user)); await loadState(); setPhase("ready");

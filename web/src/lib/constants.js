@@ -160,6 +160,9 @@ const D_ROLES = {
   validator:{label:"Validateur",       tabs:["home","suivi","programme","analytics","reports"], edit:true, del:false, validate:true, admin:false, sync:true },
   editor: { label:"Éditeur",           tabs:["home","suivi","programme","analytics","reports"], edit:true, del:false, validate:false,admin:false, sync:true },
   viewer: { label:"Lecteur",           tabs:["home","suivi","programme","reports"],              edit:false,del:false, validate:false,admin:false, sync:false },
+  /* Écran de supervision (kiosque) : lecture seule du tableau de bord, pour un
+     affichage mural permanent. Le serveur borne son accès de 07h30 à 18h00. */
+  dashboard:{label:"Écran de supervision", tabs:["suivi"],                                        edit:false,del:false, validate:false,admin:false, sync:false },
 };
 
 /* Les destinations réellement ouvertes à un compte, règle unique partagée par
