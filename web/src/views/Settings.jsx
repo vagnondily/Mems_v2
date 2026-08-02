@@ -1725,6 +1725,11 @@ function SetLocations({ db, notify, can, reload, me }){
   /* La suppression des contours reste une action de maintenance (le millésime
      garde son arbre, on n'en retire que le fond de carte) : un seul verrou suffit. */
   const [geomBusy,setGeomBusy] = useState(false);
+  /* La gestion du référentiel (millésimes, contours, chargement, sites par tag)
+     est SECONDAIRE : le tableau des localités passe en premier, la gestion se
+     déplie à la demande — « le tableau en priorité, cherche un moyen pour les
+     référentiels ». */
+  const [gestion,setGestion] = useState(false);
 
   /* Répertoire : filtres en cascade et pagination, tout vient du serveur. */
   const [sel,setSel] = useState({ adm1:"", adm2:"", adm3:"" });
@@ -1751,7 +1756,7 @@ function SetLocations({ db, notify, can, reload, me }){
      paraissait vide (« dans l'onglet localité je ne vois rien »). On affiche
      donc la maille la plus fine qui existe dans le millésime courant. */
   const niveauProfond = ["adm4","adm3","adm2","adm1"]
-    .find(l => (db.geoVersion?.counts?.[l] || 0) > 0) || "adm4";
+    .find(l => (db.geoVersion?.counts?.[l] || 0) > 0) || "adm3";
   useEffect(()=>{
     let alive = true;
     setDir(d=>({ ...d, loading:true }));
@@ -1801,198 +1806,176 @@ function SetLocations({ db, notify, can, reload, me }){
 
   const cur = db.geoVersion;
   const pages = Math.ceil(dir.total / PER);
+  const geoCount = cur?.counts ? Object.values(cur.counts).reduce((a,b)=>a+(b||0),0) : (cur?.units||0);
+  const loadRef = async (quoi) => { setRefBusy(quoi);
+    try{ const r = await api.chargerReference(quoi); const b = r.bilan||{};
+      notify(quoi==="decoupage" ? `Découpage chargé : ${fmt(b.geo?.unites||0)} unités, ${fmt(b.geo?.contours||0)} contours`
+        : quoi==="indicateurs" ? `Référentiels chargés : ${fmt(b.activites?.lues||0)} activités, ${fmt(b.indicateurs?.lues||0)} indicateurs`
+        : `Sites chargés : ${fmt(b.crees||0)} créés, ${fmt(b.majs||0)} mis à jour`, "ok");
+      await reload?.(); await loadVersions();
+    }catch(e){ notify(e.message,"err"); } setRefBusy(""); };
+  const cols = niveaux(db, { from:"adm1", to:niveauProfond, plural:false });
+  const aFiltre = sel.adm1 || sel.adm2 || sel.adm3 || q;
+
   return (
-    <>
-      <Aide>Le découpage administratif se configure désormais dans l'onglet <b>Pays</b> : on y dépose
-        le shapefile (un <b>.zip</b>, ou le <b>.shp</b> avec son <b>.dbf</b> et son <b>.prj</b>), lu
-        <b> par le serveur</b>, qui reconstruit le découpage ET ses contours et rattache le millésime au
-        pays courant. Cet écran-ci sert à <b>consulter</b> le référentiel courant, ses millésimes et le
-        répertoire des localités.
-        <br /><br />
-        Pour le référentiel complet de Madagascar — environ 18 000 fokontany — la ligne de commande lit le
-        fichier sans le charger en mémoire :
-        <code className="bg-white px-1 rounded mx-1">node src/import-geo.js fichier.csv --label "COD-AB v2023.1"</code>
-      </Aide>
-
-      {/* Chargement des données de référence DEPUIS LE SERVEUR — aucun téléversement,
-          donc aucune limite de taille (le « 413 » sur un shapefile de 23 Mo). Les
-          fichiers réels sont déjà dans docs/ ; le serveur les lit sur place. */}
-      {me?.role==="super" && (() => {
-        const load = async (quoi) => { setRefBusy(quoi);
-          try{ const r = await api.chargerReference(quoi);
-            const b = r.bilan||{};
-            notify(quoi==="decoupage" ? `Découpage chargé : ${fmt(b.geo?.unites||0)} unités, ${fmt(b.geo?.contours||0)} contours`
-              : quoi==="indicateurs" ? `Référentiels chargés : ${fmt(b.activites?.lues||0)} activités, ${fmt(b.indicateurs?.lues||0)} indicateurs`
-              : `Sites chargés : ${fmt(b.crees||0)} créés, ${fmt(b.majs||0)} mis à jour`, "ok");
-            await reload?.(); await loadVersions();
-          }catch(e){ notify(e.message,"err"); } setRefBusy(""); };
-        const geoCount = db.geoVersion?.counts ? Object.values(db.geoVersion.counts).reduce((a,b)=>a+b,0) : 0;
-        return (
-          <Card title="Données de référence (chargement serveur)"
-            subtitle="Chargées depuis les fichiers du serveur (docs/) — aucun téléversement, aucune limite de taille">
-            <Note tone="tool">Le serveur lit directement les fichiers officiels déjà présents : le
-              <b> découpage Madagascar</b> (shapefile), la <b>masterlist</b> (activités + indicateurs) et les
-              <b> sites par tag</b> (2 872 POI géolocalisés). C'est la voie à prendre si un téléversement
-              échoue en <b>413 (fichier trop volumineux)</b> — ici rien n'est envoyé.</Note>
-            <div className="flex flex-wrap gap-2">
-              <Btn kind="sec" icon={MapPin} disabled={!!refBusy}
-                onClick={()=>load("decoupage")}>{refBusy==="decoupage"?"Chargement…":`Découpage Madagascar${geoCount?" (recharger)":""}`}</Btn>
-              <Btn kind="sec" icon={Target} disabled={!!refBusy}
-                onClick={()=>load("indicateurs")}>{refBusy==="indicateurs"?"Chargement…":`Activités + indicateurs${(db.indicators||[]).length?" (recharger)":""}`}</Btn>
-              <Btn kind="sec" icon={MapPin} disabled={!!refBusy||!geoCount}
-                onClick={()=>load("sites")} title={geoCount?"":"Chargez d'abord le découpage"}>{refBusy==="sites"?"Chargement…":`Sites par tag${(db.sites||[]).length?" (recharger)":""}`}</Btn>
-            </div>
-            <div className="f11 text-slate-500 mt-2">
-              État actuel : {fmt(geoCount)} unités géo · {fmt((db.indicators||[]).length)} indicateurs ·
-              {" "}{fmt((db.sites||[]).length)} sites. Chargez le découpage AVANT les sites (ils s'y rattachent).</div>
-          </Card>);
-      })()}
-
+    <div className="space-y-4">
+      {/* ── Bandeau : référentiel courant, compact ── */}
       {cur ? (
-        <Card title="Référentiel courant" subtitle={`« ${cur.label} » — importé le ${String(cur.importedAt||"").slice(0,10)}`}>
-          <StatRow>
-            {/* Les libellés viennent du pays configuré, pas du code. */}
-            {niveaux(db, { from:"adm1", to:"adm4" }).map(([k,l])=>(
-              <Stat key={k} label={l} value={fmt(cur.counts?.[k] || 0)} />))}
-            <Stat label="Total des unités" value={fmt(cur.units)} />
-          </StatRow>
-        </Card>
+        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm px-5 py-3.5 flex items-center gap-5 flex-wrap">
+          <div className="flex items-center gap-2.5 shrink-0">
+            <span className="w-9 h-9 rounded-xl grid place-items-center" style={{ background:C.brand+"14", color:C.brand }}><MapPin size={18}/></span>
+            <div className="leading-tight">
+              <div className="f10 font-bold uppercase tracking-wider text-slate-400">Référentiel courant</div>
+              <div className="f14 font-semibold text-slate-800">{cur.label}</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-5 flex-wrap ml-2">
+            {niveaux(db, { from:"adm1", to:niveauProfond, plural:true }).map(([k,l])=>(
+              <div key={k} className="text-center">
+                <div className="f16 font-bold text-slate-800 tabular-nums leading-none">{fmt(cur.counts?.[k] || 0)}</div>
+                <div className="f10 text-slate-400 mt-0.5">{l}</div></div>))}
+            <div className="text-center">
+              <div className="f16 font-bold tabular-nums leading-none" style={{ color:C.brand }}>{fmt(cur.units)}</div>
+              <div className="f10 text-slate-400 mt-0.5">total</div></div>
+            <div className="text-center">
+              <div className={clsx("f16 font-bold tabular-nums leading-none", cur.geom?.units?"text-emerald-600":"text-slate-300")}>{fmt(cur.geom?.units||0)}</div>
+              <div className="f10 text-slate-400 mt-0.5">contours</div></div>
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            {me?.role==="super" && !geoCount &&
+              <Btn size="sm" icon={MapPin} disabled={!!refBusy} onClick={()=>loadRef("decoupage")}>
+                {refBusy==="decoupage"?"Chargement…":"Charger le découpage"}</Btn>}
+            <Btn size="sm" kind="sec" icon={gestion?ChevronDown:ChevronRight} onClick={()=>setGestion(g=>!g)}>
+              Gestion du référentiel</Btn>
+          </div>
+        </div>
       ) : (
-        <Note tone="warn"><b>Aucun référentiel chargé.</b> Les listes administratives resteront vides
-          tant qu'un découpage n'aura pas été importé depuis l'onglet <b>Pays</b>.</Note>
+        <Note tone="warn"><b>Aucun référentiel chargé.</b> {me?.role==="super"
+          ? <>Chargez le découpage depuis le serveur (bouton ci-dessous) ou importez un shapefile depuis l'onglet <b>Pays &amp; découpage</b>.</>
+          : <>Un découpage doit être importé depuis l'onglet <b>Pays &amp; découpage</b> pour peupler ce répertoire.</>}
+          {me?.role==="super" && <div className="mt-2"><Btn size="sm" icon={MapPin} disabled={!!refBusy}
+            onClick={()=>loadRef("decoupage")}>{refBusy==="decoupage"?"Chargement…":"Charger le découpage Madagascar (serveur)"}</Btn></div>}
+        </Note>
       )}
 
-      {/* ── Contours administratifs ──────────────────────────────────────
-          Les contours arrivent désormais AVEC le shapefile importé depuis l'onglet
-          Pays (le .shp les porte, le serveur les simplifie et les rattache). Cette
-          carte n'en montre plus que l'état par niveau et permet de les retirer —
-          une maintenance qui laisse l'arbre administratif intact. */}
-      <Card title="Contours administratifs — fond de carte"
-        subtitle={cur?.geom?.units
-          ? `${fmt(cur.geom.units)} unité(s) avec contour${cur.geom.source ? ` · ${cur.geom.source}` : ""}`
-          : "aucun contour : la cartographie n'a pas de fond"}
-        right={can("admin") && cur?.geom?.units > 0 &&
-          <Btn size="sm" kind="sec" icon={Trash2} disabled={geomBusy}
-            onClick={async ()=>{ if(!confirm("Retirer tous les contours de ce millésime ? L'arbre administratif est conservé.")) return;
-              setGeomBusy(true);
-              try{ const r = await api.clearGeometry(); await loadVersions();
-                if(reload) await reload();
-                notify(`${fmt(r.supprimes)} contour(s) retiré(s)`, "ok");
-              }catch(e){ notify(e.message, "err"); }
-              setGeomBusy(false); }}>Retirer les contours</Btn>}>
-
-        {!cur ? (
-          <Note tone="warn">Aucun référentiel chargé : importez un découpage depuis l'onglet <b>Pays</b>.
-            Les contours s'y rattachent, ils ne le créent pas.</Note>
-        ) : cur.geom?.units ? (
-          !!cur.geom?.parNiveau?.length && (
-            <StatRow>
-              {cur.geom.parNiveau.map(x=>(
-                <Stat key={x.level} label={niveau(db, x.level, true)}
-                  value={fmt(x.units)}
-                  sub={`${fmt(x.points_simple)} sommets affichés sur ${fmt(x.points)}`} />))}
-            </StatRow>)
-        ) : (
-          <Note>Ce millésime n'a pas de contours. Ils arrivent avec le shapefile importé depuis l'onglet
-            <b> Pays</b> : le fichier de géométries (.shp) y est lu en même temps que la table (.dbf), et le
-            serveur les simplifie pour la carte.</Note>
-        )}
-      </Card>
-
-      {versions.length > 1 && (
-        <Card flush title="Millésimes" subtitle="Changer de millésime ne perd rien : les précédents restent disponibles">
-          <TableWrap>
-            <thead><tr><Th>Millésime</Th><Th>Provenance</Th><Th num>Unités</Th><Th>Importé le</Th><Th>Par</Th><Th /></tr></thead>
-            <tbody>{versions.map(v=>(
-              <tr key={v.id} className={clsx("hover:bg-sky-50", v.current && "bg-sky-50")}>
-                <Td><b>{v.label}</b>{v.current && <Badge tone="g" className="ml-2">courant</Badge>}</Td>
-                <Td className="text-slate-500">{v.source || "—"}</Td>
-                <Td num>{fmt(v.units)}</Td>
-                <Td className="f115">{String(v.importedAt||"").slice(0,16)}</Td>
-                <Td className="text-slate-500">{v.importedBy || "—"}</Td>
-                <Td className="text-right">{!v.current && can("admin") &&
-                  <Btn size="sm" kind="sec" icon={RefreshCw} onClick={()=>activate(v.id, v.label)}>Activer</Btn>}</Td>
-              </tr>))}</tbody>
-          </TableWrap>
-        </Card>)}
-
-      {/* Les sites (POI) importés par tag — la donnée de base « List Sites per
-          Tag » rattachée à l'arbre adm1→adm4. On montre combien sont géolocalisés
-          et leur répartition par activité, pour que l'import se voie ici. */}
-      {!!(db.sites||[]).length && (() => {
-        const sites = db.sites || [];
-        const geoloc = sites.filter(s => s.lat != null && s.lon != null).length;
-        const parTag = {};
-        for(const s of sites){ const t = s.activityTag || "—"; parTag[t] = (parTag[t]||0)+1; }
-        const rangs = Object.entries(parTag).sort((a,b)=>b[1]-a[1]);
-        return (
-          <Card flush title="Sites (POI) par activité"
-            subtitle={`${fmt(sites.length)} site(s) · ${fmt(geoloc)} géolocalisé(s) · rattachés au découpage adm1→adm4`}>
-            <div className="p-4 flex flex-wrap gap-2">
-              {rangs.map(([tag,n])=>(
-                <span key={tag} className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white pl-3 pr-1.5 py-1 f11">
-                  <span className="font-semibold text-slate-700" title={(db.activities||[]).find(a=>a.tag===tag)?.name || tag}>{tag}</span>
-                  <span className="f10 tabular-nums bg-slate-100 text-slate-600 px-1.5 rounded-full">{fmt(n)}</span>
-                </span>))}
-            </div>
-            <div className="px-4 pb-4"><Aide titre="D'où viennent ces sites ?">Les points d'intérêt de base se
-              chargent depuis <b>List Sites per Tag</b> par la ligne de commande
-              <code className="bg-white px-1 rounded mx-1">npm run seed:sites</code>: chaque POI est rattaché à
-              l'arbre administratif par son chemin de noms, garde ses <b>coordonnées GPS</b> et, quand son
-              POI_code manque, reçoit une identité <b>dérivée du point GPS</b>. Le tag du fichier est rapproché
-              d'une activité réelle du référentiel.</Aide></div>
-          </Card>);
-      })()}
-
+      {/* ── LE RÉPERTOIRE : priorité à l'écran ── */}
       <Card flush title="Répertoire des localités"
         subtitle={dir.loading ? "Chargement…"
-          : `${fmt(dir.total)} ${niveau(db, niveauProfond, false).toLowerCase()}(s) dans la sélection · page ${page+1} sur ${Math.max(1,pages)}`}
-        right={<>
-          <Btn size="sm" kind="sec" icon={Download} onClick={exp} disabled={exportEnCours || !dir.total}>
-            {exportEnCours ? "Export…" : "Exporter tout"}</Btn>
+          : `${fmt(dir.total)} ${niveau(db, niveauProfond, false).toLowerCase()}(s)${aFiltre?" dans la sélection":""} · page ${page+1} sur ${Math.max(1,pages)}`}>
+        {/* Barre de filtres propre, AU-DESSUS du tableau (plus dans l'en-tête cramé) */}
+        <div className="px-4 pt-3 pb-2 flex items-center gap-2 flex-wrap border-b border-slate-100">
           <Select value={sel.adm1} onChange={e=>setSel({ adm1:e.target.value, adm2:"", adm3:"" })}
             empty="Toutes les régions" options={geo.adm1.map(x=>x.name)} className="mi-py1 mi-xs mi-wauto" />
           <Select value={sel.adm2} onChange={e=>setSel(s=>({ ...s, adm2:e.target.value, adm3:"" }))}
-            empty="Tous les districts" options={geo.adm2.map(x=>x.name)} className="mi-py1 mi-xs mi-wauto"
-            disabled={!sel.adm1} />
+            empty="Tous les districts" options={geo.adm2.map(x=>x.name)} className="mi-py1 mi-xs mi-wauto" disabled={!sel.adm1} />
           <Select value={sel.adm3} onChange={e=>setSel(s=>({ ...s, adm3:e.target.value }))}
-            empty="Toutes les communes" options={geo.adm3.map(x=>x.name)} className="mi-py1 mi-xs mi-wauto"
-            disabled={!sel.adm2} />
-          <div className="relative"><Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Rechercher…" className={clsx(inputCls,"pl-7 mi-py1 w-44")} /></div></>}>
-        <TableWrap>
-          {(() => {
-            /* Colonnes jusqu'à la maille la plus fine réellement chargée : pour un
-               découpage aux communes (adm3), on n'affiche pas une colonne fokontany
-               vide. La dernière colonne porte le nom de l'unité (g.name). */
-            const cols = niveaux(db, { from:"adm1", to:niveauProfond, plural:false });
-            return (<>
-              <thead><tr>{cols.map(([c,l])=><Th key={c}>{l}</Th>)}<Th>P-code</Th>
-                <Th num>Latitude</Th><Th num>Longitude</Th><Th num>Sites</Th></tr></thead>
-              <tbody>{dir.rows.map(g=>{
-                const cnt = db.sites.filter(s => s[niveauProfond]
-                  ? s[niveauProfond]===g.name : (g.adm3 && s.adm3===g.adm3)).length;
-                return (<tr key={g.pcode} className="hover:bg-sky-50">
-                  {cols.map(([c])=><Td key={c} className={c===niveauProfond?"font-medium text-slate-800":"text-slate-500"}>
-                    {c===niveauProfond ? g.name : (g[c]||"—")}</Td>)}
-                  <Td className="f115 c-bd">{g.pcode}</Td>
-                  <Td num className="f115">{g.lat ?? "—"}</Td><Td num className="f115">{g.lon ?? "—"}</Td>
-                  <Td num className="text-slate-500">{cnt||""}</Td>
-                </tr>); })}</tbody>
-            </>);
-          })()}
+            empty="Toutes les communes" options={geo.adm3.map(x=>x.name)} className="mi-py1 mi-xs mi-wauto" disabled={!sel.adm2} />
+          <div className="relative">
+            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Rechercher une localité…"
+              className={clsx(inputCls,"pl-7 mi-py1 w-56")} /></div>
+          {aFiltre && <Btn size="sm" kind="ghost" onClick={()=>{ setSel({adm1:"",adm2:"",adm3:""}); setQ(""); }}>Effacer</Btn>}
+          <Btn size="sm" kind="sec" icon={Download} onClick={exp} disabled={exportEnCours || !dir.total} className="ml-auto">
+            {exportEnCours ? "Export…" : "Exporter"}</Btn>
+        </div>
+        <TableWrap max="mh520">
+          <thead><tr>{cols.map(([c,l])=><Th key={c}>{l}</Th>)}<Th>P-code</Th>
+            <Th num>Latitude</Th><Th num>Longitude</Th><Th num>Sites</Th></tr></thead>
+          <tbody>{dir.rows.map(g=>{
+            const cnt = db.sites.filter(s => s[niveauProfond]
+              ? s[niveauProfond]===g.name : (g.adm3 && s.adm3===g.adm3)).length;
+            return (<tr key={g.pcode} className="hover:bg-sky-50">
+              {cols.map(([c])=><Td key={c} className={c===niveauProfond?"font-medium text-slate-800":"text-slate-500"}>
+                {c===niveauProfond ? g.name : (g[c]||"—")}</Td>)}
+              <Td className="f115 c-bd">{g.pcode}</Td>
+              <Td num className="f115 text-slate-500">{g.lat != null ? Number(g.lat).toFixed(5) : "—"}</Td>
+              <Td num className="f115 text-slate-500">{g.lon != null ? Number(g.lon).toFixed(5) : "—"}</Td>
+              <Td num className="text-slate-500">{cnt||""}</Td>
+            </tr>); })}</tbody>
         </TableWrap>
         {!dir.loading && !dir.rows.length && (
-          <div className="px-4 py-8 text-center f125 text-slate-500">
-            {dir.error ? dir.error : "Aucune localité dans cette sélection."}</div>)}
+          <div className="px-4 py-10 text-center f125 text-slate-500">
+            {dir.error ? dir.error : cur ? "Aucune localité dans cette sélection." : "Chargez un découpage pour peupler le répertoire."}</div>)}
         {pages > 1 && (
-          <div className="px-4 py-2 flex items-center gap-2 f115 text-slate-500 border-t border-slate-100">
+          <div className="px-4 py-2.5 flex items-center gap-2 f115 text-slate-500 border-t border-slate-100">
             <Btn size="sm" kind="sec" disabled={page===0} onClick={()=>setPage(p=>p-1)}>Précédent</Btn>
             <span>{fmt(page*PER+1)} – {fmt(Math.min((page+1)*PER, dir.total))} sur {fmt(dir.total)}</span>
             <Btn size="sm" kind="sec" disabled={page>=pages-1} onClick={()=>setPage(p=>p+1)}>Suivant</Btn>
           </div>)}
       </Card>
-    </>);
+
+      {/* ── Gestion du référentiel : repliée, secondaire ── */}
+      {gestion && (
+        <div className="space-y-4">
+          {me?.role==="super" && (
+            <Card title="Données de référence (chargement serveur)"
+              subtitle="Lues depuis les fichiers du serveur — aucun téléversement, aucune limite de taille (résout le 413)">
+              <div className="flex flex-wrap gap-2">
+                <Btn kind="sec" icon={MapPin} disabled={!!refBusy}
+                  onClick={()=>loadRef("decoupage")}>{refBusy==="decoupage"?"Chargement…":`Découpage${geoCount?" (recharger)":""}`}</Btn>
+                <Btn kind="sec" icon={Target} disabled={!!refBusy}
+                  onClick={()=>loadRef("indicateurs")}>{refBusy==="indicateurs"?"Chargement…":`Activités + indicateurs${(db.indicators||[]).length?" (recharger)":""}`}</Btn>
+                <Btn kind="sec" icon={MapPin} disabled={!!refBusy||!geoCount}
+                  onClick={()=>loadRef("sites")} title={geoCount?"":"Chargez d'abord le découpage"}>{refBusy==="sites"?"Chargement…":`Sites par tag${(db.sites||[]).length?" (recharger)":""}`}</Btn>
+              </div>
+              <div className="f11 text-slate-500 mt-2">Chargez le découpage AVANT les sites (ils s'y rattachent).</div>
+            </Card>)}
+
+          <Card title="Contours administratifs — fond de carte"
+            subtitle={cur?.geom?.units
+              ? `${fmt(cur.geom.units)} unité(s) avec contour${cur.geom.source ? ` · ${cur.geom.source}` : ""}`
+              : "aucun contour : la cartographie n'a pas de fond"}
+            right={can("admin") && cur?.geom?.units > 0 &&
+              <Btn size="sm" kind="sec" icon={Trash2} disabled={geomBusy}
+                onClick={async ()=>{ if(!confirm("Retirer tous les contours de ce millésime ? L'arbre administratif est conservé.")) return;
+                  setGeomBusy(true);
+                  try{ const r = await api.clearGeometry(); await loadVersions(); if(reload) await reload();
+                    notify(`${fmt(r.supprimes)} contour(s) retiré(s)`, "ok");
+                  }catch(e){ notify(e.message, "err"); } setGeomBusy(false); }}>Retirer les contours</Btn>}>
+            {cur?.geom?.units && !!cur.geom?.parNiveau?.length
+              ? <StatRow>{cur.geom.parNiveau.map(x=>(
+                  <Stat key={x.level} label={niveau(db, x.level, true)} value={fmt(x.units)}
+                    sub={`${fmt(x.points_simple)} sommets sur ${fmt(x.points)}`} />))}</StatRow>
+              : <Note>Les contours arrivent avec le shapefile importé depuis l'onglet <b>Pays &amp; découpage</b>,
+                  ou avec le chargement serveur du découpage ci-dessus.</Note>}
+          </Card>
+
+          {versions.length > 1 && (
+            <Card flush title="Millésimes" subtitle="Changer de millésime ne perd rien : les précédents restent disponibles">
+              <TableWrap>
+                <thead><tr><Th>Millésime</Th><Th>Provenance</Th><Th num>Unités</Th><Th>Importé le</Th><Th>Par</Th><Th /></tr></thead>
+                <tbody>{versions.map(v=>(
+                  <tr key={v.id} className={clsx("hover:bg-sky-50", v.current && "bg-sky-50")}>
+                    <Td><b>{v.label}</b>{v.current && <Badge tone="g" className="ml-2">courant</Badge>}</Td>
+                    <Td className="text-slate-500">{v.source || "—"}</Td>
+                    <Td num>{fmt(v.units)}</Td>
+                    <Td className="f115">{String(v.importedAt||"").slice(0,16)}</Td>
+                    <Td className="text-slate-500">{v.importedBy || "—"}</Td>
+                    <Td className="text-right">{!v.current && can("admin") &&
+                      <Btn size="sm" kind="sec" icon={RefreshCw} onClick={()=>activate(v.id, v.label)}>Activer</Btn>}</Td>
+                  </tr>))}</tbody>
+              </TableWrap>
+            </Card>)}
+
+          {!!(db.sites||[]).length && (() => {
+            const sites = db.sites || [];
+            const geoloc = sites.filter(s => s.lat != null && s.lon != null).length;
+            const parTag = {}; for(const s of sites){ const t = s.activityTag || "—"; parTag[t] = (parTag[t]||0)+1; }
+            const rangs = Object.entries(parTag).sort((a,b)=>b[1]-a[1]);
+            return (
+              <Card flush title="Sites (POI) par activité"
+                subtitle={`${fmt(sites.length)} site(s) · ${fmt(geoloc)} géolocalisé(s) · rattachés au découpage`}>
+                <div className="p-4 flex flex-wrap gap-2">
+                  {rangs.map(([tag,n])=>(
+                    <span key={tag} className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white pl-3 pr-1.5 py-1 f11">
+                      <span className="font-semibold text-slate-700" title={(db.activities||[]).find(a=>a.tag===tag)?.name || tag}>{tag}</span>
+                      <span className="f10 tabular-nums bg-slate-100 text-slate-600 px-1.5 rounded-full">{fmt(n)}</span>
+                    </span>))}
+                </div>
+              </Card>);
+          })()}
+        </div>)}
+    </div>);
 }
 
 /* ── Référentiel des activités (activity_categories) ──────────────────

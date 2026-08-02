@@ -63,24 +63,59 @@ r.get("/", (req, res) => {
   res.json({ total, rows });
 });
 
-/* ── Audit GPS des points, façon PAM GPS AUDIT TOOL (docs/app.R) ───────
-   L'outil R rattache chaque point à SA commune d'accueil (jointure spatiale),
-   puis mesure la distance entre le GPS relevé et le CENTROÏDE de cette commune
-   pour déceler les points mal localisés — coordonnées inversées, virgule
-   déplacée, saisie dans la mauvaise unité. On fait de même, mais sans serveur de
-   routage : la distance est à vol d'oiseau (haversine), et l'on vérifie en plus
-   que le point tombe dans la boîte englobante de sa commune (l'équivalent léger
-   de « le point est-il DANS le polygone »). app.R majore la distance routière
-   d'un facteur 1,3 en repli ; ici la distance à vol d'oiseau est la borne basse
-   assumée, ce que la note de l'écran dit. */
+/* ── Audit GPS des points — portage fidèle de docs/app.R ──────────────
+   L'outil R (« PAM GPS AUDIT TOOL ») fait trois choses, reprises ici une à une :
+
+   1. CENTROÏDE de la commune d'accueil (app.R : group_by adm1/adm2/adm3 →
+      st_union → st_centroid). MEMS stocke déjà ce centroïde par unité
+      (geo_unit.lat/lon), calculé à l'import du shapefile — on le lit tel quel.
+
+   2. DISTANCE point→centroïde (app.R : `get_route_safe`). app.R tente d'abord un
+      itinéraire routier OSRM ; en cas d'échec — ce qui est le cas hors ligne — il
+      RETOMBE sur la distance planaire × 1,3 (`round(d * 1.3, 2)`). Aucun serveur de
+      routage n'étant joignable ici, on applique EXACTEMENT ce repli : distance à
+      vol d'oiseau (haversine) × 1,3, arrondie à deux décimales — une estimation de
+      distance ROUTIÈRE, pas à vol d'oiseau. C'est la formule d'app.R, pas une
+      approximation de notre cru.
+
+   3. ATTRIBUTION du bureau de terrain (app.R : `fo_name_lookup`, code → nom). MEMS
+      attribue déjà chaque site à un bureau (office_id) ; on rend ce nom, et on
+      liste la table de correspondance des Field Offices de Madagascar pour mémoire.
+
+   En plus d'app.R : on vérifie que le point tombe dans la BOÎTE ENGLOBANTE de sa
+   commune (geo_geom) — l'équivalent léger du « le point est-il DANS le polygone ». */
 const R_TERRE = 6371;
+const FACTEUR_ROUTIER = 1.3;   /* app.R : round(d * 1.3, 2) en repli hors OSRM */
 function haversineKm(aLat, aLon, bLat, bLon){
   const rad = d => d * Math.PI / 180;
   const dLat = rad(bLat - aLat), dLon = rad(bLon - aLon);
   const h = Math.sin(dLat/2)**2 + Math.cos(rad(aLat))*Math.cos(rad(bLat))*Math.sin(dLon/2)**2;
   return 2 * R_TERRE * Math.asin(Math.min(1, Math.sqrt(h)));
 }
+/* La table des Field Offices de Madagascar, telle qu'app.R la déclare
+   (fo_name_lookup) — reproduite pour mémoire et pour nommer un bureau au besoin. */
+const FIELD_OFFICES_MDG = { 1:"Bekily", 2:"Fort Dauphin", 3:"Antananarivo", 4:"Manakara",
+  6:"Ambovombe", 7:"Tsihombe", 9:"Ampanihy", 10:"Tulear" };
 const RANG_VERDICT = { unmatched:3, outside:2, far:1, ok:0 };
+
+/* L'audit d'UN point — la même logique qu'app.R, appliquée à un seul site pour
+   qu'elle se lance AUTOMATIQUEMENT à l'ajout ou à la correction d'un site (« qu'il
+   lance ce genre d'audit dans l'ajout des sites »). Rend null s'il n'y a pas de
+   GPS ou pas de référentiel — l'appelant n'a alors rien à signaler. */
+function auditerPointUnique(site, seuil = 15){
+  if(site.lat == null || site.lon == null) return null;
+  const v = currentVersion(); if(!v) return null;
+  let u = db.prepare("SELECT pcode, name, lat, lon FROM geo_unit WHERE version_id=? AND level='adm3' AND pcode=?")
+    .get(v.id, site.geo_pcode);
+  if(!u){ const rr = resolveUnit({ adm1:site.adm1, adm2:site.adm2, adm3:site.adm3 }, v.id);
+    if(rr.pcode) u = db.prepare("SELECT pcode, name, lat, lon FROM geo_unit WHERE version_id=? AND pcode=?").get(v.id, rr.pcode); }
+  if(!u || u.lat == null) return { verdict:"unmatched", commune:null, dist:null, inBbox:null };
+  const dist = Math.round(haversineKm(site.lat, site.lon, u.lat, u.lon) * FACTEUR_ROUTIER * 100) / 100;
+  const bb = db.prepare("SELECT min_lon,min_lat,max_lon,max_lat FROM geo_geom WHERE version_id=? AND pcode=?").get(v.id, u.pcode);
+  const inBbox = bb ? (site.lon>=bb.min_lon && site.lon<=bb.max_lon && site.lat>=bb.min_lat && site.lat<=bb.max_lat) : null;
+  const verdict = inBbox === false ? "outside" : dist > seuil ? "far" : "ok";
+  return { verdict, commune:u.name, dist, inBbox, cLat:u.lat, cLon:u.lon };
+}
 
 r.get("/gps-audit", (req, res) => {
   const q = z.object({
@@ -97,7 +132,7 @@ r.get("/gps-audit", (req, res) => {
   const where = ["lat IS NOT NULL", "lon IS NOT NULL"]; const args = [];
   if(scope){ where.push("office_id = ?"); args.push(scope); }
   const sites = db.prepare(
-    `SELECT id, name, code, adm1, adm2, adm3, adm4, lat, lon, geo_pcode, activity_tag
+    `SELECT id, name, code, adm1, adm2, adm3, adm4, lat, lon, geo_pcode, activity_tag, office_id
      FROM sites WHERE ${where.join(" AND ")} LIMIT ?`).all(...args, limit);
 
   /* Les communes (adm3) du millésime courant, avec leur centroïde (geo_unit.lat/lon)
@@ -108,11 +143,15 @@ r.get("/gps-audit", (req, res) => {
   const bbox = Object.fromEntries(db.prepare(
     "SELECT pcode, min_lon, min_lat, max_lon, max_lat FROM geo_geom WHERE version_id=? AND level='adm3'").all(v.id)
     .map(g => [g.pcode, g]));
+  /* Le bureau (Field Office) de chaque site — l'attribution qu'app.R fait par
+     fo_name_lookup ; MEMS la tient déjà par office_id. */
+  const bureaux = Object.fromEntries(db.prepare("SELECT id, name FROM offices").all().map(o => [o.id, o.name]));
 
   const bilan = { total:0, ok:0, far:0, outside:0, unmatched:0, sansContour:0 };
   const rows = [];
   for(const s of sites){
     bilan.total++;
+    const office = bureaux[s.office_id] || null;
     /* La commune d'accueil : par p-code s'il désigne une commune, sinon résolue
        par le NOM (adm1→adm3), exactement comme le rattachement du registre. */
     let u = communes[s.geo_pcode];
@@ -120,10 +159,12 @@ r.get("/gps-audit", (req, res) => {
       if(rr.pcode) u = communes[rr.pcode]; }
     if(!u || u.lat == null || u.lon == null){
       bilan.unmatched++;
-      rows.push({ id:s.id, name:s.name, code:s.code, tag:s.activity_tag, adm2:s.adm2, adm3:s.adm3, lat:s.lat, lon:s.lon, commune:null, dist:null, inBbox:null, verdict:"unmatched" });
+      rows.push({ id:s.id, name:s.name, code:s.code, tag:s.activity_tag, office, adm1:s.adm1, adm2:s.adm2, adm3:s.adm3,
+        lat:s.lat, lon:s.lon, commune:null, cLat:null, cLon:null, dist:null, inBbox:null, verdict:"unmatched" });
       continue;
     }
-    const dist = Math.round(haversineKm(s.lat, s.lon, u.lat, u.lon) * 10) / 10;
+    /* Distance ROUTIÈRE estimée, façon app.R : vol d'oiseau × 1,3, 2 décimales. */
+    const dist = Math.round(haversineKm(s.lat, s.lon, u.lat, u.lon) * FACTEUR_ROUTIER * 100) / 100;
     const bb = bbox[u.pcode];
     const inBbox = bb ? (s.lon >= bb.min_lon && s.lon <= bb.max_lon && s.lat >= bb.min_lat && s.lat <= bb.max_lat) : null;
     if(inBbox === null) bilan.sansContour++;
@@ -131,11 +172,13 @@ r.get("/gps-audit", (req, res) => {
     if(inBbox === false) verdict = "outside";
     else if(dist > seuil) verdict = "far";
     bilan[verdict]++;
-    rows.push({ id:s.id, name:s.name, code:s.code, tag:s.activity_tag, adm2:s.adm2, adm3:s.adm3, lat:s.lat, lon:s.lon, commune:u.name, dist, inBbox, verdict });
+    rows.push({ id:s.id, name:s.name, code:s.code, tag:s.activity_tag, office, adm1:s.adm1, adm2:s.adm2, adm3:s.adm3,
+      lat:s.lat, lon:s.lon, commune:u.name, cLat:u.lat, cLon:u.lon, dist, inBbox, verdict });
   }
   rows.sort((a, b) => (RANG_VERDICT[b.verdict] - RANG_VERDICT[a.verdict]) || ((b.dist || 0) - (a.dist || 0)));
 
-  res.json({ seuil, version:{ id:v.id, label:v.label }, bilan, rows: rows.slice(0, 2500) });
+  res.json({ seuil, methode:"app.R (vol d'oiseau × 1,3, repli hors OSRM)", fieldOffices:FIELD_OFFICES_MDG,
+    version:{ id:v.id, label:v.label }, bilan, rows: rows.slice(0, 2500) });
 });
 
 r.get("/:id", (req, res) => {
@@ -185,7 +228,11 @@ r.post("/", requireCap("edit"), validate(schemas.site), (req, res) => {
      liste des codes d'un site soit complète en une requête. Voir lib/alias.js. */
   synchroniserCodeParDefaut(id, b.external_code);
   audit(req, "create", id, `Site créé — ${b.name}`);
-  res.status(201).json({ site: db.prepare("SELECT * FROM sites WHERE id=?").get(id) });
+  const nouveau = db.prepare("SELECT * FROM sites WHERE id=?").get(id);
+  /* Audit GPS automatique à l'ajout : le point est jugé contre le centroïde de sa
+     commune d'accueil (méthode app.R) ; l'écran peut alerter si le verdict n'est
+     pas « conforme », sans que l'utilisateur ait à lancer l'audit à la main. */
+  res.status(201).json({ site: nouveau, gpsCheck: auditerPointUnique(nouveau) });
 });
 
 /* Modification : schéma PARTIEL, et c'est essentiel.

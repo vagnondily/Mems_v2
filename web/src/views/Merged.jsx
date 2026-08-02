@@ -90,7 +90,7 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
           de volet, les deux colonnes sont côte à côte. */}
       {sub==="coverage" && <CoveragePlan db={db} set={set} me={me} notify={notify} can={can} />}
       {sub==="sites"    && <SitesModule db={db} set={set} me={me} notify={notify} can={can} context="actual" />}
-      {sub==="gps"      && <GpsAudit notify={notify} />}
+      {sub==="gps"      && <GpsAudit notify={notify} can={can} />}
       {sub==="params"   && <Overreaching db={db} set={set} notify={notify} can={can} />}
     </div>);
 }
