@@ -12,6 +12,10 @@ export function makeDom(apiBase){
   global.HTMLElement = w.HTMLElement;
   global.HTMLInputElement = w.HTMLInputElement; global.HTMLSelectElement = w.HTMLSelectElement;
   global.Node = w.Node; global.getComputedStyle = w.getComputedStyle;
+  /* localStorage/sessionStorage exposés au global : l'application les lit sans
+     passer par `window` (drapeau des notes explicatives, mode démonstration…).
+     Sans cela, l'accès lève et l'app retombe sur ses valeurs par défaut. */
+  global.localStorage = w.localStorage; global.sessionStorage = w.sessionStorage;
   /* recharts (ResponsiveContainer) reprogramme sa détection de redimensionnement à
      chaque frame, indéfiniment — un vrai navigateur l'arrête à la fermeture de la page,
      mais ici rien ne « ferme » jamais le DOM simulé entre les tests. Sans .unref(), ce
