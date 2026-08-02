@@ -3342,7 +3342,11 @@ function OdkModal({ open, form, db, onClose, onSave, notify }){
   if(!open) return null;
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
   const url = `${db.settings.odkBase}/v1/projects/${f.project||"{projet}"}/forms/${f.formId||"{formulaire}"}.svc/Submissions`;
-  const fields = Object.keys((f.rows||[])[0] || {});
+  /* Les colonnes du dernier tirage, servies par /api/state (`champs`). Elles se
+     lisaient auparavant dans `rows[0]`, ce qui obligeait l'état initial à
+     transporter les 20 000 lignes du formulaire pour n'en regarder que les clés
+     de la première. */
+  const fields = f.champs || [];
   const attachXls = async (file) => {
     setBusy(true);
     try{

@@ -403,13 +403,34 @@ test("tirage ODK Central : pagine, aplatit les groupes, met à jour le cache et 
   assert.equal(r.body.truncated, false);
   assert.ok(odkMockRequests.every(q => q.auth === "Bearer jeton-de-test"));
 
+  /* L'état initial rend le COMPTE et les CHAMPS, jamais les lignes : le cache brut
+     — jusqu'à 20 000 soumissions par formulaire — ne voyage plus vers chaque compte
+     à chaque ouverture. Les lignes se demandent à leur route dédiée. */
   const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
   const after1 = st.body.odkForms.find(x => x.id === f.id);
   assert.equal(after1.records, 3);
-  assert.equal(after1.rows.length, 3);
+  assert.equal(after1.rows, undefined, "les lignes brutes ne sont plus dans /state");
+  assert.ok(after1.champs.includes("DPName"), "les colonnes du tirage y sont, elles");
+  assert.ok(!after1.champs.includes("Technical_module"),
+    "et elles reflètent l'aplatissement des groupes");
+
+  const lignes = await request(app).get(`/api/odk-forms/${f.id}/rows`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(lignes.status, 200);
+  assert.equal(lignes.body.total, 3);
+  assert.equal(lignes.body.rows.length, 3);
+  assert.equal(lignes.body.reste, 0);
   /* Le groupe Technical_module > TechnicalDP_submodule est aplati sur DPName seul. */
-  assert.equal(after1.rows[0].DPName, "Site 1");
-  assert.equal(after1.rows[0].Technical_module, undefined);
+  assert.equal(lignes.body.rows[0].DPName, "Site 1");
+  assert.equal(lignes.body.rows[0].Technical_module, undefined);
+
+  /* La tranche est bornée et le reste est annoncé, pour qu'un écran ne prenne pas
+     une page pour un total. */
+  const tranche = await request(app).get(`/api/odk-forms/${f.id}/rows?limit=2`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(tranche.body.rows.length, 2);
+  assert.equal(tranche.body.total, 3);
+  assert.equal(tranche.body.reste, 1);
 
   const audit = await request(app).get("/api/audit").set("Authorization", `Bearer ${adminToken}`);
   assert.ok(audit.body.rows.some(a => a.entity === "odk_forms" && a.action === "pull"));

@@ -48,13 +48,22 @@ r.get("/", (req, res) => {
      valeur saisie : les deux colonnes voyagent ensemble, `last_visit_effective`
      dit laquelle prime. Un appel de plus par site serait autrement inévitable
      dès qu'un écran affiche « dernière visite » sur une liste de 200 lignes. */
-  const sql = `SELECT sites.*, v.derniere AS last_visit_odk,
-                      COALESCE(v.derniere, sites.last_visit) AS last_visit_effective,
-                      COALESCE(v.soumissions,0) AS submissions
+  /* Sous-requêtes CORRÉLÉES, et non une jointure sur un agrégat global : la forme
+     précédente — LEFT JOIN (SELECT … GROUP BY site_id) — obligeait SQLite à
+     regrouper TOUTE la table `submissions`, tous sites confondus, avant d'appliquer
+     le LIMIT. On payait donc l'agrégation de centaines de milliers de lignes pour
+     n'en afficher que deux cents, et ce coût grandissait avec la base sans rien
+     changer à l'écran. Corrélées, les deux sous-requêtes ne sont évaluées que pour
+     les lignes effectivement retenues, et `idx_submissions_site_date` les sert. */
+  const sql = `SELECT sites.*,
+                      (SELECT MAX(svy_date) FROM submissions
+                       WHERE site_id = sites.id AND svy_date IS NOT NULL) AS last_visit_odk,
+                      COALESCE((SELECT MAX(svy_date) FROM submissions
+                                WHERE site_id = sites.id AND svy_date IS NOT NULL),
+                               sites.last_visit) AS last_visit_effective,
+                      (SELECT COUNT(*) FROM submissions
+                       WHERE site_id = sites.id AND svy_date IS NOT NULL) AS submissions
                FROM sites
-               LEFT JOIN (SELECT site_id, MAX(svy_date) derniere, COUNT(*) soumissions
-                          FROM submissions WHERE site_id IS NOT NULL AND svy_date IS NOT NULL
-                          GROUP BY site_id) v ON v.site_id = sites.id
                ${where.length ? "WHERE "+where.join(" AND ") : ""}
                ORDER BY code LIMIT ? OFFSET ?`;
   const rows = db.prepare(sql).all(...args, f.limit, f.offset);

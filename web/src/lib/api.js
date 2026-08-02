@@ -326,6 +326,11 @@ export const api = {
      HTTP, cause nommée — et jamais le secret : au plus sa présence et sa longueur. */
   connectorTest:      (id)           => call("POST", `/connectors/${encodeURIComponent(id)}/test`),
   odkFormTest:        (id)           => call("POST", `/odk-forms/${encodeURIComponent(id)}/test`),
+  /* Les lignes tirées d'une source ODK, à la demande. Elles ne voyagent plus dans
+     l'état initial : jusqu'à 20 000 soumissions par formulaire y partaient vers
+     chaque compte à chaque ouverture, alors qu'un seul écran s'en sert. */
+  odkFormRows: (id, limit=5000, offset=0) =>
+    call("GET", `/odk-forms/${encodeURIComponent(id)}/rows?limit=${limit}&offset=${offset}`),
 
   /* Chaîne ODK : verser, puis rattacher. Les deux sont réservés à
      l'administration côté serveur — ils écrivent dans le référentiel

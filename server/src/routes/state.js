@@ -12,6 +12,15 @@ import { resumeProcessus } from "./process-indicators.js";
 const r = Router();
 const J = (v, d) => { try{ return JSON.parse(v); }catch(e){ return d; } };
 
+/* ── Ce que l'état initial a le droit de peser ────────────────────────
+   MEMS traitera des milliers de sites et des dizaines de milliers de soumissions.
+   /state est appelé à CHAQUE ouverture, par CHAQUE compte : tout ce qui y entre
+   sans borne devient, à cette échelle, un coût payé par tout le monde tout le
+   temps. Les plafonds ci-dessous ne cachent rien — chaque collection bornée sert
+   aussi son TOTAL, et l'historique complet se demande à sa route dédiée. */
+const DERNIERES_EXECUTIONS = 20;   /* scripts.runs : l'écran n'en montre pas plus */
+const ANNEES_RESULTATS     = 3;    /* outcomes : l'année en cours et deux de recul */
+
 /* Vue agrégée consommée par le client au démarrage.
    Chaque collection provient de sa table : aucune donnée n'est stockée en vrac. */
 r.get("/state", (req, res) => {
@@ -42,8 +51,22 @@ r.get("/state", (req, res) => {
      terrain a déclaré, et `lastVisitEffective` dit laquelle l'emporte — l'ODK,
      parce qu'elle est observée là où la saisie est une convention posée au 15 du
      mois par la grille mensuelle. Voir lib/soumissions.js. */
-  const odkVisites = dernieresVisitesOdk({ office_id: officeFilter });
-  const months = db.prepare("SELECT * FROM site_months WHERE year=?").all(year);
+  /* Borné aux sites RÉELLEMENT servis, et pas seulement au bureau : pour un compte
+     national (officeFilter nul), la clause de bureau disparaissait et l'agrégat
+     balayait la table `submissions` ENTIÈRE — des centaines de milliers de lignes à
+     grouper à chaque ouverture, pour dater quelques milliers de sites. Avec la liste
+     des sites, `idx_submissions_site_date` sert le regroupement. */
+  const odkVisites = dernieresVisitesOdk({ office_id: officeFilter,
+    site_ids: siteRows.map(s => s.id) });
+  /* Les fiches mensuelles suivent le cloisonnement des sites qu'elles décrivent.
+     Sans la jointure, un compte de terrain chargeait les douze mois de TOUS les
+     sites du pays — des dizaines de milliers de lignes — pour n'en garder que les
+     siens quelques lignes plus bas, dans `byId`. La clé primaire
+     (site_id, year, month) sert la jointure. */
+  const months = officeFilter
+    ? db.prepare(`SELECT sm.* FROM site_months sm JOIN sites s ON s.id=sm.site_id
+                  WHERE sm.year=? AND s.office_id=?`).all(year, officeFilter)
+    : db.prepare("SELECT * FROM site_months WHERE year=?").all(year);
   const byId = {};
   siteRows.forEach(s => { byId[s.id] = Array.from({length:12}, () =>
     ({ planned:false, done:false, activeMonth:true, cp:"", monitor:"", report:"", moda:"" })); });
@@ -120,10 +143,20 @@ r.get("/state", (req, res) => {
      région (adm1), pas par bureau. Un cloisonnement correct suppose la table de portée
      géographique (office_scope) ; d'ici là, ils restent visibles de tous — c'est assumé,
      ce sont des indicateurs agrégés, non des données opérationnelles nominatives. */
-  const outcomes = db.prepare("SELECT * FROM outcomes").all().map(o => ({
-    id:o.id, rev:o.rev, indicator: indByKey[o.indicator_id] || "", indicator_id:o.indicator_id,
-    adm1:o.adm1||"", round:o.round_label||"", planned:o.planned, value:o.value,
-    date:o.collected_at||"", sample:o.sample }));
+  /* Bornés aux millésimes récents : la table grossit d'un tour d'enquête à l'autre,
+     année après année, et l'ancien `SELECT *` la servait en entier à chaque
+     ouverture. Une mesure sans date reste servie — la perdre serait pire que la
+     servir —, et le TOTAL accompagne la liste pour que l'écran sache dire ce qu'il
+     ne montre pas plutôt que d'afficher un historique amputé sans le dire. */
+  const depuisAnnee = year - (ANNEES_RESULTATS - 1);
+  const outcomesTotal = db.prepare("SELECT COUNT(*) c FROM outcomes").get().c;
+  const outcomes = db.prepare(
+    `SELECT * FROM outcomes
+     WHERE collected_at IS NULL OR collected_at='' OR CAST(substr(collected_at,1,4) AS INTEGER) >= ?`)
+    .all(depuisAnnee).map(o => ({
+      id:o.id, rev:o.rev, indicator: indByKey[o.indicator_id] || "", indicator_id:o.indicator_id,
+      adm1:o.adm1||"", round:o.round_label||"", planned:o.planned, value:o.value,
+      date:o.collected_at||"", sample:o.sample }));
 
   const outputs = db.prepare("SELECT * FROM outputs WHERE year=?").all(year).map(o => ({
     id:o.id, rev:o.rev, tag:o.activity_tag, month:o.month, planned:o.planned,
@@ -135,9 +168,16 @@ r.get("/state", (req, res) => {
     base:p.base, rate:p.rate,
     values: Object.fromEntries(popVals.filter(v=>v.population_id===p.id).map(v=>[v.year, v.value])) }));
 
+  /* Borné à l'année en cours et la précédente : le plan de distribution croît de
+     chaque mois × chaque commune, et un compte national le chargeait en entier, tous
+     millésimes confondus. Deux années couvrent la saisie courante et la comparaison
+     à l'an dernier, ce que les écrans montrent ; au-delà, c'est de l'archive, et
+     `idx_pdd_period(year, month)` sert le filtre. */
+  const pddTotal = db.prepare("SELECT COUNT(*) c FROM pdd").get().c;
   const pdd = (officeFilter
-    ? db.prepare("SELECT * FROM pdd WHERE office_id=? ORDER BY year, month, bureau").all(officeFilter)
-    : db.prepare("SELECT * FROM pdd ORDER BY year, month, bureau").all()
+    ? db.prepare("SELECT * FROM pdd WHERE office_id=? AND year>=? ORDER BY year, month, bureau")
+        .all(officeFilter, year - 1)
+    : db.prepare("SELECT * FROM pdd WHERE year>=? ORDER BY year, month, bureau").all(year - 1)
   ).map(p => ({
     /* office_id doit figurer ici : le client renvoie la collection telle qu'il l'a reçue,
        et un champ absent est réécrit à NULL par la synchronisation — le rattachement au
@@ -175,7 +215,26 @@ r.get("/state", (req, res) => {
      demander séparément afficherait « adm3 » le temps d'un aller-retour. */
   const country = currentCountry();
 
-  const odkForms = db.prepare("SELECT * FROM odk_forms").all().map(f => ({
+  /* La colonne `raw` n'est PAS lue ici, et c'est le point du SELECT nommé : elle
+     porte jusqu'à 20 000 soumissions aplaties par formulaire (lib/odkClient.js), que
+     l'ancien `SELECT *` chargeait, désérialisait (`J(f.raw, [])`) puis re-sérialisait
+     dans la réponse — à CHAQUE ouverture de l'application, pour chaque compte. À
+     l'échelle annoncée (des milliers de soumissions), /state passait de quelques
+     kilo-octets à plusieurs méga-octets de données de terrain dont aucun écran n'a
+     besoin au démarrage. Elles se tirent désormais à la demande, par
+     GET /api/odk-forms/:id/rows, quand l'écran d'analyse en réclame vraiment.
+
+     Deux dérivés suffisent partout ailleurs : le NOMBRE de lignes (colonne `records`,
+     déjà tenue à jour) et la liste des CHAMPS (les clés de la première ligne), dont
+     la fiche du formulaire se sert pour proposer les colonnes de rattachement.
+
+     Les champs sont extraits par `json_extract(raw,'$[0]')`, c'est-à-dire par SQLite
+     lui-même : il rend la PREMIÈRE ligne seule, quelques centaines d'octets, au lieu
+     de faire traverser le blob entier à JSON.parse. Lire les clés d'une ligne ne
+     justifie pas de désérialiser les vingt mille autres. */
+  const odkForms = db.prepare(`SELECT id, rev, name, form_id, project, kind, activity_tag,
+      site_field, date_field, labels, records, last_pull, token_enc, auth_schema,
+      auth_identifiant, json_extract(raw,'$[0]') AS premiere FROM odk_forms`).all().map(f => ({
     id:f.id, rev:f.rev, name:f.name, formId:f.form_id, project:f.project||"", kind:f.kind,
     tag:f.activity_tag||"", siteField:f.site_field||"", dateField:f.date_field||"",
     labels: J(f.labels, {}), records:f.records, last:f.last_pull||"",
@@ -195,7 +254,7 @@ r.get("/state", (req, res) => {
        Ce n'est pas un secret au sens de la maison ; rien n'oblige pour autant à
        le servir plus bas que l'administration. */
     ...(admin ? { authIdentifiant: f.auth_identifiant || "" } : {}),
-    rows: J(f.raw, []) }));
+    champs: Object.keys(J(f.premiere, {}) || {}) }));
 
   const settings = Object.fromEntries(
     db.prepare("SELECT key, value FROM settings").all().map(s => [s.key, J(s.value, s.value)]));
@@ -204,6 +263,11 @@ r.get("/state", (req, res) => {
     year, me: { id:u.id, role:u.role, office_id:u.office_id },
     offices, partners, categories: cats, sites, params, visits, indicators, outcomes,
     outputs, population, pdd, geoVersion, country, odkForms, settings,
+    /* Ce que les collections bornées ne montrent pas. Un écran qui affiche « 412
+       résultats » sans savoir qu'il en existe 3 000 ment sans le vouloir : les
+       totaux voyagent avec les listes, et les bornes se disent. */
+    bornes: { outcomes:{ servis: outcomes.length, total: outcomesTotal, depuis: depuisAnnee },
+              pdd:{ servis: pdd.length, total: pddTotal, depuis: year - 1 } },
     /* Le RÉSUMÉ des indicateurs de suivi de processus extraits des XLSForms —
        par activité, par module — pour que le tableau de bord dessine la structure
        du suivi sans tirer les milliers de variables. La liste complète et l'export
@@ -233,9 +297,18 @@ r.get("/state", (req, res) => {
     datasets: db.prepare("SELECT * FROM datasets").all().map(d => ({
       id:d.id, rev:d.rev, name:d.name, formId:d.form_id, raw:J(d.raw,[]), rules:J(d.rules,[]),
       formulas:J(d.formulas,[]), createdAt:d.created_at })),
-    scripts: db.prepare("SELECT * FROM scripts").all().map(s => ({
-      id:s.id, rev:s.rev, name:s.name, lang:s.language, stage:s.stage, datasetId:s.dataset_id,
-      code:s.code, notes:s.notes||"", runs:J(s.runs,[]) })),
+    /* L'historique d'exécutions ne cesse de grossir — un script lancé chaque jour
+       accumule des centaines d'entrées portant chacune sa sortie — et il partait en
+       entier. L'écran n'en montre que les dernières : on n'en sert que les dernières.
+       Le compte total voyage à côté, pour que l'écran puisse dire qu'il en existe
+       davantage plutôt que d'afficher un historique tronqué en silence. */
+    scripts: db.prepare("SELECT * FROM scripts").all().map(s => {
+      const runs = J(s.runs, []);
+      const liste = Array.isArray(runs) ? runs : [];
+      return { id:s.id, rev:s.rev, name:s.name, lang:s.language, stage:s.stage,
+        datasetId:s.dataset_id, code:s.code, notes:s.notes||"",
+        runs: liste.slice(-DERNIERES_EXECUTIONS), runsTotal: liste.length };
+    }),
     reportTemplates: db.prepare("SELECT * FROM report_templates").all().map(t => ({
       id:t.id, rev:t.rev, name:t.name, blocks:J(t.blocks,[]), intro:t.intro||"" })),
     /* Le catalogue de rations (migration 031) : « une ration, une ligne ». Sert
