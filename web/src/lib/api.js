@@ -354,6 +354,12 @@ export const api = {
      file de synchronisation des collections : 1 251 lignes n'ont rien à faire
      dans l'état poussé au démarrage, et moins encore renvoyées au serveur à
      chaque enregistrement. L'écran lit son propre point d'API. */
+  /* Indicateurs de suivi de processus (extraits des XLSForms). La liste complète
+     avec ses choix ne voyage PAS dans /state (des milliers de lignes) : l'écran
+     la tire à la demande, par activité ou par formulaire. */
+  processIndicateurs:      (q="") => call("GET", `/process-indicators${q}`),
+  processIndicateursExport:()     => fetchBlob("/process-indicators/export"),
+
   codeReferentiels: ()          => call("GET", "/code-referentiels"),
   codeReferentiel:  (nom, q="") => call("GET", `/code-referentiels/${encodeURIComponent(nom)}${q}`),
   rapprocherCodes:  (nom)       => call("POST", `/code-referentiels/${encodeURIComponent(nom)}/rapprocher`, {}),

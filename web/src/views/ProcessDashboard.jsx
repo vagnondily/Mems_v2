@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { Activity, AlertTriangle, ChevronRight, ClipboardCheck, Crosshair,
-         FileSpreadsheet, Gauge, Layers, MapPin, PanelLeftClose, PanelLeftOpen,
+import { Activity, AlertTriangle, BarChart3, ChevronRight, ClipboardCheck, Crosshair,
+         FileSpreadsheet, Gauge, Layers, MapPin, PanelLeftClose, PanelLeftOpen, Search,
          ShieldAlert, ShieldCheck } from "lucide-react";
 import { Empty, Select } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
 import { clsx, computeMMR, fmt, pct, siteScore } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
+import { AnalyseProcessus } from "./AnalyseProcessus.jsx";
 
 /* ══════════════════ Tableau de bord — cockpit de suivi de processus ══════════════════
    « Un bailleur, le management vont le regarder ; on l'affiche en permanence sur un
@@ -268,8 +269,12 @@ function ProcessDashboard({ db, go, notify }){
       text="Le tableau de bord s'alimente du registre des sites, du plan de suivi et des visites. Chargez la donnée de référence et planifiez le suivi." />);
 
   const RAIL = [["synthese","Synthèse",Gauge],["carte","Carte",MapPin],
+    ["analyse","Analyse process",BarChart3],
     ["processus","Indicateurs processus",ClipboardCheck],["activites","Par activité",Activity],
     ["controle","Poste de contrôle",ShieldCheck]];
+  /* L'analyse de reproduction porte sa propre navigation ; le panneau d'alertes
+     latéral serait redondant à côté d'elle. */
+  const alertesVisibles = vue !== "analyse";
 
   return (
     <div className="flex flex-col" style={{ height:"calc(100vh - 232px)", minHeight:560 }}>
@@ -305,25 +310,39 @@ function ProcessDashboard({ db, go, notify }){
 
         {/* Centre */}
         <section className="flex-1 min-w-0 flex flex-col gap-3 overflow-hidden">
-          {(vue==="synthese" || vue==="carte") && (
+          {vue==="synthese" && (
             <>
-              {vue==="synthese" && (
-                <div className="grid gap-3 shrink-0" style={{ gridTemplateColumns:"repeat(4, minmax(0,1fr))" }}>
-                  <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-3 flex items-center justify-center">
-                    <Jauge value={couv} color={kCouv.c} label="Couverture" sub={region?"plan réalisé":`${fmt(mmr.done)}/${fmt(mmr.required)} visites`} /></div>
-                  <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-3 flex items-center justify-center">
-                    <Jauge value={pct(aJour, champ.length)} color={kJour.c} label="Sites à jour" sub={`${fmt(aJour)}/${fmt(champ.length)} · ≤90 j`} /></div>
-                  <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-3 flex items-center justify-center">
-                    <Jauge value={pct(valides, valides+aValider)} color={kVal.c} label="Validation" sub={`${fmt(aValider)} en attente`} /></div>
-                  <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-3 flex flex-col items-center justify-center">
-                    <div className="f105 font-bold uppercase tracking-wide text-slate-500">Visites / mois</div>
-                    <Sparkline data={visitesParMois} color={C.brand} />
-                    <div className="f105 text-slate-400">{fmt(visitesChamp.filter(v=>new Date(v.date).getFullYear()===annee).length)} en {annee}</div>
-                  </div>
-                </div>)}
-              <div className="flex-1 min-h-0">
-                <CarteEtat parRegion={parRegion} onRegion={setRegion} selection={region} /></div>
+              <div className="grid gap-3 shrink-0" style={{ gridTemplateColumns:"repeat(4, minmax(0,1fr))" }}>
+                <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-3 flex items-center justify-center">
+                  <Jauge value={couv} color={kCouv.c} label="Couverture" sub={region?"plan réalisé":`${fmt(mmr.done)}/${fmt(mmr.required)} visites`} /></div>
+                <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-3 flex items-center justify-center">
+                  <Jauge value={pct(aJour, champ.length)} color={kJour.c} label="Sites à jour" sub={`${fmt(aJour)}/${fmt(champ.length)} · ≤90 j`} /></div>
+                <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-3 flex items-center justify-center">
+                  <Jauge value={pct(valides, valides+aValider)} color={kVal.c} label="Validation" sub={`${fmt(aValider)} en attente`} /></div>
+                <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-3 flex flex-col items-center justify-center">
+                  <div className="f105 font-bold uppercase tracking-wide text-slate-500">Visites / mois</div>
+                  <Sparkline data={visitesParMois} color={C.brand} />
+                  <div className="f105 text-slate-400">{fmt(visitesChamp.filter(v=>new Date(v.date).getFullYear()===annee).length)} en {annee}</div>
+                </div>
+              </div>
+              {/* Carte (largeur maîtrisée, Madagascar est étroit) + contenu à droite,
+                  pour ne plus laisser d'espace vide autour de l'île. */}
+              <div className="flex-1 min-h-0 grid gap-3" style={{ gridTemplateColumns:"minmax(300px, 40%) 1fr" }}>
+                <CarteEtat parRegion={parRegion} onRegion={setRegion} selection={region} />
+                <div className="min-h-0 overflow-y-auto pr-1 space-y-3">
+                  <ContenuSynthese parActivite={parActivite} parRegion={parRegion} onRegion={setRegion}
+                    region={region} setVue={setVue} proc={proc} />
+                </div>
+              </div>
             </>)}
+
+          {vue==="carte" && (
+            <div className="flex-1 min-h-0">
+              <CarteEtat parRegion={parRegion} onRegion={setRegion} selection={region} /></div>)}
+
+          {vue==="analyse" && (
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1">
+              <AnalyseProcessus /></div>)}
 
           {vue==="processus" && (
             <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-3">
@@ -362,7 +381,8 @@ function ProcessDashboard({ db, go, notify }){
             </div>)}
         </section>
 
-        {/* Panneau d'alertes (droite) */}
+        {/* Panneau d'alertes (droite) — masqué sur l'analyse, qui a sa navigation. */}
+        {alertesVisibles && (
         <aside className="hidden xl:flex w-80 shrink-0 flex-col bg-slate-50 border border-slate-200 rounded-2xl overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-200 bg-white flex items-center gap-2">
             <AlertTriangle size={15} className="text-amber-500" />
@@ -377,22 +397,159 @@ function ProcessDashboard({ db, go, notify }){
                     <div className="f11 text-slate-500">Tout est à jour sur ce périmètre.</div></div>
                 </div>}
           </div>
-        </aside>
+        </aside>)}
       </div>
     </div>);
 }
 
-/* ── Performance des indicateurs de suivi de processus (XLSForm) ── */
+/* Contenu qui accompagne la carte en synthèse : ce qui compte au-delà du MMR —
+   couverture par activité, régions à surveiller, et l'entrée vers l'analyse. */
+function ContenuSynthese({ parActivite, parRegion, onRegion, region, setVue, proc }){
+  /* Régions triées de la moins à jour à la plus à jour (celles qui ont des sites). */
+  const regions = [...parRegion.values()].filter(r => r.total > 0)
+    .map(r => ({ ...r, part: Math.round(r.aJour / r.total * 100) }))
+    .sort((a, b) => a.part - b.part).slice(0, 7);
+  return (<>
+    <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-4">
+      <div className="flex items-baseline justify-between mb-3">
+        <div className="f13 font-bold text-slate-800">Couverture par activité</div>
+        <button onClick={()=>setVue("activites")} className="f105 c-bd font-semibold hover:underline">Tout voir</button>
+      </div>
+      {parActivite.length
+        ? <BarresActivite items={parActivite.slice(0, 6)} />
+        : <div className="f115 text-slate-400 py-3">Aucune activité suivie sur ce périmètre.</div>}
+    </div>
+
+    <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-4">
+      <div className="f13 font-bold text-slate-800 mb-1">Régions à surveiller</div>
+      <div className="f105 text-slate-400 mb-3">Part des sites visités il y a ≤ 90 jours</div>
+      <div className="space-y-2">
+        {regions.map(r => { const b = bandePart(r.part, r.total);
+          return (
+          <button key={r.nom} onClick={()=>onRegion(region===r.nom ? "" : r.nom)}
+            className={clsx("w-full flex items-center gap-2.5 text-left rounded-lg px-1.5 py-1 hover:bg-slate-50",
+              region===r.nom && "bg-sky-50")}>
+            <span className="w-2 h-2 rounded-full shrink-0" style={{ background:b.c }} />
+            <span className="f115 text-slate-700 flex-1 truncate">{r.nom}</span>
+            <div className="w-20 h-2 rounded-full bg-slate-100 overflow-hidden shrink-0">
+              <div className="h-full rounded-full" style={{ width:`${r.part}%`, background:b.c }} /></div>
+            <span className="f11 font-bold tabular-nums w-9 text-right" style={{ color:b.c }}>{r.part}%</span>
+            <span className="f10 text-slate-400 w-14 text-right">{fmt(r.total)} site(s)</span>
+          </button>); })}
+        {!regions.length && <div className="f115 text-slate-400 py-2">Aucun site rattaché à une région.</div>}
+      </div>
+    </div>
+
+    {proc.total > 0 && (
+      <button onClick={()=>setVue("analyse")}
+        className="w-full bg-white border border-slate-200 rounded-2xl shadow-sm p-4 flex items-center gap-3 hover:shadow-md transition-shadow text-left">
+        <span className="w-10 h-10 rounded-xl grid place-items-center bg-brand/10 shrink-0" style={{ color:C.brand }}><BarChart3 size={20} /></span>
+        <div className="min-w-0 flex-1">
+          <div className="f125 font-bold text-slate-800">Analyse du suivi de processus</div>
+          <div className="f105 text-slate-500">{fmt(proc.total)} indicateurs · modules, salle de contrôle, performance</div>
+        </div>
+        <ChevronRight size={18} className="text-slate-300 shrink-0" />
+      </button>)}
+  </>);
+}
+
+/* Type XLSForm → libellé court + teinte, pour lire une variable d'un coup d'œil. */
+const TYPE_INFO = (t) => {
+  const base = String(t||"").split(/\s+/)[0];
+  const m = {
+    select_one:["choix unique","#0d9488"], select_multiple:["choix multiple","#7c3aed"],
+    integer:["entier","#0ea5e9"], decimal:["décimal","#0ea5e9"], text:["texte","#64748b"],
+    date:["date","#f59e0b"], time:["heure","#f59e0b"], geopoint:["GPS","#dd1367"],
+    range:["échelle","#0ea5e9"], barcode:["code-barres","#64748b"],
+  };
+  return m[base] || [base || "—", "#94a3b8"];
+};
+
+/* Les VARIABLES d'une activité, groupées par module, avec leurs CHOIX mappés à
+   chaque question — « je ne vois pas les variables de mes XLSForm », « mappe les
+   choix aux questions pour la visualisation ». Tirées à la demande. */
+function VariablesActivite({ tag, notify }){
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
+  const [q, setQ] = useState("");
+  const [mod, setMod] = useState("");        /* module ouvert */
+  useEffect(() => {
+    let vivant = true; setRows(null); setErr("");
+    api.processIndicateurs(`?activity=${encodeURIComponent(tag)}&limit=5000`)
+      .then(r => { if(vivant) setRows(r.rows || []); })
+      .catch(e => { if(vivant){ setErr(e.message); notify?.("Chargement des variables impossible : " + e.message, "err"); } });
+    return () => { vivant = false; };
+  }, [tag]);
+
+  if(err) return <div className="f115 text-rose-600 px-1 py-2">{err}</div>;
+  if(rows === null) return <div className="f115 text-slate-400 px-1 py-3">Chargement des variables…</div>;
+
+  const filtre = q.trim().toLowerCase();
+  const visibles = filtre
+    ? rows.filter(r => (r.label||"").toLowerCase().includes(filtre) || (r.var_name||"").toLowerCase().includes(filtre))
+    : rows;
+  /* Regroupement par module, dans l'ordre d'apparition. */
+  const modules = [];
+  const parMod = new Map();
+  for(const r of visibles){ const key = r.module || "(sans module)";
+    if(!parMod.has(key)){ parMod.set(key, []); modules.push(key); }
+    parMod.get(key).push(r); }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="relative">
+          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Rechercher une variable, un libellé…"
+            className="pl-7 pr-2 py-1 f115 rounded-lg border border-slate-200 bg-white w-64 outline-none focus:border-sky-400" /></div>
+        <span className="f105 text-slate-400">{fmt(visibles.length)} variable(s) · {modules.length} module(s)</span>
+      </div>
+      {modules.map(nomMod => { const liste = parMod.get(nomMod); const ouvert = mod === nomMod || !!filtre;
+        return (
+        <div key={nomMod} className="rounded-xl border border-slate-200 overflow-hidden">
+          <button onClick={()=>setMod(ouvert && !filtre ? "" : nomMod)}
+            className="w-full flex items-center gap-2 px-3 py-2 bg-slate-50 hover:bg-slate-100 text-left">
+            <Layers size={14} className="text-slate-400 shrink-0" />
+            <span className="f125 font-semibold text-slate-700 flex-1 truncate">{nomMod}</span>
+            <span className="f11 font-bold text-slate-500 tabular-nums">{liste.length}</span>
+            <ChevronRight size={14} className={clsx("text-slate-300 transition-transform", ouvert && "rotate-90")} />
+          </button>
+          {ouvert && (
+            <div className="divide-y divide-slate-100">
+              {liste.map(r => { const [tl, tc] = TYPE_INFO(r.var_type);
+                return (
+                <div key={r.id} className="px-3 py-2">
+                  <div className="flex items-start gap-2">
+                    <span className="f9 font-bold px-1.5 py-0.5 rounded shrink-0 mt-0.5" style={{ background:tc+"1a", color:tc }}>{tl}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="f125 text-slate-800 leading-snug">{r.label || <span className="text-slate-400 italic">(sans libellé)</span>}</div>
+                      <code className="f10 text-slate-400">{r.var_name}</code>
+                      {/* Les CHOIX mappés à la question. */}
+                      {r.choices?.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {r.choices.slice(0, 14).map((c,i)=>(
+                            <span key={i} className="f10 rounded-md bg-slate-100 text-slate-600 px-1.5 py-0.5" title={c.value}>{c.label}</span>))}
+                          {r.choices.length > 14 && <span className="f10 text-slate-400 px-1 py-0.5">+{r.choices.length-14}</span>}
+                        </div>)}
+                    </div>
+                  </div>
+                </div>); })}
+            </div>)}
+        </div>); })}
+    </div>);
+}
+
+/* ── Performance + variables des indicateurs de suivi de processus (XLSForm) ── */
 function PerfProcessus({ proc, parActivite, notify }){
   const [ouvert, setOuvert] = useState("");
+  const [vue, setVue] = useState("perf");          /* perf | variables */
   const perfDe = (tag) => parActivite.find(a => a.tag === tag)
     || parActivite.find(a => norm(a.nom).includes(norm(tag)));
 
   const dl = async () => {
     try{
-      const res = await fetch("/api/process-indicators/export", { credentials:"include" });
-      if(!res.ok) throw new Error("export indisponible");
-      const blob = await res.blob(); const url = URL.createObjectURL(blob);
+      const blob = await api.processIndicateursExport();
+      const url = URL.createObjectURL(blob);
       const a = document.createElement("a"); a.href = url; a.download = "indicateurs_suivi_processus.xlsx";
       a.click(); URL.revokeObjectURL(url);
     }catch(e){ notify?.("Export impossible : " + e.message, "err"); }
@@ -411,10 +568,18 @@ function PerfProcessus({ proc, parActivite, notify }){
       <span className="w-10 h-10 rounded-xl grid place-items-center bg-brand/10" style={{ color:C.brand }}><ClipboardCheck size={20} /></span>
       <div className="min-w-0">
         <div className="f14 font-bold text-slate-800">Indicateurs de suivi de processus</div>
-        <div className="f115 text-slate-500"><b>{fmt(proc.total)}</b> variables extraites de <b>{proc.activites.length}</b> formulaires XLSForm — performance calculée sur la donnée réelle.</div>
+        <div className="f115 text-slate-500"><b>{fmt(proc.total)}</b> variables extraites de <b>{proc.activites.length}</b> formulaires XLSForm — libellés, types et choix.</div>
       </div>
-      <button onClick={dl} className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg f115 font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200">
-        <FileSpreadsheet size={15} /> Exporter le référentiel</button>
+      <div className="ml-auto flex items-center gap-2">
+        <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+          {[["perf","Performance"],["variables","Variables"]].map(([k,l])=>(
+            <button key={k} onClick={()=>setVue(k)}
+              className={clsx("px-3 py-1 f11 rounded-md font-semibold transition-colors",
+                vue===k ? "bg-brand text-white shadow-sm" : "text-slate-500 hover:text-slate-800")}>{l}</button>))}
+        </div>
+        <button onClick={dl} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg f115 font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200">
+          <FileSpreadsheet size={15} /> Exporter</button>
+      </div>
     </div>
 
     {proc.activites.map(act => {
@@ -431,20 +596,20 @@ function PerfProcessus({ proc, parActivite, notify }){
               <div className="f13 font-semibold text-slate-800 truncate">{act.label}</div>
               <div className="f105 text-slate-400 truncate">{act.total} indicateurs · {act.modules.length} modules · {act.formTitle || act.form}</div>
             </div>
-            {/* Couverture + conformité, quand des sites de l'activité existent. */}
-            <div className="flex items-center gap-4 shrink-0">
-              <div className="text-right"><div className="f10 text-slate-400 uppercase tracking-wide">Couverture</div>
-                <div className="f16 font-extrabold tabular-nums leading-none" style={{ color:b.c }}>{rate != null ? rate+"%" : "—"}</div></div>
-              <div className="text-right"><div className="f10 text-slate-400 uppercase tracking-wide">Conformité</div>
-                <div className="f16 font-extrabold tabular-nums leading-none text-slate-700">{conf != null ? conf+"%" : "—"}</div></div>
-              <ChevronRight size={16} className={clsx("text-slate-300 transition-transform", open && "rotate-90")} />
-            </div>
+            {vue==="perf" && (
+              <div className="flex items-center gap-4 shrink-0">
+                <div className="text-right"><div className="f10 text-slate-400 uppercase tracking-wide">Couverture</div>
+                  <div className="f16 font-extrabold tabular-nums leading-none" style={{ color:b.c }}>{rate != null ? rate+"%" : "—"}</div></div>
+                <div className="text-right"><div className="f10 text-slate-400 uppercase tracking-wide">Conformité</div>
+                  <div className="f16 font-extrabold tabular-nums leading-none text-slate-700">{conf != null ? conf+"%" : "—"}</div></div>
+                <ChevronRight size={16} className={clsx("text-slate-300 transition-transform", open && "rotate-90")} />
+              </div>)}
+            {vue==="variables" && <ChevronRight size={16} className={clsx("text-slate-300 transition-transform shrink-0", open && "rotate-90")} />}
           </button>
-          {/* Barre de couverture */}
-          {rate != null && (
+          {vue==="perf" && rate != null && (
             <div className="px-4 pb-1"><div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
               <div className="h-full rounded-full" style={{ width:`${Math.min(100,rate)}%`, background:b.c }} /></div></div>)}
-          {open && (
+          {open && vue==="perf" && (
             <div className="px-4 pb-4 pt-2 border-t border-slate-100">
               <div className="f105 font-bold uppercase tracking-wide text-slate-400 mb-2">Modules thématiques</div>
               <div className="grid gap-2" style={{ gridTemplateColumns:"repeat(auto-fill, minmax(200px,1fr))" }}>
@@ -456,6 +621,10 @@ function PerfProcessus({ proc, parActivite, notify }){
                   </div>))}
               </div>
               {rate == null && <p className="f105 text-slate-400 mt-3">Aucun site rattaché à cette activité sur le périmètre courant — la performance s'affichera dès qu'un site portera ce tag.</p>}
+            </div>)}
+          {open && vue==="variables" && (
+            <div className="px-4 pb-4 pt-3 border-t border-slate-100">
+              <VariablesActivite tag={act.tag} notify={notify} />
             </div>)}
         </div>);
     })}
