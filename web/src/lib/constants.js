@@ -29,7 +29,7 @@ button,select,textarea{font:inherit;color:inherit}
 ::-webkit-scrollbar-track{background:transparent}
 .f8{font-size:8px}.f9{font-size:9px}.f95{font-size:9.5px}.f10{font-size:10px}.f105{font-size:10.5px}
 .f11{font-size:11px}.f115{font-size:11.5px}.f12{font-size:12px}.f125{font-size:12.5px}.f13{font-size:13px}
-.f15{font-size:15px}.f17{font-size:17px}.f19{font-size:19px}
+.f14{font-size:14px}.f15{font-size:15px}.f16{font-size:16px}.f17{font-size:17px}.f19{font-size:19px}.f22{font-size:22px}.f26{font-size:26px}.f30{font-size:30px}.f34{font-size:34px}
 .tr14{letter-spacing:.14em}
 .mi-f115{font-size:11.5px !important}.mi-f12{font-size:12px !important}.mi-xs{font-size:12px !important}
 .mi-tc{text-align:center !important}.mi-py1{padding-top:4px !important;padding-bottom:4px !important}

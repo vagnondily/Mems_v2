@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { BarChart3, Bell, CalendarRange, Check, ChevronDown, Cog, Database, FileText, KeyRound, LayoutDashboard, LogOut, MapPin, Save, ShieldCheck, UserCog } from "lucide-react";
-import { Badge, Btn, BrandMark, Empty, Field, Input, Modal, Note, NotesToggle } from "../components/ui.jsx";
+import { Badge, Btn, BrandMark, Empty, Field, Input, Modal, Note, NotesMenuItem } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
 import { clsx } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
@@ -290,9 +290,6 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, notify, onM
             </button>))}
         </nav>
         <div className="ml-auto flex items-center gap-3 shrink-0">
-          {/* Interrupteur global des notes explicatives — « show and hide » pour
-              toutes les petites notes de tous les écrans, d'un seul geste. */}
-          <NotesToggle />
           <SyncBadge sync={sync} />
           {/* Les tâches urgentes occupaient un tableau au milieu de l'accueil : on ne
               les voyait qu'en s'y rendant, et jamais depuis les autres écrans. Elles
@@ -319,6 +316,9 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, notify, onM
                 <button onClick={()=>{setCompte(true);setMenu(false);}}
                   className="flex items-center gap-2 w-full px-4 py-2.5 f13 text-slate-700 hover:bg-slate-50">
                   <UserCog size={14} /> Mon compte</button>
+                {/* L'interrupteur des notes explicatives — rangé ici, hors de la
+                    vue des pages, pour ne pas les enlaidir. */}
+                <NotesMenuItem onDone={()=>setMenu(false)} />
                 {allowed.includes("settings") && (
                   <button onClick={()=>{setTab("settings");setMenu(false);}}
                     className="flex items-center gap-2 w-full px-4 py-2.5 f13 text-slate-700 hover:bg-slate-50 border-t border-slate-100">
