@@ -210,6 +210,93 @@ function siteRequirement(db, site){
   const c = computeParam(p, db.sites, db.formulas);
   return { required: Math.max(0, Math.round(c.adjustedFreq)), interval: r1(c.adjustedInterval) };
 }
+/* ══════════════════ Variables issues du suivi de processus ══════════════════
+   « Les indicateurs de l'XLSForm doivent aussi être dans les calculs. »
+
+   Le référentiel de suivi de processus (table process_indicator, extraite des
+   XLSForms MoDa) décrit CE QUE les formulaires collectent, activité par activité
+   et module par module. Ce que l'on peut en tirer de NUMÉRIQUE — donc d'utilisable
+   dans une expression — est de deux natures, et il faut les distinguer :
+
+     — la STRUCTURE : combien d'indicateurs et de modules l'activité déclare. Elle
+       vient du référentiel XLSForm lui-même et ne dépend d'aucune collecte.
+     — la RÉALISATION : combien de sites porte l'activité, combien ont été visités
+       sur l'exercice, et quelle part cela fait. Elle vient du registre et des
+       visites, c'est-à-dire de ce qui a réellement eu lieu.
+
+   Les deux sont servies parce qu'un calcul de performance de processus a besoin
+   des deux : « part des modules couverts », « visites par indicateur déclaré »,
+   « couverture pondérée par la richesse du formulaire ». Aucune valeur n'est
+   inventée : ce qui n'a pas de collecte rendue vaut zéro, et le tableau des
+   variables le dit en toutes lettres à l'écran.
+
+   Le nom d'une variable est `proc_<TAG>_<mesure>` : préfixé, pour ne jamais entrer
+   en collision avec les variables de couverture (duration, nbSites…), et lisible,
+   pour qu'une expression se relise sans dictionnaire. */
+const PROC_MESURES = [
+  ["indicateurs", "Indicateurs déclarés dans l'XLSForm de l'activité", "Référentiel XLSForm"],
+  ["modules",     "Modules (sections) de l'XLSForm de l'activité",     "Référentiel XLSForm"],
+  ["sites",       "Sites actifs portant cette activité",               "Registre des sites"],
+  ["visites",     "Visites enregistrées sur l'exercice",               "Suivi de processus"],
+  ["couverture",  "Part des sites de l'activité visités au moins une fois (%)", "Suivi de processus"],
+];
+
+function variablesProcessus(db, year){
+  const an = year || db?.year || new Date().getFullYear();
+  const activites = db?.processIndicators?.activites || [];
+  const sites = db?.sites || [];
+  const visites = db?.visits || [];
+  const vars = {}, meta = [];
+
+  /* Deux agrégats en UN parcours de chaque table : à l'échelle annoncée, un
+     filtre par activité dans une boucle sur les activités relirait le registre
+     autant de fois qu'il y a d'activités. */
+  const sitesParTag = new Map(), visitesParTag = new Map(), visitesParSite = new Set();
+  for(const s of sites){
+    if(s.status === "Inactive") continue;
+    const t = s.activityTag; if(!t) continue;
+    sitesParTag.set(t, (sitesParTag.get(t) || 0) + 1);
+  }
+  for(const v of visites){
+    if(new Date(v.date).getFullYear() !== an) continue;
+    if(v.tag) visitesParTag.set(v.tag, (visitesParTag.get(v.tag) || 0) + 1);
+    if(v.siteId) visitesParSite.add(v.siteId);
+  }
+  const sitesVusParTag = new Map();
+  for(const s of sites){
+    if(s.status === "Inactive" || !s.activityTag) continue;
+    if(visitesParSite.has(s.id))
+      sitesVusParTag.set(s.activityTag, (sitesVusParTag.get(s.activityTag) || 0) + 1);
+  }
+
+  for(const a of activites){
+    const tag = a.tag || a.form; if(!tag) continue;
+    const cle = String(tag).replace(/\W/g, "");
+    const nSites = sitesParTag.get(tag) || 0;
+    const valeurs = {
+      indicateurs: a.total || 0,
+      modules: (a.modules || []).length,
+      sites: nSites,
+      visites: visitesParTag.get(tag) || 0,
+      couverture: pct(sitesVusParTag.get(tag) || 0, nSites),
+    };
+    for(const [mesure, sens, origine] of PROC_MESURES){
+      const nom = `proc_${cle}_${mesure}`;
+      vars[nom] = valeurs[mesure];
+      meta.push({ nom, sens: `${sens} — ${a.label || tag}`, origine, valeur: valeurs[mesure], tag });
+    }
+  }
+
+  /* Les deux totaux, pour un calcul qui raisonne sur l'ensemble du dispositif. */
+  vars.procIndicateurs = db?.processIndicators?.total || 0;
+  vars.procActivites = activites.length;
+  meta.push({ nom:"procIndicateurs", sens:"Total des indicateurs de processus déclarés, toutes activités",
+    origine:"Référentiel XLSForm", valeur: vars.procIndicateurs, tag:"" });
+  meta.push({ nom:"procActivites", sens:"Nombre d'activités dotées d'un XLSForm de suivi",
+    origine:"Référentiel XLSForm", valeur: vars.procActivites, tag:"" });
+  return { vars, meta };
+}
+
 function computeMMR(db, year){
   const now = new Date();
   const elapsed = now.getFullYear()===year ? now.getMonth()+1 : (now.getFullYear()>year?12:0);
@@ -345,4 +432,4 @@ function profileColumn(rows, field){
   return stat;
 }
 
-export { FNS, IND_FNS, KEY, LEVELS, POP_BASE_YEAR, RULE_TYPES, SAFE_CHARS, applyFormulas, applyRules, clsx, codeOf, computeMMR, computeParam, derniereVisite, evalFormula, evalIndicator, fmt, legacyScore, monthsSince, motifLisible, motifSaisissable, n, paramFor, pct, populationFor, profileColumn, r1, r2, r5, siteRequirement, siteScore, uid, visiteOdk, visitesDuMois };
+export { FNS, IND_FNS, KEY, LEVELS, POP_BASE_YEAR, RULE_TYPES, SAFE_CHARS, applyFormulas, applyRules, clsx, codeOf, computeMMR, computeParam, derniereVisite, evalFormula, evalIndicator, fmt, legacyScore, monthsSince, motifLisible, motifSaisissable, n, paramFor, pct, populationFor, profileColumn, r1, r2, r5, siteRequirement, siteScore, uid, variablesProcessus, visiteOdk, visitesDuMois };

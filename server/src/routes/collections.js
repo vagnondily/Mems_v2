@@ -108,9 +108,22 @@ const COLLECTIONS = {
       households:x.households, tonnage:x.tonnage, amount:x.amount, benef_actual:x.benefActual,
       received:x.received, distributed:x.distributed, status:x.status, note:x.note }) },
 
+  /* `blocks` porte DEUX formes, et la seconde n'est pas un raffinement gratuit.
+     Les sept sections standard sont désignées par leur seul identifiant — une
+     chaîne, comme depuis l'origine. Un CALCUL, lui, ne suffit pas à se désigner :
+     il faut dire LEQUEL et COMMENT le montrer (chiffre, jauge, barre par
+     activité, tableau). D'où l'objet `{ b:"calc", id, viz }`. Encoder ces trois
+     informations dans une chaîne aurait tenu — jusqu'au premier identifiant
+     technique un peu long, que le plafond de quarante caractères aurait tronqué
+     en silence, c'est-à-dire en pointant vers un autre calcul ou vers aucun. */
   reportTemplates: { table:"report_templates", cap:"edit",
     schema: z.object({ id:S(64), name:z.string().min(1).max(160),
-      blocks:z.array(z.string().max(40)).max(40).default([]), intro:S(4000) }),
+      blocks: z.array(z.union([
+        z.string().max(40),
+        z.object({ b: z.literal("calc"), id: z.string().min(1).max(64),
+                   viz: z.enum(["nombre","jauge","barres","tableau"]).default("nombre") }),
+      ])).max(60).default([]),
+      intro:S(4000) }),
     map: (x) => ({ name:x.name, blocks:JSON.stringify(x.blocks), intro:x.intro }) },
 
   /* Catalogue de rations (migration 031). « Une ration, une ligne » : un libellé

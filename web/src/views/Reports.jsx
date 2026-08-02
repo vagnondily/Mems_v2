@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { CalendarRange, Download, FileText, Filter, Sparkles, Table2 } from "lucide-react";
+import { CalendarRange, Download, FileText, Filter, Plus, Sparkles, Table2, Trash2 } from "lucide-react";
 import { Badge, Btn, Card, Empty, Field, Input, Note, Select, TableWrap, Tabs, Td, Th, download, inputCls, toCSV } from "../components/ui.jsx";
-import { LEVELS, fmt, n, pct, siteRequirement, siteScore } from "../lib/calc.js";
+import { LEVELS, evalFormula, fmt, n, pct, r2, siteRequirement, siteScore, variablesProcessus } from "../lib/calc.js";
 import { D_ADJUST } from "../lib/constants.js";
 import { GRANULARITES, anneesDisponibles, bornesPeriode, dateDansPeriode, libelleCourtPeriode,
   libellePeriode, moisDansPeriode, moisEcoules, normalisePeriode, optionsValeur, periodeAnnee,
@@ -162,6 +162,31 @@ const BLOCKS = [
   ["sites","Liste des sites","Tableau détaillé des sites avec priorité et couverture"],
   ["tasks","Points d'attention","Échéances manquées et actions à mener"],
 ];
+
+/* ══════════════════ Les calculs dans le rapport ══════════════════
+   « Si je crée un calcul, je devrais pouvoir l'insérer dans le générateur de
+   rapports comme tous les indicateurs, et sélectionner comment se fera sa
+   visualisation. »
+
+   Un bloc de calcul n'est donc pas une section de plus dans BLOCKS : c'est une
+   section PARAMÉTRÉE — quel calcul, et sous quelle forme. Les quatre formes
+   couvrent les quatre façons de lire un nombre, et le choix n'est pas cosmétique :
+   une jauge suppose une échelle de 0 à 100, une barre par activité suppose que le
+   calcul dépend de l'activité. L'écran le dit au moment de choisir, plutôt que de
+   laisser produire un graphique qui ne veut rien dire.
+
+   Un calcul retiré des Paramètres laisse un bloc orphelin dans les modèles qui le
+   citaient. Le rapport ne l'ignore PAS en silence : il l'écrit, parce qu'un
+   document qui perd une section sans le dire est pire qu'un document qui affiche
+   « ce calcul n'existe plus ». */
+const VIZ = [
+  ["nombre",  "Chiffre",            "Le résultat seul, en grand, avec son intitulé."],
+  ["jauge",   "Jauge de 0 à 100",   "Une barre de progression. Suppose un résultat en pourcentage."],
+  ["barres",  "Barres par activité","Une barre par activité dotée d'un XLSForm de suivi. Suppose que le calcul emploie des variables proc_…"],
+  ["tableau", "Tableau par activité","Le résultat activité par activité, en lignes."],
+];
+const estCalc = (b) => !!b && typeof b === "object" && b.b === "calc";
+const cleBloc = (b) => estCalc(b) ? `calc:${b.id}:${b.viz}` : String(b);
 /* computeMMR raisonne à l'exercice : il proratise l'exigence annuelle sur les
    mois écoulés de l'année et compte les visites de cette année. La règle est la
    même ici, restreinte aux mois de la période — sur une année entière, les deux
@@ -179,6 +204,52 @@ function mmrPeriode(db, p){
   });
   return { pct: pct(done, Math.round(required)), required: Math.round(required), done,
            activeSites: actifs, visitedSites: visites, coverage: pct(visites, actifs), elapsed: ecoules };
+}
+
+/* Le contexte d'évaluation d'un calcul dans un rapport.
+
+   `global` porte les variables de processus réelles du pays. `parActivite` porte
+   le MÊME jeu restreint à une activité, de sorte qu'un calcul écrit avec des
+   variables `proc_<TAG>_…` puisse être rendu activité par activité : pour
+   l'activité GD, `proc_GD_couverture` est sa couverture à elle, et les variables
+   des autres activités restent disponibles — un calcul a le droit de comparer.
+
+   Les variables de COUVERTURE (duration, nbSites…) n'ont de valeur que pour un
+   couple bureau × activité : hors de ce contexte elles valent zéro, et le rapport
+   le dit là où c'est visible plutôt que d'afficher un résultat qui ne repose sur
+   rien. */
+function contexteCalculs(db){
+  const { vars, meta } = variablesProcessus(db);
+  const activites = (db.processIndicators?.activites || [])
+    .map(a => ({ tag: a.tag || a.form, label: a.label || a.tag || a.form }))
+    .filter(a => a.tag);
+  return { vars, meta, activites };
+}
+
+/* Évalue un calcul, globalement et par activité. Rend TOUJOURS un objet lisible,
+   y compris quand le calcul n'existe plus ou que son expression est fautive : un
+   rapport qui laisse tomber une section sans le dire est le pire des deux maux. */
+function evaluerCalcul(db, D, id){
+  const f = (db.formulas || []).find(x => x.id === id);
+  if(!f) return { manquant:true, id, label:id,
+    err:`Ce calcul n'existe plus dans Paramètres → Calculs (identifiant « ${id} »).` };
+  const g = evalFormula(f.expr, D.calc.vars);
+  const parActivite = D.calc.activites.map(a => {
+    const cle = String(a.tag).replace(/\W/g, "");
+    /* Les variables de l'activité courante sont exposées SANS leur préfixe
+       d'activité, en plus des noms complets : un calcul écrit une fois avec
+       `couverture` se décline alors sur chaque activité, sans avoir à être
+       réécrit par activité. */
+    const locales = {};
+    for(const [k, v] of Object.entries(D.calc.vars)){
+      const pref = `proc_${cle}_`;
+      if(k.startsWith(pref)) locales[k.slice(pref.length)] = v;
+    }
+    const r = evalFormula(f.expr, { ...D.calc.vars, ...locales });
+    return { tag:a.tag, label:a.label, ok:r.ok, valeur:r.ok ? r.value : null, err:r.err };
+  });
+  return { manquant:false, id, label:f.label || f.id, desc:f.desc || "", expr:f.expr,
+           ok:g.ok, valeur:g.ok ? g.value : null, err:g.err, parActivite };
 }
 
 function reportData(db, periode){
@@ -241,6 +312,10 @@ function reportData(db, periode){
        un trimestre passé n'a pas de sens : la liste est datée du tirage, et le
        rapport le dit plutôt que de faire semblant de la filtrer. */
     tasks: urgentTasks(db).slice(0,15),
+    /* De quoi évaluer un calcul, et par activité quand il en dépend. Servi une
+       fois dans les données du rapport plutôt que recalculé par chaque bloc :
+       un modèle qui cite cinq calculs referait sinon cinq fois le même travail. */
+    calc: contexteCalculs(db),
   };
 }
 function reportHTML(db, tpl, periode){
@@ -302,7 +377,50 @@ function reportHTML(db, tpl, periode){
       D.tasks.map(t=>`<li><span class="pill ${t.prio}">${esc(t.prio)}</span> <b>${esc(t.kind)}</b> — ${esc(t.text)}</li>`).join("")}
       </ul></section>`,
   };
-  const body = (tpl.blocks||[]).map(b => B[b] ? B[b]() : "").join("");
+  /* Un bloc de calcul se rend selon la visualisation choisie au modèle. Les
+     quatre formes sont volontairement simples et sans dépendance : le document
+     doit s'ouvrir et s'imprimer partout, y compris hors ligne, sans qu'aucun
+     script ne s'exécute. */
+  const blocCalc = (spec) => {
+    const c = evaluerCalcul(db, D, spec.id);
+    if(c.manquant) return `<section>${h2("Calcul introuvable", "modèle à corriger")}
+      <p class="muted">${esc(c.err)}</p></section>`;
+    const entete = h2(esc(c.label), esc(c.desc || `expression : ${c.expr}`));
+    if(!c.ok && spec.viz !== "barres" && spec.viz !== "tableau")
+      return `<section>${entete}<p class="bad">Ce calcul n'a pas pu être évalué : ${esc(c.err)}</p></section>`;
+    const util = c.parActivite.filter(a => a.ok);
+    if(spec.viz === "jauge"){
+      const v = Math.max(0, Math.min(100, c.valeur));
+      return `<section>${entete}<div class="kpis" style="grid-template-columns:1fr">
+        <div class="kpi"><span>${esc(c.label)}</span><b>${r2(c.valeur)}</b>
+        ${bar(v, tone(v))}<span class="pc">${r2(v)} / 100</span></div></div></section>`;
+    }
+    if(spec.viz === "barres"){
+      if(!util.length) return `<section>${entete}<p class="muted">Aucune activité ne peut être
+        évaluée avec ce calcul — il n'emploie sans doute aucune variable de suivi de processus
+        (<code>proc_…</code>), ou aucun XLSForm n'est encore chargé.</p></section>`;
+      const max = Math.max(...util.map(a => Math.abs(a.valeur)), 1);
+      return `<section>${entete}<table><thead><tr><th>Activité</th><th class="n">Résultat</th>
+        <th>Répartition</th></tr></thead><tbody>${
+        util.map(a => `<tr><td><b>${esc(a.label)}</b></td><td class="n">${r2(a.valeur)}</td>
+          <td>${bar(Math.round(Math.abs(a.valeur) / max * 100), tone(a.valeur))}</td></tr>`).join("")}
+        </tbody></table></section>`;
+    }
+    if(spec.viz === "tableau"){
+      if(!c.parActivite.length) return `<section>${entete}<p class="muted">Aucune activité dotée
+        d'un XLSForm de suivi : il n'y a rien à ventiler.</p></section>`;
+      return `<section>${entete}<table><thead><tr><th>Activité</th><th class="n">Résultat</th>
+        </tr></thead><tbody>${
+        c.parActivite.map(a => `<tr><td>${esc(a.label)}</td><td class="n">${
+          a.ok ? r2(a.valeur) : `<span class="muted">${esc(a.err || "non évaluable")}</span>`}</td></tr>`).join("")}
+        </tbody></table></section>`;
+    }
+    return `<section>${entete}<div class="kpis" style="grid-template-columns:1fr">
+      <div class="kpi"><span>${esc(c.label)}</span><b>${r2(c.valeur)}</b>
+      <em>expression : ${esc(c.expr)}</em></div></div></section>`;
+  };
+  const body = (tpl.blocks||[]).map(b =>
+    estCalc(b) ? blocCalc(b) : (B[b] ? B[b]() : "")).join("");
   return `<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <title>${esc(tpl.name)} — ${esc(db.settings.org)}</title>
 <style>
@@ -384,7 +502,19 @@ function reportCSV(db, tpl, periode){
       ["id","poi","office","adm","tag","status","benef","prio","planned","done"]),
     tasks: () => bloc("Points d'attention — état au jour du tirage", D.tasks, ["prio","kind","text","ctx"]),
   };
-  (tpl.blocks||[]).forEach(b => B[b] && B[b]());
+  (tpl.blocks||[]).forEach(b => {
+    if(!estCalc(b)){ B[b] && B[b](); return; }
+    /* Un calcul s'exporte par activité : c'est la seule ventilation qui donne des
+       LIGNES, et un CSV d'une seule cellule ne s'ouvre nulle part utilement. Le
+       résultat global figure en première ligne, sous l'activité « (ensemble) ». */
+    const c = evaluerCalcul(db, D, b.id);
+    if(c.manquant){ bloc(`Calcul introuvable — ${b.id}`, [{ erreur:c.err }], ["erreur"]); return; }
+    bloc(`${c.label} — calcul (${b.viz})`,
+      [{ activite:"(ensemble)", resultat: c.ok ? r2(c.valeur) : "", erreur: c.ok ? "" : c.err },
+       ...c.parActivite.map(a => ({ activite:a.label, resultat: a.ok ? r2(a.valeur) : "",
+         erreur: a.ok ? "" : (a.err || "non évaluable") }))],
+      ["activite","resultat","erreur"]);
+  });
   return "﻿" + parts.join("\n");
 }
 function ReportBuilder({ db, set, periode, notify, can }){
@@ -393,6 +523,19 @@ function ReportBuilder({ db, set, periode, notify, can }){
   const tpl = db.reportTemplates.find(t=>t.id===tplId) || db.reportTemplates[0];
   const toggle = (b) => set(d => { const t=d.reportTemplates.find(x=>x.id===tplId); if(!t) return d;
     t.blocks = t.blocks.includes(b) ? t.blocks.filter(x=>x!==b) : [...t.blocks, b]; return d; });
+  /* Les blocs de calcul : ajout, changement de visualisation, retrait. Ils vivent
+     à côté des sections standard dans la même liste `blocks`, donc dans le même
+     ORDRE — c'est ce qui permet d'intercaler un calcul entre deux sections plutôt
+     que de le reléguer en fin de document. */
+  const calculsChoisis = (tpl?.blocks || []).filter(estCalc);
+  const ajouterCalc = (id) => set(d => { const t=d.reportTemplates.find(x=>x.id===tplId); if(!t) return d;
+    if(t.blocks.some(b => estCalc(b) && b.id === id)) return d;
+    t.blocks = [...t.blocks, { b:"calc", id, viz:"nombre" }]; return d; });
+  const changerViz = (id, viz) => set(d => { const t=d.reportTemplates.find(x=>x.id===tplId); if(!t) return d;
+    t.blocks = t.blocks.map(b => estCalc(b) && b.id === id ? { ...b, viz } : b); return d; });
+  const retirerCalc = (id) => set(d => { const t=d.reportTemplates.find(x=>x.id===tplId); if(!t) return d;
+    t.blocks = t.blocks.filter(b => !(estCalc(b) && b.id === id)); return d; });
+  const [aAjouter,setAAjouter] = useState("");
   const build = () => { if(!tpl) return; setHtml(reportHTML(db, tpl, periode)); notify(`Rapport généré — ${libellePeriode(periode)}`,"ok"); };
   /* L'aperçu se vide dès que la période change : garder à l'écran un document
      tiré sur une autre période, sous une barre qui en annonce une nouvelle,
@@ -425,6 +568,48 @@ function ReportBuilder({ db, set, periode, notify, can }){
               <input type="checkbox" className="mt-0.5" checked={!!tpl?.blocks?.includes(b)} disabled={!can("edit")} onChange={()=>toggle(b)} />
               <span><span className="f13 font-medium text-slate-800 block">{l}</span>
                 <span className="f115 text-slate-500">{d}</span></span></label>))}
+        </Card>
+
+        {/* ── Les calculs, au même titre que les indicateurs ── */}
+        <Card title="Calculs" subtitle="Insérez un calcul et choisissez sa visualisation">
+          <Note>Tout calcul défini dans <b>Paramètres → Calculs</b> s'insère ici, y compris ceux
+            écrits sur les variables de <b>suivi de processus</b> issues des XLSForms
+            (<code>proc_…</code>). Chaque calcul porte SA visualisation : le même chiffre se lit
+            différemment en jauge ou ventilé par activité.</Note>
+          {can("edit") && (
+            <div className="flex gap-2 mb-3">
+              <Select value={aAjouter} onChange={e=>setAAjouter(e.target.value)} empty="Choisir un calcul…"
+                options={(db.formulas||[])
+                  .filter(f => !calculsChoisis.some(b => b.id === f.id))
+                  .map(f => [f.id, f.label || f.id])} />
+              <Btn size="sm" icon={Plus} disabled={!aAjouter}
+                onClick={()=>{ ajouterCalc(aAjouter); setAAjouter(""); }}>Insérer</Btn>
+            </div>)}
+          {!calculsChoisis.length
+            ? <p className="f115 text-slate-500">Aucun calcul inséré dans ce modèle.</p>
+            : <div className="space-y-2">
+                {calculsChoisis.map(b => {
+                  const f = (db.formulas||[]).find(x => x.id === b.id);
+                  return (
+                    <div key={b.id} className="border border-slate-200 rounded-xl px-3 py-2.5">
+                      <div className="flex items-center gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="f125 font-semibold text-slate-800 truncate">
+                            {f ? (f.label || f.id) : <span className="text-rose-600">Calcul supprimé — {b.id}</span>}</div>
+                          {f && <div className="f11 text-slate-500 truncate">{f.desc || f.expr}</div>}
+                        </div>
+                        {can("edit") && <button onClick={()=>retirerCalc(b.id)} title="Retirer du modèle"
+                          className="text-slate-400 hover:text-rose-600 p-1 shrink-0"><Trash2 size={14}/></button>}
+                      </div>
+                      <div className="mt-2">
+                        <Select value={b.viz} disabled={!can("edit")}
+                          onChange={e=>changerViz(b.id, e.target.value)}
+                          options={VIZ.map(([v,l])=>[v,l])} className="mi-py1 mi-xs" />
+                        <p className="f11 text-slate-500 mt-1">
+                          {(VIZ.find(v=>v[0]===b.viz)||[])[2]}</p>
+                      </div>
+                    </div>); })}
+              </div>}
         </Card>
       </div>
       <Card flush title="Aperçu du rapport"
