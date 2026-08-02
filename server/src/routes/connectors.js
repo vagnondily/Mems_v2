@@ -251,9 +251,14 @@ r.post("/connectors/moda-preparer", requireCap("admin"), (req, res, next) => {
       const deja = db.prepare("SELECT id FROM connector WHERE name=?").get(nom);
       if(deja){ existants.push(nom); continue; }
       const id = newId("conn");
+      /* MoDa est un déploiement KoboToolbox : son API v1 lit un GET
+         « /api/v1/data/{n°}?format=json » et attend « Authorization: Token <clé> »
+         — le schéma « jeton », PAS « porteur » (Bearer). Une clé MoDa présentée en
+         Bearer revient en 401. On pré-règle donc le bon schéma : l'administrateur
+         n'a que le numéro du formulaire et la clé à saisir. */
       ins.run(id, nom, "kobo", "https://moda.wfp.org",
         JSON.stringify({ apiVersion:"v1", formId:"", activityTag:c.tag }),
-        null, "porteur", null, bound, 0);
+        null, "jeton", null, bound, 0);
       crees.push(nom);
     }
     if(crees.length) audit(req, "create", "moda", `Connecteurs MoDa préparés — ${crees.length} activité(s)`);

@@ -3397,6 +3397,36 @@ test("connecteurs : supprimer un connecteur emporte ses correspondances", async 
     .set("Authorization", `Bearer ${adminToken}`)).status, 404);
 });
 
+test("connecteurs MoDa : les 5 sources pré-créées attendent « Token » (API v1), pas « Bearer »", async () => {
+  /* MoDa est un déploiement KoboToolbox : son API v1 lit un GET
+     « /api/v1/data/{n°}?format=json » et n'accepte le justificatif qu'en
+     « Authorization: Token <clé> ». Une clé MoDa présentée en « Bearer »
+     (schéma « porteur ») revient en 401 — la préparation doit donc câbler le
+     schéma « jeton », sans quoi les 5 sources naissent inutilisables. */
+  const r = await request(app).post("/api/connectors/moda-preparer")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.ok(r.body.connectors.length >= 5, "les cinq activités MoDa sont pré-créées");
+
+  const enBase = db.prepare("SELECT name, auth_schema, config, kind FROM connector WHERE name LIKE 'MoDa — %'").all();
+  assert.equal(enBase.length, r.body.connectors.length);
+  for(const c of enBase){
+    assert.equal(c.auth_schema, "jeton",
+      `${c.name} : le schéma est « jeton » (Token), celui que MoDa v1 exige`);
+    assert.equal(c.kind, "kobo");
+    const cfg = JSON.parse(c.config);
+    assert.equal(cfg.apiVersion, "v1", `${c.name} : l'API v1 est pré-réglée`);
+    assert.ok(cfg.activityTag, `${c.name} : la source est liée à son activité`);
+  }
+
+  /* Idempotent : un second appel ne recrée rien. */
+  const r2 = await request(app).post("/api/connectors/moda-preparer")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r2.status, 200);
+  assert.equal(r2.body.crees.length, 0, "un second appel ne duplique aucune source");
+  assert.ok(r2.body.existants.length >= 5);
+});
+
 test("connecteurs : la valeur par défaut passe par la même transformation que la valeur lue", async () => {
   const c = (await creerConnecteur({ name: "Réceptions collées", kind: "csv", config: {} })).body.connector;
   const r = await request(app).post(`/api/connectors/${c.id}/apercu`)
