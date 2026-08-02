@@ -226,6 +226,43 @@ r.post("/connectors", requireCap("admin"), (req, res, next) => {
     { administration: true }) });
 });
 
+/* Les cinq connecteurs MoDa, un par formulaire de suivi de processus. « Créer les
+   5 connecteurs où l'admin modifiera juste les numéros des formulaires et se
+   liera automatiquement à la base. » On les pré-crée (idempotent, par nom),
+   pré-réglés sur MoDa (API v1) et rattachés à leur ACTIVITÉ (config.activityTag) :
+   l'administrateur n'a plus qu'à saisir le numéro du formulaire et le jeton, et
+   les soumissions tirées se rattacheront à l'activité — donc à ses indicateurs. */
+const CONNECTEURS_MODA = [
+  { tag:"GD",    label:"GD / PREVMA" },
+  { tag:"SMP",   label:"Repas scolaires (SMP)" },
+  { tag:"MIARO", label:"MIARO — Résilience / Production" },
+  { tag:"NUT",   label:"Nutrition (PECMAM / AIM)" },
+  { tag:"SAMS",  label:"Résilience (SAMS)" },
+];
+r.post("/connectors/moda-preparer", requireCap("admin"), (req, res, next) => {
+  try{
+    const bound = req.user?.office_id && !can(req.user, "admin") ? req.user.office_id : null;
+    const ins = db.prepare(`INSERT INTO connector
+        (id,name,kind,base_url,config,secret_enc,auth_schema,auth_identifiant,office_id,active)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`);
+    const crees = [], existants = [];
+    for(const c of CONNECTEURS_MODA){
+      const nom = `MoDa — ${c.label}`;
+      const deja = db.prepare("SELECT id FROM connector WHERE name=?").get(nom);
+      if(deja){ existants.push(nom); continue; }
+      const id = newId("conn");
+      ins.run(id, nom, "kobo", "https://moda.wfp.org",
+        JSON.stringify({ apiVersion:"v1", formId:"", activityTag:c.tag }),
+        null, "porteur", null, bound, 0);
+      crees.push(nom);
+    }
+    if(crees.length) audit(req, "create", "moda", `Connecteurs MoDa préparés — ${crees.length} activité(s)`);
+    res.json({ crees, existants,
+      connectors: db.prepare("SELECT * FROM connector WHERE name LIKE 'MoDa — %' ORDER BY name")
+        .all().map(x => shape(x, { administration: true })) });
+  }catch(e){ next(e); }
+});
+
 r.put("/connectors/:id", requireCap("admin"), (req, res, next) => {
   const c = charger(req, res); if(!c) return;
   const parsed = schemaConnecteur.safeParse(req.body);

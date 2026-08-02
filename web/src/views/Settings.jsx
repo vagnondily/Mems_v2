@@ -3490,6 +3490,18 @@ function SetConnectors({ notify, can }){
   const charger = () => api.connectors().then(r=>setRows(r.rows||[]))
     .catch(e=>{ notify(e.message,"err"); setRows([]); });
 
+  /* Pré-crée les 5 connecteurs MoDa (un par activité). L'admin n'a plus qu'à
+     ouvrir chacun, saisir le numéro de formulaire et le jeton : le rattachement à
+     l'activité (config.activityTag) est déjà fait. */
+  const preparerModa = async () => {
+    try{ const r = await api.preparerConnecteursModa();
+      const rows2 = r.connectors || []; if(rows2.length) setRows(rows2); else await charger();
+      notify(r.crees?.length
+        ? `${r.crees.length} connecteur(s) MoDa créé(s) — ouvrez chacun pour saisir le numéro du formulaire et le jeton`
+        : "Les 5 connecteurs MoDa existent déjà", "ok");
+    }catch(e){ notify(e.message, "err"); }
+  };
+
   useEffect(()=>{
     api.connectorChamps()
       .then(r=>{ setRegistre(r); setEntity(p=>p || r.entites?.[0]?.cle || ""); })
@@ -3752,6 +3764,9 @@ function SetConnectors({ notify, can }){
               disabled={busy} onClick={()=>tester(conn)}>Tester</Btn>}
             {conn && <Btn size="sm" kind="sec" icon={Pencil} onClick={()=>setEdit({ ...conn, secret:"" })}>Modifier</Btn>}
             {conn && <Btn size="sm" kind="ghost" icon={Trash2} onClick={()=>supprimer(conn)}>Supprimer</Btn>}
+            <Btn size="sm" kind="sec" icon={Link2} disabled={busy}
+              title="Créer les 5 connecteurs MoDa (un par activité de suivi de processus)"
+              onClick={preparerModa}>Préparer MoDa</Btn>
             <Btn size="sm" icon={Plus}
               onClick={()=>setEdit({ name:"", kind:"csv", base_url:"", config:{}, office_id:"", active:true, secret:"" })}>
               Nouveau</Btn>
