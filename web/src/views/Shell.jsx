@@ -330,7 +330,16 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, notify, onM
         </div>
       </header>
       <main className="flex-1 min-h-0 overflow-y-auto w-full">
-        <div className="mw1520 w-full mx-auto px-5 py-5">{children}</div>
+        <div className="mw1520 w-full mx-auto px-5 py-5">
+          {/* Bandeau MODE DÉMONSTRATION — pour ne jamais confondre un jeu de test
+              avec la production. Le super bascule le mode dans Paramètres › Localités. */}
+          {db.settings?.dataMode === "demo" && (
+            <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 flex items-center gap-2.5 f125 text-amber-900">
+              <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0" />
+              <span><b>Mode démonstration</b> — les données affichées sont un jeu de test, non des données réelles de production.</span>
+            </div>)}
+          {children}
+        </div>
       </main>
       {/* L'intitulé complet vit ici : le pied de page est l'endroit où l'on a la
           place de le lire, et il n'a pas à occuper la barre à chaque écran. */}

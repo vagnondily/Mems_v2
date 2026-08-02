@@ -53,7 +53,19 @@ const optionValeur = (nom, defaut) => {
   const i = args.indexOf(nom);
   return i >= 0 && args[i + 1] ? args[i + 1] : defaut;
 };
-const DOCS = path.resolve(optionValeur("--docs", path.join(here, "..", "..", "docs")));
+/* Où lire les fichiers de référence, dans l'ordre : option `--docs` / variable
+   `MEMS_DATA_DIR`, puis le dossier `data/` du dépôt s'il porte le shapefile, puis
+   `docs/` (fichiers d'origine versionnés). « Crée un dossier data et mets-y les
+   données réelles » : ce dossier est ainsi la source préférée dès qu'il est
+   peuplé, sans casser l'existant qui vit dans docs/. */
+const resoudreSource = () => {
+  const explicite = optionValeur("--docs", process.env.MEMS_DATA_DIR || "");
+  if(explicite) return path.resolve(explicite);
+  const dataDir = path.join(here, "..", "..", "data");
+  try{ if(fs.existsSync(path.join(dataDir, "mdg_bnd_adm3_com_pam_2025.shp"))) return dataDir; }catch(e){}
+  return path.join(here, "..", "..", "docs");
+};
+const DOCS = path.resolve(resoudreSource());
 /* `let` et non `const` : le semis est aussi appelé PAR le serveur (route
    d'administration « charger les données de référence »), qui passe ses propres
    options plutôt que la ligne de commande. */
