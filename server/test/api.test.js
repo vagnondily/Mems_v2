@@ -1429,6 +1429,113 @@ test("ciblage daté : plusieurs ciblages par unité, on garde tout et on montre 
   assert.ok(raisons.body.items.some(x => x.code === "FSRP"), "la liste des raisons contient FSRP");
 });
 
+test("ciblage : l'état courant suit l'historique — les taux réagissent au ciblage saisi", async () => {
+  /* Le défaut de fond du module : `targeting` (l'historique daté) et
+     `caseload.targeted` (les « ciblés du moment », dont les trois taux sont
+     calculés) étaient deux magasins que RIEN ne reliait. Un agent saisissait un
+     ciblage de 1 234 personnes sur l'écran « Ciblage par commune », puis lisait
+     sur l'écran voisin un taux de ciblage inchangé, calculé sur une valeur qu'il
+     fallait retaper ailleurs. Deux vérités pour un seul fait. */
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  await activerMillesimeDuSeed(t);
+  const year = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`)).body.year;
+  const unite = (await request(app).get(`/api/caseload?level=adm3&year=${year}`)
+    .set("Authorization", `Bearer ${t}`)).body.rows.find(r => r.population > 2000);
+  assert.ok(unite, "une commune du jeu d'essai porte une population");
+
+  const lire = async () => (await request(app)
+    .get(`/api/caseload?level=adm3&year=${year}&tag=CIBL`).set("Authorization", `Bearer ${t}`))
+    .body.rows.find(r => r.pcode === unite.pcode);
+
+  const cibler = (date, n) => request(app).post("/api/targeting").set("Authorization", `Bearer ${t}`)
+    .send({ year, activity_tag:"CIBL", targeted_at:date,
+      units:[{ geo_pcode:unite.pcode, level:"adm3", targeted:n, targeted_hh:Math.round(n/5) }] });
+
+  /* Une provenance déjà consignée sur la ligne — celle de la POPULATION — ne doit
+     pas disparaître au profit de celle du ciblage : les deux se lisent. */
+  await request(app).put("/api/caseload").set("Authorization", `Bearer ${t}`)
+    .send({ rows:[{ geo_pcode:unite.pcode, level:"adm3", year, activity_tag:"CIBL",
+      population:unite.population, households:0, targeted:0, targeted_hh:0, source:"RGPH3" }] });
+
+  const a = await cibler("2026-05-01", 1234);
+  assert.equal(a.status, 200, JSON.stringify(a.body));
+  const apres = await lire();
+  assert.equal(apres.targeted, 1234,
+    "le ciblage saisi devient l'état courant, donc entre dans les taux");
+  assert.match(apres.source, /RGPH3/, "la provenance de la population est conservée");
+  assert.match(apres.source, /Ciblage daté du 2026-05-01/, "celle du ciblage s'y ajoute");
+  assert.equal(apres.population, unite.population, "la population n'est pas touchée par un ciblage");
+
+  /* Un ciblage plus RÉCENT prend la main. */
+  assert.equal((await cibler("2026-08-01", 900)).status, 200);
+  assert.equal((await lire()).targeted, 900, "le plus récent l'emporte");
+
+  /* Un ciblage saisi en retard, portant une date ANTÉRIEURE, ne doit rien écraser :
+     l'état courant est le ciblage le plus récent, pas le dernier enregistré. */
+  assert.equal((await cibler("2026-03-01", 77)).status, 200);
+  assert.equal((await lire()).targeted, 900,
+    "un ciblage antérieur saisi après coup n'écrase pas l'état courant");
+
+  /* Supprimer le plus récent fait remonter celui d'avant — sans quoi corriger une
+     erreur de saisie laisserait sa valeur dans les taux. */
+  const rows = (await request(app).get(`/api/targeting?year=${year}&tag=CIBL`)
+    .set("Authorization", `Bearer ${t}`)).body.rows.filter(x => x.pcode === unite.pcode);
+  assert.equal(rows.length, 3, "les trois événements sont conservés");
+  const aout = rows.find(x => x.targetedAt === "2026-08-01");
+  assert.equal((await request(app).delete(`/api/targeting/${aout.id}`)
+    .set("Authorization", `Bearer ${t}`)).status, 200);
+  assert.equal((await lire()).targeted, 1234,
+    "le ciblage de mai redevient courant après suppression de celui d'août");
+});
+
+test("ciblage : une date qui n'en est pas une est refusée, au lieu de devenir « le dernier »", async () => {
+  /* Le classement se fait par comparaison de CHAÎNES : une valeur non datée se
+     range selon son premier caractère. « pas-une-date » passait donc devant
+     « 2026-05-01 » et devenait le dernier ciblage de la commune — l'écran
+     préremplissait le quota avec elle et l'extract la reprenait, tandis que la
+     valeur réellement décidée disparaissait sans un mot. */
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const year = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`)).body.year;
+  const unite = (await request(app).get(`/api/caseload?level=adm3&year=${year}`)
+    .set("Authorization", `Bearer ${t}`)).body.rows[0];
+  const envoyer = (date) => request(app).post("/api/targeting").set("Authorization", `Bearer ${t}`)
+    .send({ year, activity_tag:"DATE", targeted_at:date,
+      units:[{ geo_pcode:unite.pcode, level:"adm3", targeted:10, targeted_hh:2 }] });
+
+  for(const mauvaise of ["pas-une-date", "2026", "01/05/2026", "2026-13-01", "2026-02-31"]){
+    const r = await envoyer(mauvaise);
+    assert.equal(r.status, 422, `« ${mauvaise} » doit être refusée — ${JSON.stringify(r.body)}`);
+    assert.match(JSON.stringify(r.body), /AAAA-MM-JJ/, "le message dit le format attendu");
+  }
+  assert.equal((await envoyer("2026-02-28")).status, 200, "une vraie date passe");
+});
+
+test("ciblage : on ne cible pas plus de personnes qu'il n'en habite", async () => {
+  /* `PUT /api/caseload` refusait déjà « X ciblés pour Y habitants ». La même
+     donnée entrait pourtant sans contrôle par la porte du ciblage daté : deux
+     portes vers le même fait, une seule surveillée. */
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+  const year = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`)).body.year;
+  const unite = (await request(app).get(`/api/caseload?level=adm3&year=${year}`)
+    .set("Authorization", `Bearer ${t}`)).body.rows.find(r => r.population > 0);
+  assert.ok(unite, "une commune porte une population connue");
+
+  const r = await request(app).post("/api/targeting").set("Authorization", `Bearer ${t}`)
+    .send({ year, activity_tag:"TROP", targeted_at:"2026-04-01",
+      units:[{ geo_pcode:unite.pcode, level:"adm3", targeted:99999999, targeted_hh:0 }] });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.crees, 0, "rien n'est enregistré");
+  assert.equal(r.body.rejetes, 1);
+  assert.match(r.body.rejets[0].message, /99999999 ciblés pour/,
+    "le motif nomme le chiffre refusé et la population qui le contredit");
+
+  /* Un ciblage plausible passe : le garde borne, il n'interdit pas. */
+  const ok = await request(app).post("/api/targeting").set("Authorization", `Bearer ${t}`)
+    .send({ year, activity_tag:"TROP", targeted_at:"2026-04-01",
+      units:[{ geo_pcode:unite.pcode, level:"adm3", targeted:Math.floor(unite.population/2), targeted_hh:0 }] });
+  assert.equal(ok.body.crees, 1);
+});
+
 /* Chantier A4 — `PUT /api/caseload` n'appliquait aucun contrôle de périmètre alors
    que le même flux par import en applique un ligne à ligne : `scopeOf` était importé
    dans la route mais ne servait qu'en lecture. */
