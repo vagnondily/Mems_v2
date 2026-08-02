@@ -36,8 +36,9 @@
    est construit UNE fois pour tout le lot, et non par ligne.
    ═══════════════════════════════════════════════════════════════════════ */
 
-import { db } from "../db.js";
+import { db, tx } from "../db.js";
 import { TRANSFORMATIONS } from "./mapping.js";
+import { retirerVisiteDeSoumission } from "./visites.js";
 
 /* La normalisation d'un code est déjà écrite, testée et documentée dans le jeu
    fermé des transformations : « mg 232 09050001 » et « MG23209050001 » y sont
@@ -397,12 +398,24 @@ export function rejouerRattachement({ ids = null, seulementNonResolues = true, o
                               updated_at=datetime('now')
                           WHERE id=?`);
   let rattachees = 0, detachees = 0, nonResolues = 0;
-  for(const l of lignes){
-    const r = resoudre(l, index);
-    if(r.site_id && !l.site_id) rattachees++;
-    else if(!r.site_id && l.site_id) detachees++;
-    if(!r.site_id) nonResolues++;
-    maj.run(r.site_id, r.passe, r.motif, r.confiance, l.id);
-  }
+  /* En une transaction : sur des milliers de soumissions, l'écriture ligne à ligne
+     hors transaction est lente ET non atomique — un rejeu interrompu laisserait la
+     moitié des soumissions réécrites et l'autre non. */
+  tx(() => {
+    for(const l of lignes){
+      const r = resoudre(l, index);
+      if(r.site_id && !l.site_id) rattachees++;
+      else if(!r.site_id && l.site_id) detachees++;
+      if(!r.site_id) nonResolues++;
+      maj.run(r.site_id, r.passe, r.motif, r.confiance, l.id);
+      /* La soumission a changé de site (ou est détachée) : la visite ODK qu'elle
+         avait fait naître sur l'ANCIEN site n'a plus de fondement. Sans ce retrait,
+         le rejeu en masse laissait une VISITE FANTÔME et un mois « réalisé »
+         indélébile sur l'ancien site — ce que /detacher et /rattacher-a évitent
+         déjà à la main. À l'échelle de milliers de soumissions re-résolues (un
+         site ajouté rend un code ambigu), ces fantômes gonflent la couverture. */
+      if(l.site_id && l.site_id !== r.site_id) retirerVisiteDeSoumission(l.id);
+    }
+  })();
   return { examinees: lignes.length, rattachees, detachees, nonResolues, protegees };
 }
