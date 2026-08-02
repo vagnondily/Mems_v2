@@ -33,6 +33,7 @@ import odkRoutes from "./routes/odk.js";
 import submissionRoutes from "./routes/submissions.js";
 import aliasRoutes from "./routes/aliases.js";
 import codeRoutes from "./routes/codes.js";
+import processIndicatorRoutes from "./routes/process-indicators.js";
 import connectorRoutes from "./routes/connectors.js";
 import scriptRoutes from "./routes/scripts.js";
 import adminRoutes from "./routes/admin.js";
@@ -150,6 +151,10 @@ app.use("/api", authenticate, aliasRoutes);
    NATIONALES, sans bureau propriétaire : lecture ouverte, écriture sous
    « admin », cloisonnement au seul endroit où des sites sont touchés. */
 app.use("/api/code-referentiels", authenticate, codeRoutes);
+/* Indicateurs de suivi de processus, extraits des XLSForms : référentiel de
+   référence, lecture ouverte, alimenté par le renflouement « données réelles ».
+   Le tableau de bord en calcule la performance. */
+app.use("/api/process-indicators", authenticate, processIndicatorRoutes);
 app.use("/api", authenticate, xlsformRoutes);
 /* Connecteurs et correspondance des variables : monté sous /api comme les deux
    précédents, dont il prolonge le travail — le XLSForm dit ce que la source
