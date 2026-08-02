@@ -471,10 +471,29 @@ r.post("/bulk", requireCap("edit"), (req, res) => {
      masse. Un compte national/super (scope null) reste libre de réaffecter. */
   if(field === "office_id" && scope)
     return res.status(403).json({ error:"un compte rattaché à un bureau ne peut pas réaffecter ses sites à un autre bureau en masse" });
-  const stmt = db.prepare(`UPDATE sites SET ${field}=?, updated_at=datetime('now')
+  /* `rev=rev+1` n'est pas optionnel : PUT /:id refuse en 409 quand le rev envoyé
+     ne correspond plus (verrou optimiste anti-écrasement). Si le bulk laissait rev
+     inchangé, un éditeur ayant chargé le site avant la modification groupée
+     conserverait le même rev, son PUT passerait le contrôle et écraserait en
+     silence ce que le bulk vient d'écrire. On incrémente donc rev comme le fait
+     PUT /:id et l'import Excel. */
+  const stmt = db.prepare(`UPDATE sites SET ${field}=?, rev=rev+1, updated_at=datetime('now')
                            WHERE id=? ${scope ? "AND office_id=?" : ""}`);
   let n = 0;
-  tx(() => { for(const id of ids) n += stmt.run(value, id, ...(scope?[scope]:[])).changes; })();
+  /* Une valeur que la base refuse — un statut hors ('Active','Inactive'), une clé
+     étrangère inconnue — remontait en « erreur interne » 500, c'est-à-dire en panne
+     du serveur, alors que c'est une saisie à corriger. On la nomme : l'opérateur qui
+     lance une modification sur 500 sites doit lire CE QUI ne passe pas, pas un
+     message qui l'envoie ouvrir un ticket. */
+  try{
+    tx(() => { for(const id of ids) n += stmt.run(value, id, ...(scope?[scope]:[])).changes; })();
+  }catch(e){
+    if(/CHECK constraint|FOREIGN KEY|NOT NULL|UNIQUE/.test(e.message))
+      return res.status(422).json({ error:
+        `la valeur « ${value === null ? "(vide)" : value} » n'est pas admise pour le champ `
+        + `« ${field} » : la base l'a refusée. Aucun site n'a été modifié.` });
+    throw e;
+  }
   audit(req, "bulk", null, `Modification groupée de ${n} site(s) — ${field}`);
   res.json({ updated:n });
 });

@@ -376,6 +376,13 @@ r.put("/visits/:id/status", requireCap("validate"), (req, res) => {
   if(!p.success) return res.status(422).json({ error:"statut invalide" });
   const v = db.prepare("SELECT * FROM visits WHERE id=?").get(req.params.id);
   if(!v) return res.status(404).json({ error:"visite introuvable" });
+  /* Cloisonnement par bureau : `validator` est un rôle borné (lib/scope.js), et
+     valider est une écriture. Sans cette garde, un validateur du bureau A qui
+     devine l'identifiant d'une visite du bureau B pouvait la valider ou la marquer
+     « Erreur » — la même IDOR que les routes de sites/aliases/ciblage referment.
+     404 plutôt que 403, pour ne pas confirmer l'existence d'une visite hors périmètre. */
+  const bureau = officeBound(req.user);
+  if(bureau && v.office_id !== bureau) return res.status(404).json({ error:"visite introuvable" });
   db.prepare("UPDATE visits SET status=?, validated_by=?, validated_at=datetime('now') WHERE id=?")
     .run(p.data.status, req.user.id, v.id);
   db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)

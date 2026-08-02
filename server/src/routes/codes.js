@@ -134,12 +134,24 @@ r.post("/:referentiel/rapprocher", requireCap("admin"), (req, res) => {
       : null,
     /* Une entrée qui perd son site est le seul effet DESTRUCTEUR d'un geste
        présenté comme rejouable : il se dit en toutes lettres, avec la cause la
-       plus fréquente, faute de quoi l'opérateur croit avoir relancé pour rien. */
+       plus fréquente, faute de quoi l'opérateur croit avoir relancé pour rien.
+
+       Et il faut dire ce qui, à l'inverse, NE change PAS : le code de
+       reconnaissance posé au passage précédent survit — il n'est retiré que par une
+       conclusion contraire, jamais par une absence de conclusion, ce qui permet de
+       réparer le fichier sans avoir tout perdu entre-temps. Sans cette phrase,
+       « détachée » se lit comme « plus rien ne rattache », alors que les
+       soumissions portant ce code continuent d'aller au même site. Deux faits
+       opposés dont un seul était dit. */
     detachement: bilan.detacheesTotal
       ? `${bilan.detacheesTotal} entrée(s) ont PERDU le site auquel elles étaient rattachées : `
         + "le fichier ou le registre a changé depuis le dernier rapprochement (code MEMS corrigé "
         + "sur une fiche de site, désignation rectifiée dans le fichier). Elles sont listées "
-        + "ci-dessous avec leur motif."
+        + "ci-dessous avec leur motif. Attention : le CODE DE RECONNAISSANCE posé au "
+        + "rapprochement précédent reste en place, et les soumissions portant ce code continuent "
+        + "d'être rattachées à l'ancien site. C'est voulu — il vous laisse réparer le fichier sans "
+        + "tout perdre — mais si le rattachement lui-même était une erreur, retirez le code dans "
+        + "« Codes de reconnaissance » du site concerné."
       : null,
     remarque: bilan.codesAmbigus.length
       ? `${bilan.codesAmbigus.length} code(s) désignent désormais plusieurs sites. Le résolveur `
