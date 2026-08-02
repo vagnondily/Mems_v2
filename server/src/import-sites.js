@@ -47,8 +47,16 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
 const flag = (name, def=null) => { const i = args.indexOf(`--${name}`);
   return i >= 0 ? (args[i+1] && !args[i+1].startsWith("--") ? args[i+1] : true) : def; };
-const fichier = args.find(a => !a.startsWith("--") && /\.xlsx?$/i.test(a))
-  || path.join(here, "..", "..", "docs", "List Sites per Tag.xlsx");
+/* Même résolution de source que seed-reel : `MEMS_DATA_DIR`, puis `data/` s'il
+   porte le classeur, puis `docs/`. Un chemin explicite en argument prime sur tout. */
+const sourceSites = () => {
+  const base = process.env.MEMS_DATA_DIR ? path.resolve(process.env.MEMS_DATA_DIR)
+    : (() => { const d = path.join(here, "..", "..", "data");
+        try{ if(fs.existsSync(path.join(d, "List Sites per Tag.xlsx"))) return d; }catch(e){}
+        return path.join(here, "..", "..", "docs"); })();
+  return path.join(base, "List Sites per Tag.xlsx");
+};
+const fichier = args.find(a => !a.startsWith("--") && /\.xlsx?$/i.test(a)) || sourceSites();
 const nomFeuille = String(flag("sheet") || "Sites");
 const dry = !!flag("dry");
 const limite = Number(flag("limit")) || Infinity;

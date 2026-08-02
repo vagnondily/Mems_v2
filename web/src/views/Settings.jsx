@@ -93,7 +93,7 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
       {active==="country" && <SetCountry db={db} notify={notify} can={can} reload={reload} />}
       {active==="offices" && <SetOffices db={db} notify={notify} can={can} reload={reload} />}
       {active==="about" && <SetAbout db={db} />}
-      {active==="locations" && <SetLocations db={db} notify={notify} can={can} reload={reload} me={me} />}
+      {active==="locations" && <SetLocations db={db} set={set} notify={notify} can={can} reload={reload} me={me} />}
       {active==="scope" && <SetScope db={db} notify={notify} can={can} />}
       {active==="activities" && <SetActivities db={db} notify={notify} can={can} reload={reload} me={me} />}
       {active==="listes" && <SetListes notify={notify} can={can} me={me} />}
@@ -1719,7 +1719,12 @@ function SetContoursNiveaux({ db, notify, can, onCommitted, inline }){
    (région → district → commune → fokontany) chargé par millésime. Sites, population
    et distributions s'y raccrochent, donc il ne se modifie pas à la main — on importe
    un nouveau millésime, et l'ancien reste disponible. */
-function SetLocations({ db, notify, can, reload, me }){
+function SetLocations({ db, set, notify, can, reload, me }){
+  /* Le mode de données de l'instance : « réel » ou « démonstration ». Le super le
+     déclare ; un bandeau le rappelle partout, pour qu'on ne confonde jamais un
+     jeu de test avec la production. Charger des données réelles rebascule en réel. */
+  const dataMode = db.settings?.dataMode === "demo" ? "demo" : "reel";
+  const setDataMode = (m) => set?.(d => { d.settings.dataMode = m; return d; });
   const [versions,setVersions] = useState([]);
   const [refBusy,setRefBusy]   = useState("");   /* chargement des données de référence */
   /* La suppression des contours reste une action de maintenance (le millésime
@@ -1812,6 +1817,7 @@ function SetLocations({ db, notify, can, reload, me }){
       notify(quoi==="decoupage" ? `Découpage chargé : ${fmt(b.geo?.unites||0)} unités, ${fmt(b.geo?.contours||0)} contours`
         : quoi==="indicateurs" ? `Référentiels chargés : ${fmt(b.activites?.lues||0)} activités, ${fmt(b.indicateurs?.lues||0)} indicateurs`
         : `Sites chargés : ${fmt(b.crees||0)} créés, ${fmt(b.majs||0)} mis à jour`, "ok");
+      setDataMode("reel");                 /* charger du réel rebascule l'instance en mode réel */
       await reload?.(); await loadVersions();
     }catch(e){ notify(e.message,"err"); } setRefBusy(""); };
   const cols = niveaux(db, { from:"adm1", to:niveauProfond, plural:false });
@@ -1842,6 +1848,15 @@ function SetLocations({ db, notify, can, reload, me }){
               <div className="f10 text-slate-400 mt-0.5">contours</div></div>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            {/* Bascule RÉEL / DÉMONSTRATION — réservée au super. */}
+            {me?.role==="super" && (
+              <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5" title="Mode de données de l'instance">
+                {[["reel","Réelles"],["demo","Démonstration"]].map(([m,l])=>(
+                  <button key={m} onClick={()=>setDataMode(m)}
+                    className={clsx("px-3 py-1 f11 rounded-md font-semibold transition-colors",
+                      dataMode===m ? (m==="demo"?"bg-amber-500 text-white shadow-sm":"bg-brand text-white shadow-sm") : "text-slate-500 hover:text-slate-800")}>
+                    {l}</button>))}
+              </div>)}
             {me?.role==="super" && !geoCount &&
               <Btn size="sm" icon={MapPin} disabled={!!refBusy} onClick={()=>loadRef("decoupage")}>
                 {refBusy==="decoupage"?"Chargement…":"Charger le découpage"}</Btn>}
