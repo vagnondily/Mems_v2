@@ -346,7 +346,7 @@ function ProcessDashboard({ db, go, notify }){
 
           {vue==="analyse" && (
             <div className="flex-1 min-h-0 overflow-y-auto pr-1">
-              <AnalyseProcessus /></div>)}
+              <AnalyseProcessus db={db} notify={notify} /></div>)}
 
           {vue==="processus" && (
             <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-3">

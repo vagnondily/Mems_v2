@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
-import { Activity, BarChart3, ClipboardCheck, HelpCircle, LayoutGrid, MapPin, ShieldCheck, UserCog } from "lucide-react";
-import { MAP, PTS_DATA, SUMM_DATA } from "../lib/processAnalyse.js";
-import { clsx, fmt } from "../lib/calc.js";
+import { useEffect, useMemo, useState } from "react";
+import { Activity, BarChart3, ClipboardCheck, HelpCircle, Layers, LayoutGrid, Sprout, ShieldCheck, UserCog } from "lucide-react";
+import { SUMM_DATA } from "../lib/processAnalyse.js";
+import { api } from "../lib/api.js";
+import { clsx, fmt, pct } from "../lib/calc.js";
 
 /* ══════════════════ Analyse du suivi de processus ══════════════════
    Reproduction fidèle du tableau de bord de référence WFP Madagascar
@@ -17,7 +18,7 @@ import { clsx, fmt } from "../lib/calc.js";
 const HEX = { exc:"#16A34A", sat:"#84CC16", imp:"#F59E0B", urg:"#EF4444", na:"#94A3B8" };
 const LAB = { exc:"Excellent", sat:"Satisfaisant", imp:"À améliorer", urg:"Action urgente", na:"Non évalué" };
 const band = (v) => v == null ? "na" : v >= 80 ? "exc" : v >= 65 ? "sat" : v >= 50 ? "imp" : "urg";
-const bp   = (p) => p >= 80 ? "exc" : p >= 65 ? "sat" : p >= 50 ? "imp" : "urg";
+const bp   = (p) => p == null ? "na" : p >= 80 ? "exc" : p >= 65 ? "sat" : p >= 50 ? "imp" : "urg";
 const verdict = (cov, idx) =>
   (cov < 40 || idx < 50) ? { v:"Critique",     bg:"#EF4444", d:"Intervention prioritaire : couverture et/ou qualité insuffisantes.", da:"Agir" }
   : (idx < 65 || cov < 65) ? { v:"Vigilance",  bg:"#F59E0B", d:"Renforcer le suivi et cibler les sites les plus faibles.", da:"Surveiller" }
@@ -28,10 +29,16 @@ const tArrow = (trend) => {
   return d > 0 ? { a:"↑", c:HEX.exc, w:"en hausse", d } : d < 0 ? { a:"↓", c:HEX.urg, w:"en repli", d } : { a:"→", c:HEX.na, w:"stable", d:0 };
 };
 
-const ATABS = [["_OV","Vue d'ensemble",LayoutGrid],["GD","GD/PREVMA",Activity],["SMP","SMP",Activity],["MAM","PECMAM",Activity],["STUNT","Stunting",Activity]];
-const ACCH = { SMP:"#0EA5E9", GD:"#7C3AED", MAM:"#EF4444", STUNT:"#10B981", _OV:"#123A5E" };
+/* Résilience (SAMS) ne figurait pas dans l'instantané MoDa de référence : on
+   l'ajoute comme activité à part entière, calculée sur le référentiel XLSForm
+   vivant et les sites réels (conformité en attente de la collecte). */
+const ATABS = [["_OV","Vue d'ensemble",LayoutGrid],["GD","GD/PREVMA",Activity],["SMP","SMP",Activity],
+  ["MAM","PECMAM",Activity],["STUNT","Stunting",Activity],["SAMS","Résilience",Sprout]];
+const ACCH = { SMP:"#0EA5E9", GD:"#7C3AED", MAM:"#EF4444", STUNT:"#10B981", SAMS:"#0D9488", _OV:"#123A5E" };
+/* Pas de page « Carte » ici : la carte principale du cockpit (état par région)
+   suffit — une seconde carte de Madagascar prêtait à confusion. */
 const PAGES = [["synthese","Synthèse",ClipboardCheck],["controlroom","Salle de contrôle",ShieldCheck],
-  ["carte","Carte",MapPin],["performance","Performance",BarChart3],["qualite","Qualité",ClipboardCheck],
+  ["performance","Performance",BarChart3],["qualite","Qualité",ClipboardCheck],
   ["agent","Agent",UserCog],["aide","Aide",HelpCircle]];
 
 const Card = ({ title, sub, right, children, className }) => (
@@ -216,28 +223,6 @@ function AgentTable({ agents }){
     </div>);
 }
 
-/* ── Choroplèthe de Madagascar (marqueurs colorés par classe) ── */
-function MapChoro({ pts }){
-  const { W, H, frame, outline, inset } = MAP;
-  const px = (lng) => (lng - frame.lng0) / (frame.lng1 - frame.lng0) * W;
-  const py = (lat) => (frame.lat1 - lat) / (frame.lat1 - frame.lat0) * H;
-  return (
-    <div className="relative rounded-xl overflow-hidden" style={{ background:"#DCE6EF" }}>
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display:"block", maxHeight:420 }}>
-        <path d={outline} fill="#CBD9E6" stroke="#AEC0D2" strokeWidth="1" />
-        {pts.map((p,i)=>(<circle key={i} cx={px(p[1])} cy={py(p[0])} r="2.4" fill={HEX[band(p[2])]} fillOpacity="0.88" />))}
-      </svg>
-    </div>);
-}
-
-function Legend(){
-  return (
-    <div className="flex items-center gap-3 flex-wrap f105 mt-2">
-      {["exc","sat","imp","urg","na"].map(k=>(
-        <span key={k} className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm" style={{ background:HEX[k] }} />{LAB[k]}</span>))}
-    </div>);
-}
-
 /* Sparkline de tendance de l'indice, ligne de base à 50. */
 function Trend({ trend, color, h=120 }){
   if(!trend || !trend.length) return null;
@@ -258,7 +243,6 @@ function Trend({ trend, color, h=120 }){
 /* ══════════════════ Pages ══════════════════ */
 function PageOverview({ go }){
   const o = SUMM_DATA._OV;
-  const allPts = ["GD","SMP","MAM","STUNT"].flatMap(k=>PTS_DATA[k]||[]);
   return (<div className="space-y-3">
     <Kpis items={[
       { l:"Couverture globale", v:o.coverage+"%", cap:"#123A5E", s:`${fmt(o.monitored)}/${fmt(o.planned)} sites` },
@@ -284,11 +268,19 @@ function PageOverview({ go }){
           <Stack cls={s.classes} />
         </button>); })}
     </div>
-    <div className="grid gap-3" style={{ gridTemplateColumns:"1fr 340px" }}>
-      <Card title="Couverture nationale" sub={`${fmt(allPts.length)} sites · couleur = classe de performance`}>
-        <MapChoro pts={allPts} /><Legend /></Card>
+    <div className="grid gap-3" style={{ gridTemplateColumns:"320px 1fr" }}>
       <Card title="Répartition globale">
         <div className="flex items-center gap-4"><Donut cls={o.classes} total={o.visits} /><div className="flex-1"><ClassList cls={o.classes} /></div></div></Card>
+      <Card title="Indice par activité" sub="Couverture et indice de qualité, par activité">
+        <div className="space-y-2.5">
+          {["GD","SMP","MAM","STUNT"].map(k=>{ const s=SUMM_DATA[k];
+            return (
+            <div key={k} className="grid items-center gap-3" style={{ gridTemplateColumns:"120px 1fr 84px" }}>
+              <span className="f115 text-slate-600 truncate">{s.label.split("·")[0].trim()}</span>
+              <div className="h-3 rounded-full bg-slate-100 overflow-hidden"><div className="h-full rounded-full" style={{ width:`${s.index}%`, background:HEX[band(s.index)] }} /></div>
+              <span className="f11 text-right tabular-nums"><b style={{ color:HEX[band(s.index)] }}>{s.index}</b><span className="text-slate-400"> · {s.coverage}%</span></span>
+            </div>); })}
+        </div></Card>
     </div>
   </div>);
 }
@@ -303,12 +295,10 @@ function PageSynthese({ s }){
       { l:"Action urgente", v:s.urgentPct+"%", cap:"#EF4444", c:"#EF4444", s:`${fmt(s.classes.urg)} sites < 50` },
       { l:"Visites", v:fmt(s.visits), cap:"#0D9488", s:`${s.naPct}% non évalué` },
     ]} />
-    <div className="grid gap-3" style={{ gridTemplateColumns:"1fr 300px" }}>
-      <Card title="Implantation des sites" sub="Couleur = classe de performance">
-        <MapChoro pts={PTS_DATA[s._k]||[]} /><Legend /></Card>
+    <div className="grid gap-3" style={{ gridTemplateColumns:"300px 1fr" }}>
       <Card title="Répartition"><div className="flex flex-col items-center gap-3"><Donut cls={s.classes} total={s.visits} /><div className="w-full"><ClassList cls={s.classes} /></div></div></Card>
+      <Card title="Profil par module"><DimsBars dims={dg} /></Card>
     </div>
-    <Card title="Profil par module"><DimsBars dims={dg} /></Card>
     <div className="grid gap-3" style={{ gridTemplateColumns:"1fr 1fr" }}>
       <Card title="Modules à renforcer en priorité" sub="Les 3 plus faibles">
         <div className="space-y-2">
@@ -424,13 +414,6 @@ function PageAgent({ s }){
   </div>);
 }
 
-function PageCarte({ s }){
-  return (<div className="grid gap-3" style={{ gridTemplateColumns:"1fr 380px" }}>
-    <Card title="Couverture géographique" sub={`${fmt((PTS_DATA[s._k]||[]).length)} sites`}><MapChoro pts={PTS_DATA[s._k]||[]} /><Legend /></Card>
-    <Card title="Performance par bureau"><RankList rows={s.bureaux} /></Card>
-  </div>);
-}
-
 function PageAide(){
   const rows = [["Excellent","≥ 80","#16A34A","Documenter"],["Satisfaisant","65 – 79","#84CC16","Consolider"],
     ["À améliorer","50 – 64","#F59E0B","Plan d'action"],["Action urgente","< 50","#EF4444","Intervention"],["Non évalué","(nul)","#94A3B8","—"]];
@@ -445,17 +428,79 @@ function PageAide(){
     </Card>);
 }
 
-export function AnalyseProcessus(){
+/* ── Résilience (SAMS) — activité CALCULÉE, hors instantané MoDa ──
+   Structure tirée du référentiel XLSForm vivant, couverture des sites réels ; la
+   conformité par indicateur attend la connexion du formulaire MoDa SAMS. */
+function PageResilience({ db, notify }){
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
+  useEffect(() => { let vivant = true;
+    api.processIndicateurs("?activity=SAMS&limit=5000")
+      .then(r => { if(vivant) setRows(r.rows || []); })
+      .catch(e => { if(vivant){ setErr(e.message); notify?.("Chargement Résilience impossible : " + e.message, "err"); } });
+    return () => { vivant = false; };
+  }, []);
+  const perf = useMemo(() => {
+    const sites = (db.sites || []).filter(s => s.activityTag === "SAMS" && s.status !== "Inactive");
+    const planned = sites.reduce((a, s) => a + (s.plan || []).filter(p => p.planned).length, 0);
+    const done = sites.reduce((a, s) => a + (s.plan || []).filter(p => p.done).length, 0);
+    const visits = (db.visits || []).filter(v => v.tag === "SAMS").length;
+    return { sites: sites.length, planned, done, visits, coverage: pct(done, planned) };
+  }, [db.sites, db.visits]);
+
+  if(err) return <div className="f125 text-rose-600 p-4">{err}</div>;
+  if(rows === null) return <div className="f125 text-slate-400 p-4">Chargement du référentiel Résilience…</div>;
+
+  const modules = []; const parMod = new Map();
+  for(const r of rows){ const m = r.module || "(sans module)";
+    if(!parMod.has(m)){ parMod.set(m, []); modules.push(m); } parMod.get(m).push(r); }
+
+  return (<div className="space-y-3">
+    <div className="rounded-xl border border-teal-200 bg-teal-50 px-3.5 py-2 flex items-center gap-2 f105 text-teal-900">
+      <Sprout size={14} className="shrink-0" />
+      <span><b>Résilience (SAMS)</b> — structure issue du référentiel XLSForm vivant ; la <b>couverture</b> est réelle,
+        la <b>conformité par indicateur</b> s'affichera dès la connexion du formulaire MoDa SAMS.</span>
+    </div>
+    <Kpis items={[
+      { l:"Couverture", v:perf.coverage+"%", cap:ACCH.SAMS, c:HEX[bp(perf.coverage)], s:`${fmt(perf.done)}/${fmt(perf.planned)} visites planifiées` },
+      { l:"Sites suivis", v:fmt(perf.sites), cap:"#0D9488", s:"tag SAMS" },
+      { l:"Visites", v:fmt(perf.visits), cap:"#0EA5E9", s:"réalisées" },
+      { l:"Indicateurs", v:fmt(rows.length), cap:"#7C3AED", s:`${modules.length} modules` },
+    ]} />
+    <Card title="Indicateurs par module" sub="Référentiel SAMS — conformité en attente de collecte">
+      <div className="space-y-4">
+        {modules.map(nom => { const liste = parMod.get(nom);
+          return (
+          <div key={nom}>
+            <div className="flex items-center gap-2 mb-2 pb-1 border-b border-slate-100">
+              <Layers size={14} className="text-slate-400" />
+              <span className="f125 font-semibold text-slate-800 flex-1">{nom}</span>
+              <span className="f105 text-slate-400">{liste.length} ind.</span>
+              <span className="f10 font-bold text-white px-2 py-0.5 rounded" style={{ background:HEX.na }}>—</span></div>
+            <div className="grid gap-2" style={{ gridTemplateColumns:"repeat(auto-fill,minmax(210px,1fr))" }}>
+              {liste.map(r => (
+                <div key={r.id} className="rounded-lg border border-slate-200 px-2.5 py-1.5 flex items-center gap-2"
+                  style={{ borderLeft:`3px solid ${HEX.na}` }}>
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background:HEX.na }} />
+                  <span className="f105 text-slate-600 truncate flex-1" title={r.label || r.var_name}>{r.label || r.var_name}</span></div>))}
+            </div>
+          </div>); })}
+      </div>
+    </Card>
+  </div>);
+}
+
+export function AnalyseProcessus({ db, notify }){
   const [act, setAct] = useState("_OV");
   const [page, setPage] = useState("synthese");
   const go = (a, p) => { setAct(a); setPage(p||"synthese"); };
-  const s = useMemo(() => act==="_OV" ? null : { ...SUMM_DATA[act], _k:act }, [act]);
+  const s = useMemo(() => (act==="_OV" || act==="SAMS") ? null : { ...SUMM_DATA[act], _k:act }, [act]);
 
   const renduPage = () => {
     if(act==="_OV") return <PageOverview go={go} />;
+    if(act==="SAMS") return <PageResilience db={db} notify={notify} />;
     switch(page){
       case "controlroom": return <PageControlRoom s={s} />;
-      case "carte": return <PageCarte s={s} />;
       case "performance": return <PagePerformance s={s} />;
       case "qualite": return <PageQualite s={s} />;
       case "agent": return <PageAgent s={s} />;
@@ -480,8 +525,8 @@ export function AnalyseProcessus(){
             style={act===k ? { background:ACCH[k] } : undefined}>
             <Ic size={14}/>{l}</button>))}
       </div>
-      {/* Onglets de page (masqués en vue d'ensemble) */}
-      {act!=="_OV" && (
+      {/* Onglets de page (masqués en vue d'ensemble et sur Résilience, vue unique) */}
+      {act!=="_OV" && act!=="SAMS" && (
         <div className="flex items-center gap-1 flex-wrap border-b border-slate-200 pb-2">
           {PAGES.map(([k,l,Ic])=>(
             <button key={k} onClick={()=>setPage(k)}
