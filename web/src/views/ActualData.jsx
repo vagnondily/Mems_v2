@@ -493,7 +493,7 @@ function OutputData({ db, set, notify, can }){
     <>
       <Tabs className="mb-4" value={tab} onChange={setTab}
         items={[["outputs","Bénéficiaires par activité"],["population","Population, ciblage et distribution"],
-                ["ciblage","Ciblage daté"]]} />
+                ["ciblage","Ciblage par commune"]]} />
       {tab==="outputs" ? (
         <>
           <Note>Pour chaque mois, saisissez les bénéficiaires planifiés et atteints, et qualifiez l'ajustement :
@@ -544,35 +544,32 @@ function OutputData({ db, set, notify, can }){
     </>);
 }
 
-/* ── Ciblage daté ─────────────────────────────────────────────────────
-   « Le ciblage peut se faire plusieurs fois… afficher le dernier, garder tous
-   les ciblages avec leur date. Sélectionner les districts/communes à cibler en
-   amont, un genre et une raison, puis extraire un fichier prérempli. »
+/* ── Ciblage par commune ──────────────────────────────────────────────
+   « Un ciblage se fait PAR COMMUNE, et chaque commune a SON quota, qui diffère
+   ou non des autres. » On abandonne donc le « une valeur pour toutes les unités
+   cochées » : la saisie se fait par CASCADE — région → district — puis, commune
+   par commune, on inscrit le quota de bénéficiaires ciblés propre à chacune.
 
-   On sélectionne des unités dans l'arbre (région → district → commune), on leur
-   affecte un ciblage daté (personnes, ménages, genre, raison), on enregistre —
-   et le tableau du bas montre le DERNIER ciblage par unité × activité, chaque
-   ligne dépliable sur son historique. L'extract Excel ne reprend que les unités
-   ciblées. */
+   Le ciblage reste daté et historisé : une même commune peut être re-ciblée plus
+   tard, on garde tout et on montre le dernier. L'extract Excel ne reprend que les
+   communes ciblées. */
 function TargetingView({ db, notify, can }){
   const [year,setYear]   = useState(db.year);
   const [tag,setTag]     = useState("");
-  const [level,setLevel] = useState("adm3");
-  const [sel,setSel]     = useState({ adm1:"", adm2:"" });
+  const [sel,setSel]     = useState({ adm1:"", adm2:"" });   /* cascade région → district */
   const geo = useGeoCascade(sel);
   const [rows,setRows]   = useState([]);
   const [loading,setLoading] = useState(true);
   const [busy,setBusy]   = useState(false);
   const [open,setOpen]   = useState(() => new Set());   /* historiques dépliés */
   const [reasons,setReasons] = useState([]);
-  /* Le formulaire d'un nouveau ciblage. */
+  /* L'entête de l'événement de ciblage, commun aux communes saisies. */
   const [date,setDate]   = useState(new Date().toISOString().slice(0,10));
   const [gender,setGender] = useState("Tous");
   const [reason,setReason] = useState("");
   const [note,setNote]   = useState("");
-  const [nb,setNb]       = useState(0);
-  const [nbHh,setNbHh]   = useState(0);
-  const [picked,setPicked] = useState(() => new Set());  /* p-codes sélectionnés */
+  /* Le quota PAR commune : { pcode: { targeted, hh } }. */
+  const [quotas,setQuotas] = useState({});
 
   const activites = (db.activities || []).filter(a=>a.active);
   const genres = ["Tous","Femmes","Hommes","Filles","Garçons","Femmes enceintes et allaitantes"];
@@ -588,30 +585,41 @@ function TargetingView({ db, notify, can }){
   useEffect(()=>{ api.liste("raison_ciblage")
     .then(r=>setReasons((r.items||[]).filter(x=>x.active!==false).map(x=>x.code))).catch(()=>{}); }, []);
 
-  /* Les unités du niveau choisi, dans la sélection région/district. */
-  const parent = geo.codes.adm2 || geo.codes.adm1 || "";
-  const [unites,setUnites] = useState([]);
+  /* Les communes du DISTRICT choisi, avec leur population (contexte) et le dernier
+     ciblage déjà connu — pour ne pas repartir de zéro. */
+  const districtPcode = geo.codes.adm2 || "";
+  const [communes,setCommunes] = useState([]);
   useEffect(()=>{
-    if(!db.geoVersion) return;
-    const qs = new URLSearchParams({ level, limit:"3000" });
-    if(parent) qs.set("parent", parent);
-    api.caseload("?year="+year+"&"+qs).then(r=>setUnites((r.rows||[]).map(x=>({ pcode:x.pcode, name:x.name,
-      adm1:x.adm1||"", adm2:x.adm2||"" })))).catch(()=>setUnites([]));
-  }, [level, parent, year, db.geoVersion]);
+    if(!db.geoVersion || !districtPcode){ setCommunes([]); setQuotas({}); return; }
+    const qs = new URLSearchParams({ level:"adm3", parent:districtPcode, limit:"3000" });
+    api.caseload("?year="+year+"&"+qs).then(r=>{
+      const list = (r.rows||[]).map(x=>({ pcode:x.pcode, name:x.name, population:x.population||0 }));
+      setCommunes(list);
+      /* Pré-remplir avec le dernier ciblage connu de chaque commune (pour l'activité courante). */
+      const dejaCible = {};
+      for(const c of list){
+        const d = rows.find(t => t.pcode===c.pcode && t.tag===(tag||"") && t.dernier);
+        if(d) dejaCible[c.pcode] = { targeted:d.targeted, hh:d.targetedHh };
+      }
+      setQuotas(dejaCible);
+    }).catch(()=>{ setCommunes([]); setQuotas({}); });
+  }, [districtPcode, year, tag, db.geoVersion, rows.length]);
 
-  const togglePick = (pcode) => setPicked(s => { const n2=new Set(s); n2.has(pcode)?n2.delete(pcode):n2.add(pcode); return n2; });
-  const pickAll = () => setPicked(new Set(unites.map(u=>u.pcode)));
-  const pickNone = () => setPicked(new Set());
+  const setQuota = (pcode, champ, val) => setQuotas(q => ({ ...q,
+    [pcode]: { targeted:0, hh:0, ...(q[pcode]||{}), [champ]:Math.max(0, n(val)) } }));
+  const communesCiblees = communes.filter(c => (quotas[c.pcode]?.targeted||0) > 0 || (quotas[c.pcode]?.hh||0) > 0);
+  const totalCible = communesCiblees.reduce((s,c)=>s+(quotas[c.pcode]?.targeted||0), 0);
 
   const enregistrer = async () => {
-    if(!picked.size){ notify("Sélectionnez au moins une unité à cibler","warn"); return; }
+    if(!communesCiblees.length){ notify("Renseignez le quota d'au moins une commune","warn"); return; }
     setBusy(true);
     try{
       const r = await api.addTargeting({ year, activity_tag:tag, targeted_at:date,
         gender:gender==="Tous"?null:gender, reason:reason||null, note:note||null,
-        units:[...picked].map(pcode => ({ geo_pcode:pcode, level, targeted:nb, targeted_hh:nbHh })) });
-      notify(`Ciblage enregistré sur ${r.crees} unité(s)${r.rejetes?`, ${r.rejetes} rejetée(s)`:""}`,"ok");
-      setPicked(new Set()); charger();
+        units:communesCiblees.map(c => ({ geo_pcode:c.pcode, level:"adm3",
+          targeted:quotas[c.pcode]?.targeted||0, targeted_hh:quotas[c.pcode]?.hh||0 })) });
+      notify(`Ciblage enregistré sur ${r.crees} commune(s)${r.rejetes?`, ${r.rejetes} rejetée(s)`:""}`,"ok");
+      charger();
     }catch(e){ notify(e.message,"err"); }
     setBusy(false);
   };
@@ -633,77 +641,89 @@ function TargetingView({ db, notify, can }){
     }catch(e){ notify(e.message||"extraction impossible","err"); }
   };
 
-  /* Le tableau montre le DERNIER ciblage par unité × activité ; l'historique se
-     déplie. On regroupe par (pcode, tag). */
   const derniers = rows.filter(r=>r.dernier);
   const histo = (r) => rows.filter(x => x.pcode===r.pcode && x.tag===r.tag);
 
   if(!db.geoVersion) return (
-    <Note tone="warn"><b>Aucun référentiel chargé.</b> Le ciblage se rattache aux unités administratives.
-      Chargez un millésime depuis Paramètres → Localités.</Note>);
+    <Note tone="warn"><b>Aucun référentiel chargé.</b> Le ciblage se rattache aux communes.
+      Chargez un millésime depuis Paramètres › Pays &amp; découpage.</Note>);
 
   return (
     <>
-      <Note>Le ciblage se refait dans le temps : chaque ciblage est <b>daté</b> et conservé. Le tableau
-        montre le <b>dernier</b> ciblage par unité et activité — dépliez une ligne pour voir tout l'historique.
-        Sélectionnez les districts ou communes à cibler, affectez-leur une <b>date</b>, un <b>genre</b> et
-        une <b>raison</b>, puis enregistrez. Le fichier prérempli ne reprend que les unités ciblées.</Note>
-
-      {/* ── Nouveau ciblage ── */}
-      <Card flush title="Nouveau ciblage" subtitle="Sélectionnez des unités, puis affectez-leur un ciblage daté"
+      {/* ── Nouveau ciblage : cascade puis quota par commune ── */}
+      <Card flush title="Nouveau ciblage"
+        subtitle="Choisissez la région et le district, puis inscrivez le quota de bénéficiaires ciblés propre à chaque commune"
         right={<div className="flex items-center gap-2 flex-wrap">
           <Select value={String(year)} onChange={e=>setYear(+e.target.value)} className="mi-py1 mi-xs mi-wauto"
             options={[db.year-1, db.year, db.year+1].map(y=>[String(y), String(y)])} />
           <Select value={tag} onChange={e=>setTag(e.target.value)} empty="Toutes activités"
             options={activites.map(a=>[a.tag, `${a.tag} — ${a.name}`])} className="mi-py1 mi-xs mi-wauto" />
         </div>}>
-        <div className="p-4 space-y-3">
-          <div className="flex items-end gap-2 flex-wrap">
-            <Select value={level} onChange={e=>{ setLevel(e.target.value); pickNone(); }} className="mi-py1 mi-xs mi-wauto"
-              options={[["adm2","Par district"],["adm3","Par commune"],["adm4","Par fokontany"]]} />
-            <Select value={sel.adm1} onChange={e=>setSel({ adm1:e.target.value, adm2:"" })}
-              empty="Toutes les régions" options={geo.adm1.map(x=>x.name)} className="mi-py1 mi-xs mi-wauto" />
-            <Select value={sel.adm2} onChange={e=>setSel(s=>({ ...s, adm2:e.target.value }))} disabled={!sel.adm1}
-              empty="Tous les districts" options={geo.adm2.map(x=>x.name)} className="mi-py1 mi-xs mi-wauto" />
-            <Btn size="sm" kind="sec" onClick={pickAll} disabled={!unites.length}>Tout sélectionner</Btn>
-            <Btn size="sm" kind="ghost" onClick={pickNone} disabled={!picked.size}>Vider</Btn>
-            <span className="f11 text-slate-500 pb-1.5">{picked.size} unité(s) sélectionnée(s)</span>
-          </div>
-          {/* Sélection des unités */}
-          <div className="border border-slate-200 rounded-lg max-h-52 overflow-auto p-2 flex flex-wrap gap-1.5">
-            {unites.length ? unites.map(u=>(
-              <button key={u.pcode} onClick={()=>togglePick(u.pcode)}
-                className={clsx("px-2.5 py-1 rounded-full f11 border transition-colors",
-                  picked.has(u.pcode) ? "bg-brand text-white border-transparent" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50")}>
-                {u.name}</button>))
-              : <span className="f11 text-slate-400 p-2">Aucune unité à ce niveau dans la sélection.</span>}
-          </div>
-          {/* Paramètres du ciblage */}
-          <div className="grid grid-cols-2 md:grid-cols-6 gap-2 items-end">
+        <div className="p-4 space-y-4">
+          {/* Entête de l'événement */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <Field label="Date du ciblage" className="mb-0"><Input type="date" value={date} onChange={e=>setDate(e.target.value)} /></Field>
-            <Field label="Personnes ciblées" className="mb-0"><Input type="number" min="0" value={nb} onChange={e=>setNb(Math.max(0,n(e.target.value)))} /></Field>
-            <Field label="Ménages ciblés" className="mb-0"><Input type="number" min="0" value={nbHh} onChange={e=>setNbHh(Math.max(0,n(e.target.value)))} /></Field>
-            <Field label="Genre" className="mb-0"><Select value={gender} onChange={e=>setGender(e.target.value)} options={genres} /></Field>
-            <Field label="Raison" className="mb-0"><Select value={reason} onChange={e=>setReason(e.target.value)} empty="—" options={reasons} /></Field>
-            <Field label="Note" className="mb-0"><Input value={note} onChange={e=>setNote(e.target.value)} placeholder="Précision" /></Field>
+            <Field label="Genre visé" className="mb-0"><Select value={gender} onChange={e=>setGender(e.target.value)} options={genres} /></Field>
+            <Field label="Raison" className="mb-0"><Select value={reason} onChange={e=>setReason(e.target.value)} empty="— aucune —" options={reasons} /></Field>
+            <Field label="Note" className="mb-0"><Input value={note} onChange={e=>setNote(e.target.value)} placeholder="Précision (facultatif)" /></Field>
           </div>
+
+          {/* Cascade région → district */}
+          <div className="flex items-end gap-3 flex-wrap">
+            <Field label="Région" className="mb-0">
+              <Select value={sel.adm1} onChange={e=>setSel({ adm1:e.target.value, adm2:"" })}
+                empty="Choisir une région…" options={geo.adm1.map(x=>x.name)} className="mi-wauto" /></Field>
+            <Field label="District" className="mb-0">
+              <Select value={sel.adm2} onChange={e=>setSel(s=>({ ...s, adm2:e.target.value }))} disabled={!sel.adm1}
+                empty="Choisir un district…" options={geo.adm2.map(x=>x.name)} className="mi-wauto" /></Field>
+            {!!communesCiblees.length && <div className="pb-1.5 f125 text-slate-600">
+              <b className="text-slate-900">{fmt(communesCiblees.length)}</b> commune(s) · <b className="text-slate-900">{fmt(totalCible)}</b> personnes ciblées</div>}
+          </div>
+
+          {/* Quota par commune */}
+          {!districtPcode
+            ? <div className="rounded-lg border border-dashed border-slate-200 py-8 text-center f125 text-slate-400">
+                Choisissez une région puis un district pour saisir le quota de chaque commune.</div>
+            : !communes.length
+              ? <div className="rounded-lg border border-dashed border-slate-200 py-8 text-center f125 text-slate-400">Aucune commune dans ce district.</div>
+              : <TableWrap max="mh320">
+                <thead><tr><Th>Commune</Th><Th num>Population</Th><Th num>Personnes ciblées</Th>
+                  <Th num>Ménages</Th><Th num>Taux</Th></tr></thead>
+                <tbody>{communes.map(c=>{
+                  const q = quotas[c.pcode] || {}; const taux = c.population ? Math.round((q.targeted||0)/c.population*1000)/10 : null;
+                  const actif = (q.targeted||0)>0 || (q.hh||0)>0;
+                  return (
+                  <tr key={c.pcode} className={clsx("hover:bg-sky-50", actif && "bg-sky-50/40")}>
+                    <Td className="font-medium text-slate-800">{c.name}</Td>
+                    <Td num className="text-slate-500">{c.population?fmt(c.population):"—"}</Td>
+                    <Td num><Input type="number" min="0" value={q.targeted||""} disabled={!can("edit")}
+                      onChange={e=>setQuota(c.pcode,"targeted",e.target.value)} placeholder="0"
+                      className="w-28 text-right mi-py1" /></Td>
+                    <Td num><Input type="number" min="0" value={q.hh||""} disabled={!can("edit")}
+                      onChange={e=>setQuota(c.pcode,"hh",e.target.value)} placeholder="0"
+                      className="w-24 text-right mi-py1" /></Td>
+                    <Td num>{taux!=null && actif ? <Badge tone={taux>=30?"y":""}>{taux} %</Badge> : <span className="text-slate-300">—</span>}</Td>
+                  </tr>); })}</tbody>
+              </TableWrap>}
+
           <div className="flex items-center gap-2">
             {can("edit")
-              ? <Btn size="sm" icon={Target} disabled={busy||!picked.size} onClick={enregistrer}>Enregistrer ce ciblage</Btn>
+              ? <Btn size="sm" icon={Target} disabled={busy||!communesCiblees.length} onClick={enregistrer}>
+                  Enregistrer le ciblage{communesCiblees.length?` (${communesCiblees.length} commune${communesCiblees.length>1?"s":""})`:""}</Btn>
               : <Note tone="warn">La saisie du ciblage est réservée aux comptes ayant le droit d'édition.</Note>}
             <span className="f11 text-slate-400">Raisons éditables dans Paramètres › Listes › Raisons de ciblage.</span>
           </div>
         </div>
       </Card>
 
-      {/* ── Le dernier ciblage par unité, historique dépliable ── */}
+      {/* ── Le dernier ciblage par commune, historique dépliable ── */}
       <Card flush title="Ciblages enregistrés" subtitle={loading ? "Chargement…"
-          : `${fmt(derniers.length)} unité(s) ciblée(s) · ${fmt(rows.length)} ciblage(s) au total · ${year}${tag?" — "+tag:""}`}
+          : `${fmt(derniers.length)} commune(s) ciblée(s) · ${fmt(rows.length)} ciblage(s) au total · ${year}${tag?" — "+tag:""}`}
         right={<Btn size="sm" kind="sec" icon={Download} disabled={!derniers.length} onClick={extraire}>Fichier prérempli (Excel)</Btn>}>
         {!derniers.length
-          ? <Empty icon={Target} title="Aucun ciblage" text="Sélectionnez des unités ci-dessus et enregistrez un ciblage daté." />
+          ? <Empty icon={Target} title="Aucun ciblage" text="Saisissez les quotas par commune ci-dessus et enregistrez." />
           : <TableWrap max="mh420">
-            <thead><tr><Th /><Th>Région</Th><Th>District</Th><Th>Unité</Th><Th>Activité</Th>
+            <thead><tr><Th /><Th>Région</Th><Th>District</Th><Th>Commune</Th><Th>Activité</Th>
               <Th>Dernier ciblage</Th><Th num>Ciblés</Th><Th num>Ménages</Th><Th>Genre</Th><Th>Raison</Th><Th /></tr></thead>
             <tbody>{derniers.map(r=>{
               const h = histo(r); const cle = r.pcode+"|"+r.tag; const ouvert = open.has(cle);
