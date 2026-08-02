@@ -69,7 +69,7 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
 
       {sub==="summary" && <ActualSummary db={db} />}
 
-      {sub==="dashboard" && <ProcessDashboard db={db} />}
+      {sub==="dashboard" && <ProcessDashboard db={db} go={go} notify={notify} />}
 
       {sub==="monitoring" && (<>
         <Volet value={volet} onChange={setVolet}
