@@ -4,7 +4,7 @@ import "leaflet/dist/leaflet.css";
 import { Activity, AlertTriangle, BarChart3, ChevronRight, ClipboardCheck, Crosshair,
          FileSpreadsheet, Gauge, Layers, MapPin, PanelLeftClose, PanelLeftOpen, Search,
          ShieldAlert, ShieldCheck } from "lucide-react";
-import { Empty, Select } from "../components/ui.jsx";
+import { Btn, Empty, Select } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
 import { clsx, computeMMR, fmt, pct, siteScore } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
@@ -182,7 +182,7 @@ function CarteAlerte({ a }){
     </div>);
 }
 
-function ProcessDashboard({ db, go, notify }){
+function ProcessDashboard({ db, go, notify, onglets }){
   const [annee, setAnnee] = useState(db.year);
   const [vue, setVue] = useState("synthese");     /* synthese | carte | processus | activites | controle */
   const [replie, setReplie] = useState(false);
@@ -237,17 +237,27 @@ function ProcessDashboard({ db, go, notify }){
     if(retard) list.push({ c:ROUGE, ic:AlertTriangle, n:retard, titre:"Retards de visite",
       detail:"Sites dont une visite planifiée est échue sans réalisation.",
       cta:"Voir le suivi", action:() => go?.("suivi", "monitoring") });
+    /* « Valider » et « Examiner » portent sur des visites RÉALISÉES : elles
+       ouvrent le volet du même nom, et non le calendrier de planification, où il
+       n'y a rien à valider ni à examiner. */
     if(aValider) list.push({ c:AMBRE, ic:ClipboardCheck, n:aValider, titre:"Validations en attente",
       detail:"Visites réalisées en attente de validation.",
-      cta:"Valider", action:() => go?.("suivi", "monitoring") });
-    if(sansGps) list.push({ c:AMBRE, ic:Crosshair, n:sansGps, titre:"Coordonnées GPS manquantes",
+      cta:"Valider", action:() => go?.("suivi", "monitoring", "reel") });
+    /* La vérification GPS vit dans les Paramètres. Proposer « Vérifier » à un
+       compte qui n'a pas cette destination produisait un clic qui le renvoyait
+       silencieusement à l'accueil (App.jsx retombe sur la première destination
+       autorisée). On ne montre donc l'encart qu'à qui peut y donner suite —
+       même règle que la cloche, qui filtre déjà ses tâches ainsi. */
+    const versParametres = !onglets || onglets.includes("settings");
+    if(sansGps && versParametres) list.push({ c:AMBRE, ic:Crosshair, n:sansGps,
+      titre:"Coordonnées GPS manquantes",
       detail:"Sites sans point GPS — vérification impossible.",
       cta:"Vérifier", action:() => go?.("settings", "gps") });
     if(integrite) list.push({ c:ROUGE, ic:ShieldAlert, n:integrite, titre:"Signaux d'intégrité",
       detail:"Sites portant une alerte fraude, CFM ou rapport.",
-      cta:"Examiner", action:() => go?.("suivi", "monitoring") });
+      cta:"Examiner", action:() => go?.("suivi", "monitoring", "reel") });
     return list;
-  }, [champ, visitesChamp, aValider, mmr.elapsed, go]);
+  }, [champ, visitesChamp, aValider, mmr.elapsed, go, onglets]);
 
   /* Par activité (barres + poste de contrôle). */
   const parActivite = useMemo(() => tags.map((t) => {
@@ -272,6 +282,23 @@ function ProcessDashboard({ db, go, notify }){
     <Empty icon={Gauge} title="Aucune donnée de suivi"
       text="Le tableau de bord s'alimente du registre des sites, du plan de suivi et des visites. Chargez la donnée de référence et planifiez le suivi." />);
 
+  /* Ce qui reste sous le haut de ce bloc, marge basse comprise. Recalculé au
+     redimensionnement : une fenêtre qu'on réduit ne doit pas laisser le cockpit
+     dépasser sous le pli. */
+  const corps = useRef(null);
+  const [hauteur, setHauteur] = useState("calc(100vh - 232px)");
+  useEffect(() => {
+    const MARGE = 16;
+    const mesurer = () => {
+      const el = corps.current; if(!el) return;
+      const haut = el.getBoundingClientRect().top;
+      setHauteur(`${Math.max(560, window.innerHeight - haut - MARGE)}px`);
+    };
+    mesurer();
+    window.addEventListener("resize", mesurer);
+    return () => window.removeEventListener("resize", mesurer);
+  }, [vue]);
+
   const RAIL = [["synthese","Synthèse",Gauge],["carte","Carte",MapPin],
     ["analyse","Analyse process",BarChart3],
     ["processus","Indicateurs processus",ClipboardCheck],["activites","Par activité",Activity],
@@ -281,7 +308,13 @@ function ProcessDashboard({ db, go, notify }){
   const alertesVisibles = vue !== "analyse";
 
   return (
-    <div className="flex flex-col" style={{ height:"calc(100vh - 232px)", minHeight:560 }}>
+    /* La hauteur se MESURE au lieu de se deviner. Elle valait « calc(100vh - 232px) »,
+       où 232 encodait à la main la somme en-tête d'application + PageHead + barre
+       d'onglets : chaque retouche de l'un de ces trois éléments — et il y en a eu —
+       faisait déborder le cockpit ou y laissait un vide, sur l'écran justement conçu
+       pour rester affiché en permanence. On lit la position réelle du bloc et on
+       remplit ce qui reste, ce qui reste juste quoi qu'il advienne au-dessus. */
+    <div ref={corps} className="flex flex-col" style={{ height:hauteur, minHeight:560 }}>
       {/* ── Barre du cockpit ── */}
       <div className="flex items-center gap-3 mb-3 flex-wrap">
         <button onClick={()=>setReplie(r=>!r)} title={replie?"Déplier le menu":"Replier le menu"}
@@ -581,8 +614,10 @@ function PerfProcessus({ proc, parActivite, notify }){
               className={clsx("px-3 py-1 f11 rounded-md font-semibold transition-colors",
                 vue===k ? "bg-brand text-white shadow-sm" : "text-slate-500 hover:text-slate-800")}>{l}</button>))}
         </div>
-        <button onClick={dl} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg f115 font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200">
-          <FileSpreadsheet size={15} /> Exporter</button>
+        {/* Le bouton de l'application, et non un <button> gris fabriqué à la main :
+            l'ancien ne portait ni le rayon (.m-btn) ni la palette des boutons
+            secondaires, et ne ressemblait donc à aucun autre bouton de MEMS. */}
+        <Btn size="sm" kind="sec" icon={FileSpreadsheet} onClick={dl}>Exporter</Btn>
       </div>
     </div>
 

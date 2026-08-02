@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CalendarRange, Check } from "lucide-react";
 import { Tabs } from "../components/ui.jsx";
 import { clsx } from "../lib/calc.js";
@@ -44,17 +44,32 @@ function Volet({ value, onChange, gauche, droite }){
 }
 
 /* Mémoire du volet par sujet : passer de « Distributions » à « Résultats » et
-   revenir ne doit pas ramener au prévu si l'on travaillait sur le réalisé. */
-function useVolet(initial = "plan"){
-  const [v, setV] = useState(initial);
+   revenir ne doit pas ramener au prévu si l'on travaillait sur le réalisé.
+
+   `demande` est le volet porté par une NAVIGATION — une tâche de la cloche, un
+   encart du cockpit. Il compte parce que ces raccourcis mènent presque tous à un
+   geste de RÉALISATION (saisir une quantité distribuée, valider une visite,
+   relever une valeur mesurée) qui vit dans le volet « réalisé », alors que le
+   volet s'ouvrait invariablement sur « plan ». L'utilisateur atterrissait donc
+   sur l'écran de planification et devait encore cliquer pour arriver là où le
+   travail se fait — sans que rien ne le lui dise.
+
+   Il n'est appliqué qu'au CHANGEMENT : une fois arrivé, l'utilisateur reste maître
+   de la bascule, et un nouveau rendu ne vient pas lui reprendre son choix. */
+function useVolet(initial = "plan", demande = null){
+  const [v, setV] = useState(demande || initial);
+  const vu = useRef(demande);
+  useEffect(() => {
+    if(demande && demande !== vu.current){ vu.current = demande; setV(demande); }
+  }, [demande]);
   return [v, setV];
 }
 
 /* ── Suivi-évaluation ─────────────────────────────────────────────────
    Le travail de l'unité de suivi : où va-t-on, y est-on allé, avec quelle
    couverture, et sur quels paramètres cette couverture est calculée. */
-export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
-  const [volet, setVolet] = useVolet();
+export function Suivi({ db, set, me, sub, setSub, notify, can, go, onglets, volet:voletDemande }){
+  const [volet, setVolet] = useVolet("plan", voletDemande);
   const items = [["summary","Résumé global"],["dashboard","Tableau de bord"],
     ["monitoring","Suivi des sites"],
     ["mre","Plan MRE et budget"],["tpm","Suivi tiers"],
@@ -68,7 +83,7 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
 
       {sub==="summary" && <ActualSummary db={db} />}
 
-      {sub==="dashboard" && <ProcessDashboard db={db} go={go} notify={notify} />}
+      {sub==="dashboard" && <ProcessDashboard db={db} go={go} notify={notify} onglets={onglets} />}
 
       {sub==="monitoring" && (<>
         <Volet value={volet} onChange={setVolet}
@@ -97,9 +112,9 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go }){
    Ce que le programme distribue et obtient : plan de distribution et
    réalisations, population ciblée, indicateurs de résultat, et les entrées
    de données qui les alimentent. */
-export function Programme({ db, set, me, sub, setSub, notify, can, go }){
-  const [voletD, setVoletD] = useVolet();
-  const [voletR, setVoletR] = useVolet();
+export function Programme({ db, set, me, sub, setSub, notify, can, go, volet:voletDemande }){
+  const [voletD, setVoletD] = useVolet("plan", voletDemande);
+  const [voletR, setVoletR] = useVolet("plan", voletDemande);
   const items = [["distribution","Distributions"],["population","Population et outputs"],
     ["results","Résultats"],["import","Import Excel"],["sources","Sources de données"],
     ["soumissions","Soumissions ODK"]];

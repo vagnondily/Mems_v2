@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { Download, MapPin, RefreshCw, Save } from "lucide-react";
@@ -37,7 +37,11 @@ function GpsAudit({ notify, can }){
 
   const b = d.bilan;
   const rows = filtre ? d.rows.filter(r => r.verdict === filtre) : d.rows;
-  const avecGps = d.rows.filter(r => r.lat != null && r.lon != null);
+  /* Mémoïsés : `points` alimente un effet Leaflet, et un tableau reconstruit à
+     chaque rendu relançait le dessin de deux mille marqueurs à chaque clic. */
+  const avecGps = useMemo(() => d.rows.filter(r => r.lat != null && r.lon != null), [d.rows]);
+  const pointsCarte = useMemo(
+    () => filtre ? avecGps.filter(r => r.verdict === filtre) : avecGps, [avecGps, filtre]);
 
   const exporter = () => {
     download(`verification_gps_seuil${seuil}.csv`,
@@ -76,7 +80,7 @@ function GpsAudit({ notify, can }){
       {/* ── Carte des points ── */}
       <Card flush title="Carte des points GPS"
         subtitle={`${fmt(avecGps.length)} point(s) géolocalisé(s) · couleur selon le verdict`}>
-        <CarteAudit points={filtre ? avecGps.filter(r=>r.verdict===filtre) : avecGps} onPick={r=>can?.("edit") && setCorr(r)} />
+        <CarteAudit points={pointsCarte} onPick={r=>can?.("edit") && setCorr(r)} />
       </Card>
 
       {/* ── Tableau des points à contrôler, avec correction ── */}
@@ -137,6 +141,18 @@ function CarteAudit({ points, onPick }){
     mapRef.current = map; layerRef.current = L.layerGroup().addTo(map);
     return ()=>{ map.remove(); mapRef.current = null; };
   }, []);
+  /* Le choix de point passe par une RÉFÉRENCE, jamais par les dépendances de
+     l'effet. `onPick` est recréé à chaque rendu du parent — c'est une fermeture
+     écrite en ligne —, si bien que l'effet se relançait à chaque frappe et à chaque
+     clic : deux mille marqueurs redessinés, et surtout un `fitBounds` qui ramenait
+     brutalement la vue au cadre global. L'utilisateur qui zoomait puis cliquait
+     « Corriger » perdait sa navigation à chaque fois. */
+  const pickRef = useRef(onPick);
+  useEffect(()=>{ pickRef.current = onPick; }, [onPick]);
+  /* Le cadrage n'est posé qu'une fois. Redessiner les points quand le filtre change
+     est légitime ; recadrer la carte sous les yeux de quelqu'un qui l'a déplacée ne
+     l'est pas. */
+  const cadre = useRef(false);
   useEffect(()=>{
     const map = mapRef.current, g = layerRef.current; if(!map || !g) return;
     g.clearLayers();
@@ -145,12 +161,15 @@ function CarteAudit({ points, onPick }){
       const c = (VERDICTS[p.verdict]||{}).couleur || "#64748b";
       const m = L.circleMarker([p.lat, p.lon], { radius:4, color:"#fff", weight:1, fillColor:c, fillOpacity:0.9 })
         .bindTooltip(`${esc(p.name)} — ${p.dist!=null?p.dist+" km":"non rattaché"}`, { direction:"top" });
-      if(onPick) m.on("click", ()=>onPick(p));
+      m.on("click", ()=>pickRef.current?.(p));
       m.addTo(g); pts.push([p.lat, p.lon]);
     }
-    if(pts.length){ try{ map.fitBounds(pts, { padding:[24,24], maxZoom:9 }); }catch{} }
-    setTimeout(()=>map.invalidateSize(), 60);
-  }, [points, onPick]);
+    if(pts.length && !cadre.current){
+      try{ map.fitBounds(pts, { padding:[24,24], maxZoom:9 }); cadre.current = true; }catch{}
+    }
+    const t = setTimeout(()=>map.invalidateSize(), 60);
+    return ()=>clearTimeout(t);
+  }, [points]);
   return <div ref={boxRef} style={{ height:360 }} className="w-full rounded-b-2xl" />;
 }
 

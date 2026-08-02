@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Activity, BarChart3, ClipboardCheck, HelpCircle, Layers, LayoutGrid, Sprout, ShieldCheck, UserCog } from "lucide-react";
 import { SUMM_DATA } from "../lib/processAnalyse.js";
 import { api } from "../lib/api.js";
+import { Card as CardUI } from "../components/ui.jsx";
 import { clsx, fmt, pct } from "../lib/calc.js";
+import { C } from "../lib/constants.js";
 
 /* ══════════════════ Analyse du suivi de processus ══════════════════
    Reproduction fidèle du tableau de bord de référence WFP Madagascar
@@ -15,14 +17,22 @@ import { clsx, fmt, pct } from "../lib/calc.js";
    vivant de MEMS ; les valeurs se rafraîchiront depuis les soumissions une fois
    la source connectée. Barème, couleurs et pages repris à l'identique. */
 
-const HEX = { exc:"#16A34A", sat:"#84CC16", imp:"#F59E0B", urg:"#EF4444", na:"#94A3B8" };
+/* La grammaire de couleur est celle de TOUTE l'application (lib/constants.js), et
+   non celle du document de référence. Le tableau de bord d'origine empruntait sa
+   palette à Tailwind — émeraude, citron vert, rose vif — si bien que, dans le MÊME
+   écran, la jauge « Couverture » du cockpit était olive/or/cramoisi et l'onglet
+   « Analyse process » basculait tout en émeraude/citron/rose : deux verts pour
+   « bon », deux rouges pour « alerte », côte à côte. Rien n'apprenait à l'œil ce
+   que la couleur voulait dire. « Satisfaisant » reçoit une teinte CLAIRE du vert
+   institutionnel, pour rester une nuance de « bon » et non une autre couleur. */
+const HEX = { exc:C.ok, sat:"#8fbb4e", imp:C.warn, urg:C.bad, na:C.t3 };
 const LAB = { exc:"Excellent", sat:"Satisfaisant", imp:"À améliorer", urg:"Action urgente", na:"Non évalué" };
 const band = (v) => v == null ? "na" : v >= 80 ? "exc" : v >= 65 ? "sat" : v >= 50 ? "imp" : "urg";
 const bp   = (p) => p == null ? "na" : p >= 80 ? "exc" : p >= 65 ? "sat" : p >= 50 ? "imp" : "urg";
 const verdict = (cov, idx) =>
-  (cov < 40 || idx < 50) ? { v:"Critique",     bg:"#EF4444", d:"Intervention prioritaire : couverture et/ou qualité insuffisantes.", da:"Agir" }
-  : (idx < 65 || cov < 65) ? { v:"Vigilance",  bg:"#F59E0B", d:"Renforcer le suivi et cibler les sites les plus faibles.", da:"Surveiller" }
-  : { v:"Satisfaisant", bg:"#16A34A", d:"Maintenir le dispositif et documenter les bonnes pratiques.", da:"Maintenir" };
+  (cov < 40 || idx < 50) ? { v:"Critique",     bg:C.bad,  d:"Intervention prioritaire : couverture et/ou qualité insuffisantes.", da:"Agir" }
+  : (idx < 65 || cov < 65) ? { v:"Vigilance",  bg:C.warn, d:"Renforcer le suivi et cibler les sites les plus faibles.", da:"Surveiller" }
+  : { v:"Satisfaisant", bg:C.ok, d:"Maintenir le dispositif et documenter les bonnes pratiques.", da:"Maintenir" };
 const tArrow = (trend) => {
   if(!trend || trend.length < 2) return { a:"→", c:HEX.na, w:"stable", d:0 };
   const d = trend[trend.length-1].v - trend[trend.length-2].v;
@@ -41,15 +51,14 @@ const PAGES = [["synthese","Synthèse",ClipboardCheck],["controlroom","Salle de 
   ["performance","Performance",BarChart3],["qualite","Qualité",ClipboardCheck],
   ["agent","Agent",UserCog],["aide","Aide",HelpCircle]];
 
-const Card = ({ title, sub, right, children, className }) => (
-  <div className={clsx("bg-white border border-slate-200 rounded-2xl shadow-sm", className)}>
-    {(title || right) && (
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-100">
-        <div className="min-w-0"><div className="f13 font-bold text-slate-800">{title}</div>
-          {sub && <div className="f105 text-slate-400">{sub}</div>}</div>
-        <div className="ml-auto shrink-0">{right}</div></div>)}
-    <div className="p-4">{children}</div>
-  </div>);
+/* La carte est celle de l'application (components/ui.jsx), et non une seconde
+   définition locale. L'ancienne divergeait sur trois points — en-tête px-4 py-3
+   contre px-5 py-4, titre en gras contre demi-gras, sous-titre plus pâle — si bien
+   que les cartes de cette page étaient un peu plus serrées et plus grasses que
+   toutes les autres cartes de MEMS, dans le même écran. Une seule définition.
+   L'enveloppe ci-dessous ne fait que traduire `sub` en `subtitle`, pour ne pas
+   toucher aux quarante appels de ce fichier. */
+const Card = ({ sub, ...reste }) => <CardUI subtitle={sub} {...reste} />;
 
 /* ── KPI row ── */
 function Kpis({ items }){
@@ -531,7 +540,10 @@ export function AnalyseProcessus({ db, notify }){
           {PAGES.map(([k,l,Ic])=>(
             <button key={k} onClick={()=>setPage(k)}
               className={clsx("inline-flex items-center gap-1.5 px-2.5 py-1.5 f115 rounded-lg font-semibold transition-colors",
-                page===k ? "bg-slate-100 text-slate-900" : "text-slate-500 hover:text-slate-800")}>
+                /* « Actif » se dit partout ailleurs en bleu institutionnel (SideRail,
+                   rail du cockpit) ; ici c'était un gris, qui se lit comme un état
+                   désactivé. Même idiome que le reste. */
+                page===k ? "bg-brand text-white shadow-sm" : "text-slate-500 hover:text-slate-800")}>
               <Ic size={13}/>{l}</button>))}
         </div>)}
       {renduPage()}

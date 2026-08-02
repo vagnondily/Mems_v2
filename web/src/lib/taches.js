@@ -46,7 +46,14 @@ function tachesUtilisateur(db, me, onglets){
   const nowM = new Date().getMonth();
   const out = [];
   /* Une tâche qui mène à une destination fermée au compte est une impasse : on
-     ne la montre pas plutôt que de la rendre inerte au clic. */
+     ne la montre pas plutôt que de la rendre inerte au clic.
+
+     `vers` porte jusqu'à TROIS segments : destination, sous-onglet, et volet. Le
+     troisième vaut « reel » pour toute tâche qui appelle une SAISIE — quantité
+     distribuée, validation d'une visite, valeur mesurée d'un indicateur. Sans lui,
+     ces raccourcis ouvraient invariablement le volet « plan », c'est-à-dire le
+     calendrier de planification, et l'utilisateur devait encore trouver et cliquer
+     la bascule pour atteindre l'écran où le geste demandé se fait. */
   const poser = (t) => { if(complet || !onglets || onglets.includes(t.vers[0])) out.push(t); };
 
   (db.sites || []).filter(s => s.status !== "Inactive" && aMoi(s.subOffice)).forEach(s => {
@@ -77,7 +84,7 @@ function tachesUtilisateur(db, me, onglets){
         severite: l.month < nowM - 1 ? "urgent" : "a_surveiller",
         titre:"Distribution non renseignée",
         detail:`${l.commune} — ${MONTHS_L[l.month]}, ${l.actType} ${l.modality} : aucune quantité distribuée saisie`,
-        contexte:l.bureau, vers:["programme","distribution"] });
+        contexte:l.bureau, vers:["programme","distribution","reel"] });
 
     const planifie = quantitePlanifiee(l);
     if(n(l.distributed) && planifie && n(l.distributed) / planifie < 0.5 && l.month <= nowM)
@@ -85,7 +92,7 @@ function tachesUtilisateur(db, me, onglets){
         titre:"Taux de distribution faible",
         detail:`${l.commune} — ${MONTHS_L[l.month]}, ${l.actType} : `
           + `${(n(l.distributed) / planifie * 100).toFixed(2)} % du planifié distribué`,
-        contexte:l.bureau, vers:["programme","distribution"] });
+        contexte:l.bureau, vers:["programme","distribution","reel"] });
   });
 
   /* Une validation en attente ne concerne que les comptes qui valident : c'est
@@ -95,7 +102,7 @@ function tachesUtilisateur(db, me, onglets){
     if(attente) poser({ id:"validation", severite:"a_surveiller",
       titre:"Validation en attente",
       detail:`${attente} soumission(s) de suivi de processus attendent une validation`,
-      contexte: me?.office || "tous les bureaux", vers:["suivi","monitoring"] });
+      contexte: me?.office || "tous les bureaux", vers:["suivi","monitoring","reel"] });
   }
 
   if(peut("edit")) (db.params || [])
@@ -114,7 +121,7 @@ function tachesUtilisateur(db, me, onglets){
       poser({ id:`indicateur:${ind.id}`, severite:"information",
         titre:"Indicateur sans mesure",
         detail:`${ind.name.slice(0,60)} — aucune mesure enregistrée`,
-        contexte:"indicateurs", vers:["programme","results"] });
+        contexte:"indicateurs", vers:["programme","results","reel"] });
   });
 
   return out.sort((a,b) => RANG[a.severite] - RANG[b.severite]);

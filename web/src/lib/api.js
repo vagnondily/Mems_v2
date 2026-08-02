@@ -507,7 +507,22 @@ export function createSyncQueue({ onStatus = () => {}, onConflict = null, delay 
         return;
       }
       failures++;
-      onStatus({ state:"error", inflight, failures, message:e.message, collection:name });
+      /* Deux natures d'échec, et elles n'appellent pas la même suite.
+
+         TRANSITOIRE (5xx, réseau coupé) : la modification est encore bonne, on la
+         remet en file avec un délai croissant. C'est ce que le code faisait déjà.
+
+         DÉFINITIF (400, 403, 422 — une ligne que le serveur refuse) : réessayer ne
+         servirait à rien, et c'est là que le silence coûtait cher. Le travail était
+         retiré de la file, la modification restait affichée dans l'état local, et
+         RIEN ne le disait : l'appelant ne notifiait qu'au troisième échec d'affilée,
+         si bien qu'un rejet isolé laissait l'écran montrer une saisie que le serveur
+         n'avait jamais acceptée — jusqu'au prochain rechargement complet, qui la
+         faisait disparaître sans explication. On le remonte immédiatement, marqué
+         comme définitif, pour que l'appelant le dise et propose de recharger. */
+      const definitif = e.status >= 400 && e.status < 500;
+      onStatus({ state:"error", inflight, failures, message:e.message, collection:name,
+                 definitif, rejete: definitif ? job : null });
       if(e.status >= 500 || e.status === 0){
         /* Erreur transitoire : on remet en file avec un délai croissant, plafonné. */
         if(!pending.has(name)) pending.set(name, job);

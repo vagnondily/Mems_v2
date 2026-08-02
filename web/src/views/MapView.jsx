@@ -454,13 +454,29 @@ export default function MapView({ db, me, notify, go }){
   /* Points de site. Un cercle plutôt qu'une épingle : le rayon porte le nombre
      de bénéficiaires et la couleur porte le mode thématique choisi — deux
      informations qu'une épingle uniforme ne sait pas rendre. */
+  /* Le nombre de points est PLAFONNÉ, et la troncature se dit. Sans plafond, un
+     jeu national géolocalisé fabriquait un marqueur et un corps de bulle par site —
+     des milliers de couches vectorielles reconstruites à chaque changement de
+     filtre ou de thème —, ce qui figeait le déplacement de la carte. Le plafond est
+     bien plus haut que celui de la liste latérale (400) : une carte vit de sa
+     densité, une liste se lit. Les sites retenus sont les mêmes que ceux du haut de
+     la liste — les plus grands bénéficiaires d'abord —, pour que ce qui disparaît
+     soit toujours le plus petit, et non un site au hasard. */
+  const PLAFOND_POINTS = 3000;
+  const pointsCarte = useMemo(() => {
+    const avecGps = filtered.filter(s => s.lat != null && s.lon != null);
+    if(avecGps.length <= PLAFOND_POINTS) return avecGps;
+    return [...avecGps].sort((a,b) => (b.benef || 0) - (a.benef || 0)).slice(0, PLAFOND_POINTS);
+  }, [filtered]);
+  const pointsTronques = filtered.filter(s => s.lat != null && s.lon != null).length
+    - pointsCarte.length;
+
   useEffect(() => {
     const g = ptsRef.current;
     if(!g) return;
     g.clearLayers();
     marqueurs.current.clear();
-    for(const s of filtered){
-      if(s.lat == null || s.lon == null) continue;
+    for(const s of pointsCarte){
       const m = L.circleMarker([s.lat, s.lon], {
         radius: radiusOf(s), color:"#ffffff", weight:1.5,
         fillColor: colorOf(s), fillOpacity:0.9,
@@ -470,7 +486,7 @@ export default function MapView({ db, me, notify, go }){
       g.addLayer(m);
       marqueurs.current.set(s.id, m);
     }
-  }, [filtered, colorOf, radiusOf, db, pret]);
+  }, [pointsCarte, colorOf, radiusOf, db, pret]);
 
   /* Couche des relevés GPS. Volontairement différente à l'œil des points de
      site — losange creux, teinte violette — pour qu'on ne puisse pas la
@@ -639,7 +655,14 @@ export default function MapView({ db, me, notify, go }){
             {filtered.length > 400 && (
               <p className="p-3 f105 text-amber-700">
                 Liste tronquée à 400 entrées sur {fmt(filtered.length)} : affinez la recherche ou
-                les filtres. Tous les points restent affichés sur la carte.</p>)}
+                les filtres.{" "}
+                {/* La carte a désormais son propre plafond : l'annoncer, plutôt que
+                    de promettre « tous les points » comme avant. Une troncature tue
+                    est pire qu'une troncature dite. */}
+                {pointsTronques > 0
+                  ? <>La carte en affiche {fmt(PLAFOND_POINTS)} — les {fmt(pointsTronques)} sites
+                      aux effectifs les plus faibles n'y sont pas dessinés.</>
+                  : <>Tous les points géolocalisés restent affichés sur la carte.</>}</p>)}
           </div>
 
           {/* Le conteneur Leaflet. La hauteur doit être posée en dur : sans

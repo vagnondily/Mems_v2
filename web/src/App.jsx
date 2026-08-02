@@ -87,6 +87,8 @@ export default function App(){
   const [tab, setTabState] = useState("home");
   const [subs, setSubs] = useState({ suivi:"summary", programme:"distribution",
     analytics:"datasets", reports:"extract", settings:"general", admin:"sessions" });
+  /* Volet demandé par la dernière navigation, par destination (« plan » / « reel »). */
+  const [volets, setVolets] = useState({});
   const [toasts, setToasts] = useState([]);
   const [phase, setPhase] = useState("boot");
   const [fatal, setFatal] = useState("");
@@ -178,6 +180,18 @@ export default function App(){
     queue.current = createSyncQueue({
       onStatus: (s) => {
         setSync(s);
+        /* Un refus DÉFINITIF (400/403/422) se dit tout de suite, et il se répare :
+           la modification n'est ni réessayée ni remise en file, donc ce qui reste à
+           l'écran ne correspond plus à la base. Attendre trois échecs comme pour une
+           panne réseau laissait un rejet isolé passer sans un mot — l'utilisateur
+           croyait avoir enregistré. On recharge la vérité du serveur derrière, pour
+           que l'écran cesse d'afficher ce qui n'a pas été accepté. */
+        if(s.state === "error" && s.definitif){
+          notify(`Modification refusée (${s.collection}) : ${s.message} — l'écran est rechargé `
+            + "pour revenir à ce qui est réellement enregistré.", "err");
+          loadState().catch(() => {});
+          return;
+        }
         if(s.state === "error" && s.failures >= 3)
           notify(`Enregistrement impossible (${s.collection}) : ${s.message}`, "err");
       },
@@ -223,13 +237,40 @@ export default function App(){
     setToken(null); setMe(null); setDb(null); setTabState("home"); setPhase("login");
   };
 
-  /* Modification locale immédiate, puis envoi des seules collections réellement changées. */
+  /* Modification locale immédiate, puis envoi des seules collections réellement changées.
+
+     Deux coûts payés à chaque frappe, et tous deux évitables à l'échelle annoncée
+     (des milliers de sites, de visites, de lignes de plan) :
+
+     — le CLONE. `JSON.parse(JSON.stringify(prev))` traverse tout l'état deux fois,
+       en construisant une chaîne intermédiaire de plusieurs méga-octets.
+       `structuredClone` fait le même travail nativement, sans passer par du texte.
+       La sémantique est celle qu'attendent les appelants — ils reçoivent une copie
+       PROFONDE qu'ils mutent en place — et elle est conservée telle quelle.
+
+     — la COMPARAISON. Le clone rend toute égalité de référence impossible : le
+       raccourci `before[name] === next[name]` ne pouvait donc JAMAIS être vrai, et
+       chaque collection était sérialisée DEUX fois par appel (l'ancienne et la
+       nouvelle) pour être comparée. On garde en mémoire la signature calculée pour
+       l'état courant : au tour suivant, il est l'ancien, sa signature est déjà là,
+       et il ne reste qu'une sérialisation par collection au lieu de deux. */
+  const signatures = useRef({ db:null, sigs:new Map() });
   const set = useCallback((fn) => {
     setDb(prev => {
       if(!prev) return prev;
-      const copy = JSON.parse(JSON.stringify(prev));
+      const copy = typeof structuredClone === "function"
+        ? structuredClone(prev) : JSON.parse(JSON.stringify(prev));
       const next = fn(copy) || copy;
       const before = prevDb.current || prev;
+      /* La signature de l'état d'AVANT : réutilisée si c'est bien celui dont on a
+         gardé les signatures au tour précédent, recalculée sinon (premier appel,
+         ou état rechargé depuis le serveur). */
+      const cache = signatures.current.db === before ? signatures.current.sigs : new Map();
+      const sigAvant = (name) => {
+        if(!cache.has(name)) cache.set(name, JSON.stringify(before[name]));
+        return cache.get(name);
+      };
+      const sigApres = new Map();
       /* Recopie des réglages de configuration modifiés vers `settings`, pour que la
          collection les emporte au serveur. L'écran qui édite le barème ou les
          formules n'a ainsi pas à connaître ce détail de transport. Conditionnée au
@@ -248,8 +289,10 @@ export default function App(){
         queue.current?.push("planningConfig",
           { mmr: next.mmr, outcomePlan: next.outcomePlan || {} }, []);
       for(const name of SYNCED){
+        const apresSig = JSON.stringify(next[name]);
+        sigApres.set(name, apresSig);
         if(before[name] === next[name]) continue;
-        if(JSON.stringify(before[name]) === JSON.stringify(next[name])) continue;
+        if(sigAvant(name) === apresSig) continue;
         const shaper = SHAPERS[name];
         /* Ce que CE client a retiré, et rien d'autre. Le serveur ne déduit plus les
            suppressions : sans cela, enregistrer effaçait les lignes ajoutées entre-temps
@@ -262,11 +305,21 @@ export default function App(){
         queue.current?.push(name, shaper ? shaper(next[name], next) : next[name], deletes);
       }
       prevDb.current = next;
+      signatures.current = { db: next, sigs: sigApres };
       return next;
     });
   }, []);
 
-  const setTab = (t, s) => { setTabState(t); if(s) setSubs(x => ({ ...x, [t]:s })); };
+  /* Le troisième segment, le VOLET (« plan » / « reel »). Il vit ici, et pas dans
+     l'écran de destination, pour une raison mécanique : le Boundary remonte les
+     enfants à chaque changement de sous-onglet, ce qui réinitialisait un état local
+     aussitôt posé. Une tâche de la cloche qui vise une SAISIE arrive donc enfin sur
+     le volet où la saisie se fait, au lieu du calendrier de planification. */
+  const setTab = (t, s, v) => {
+    setTabState(t);
+    if(s) setSubs(x => ({ ...x, [t]:s }));
+    setVolets(x => ({ ...x, [t]: v || null }));
+  };
   const setSub = (t) => (s) => setSubs(x => ({ ...x, [t]:s }));
   /* Une seule matrice de droits côté client (D_ROLES), alignée sur celle du serveur.
      Le serveur reste l'arbitre : ceci ne fait que masquer ce qu'il refuserait. */
@@ -307,10 +360,16 @@ export default function App(){
            onLogout={onLogout} sync={sync} notify={notify} onMe={u=>setMe(normalizeMe(u))}>
       <Boundary reset={view + "|" + (subs[view] || "")}>
         {view==="home" && <Home db={db} me={me} go={setTab} />}
+        {/* `allowed` descend jusqu'au cockpit : ses encarts d'alerte proposent des
+            destinations, et proposer une destination fermée au compte produit un
+            clic qui ramène à l'accueil sans explication. La cloche filtre déjà
+            ainsi (lib/taches.js) ; le cockpit le fait désormais aussi. */}
         {view==="suivi" && <Suivi db={db} set={set} me={me} sub={subs.suivi}
-          setSub={setSub("suivi")} notify={notify} can={can} go={setTab} />}
+          setSub={setSub("suivi")} notify={notify} can={can} go={setTab} onglets={allowed}
+          volet={volets.suivi} />}
         {view==="programme" && <Programme db={db} set={set} me={me} sub={subs.programme}
-          setSub={setSub("programme")} notify={notify} can={can} go={setTab} />}
+          setSub={setSub("programme")} notify={notify} can={can} go={setTab}
+          volet={volets.programme} />}
         {view==="map" && <MapView db={db} me={me} notify={notify} go={setTab} />}
         {/* `me` sert à l'exécution des scripts sur le serveur : elle est
             réservée au rôle `super` et non à la capacité « admin ». */}

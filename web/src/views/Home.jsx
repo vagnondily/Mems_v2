@@ -165,7 +165,7 @@ function Home({ db, me, go }){
           right={<><Badge tone={dist.all.distribution>=0.9?"g":dist.all.distribution>=0.6?"y":"r"}>
               Taux global de distributions {rate(dist.all.distribution)}</Badge>
             {dist.pending>0 && <Badge tone="y">{dist.pending} ligne(s) sans réalisation</Badge>}
-            <Btn size="sm" kind="sec" icon={ClipboardList} onClick={()=>go("programme","distribution")}>Saisir les réalisations</Btn></>}>
+            <Btn size="sm" kind="sec" icon={ClipboardList} onClick={()=>go("programme","distribution","reel")}>Saisir les réalisations</Btn></>}>
           <div className="grid gap-px bg-slate-200 border-b border-slate-200"
             style={{gridTemplateColumns:"repeat(auto-fit,minmax(176px,1fr))"}}>
             <Stat label="Bénéficiaires servis" value={fmt(dist.all.benefActual)}

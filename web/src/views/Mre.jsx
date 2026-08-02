@@ -61,13 +61,23 @@ export default function MreView({ db, me, notify, can }){
   const [data, setData]   = useState(null);
   const [edit, setEdit]   = useState(null);
   const [busy, setBusy]   = useState(false);
+  /* Deux états que l'écran confondait. Changer d'année ou de filtre relançait la
+     lecture en laissant les anciennes lignes affichées, sans le moindre repère :
+     on lisait le plan de 2025 en croyant lire celui de 2026. Et un échec retombait
+     sur un plan VIDE, indiscernable d'un plan légitimement vide une fois le toast
+     évanoui — l'agent ne pouvait pas savoir s'il n'y avait rien ou si le serveur
+     avait échoué. Les deux se disent maintenant, et l'erreur reste à l'écran. */
+  const [chargement, setChargement] = useState(false);
+  const [erreur, setErreur] = useState("");
 
   const charger = useCallback(async () => {
     const q = new URLSearchParams({ year:String(year) });
     if(kind) q.set("kind", kind);
     if(statut) q.set("status", statut);
-    try{ setData(await api.mre("?" + q)); }
-    catch(e){ notify(e.message, "err"); setData({ rows:[], totals:null }); }
+    setChargement(true);
+    try{ setData(await api.mre("?" + q)); setErreur(""); }
+    catch(e){ notify(e.message, "err"); setErreur(e.message); setData({ rows:[], totals:null }); }
+    finally{ setChargement(false); }
   }, [year, kind, statut, notify]);
   useEffect(()=>{ charger(); }, [charger]);
 
@@ -113,16 +123,31 @@ export default function MreView({ db, me, notify, can }){
   };
 
   const exporter = () => {
+    /* Les mois RÉELS, et pas seulement le premier et le dernier. Une activité
+       planifiée en janvier et en août a `start=0` et `end=7` — le serveur les
+       dérive du minimum et du maximum pour compatibilité —, si bien qu'un fichier
+       ne portant que « début : Janvier / fin : Août » se lit comme huit mois
+       continus, quand l'écran n'en colore que deux. Le fichier remis au bailleur
+       annonçait donc une période que personne n'a planifiée. La colonne « mois »
+       porte la liste ; « debut »/« fin » restent, pour les lecteurs qui les
+       attendent, mais ne sont plus la seule vérité disponible. */
+    const moisDe = (a) => (a.months?.length
+      ? a.months : (a.start_month != null && a.end_month != null
+          ? Array.from({ length: a.end_month - a.start_month + 1 }, (_, i) => a.start_month + i)
+          : [])).map(i => MOIS[i]).join(", ");
+    const commun = (a) => ({ reference:a.ref, activite:a.title, type:a.kindLabel,
+      bureau:a.office || "National", portee:a.portee, statut:(STATUT[a.status]||[])[0],
+      mois: moisDe(a),
+      debut: a.start_month!=null ? MOIS[a.start_month] : "",
+      fin: a.end_month!=null ? MOIS[a.end_month] : "" });
     const lignes = (data?.rows || []).flatMap(a => a.costs.length
-      ? a.costs.map(l => ({ reference:a.ref, activite:a.title, type:a.kindLabel, bureau:a.office || "National",
-          portee:a.portee, statut:(STATUT[a.status]||[])[0], debut:a.start_month!=null?MOIS[a.start_month]:"",
-          fin:a.end_month!=null?MOIS[a.end_month]:"", categorie:l.category, ligne:l.label, unite:l.unit,
+      ? a.costs.map(l => ({ ...commun(a), categorie:l.category, ligne:l.label, unite:l.unit,
           quantite:l.qty, cout_unitaire:l.unit_cost, budget:l.total, depense:l.spent ?? "", devise:a.currency }))
-      : [{ reference:a.ref, activite:a.title, type:a.kindLabel, bureau:a.office || "National",
-          portee:a.portee, statut:(STATUT[a.status]||[])[0], categorie:"", ligne:"(aucune ligne de budget)",
+      : [{ ...commun(a), categorie:"", ligne:"(aucune ligne de budget)",
           quantite:"", cout_unitaire:"", budget:0, depense:"", devise:a.currency }]);
     download(`plan-mre-${year}.csv`, toCSV(lignes, ["reference","activite","type","bureau","portee",
-      "statut","debut","fin","categorie","ligne","unite","quantite","cout_unitaire","budget","depense","devise"]), "text/csv");
+      "statut","mois","debut","fin","categorie","ligne","unite","quantite","cout_unitaire","budget",
+      "depense","devise"]), "text/csv");
   };
 
   if(!data) return <Empty icon={CalendarRange} title="Chargement du plan MRE…" />;
@@ -140,6 +165,9 @@ export default function MreView({ db, me, notify, can }){
         options={Object.entries(data.referentiel?.kinds || {})} className="mi-py1 mi-xs mi-wauto" />
       <Select value={statut} onChange={e=>setStatut(e.target.value)} empty="Tous les statuts"
         options={Object.entries(STATUT).map(([k,[l]])=>[k,l])} className="mi-py1 mi-xs mi-wauto" />
+      {/* Le rechargement se voit : sans ce repère, changer d'année laissait les
+          lignes de l'année précédente à l'écran, sans rien qui les démente. */}
+      {chargement && <span className="f115 text-slate-500 animate-pulse">Lecture…</span>}
       <Btn size="sm" kind="sec" icon={Download} onClick={exporter}>Exporter</Btn>
       {can("edit") && <Btn size="sm" icon={Plus}
         onClick={()=>setEdit({ year, kind:"suivi", status:"planifie", currency:cur || "USD",
@@ -158,6 +186,14 @@ export default function MreView({ db, me, notify, can }){
                          : "text-slate-500 hover:text-slate-700")}>
             <Icon size={13} />{label}</button>))}
       </div>
+
+      {/* Un échec de lecture RESTE à l'écran. Le toast qui le portait s'évanouit en
+          quatre secondes, après quoi le plan vide se lisait comme un plan
+          légitimement vide : deux situations opposées sous la même apparence. */}
+      {erreur && (
+        <Note tone="bad"><b>Le plan n'a pas pu être lu.</b> {erreur}{" "}
+          Ce qui s'affiche ci-dessous n'est donc pas le plan de {year} : c'est un écran vide
+          faute de réponse. Réessayez, ou signalez ce message à l'équipe technique.</Note>)}
 
       {!t.currency && t.devises?.length > 1 && (
         <Note tone="warn"><b>Plusieurs devises dans le même plan ({t.devises.join(", ")}).</b>{" "}
@@ -264,7 +300,13 @@ function Plan({ data, rows, cur, filtres, can, onEdit, onDelete }){
                       <span className="w-2 h-2 rounded-full shrink-0" style={{background:KIND_TONE[k.kind]}} />
                       <span className="text-slate-700 truncate">{k.label}</span>
                       <span className="ml-auto tabular-nums font-semibold text-slate-800">
-                        {money(k.budget, cur ? "" : "")}</span>
+                        {/* Les deux branches du ternaire précédent rendaient la même
+                            chaîne vide : le code laissait croire à une règle
+                            d'affichage de la devise qui n'existait pas. Elle existe
+                            maintenant — le code devise sort quand le plan n'en porte
+                            qu'une, et se tait quand il en mélange plusieurs, un
+                            montant sans devise valant mieux qu'une devise fausse. */}
+                        {money(k.budget, cur || "")}</span>
                       <span className="tabular-nums f11 text-slate-400 w-10 text-right">
                         {Math.round(part)} %</span>
                     </div>

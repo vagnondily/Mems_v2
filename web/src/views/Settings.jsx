@@ -1997,6 +1997,22 @@ function SetLocations({ db, set, notify, can, reload, me }){
      donc la maille la plus fine qui existe dans le millésime courant. */
   const niveauProfond = ["adm4","adm3","adm2","adm1"]
     .find(l => (db.geoVersion?.counts?.[l] || 0) > 0) || "adm3";
+
+  /* Le nombre de sites par localité, compté UNE fois. Chaque ligne du répertoire
+     faisait auparavant son propre `db.sites.filter(...)` à l'intérieur du rendu :
+     deux cents lignes × plusieurs milliers de sites, refait à chaque frappe dans la
+     recherche. Deux comptages suffisent, parce que la règle d'origine dépend du
+     SITE et non de la ligne — un site qui porte la maille fine se compte sur son
+     nom, un site qui ne la porte pas se rabat sur sa commune. */
+  const comptesSites = useMemo(() => {
+    const parNiveau = new Map(), parAdm3 = new Map();
+    for(const s of (db.sites || [])){
+      const v = s[niveauProfond];
+      if(v) parNiveau.set(v, (parNiveau.get(v) || 0) + 1);
+      else if(s.adm3) parAdm3.set(s.adm3, (parAdm3.get(s.adm3) || 0) + 1);
+    }
+    return { parNiveau, parAdm3 };
+  }, [db.sites, niveauProfond]);
   useEffect(()=>{
     let alive = true;
     setDir(d=>({ ...d, loading:true }));
@@ -2129,8 +2145,8 @@ function SetLocations({ db, set, notify, can, reload, me }){
           <thead><tr>{cols.map(([c,l])=><Th key={c}>{l}</Th>)}<Th>P-code</Th>
             <Th num>Latitude</Th><Th num>Longitude</Th><Th num>Sites</Th></tr></thead>
           <tbody>{dir.rows.map(g=>{
-            const cnt = db.sites.filter(s => s[niveauProfond]
-              ? s[niveauProfond]===g.name : (g.adm3 && s.adm3===g.adm3)).length;
+            const cnt = (comptesSites.parNiveau.get(g.name) || 0)
+              + (g.adm3 ? (comptesSites.parAdm3.get(g.adm3) || 0) : 0);
             return (<tr key={g.pcode} className="hover:bg-sky-50">
               {cols.map(([c])=><Td key={c} className={c===niveauProfond?"font-medium text-slate-800":"text-slate-500"}>
                 {c===niveauProfond ? g.name : (g[c]||"—")}</Td>)}
