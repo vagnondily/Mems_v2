@@ -8,6 +8,7 @@ import { newId } from "./lib/crypto.js";
 import { buildUnits, writeVersion } from "./lib/geo.js";
 import { deriverNiveaux, writeGeometries } from "./lib/geom.js";
 import { lireTable, parcourirGeometriesShp, attributsContour } from "./lib/shapefile.js";
+import { extraireIndicateursProcessus } from "./lib/process-xlsform.js";
 
 /* ═══════════════════════════════════════════════════════════════════════
    SEMIS DES DONNÉES RÉELLES  (chantier S8, point 5)
@@ -428,6 +429,80 @@ function semerDecoupage(){
    un bilan chiffré plutôt que d'appeler process.exit — un appel depuis le
    serveur ne doit pas tuer le serveur. `quoi` borne ce qu'on charge :
    « tout » (défaut), « indicateurs » (activités + masterlist), « decoupage ». */
+/* ── Indicateurs de suivi de processus, extraits des XLSForms ──
+   « Extrais les variables name et label et mets-les dans un référentiel ; une
+   fois qu'on clique sur le renflouement, ça entre aussi dedans. » On lit les
+   formulaires de suivi de processus déposés dans DOCS et on remplit la table
+   `process_indicator`. Le tag d'activité est déduit du nom du fichier. */
+const FORMULAIRES_PROCESSUS = [
+  { motif:/GD[_ ]?PREVMA|PREVMA/i,            tag:"GD",    label:"Distribution générale / PREVMA" },
+  { motif:/SMP|SBP|scolaire/i,                tag:"SMP",   label:"Repas scolaires (SMP)" },
+  { motif:/MIARO/i,                           tag:"MIARO", label:"MIARO — Résilience / Production" },
+  { motif:/NUTRITION|PECMAM|AIM/i,            tag:"NUT",   label:"Nutrition (PECMAM / AIM)" },
+  { motif:/RESILIENCE|SAMS/i,                 tag:"SAMS",  label:"Résilience (SAMS)" },
+];
+const classerFichierProcessus = (nom) =>
+  FORMULAIRES_PROCESSUS.find(f => f.motif.test(nom)) || { tag:"", label:"" };
+
+/* Repère les XLSForms de suivi de processus dans DOCS. */
+function fichiersProcessus(){
+  try{
+    return fs.readdirSync(DOCS)
+      .filter(f => /process[_ ]?monitoring|SMP[_ ]?20\d\d/i.test(f) && f.toLowerCase().endsWith(".xlsx"));
+  }catch(e){ return []; }
+}
+
+async function semerIndicateursProcessus(){
+  const fichiers = fichiersProcessus();
+  if(!fichiers.length) return { fichiers:0, indicateurs:0, formulaires:[] };
+
+  /* Lecture (asynchrone) d'abord, écriture (transaction synchrone) ensuite :
+     ExcelJS lit en promesse, better-sqlite3 écrit en synchrone — on ne peut pas
+     imbriquer l'un dans l'autre. */
+  const paquets = [];
+  for(const nom of fichiers){
+    try{
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.readFile(fichier(nom));
+      const { formTitle, rows } = extraireIndicateursProcessus(wb);
+      const cls = classerFichierProcessus(nom);
+      paquets.push({ nom, formTitle, cls, rows });
+    }catch(e){ log.warn("XLSForm de processus illisible", { fichier:nom, raison:e.message }); }
+  }
+
+  const ins = db.prepare(`INSERT INTO process_indicator
+      (id, activity_tag, activity_label, form_file, form_title, module, module_code,
+       var_name, var_type, label, choices_json, ord, active, rev)
+      VALUES (@id,@tag,@lab,@file,@title,@module,@mcode,@name,@type,@label,@choices,@ord,1,1)`);
+  const purge = db.prepare("DELETE FROM process_indicator WHERE form_file=?");
+
+  let total = 0; const formulaires = [];
+  const ecrire = db.transaction(() => {
+    for(const p of paquets){
+      purge.run(p.nom);
+      /* Un même `name` peut réapparaître (questions rejouées dans des répétitions) :
+         le référentiel garde la PREMIÈRE occurrence — une variable, une ligne. */
+      const vus = new Set(); let ecrits = 0;
+      for(const r of p.rows){
+        if(vus.has(r.name)) continue; vus.add(r.name);
+        ins.run({ id:newId("pi"), tag:p.cls.tag, lab:p.cls.label, file:p.nom,
+          title:p.formTitle || "", module:r.module || "", mcode:r.moduleCode || "",
+          name:r.name, type:r.type || "", label:r.label || "",
+          choices:r.choices ? JSON.stringify(r.choices) : null, ord:r.ord });
+        ecrits++;
+      }
+      total += ecrits;
+      const modules = [...new Set(p.rows.map(r => r.module).filter(Boolean))].length;
+      formulaires.push({ fichier:p.nom, tag:p.cls.tag, titre:p.formTitle,
+        indicateurs:ecrits, modules });
+    }
+  });
+  ecrire();
+  log.info("indicateurs de suivi de processus chargés",
+    { fichiers:fichiers.length, indicateurs:total });
+  return { fichiers:fichiers.length, indicateurs:total, formulaires };
+}
+
 export async function semerReel({ sansGeo, forceGeo, quoi = "tout" } = {}){
   if(sansGeo !== undefined) SANS_GEO = sansGeo;
   if(forceGeo !== undefined) FORCE_GEO = forceGeo;
@@ -449,6 +524,15 @@ export async function semerReel({ sansGeo, forceGeo, quoi = "tout" } = {}){
       log.warn("classeur d'indicateurs absent : activités et indicateurs non chargés",
         { attendu: fichier(CLASSEUR) });
     }
+  }
+
+  /* Les indicateurs de suivi de processus suivent le même bouton « indicateurs »
+     (ils EN sont) mais restent extractibles seuls via quoi:"processus". */
+  if(veut("indicateurs") || veut("processus")){
+    bilan.processus = await semerIndicateursProcessus();
+    if(bilan.processus.fichiers)
+      log.info("suivi de processus chargé", { fichiers:bilan.processus.fichiers,
+        indicateurs:bilan.processus.indicateurs });
   }
 
   if(veut("decoupage")){
@@ -480,7 +564,7 @@ export async function semerReel({ sansGeo, forceGeo, quoi = "tout" } = {}){
   return bilan;
 }
 
-export { semerActivites, semerIndicateurs, semerDecoupage };
+export { semerActivites, semerIndicateurs, semerDecoupage, semerIndicateursProcessus };
 
 /* ── Exécution en ligne de commande ──────────────────────────────────
    Uniquement quand le fichier est lancé directement (`node src/seed-reel.js`),

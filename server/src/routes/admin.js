@@ -346,11 +346,11 @@ r.post("/restauration", validate(restaurationBody), async (req, res, next) => {
    seul très long qui gèlerait le serveur ou dépasserait le délai du proxy. */
 r.post("/reference", async (req, res, next) => {
   const p = z.object({
-    quoi: z.enum(["decoupage", "indicateurs", "sites"]),
+    quoi: z.enum(["decoupage", "indicateurs", "sites", "processus"]),
     forceGeo: z.boolean().optional(),
   }).safeParse(req.body || {});
   if(!p.success) return res.status(422).json({
-    error: "paramètre « quoi » attendu : decoupage, indicateurs ou sites" });
+    error: "paramètre « quoi » attendu : decoupage, indicateurs, sites ou processus" });
   const { quoi, forceGeo } = p.data;
   try{
     let bilan;

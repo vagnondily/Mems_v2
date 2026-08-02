@@ -1817,6 +1817,7 @@ function SetLocations({ db, set, notify, can, reload, me }){
     try{ const r = await api.chargerReference(quoi); const b = r.bilan||{};
       notify(quoi==="decoupage" ? `Découpage chargé : ${fmt(b.geo?.unites||0)} unités, ${fmt(b.geo?.contours||0)} contours`
         : quoi==="indicateurs" ? `Référentiels chargés : ${fmt(b.activites?.lues||0)} activités, ${fmt(b.indicateurs?.lues||0)} indicateurs`
+            + (b.processus?.indicateurs ? `, ${fmt(b.processus.indicateurs)} indicateurs de suivi de processus (XLSForm)` : "")
         : `Sites chargés : ${fmt(b.crees||0)} créés, ${fmt(b.majs||0)} mis à jour`, "ok");
       await reload?.(); await loadVersions();
     }catch(e){ notify(e.message,"err"); } setRefBusy(""); };

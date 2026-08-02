@@ -7,6 +7,7 @@ import { dernieresVisitesOdk } from "../lib/soumissions.js";
 import { MOTIFS_MANUELS } from "../lib/visites.js";
 import { schemasAuthPublics, CAUSES_AUTH } from "../lib/authSortante.js";
 import { can } from "../lib/auth.js";
+import { resumeProcessus } from "./process-indicators.js";
 
 const r = Router();
 const J = (v, d) => { try{ return JSON.parse(v); }catch(e){ return d; } };
@@ -203,6 +204,11 @@ r.get("/state", (req, res) => {
     year, me: { id:u.id, role:u.role, office_id:u.office_id },
     offices, partners, categories: cats, sites, params, visits, indicators, outcomes,
     outputs, population, pdd, geoVersion, country, odkForms, settings,
+    /* Le RÉSUMÉ des indicateurs de suivi de processus extraits des XLSForms —
+       par activité, par module — pour que le tableau de bord dessine la structure
+       du suivi sans tirer les milliers de variables. La liste complète et l'export
+       Excel passent par /api/process-indicators. */
+    processIndicators: resumeProcessus(),
     /* La liste fermée des motifs de saisie à la main, servie telle qu'elle est
        déclarée dans lib/visites.js. Elle part avec l'état initial pour la même
        raison que `country` et `settings` : la grille mensuelle en a besoin dès
