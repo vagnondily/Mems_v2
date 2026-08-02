@@ -48,13 +48,22 @@ r.get("/", (req, res) => {
      valeur saisie : les deux colonnes voyagent ensemble, `last_visit_effective`
      dit laquelle prime. Un appel de plus par site serait autrement inévitable
      dès qu'un écran affiche « dernière visite » sur une liste de 200 lignes. */
-  const sql = `SELECT sites.*, v.derniere AS last_visit_odk,
-                      COALESCE(v.derniere, sites.last_visit) AS last_visit_effective,
-                      COALESCE(v.soumissions,0) AS submissions
+  /* Sous-requêtes CORRÉLÉES, et non une jointure sur un agrégat global : la forme
+     précédente — LEFT JOIN (SELECT … GROUP BY site_id) — obligeait SQLite à
+     regrouper TOUTE la table `submissions`, tous sites confondus, avant d'appliquer
+     le LIMIT. On payait donc l'agrégation de centaines de milliers de lignes pour
+     n'en afficher que deux cents, et ce coût grandissait avec la base sans rien
+     changer à l'écran. Corrélées, les deux sous-requêtes ne sont évaluées que pour
+     les lignes effectivement retenues, et `idx_submissions_site_date` les sert. */
+  const sql = `SELECT sites.*,
+                      (SELECT MAX(svy_date) FROM submissions
+                       WHERE site_id = sites.id AND svy_date IS NOT NULL) AS last_visit_odk,
+                      COALESCE((SELECT MAX(svy_date) FROM submissions
+                                WHERE site_id = sites.id AND svy_date IS NOT NULL),
+                               sites.last_visit) AS last_visit_effective,
+                      (SELECT COUNT(*) FROM submissions
+                       WHERE site_id = sites.id AND svy_date IS NOT NULL) AS submissions
                FROM sites
-               LEFT JOIN (SELECT site_id, MAX(svy_date) derniere, COUNT(*) soumissions
-                          FROM submissions WHERE site_id IS NOT NULL AND svy_date IS NOT NULL
-                          GROUP BY site_id) v ON v.site_id = sites.id
                ${where.length ? "WHERE "+where.join(" AND ") : ""}
                ORDER BY code LIMIT ? OFFSET ?`;
   const rows = db.prepare(sql).all(...args, f.limit, f.offset);
@@ -471,10 +480,29 @@ r.post("/bulk", requireCap("edit"), (req, res) => {
      masse. Un compte national/super (scope null) reste libre de réaffecter. */
   if(field === "office_id" && scope)
     return res.status(403).json({ error:"un compte rattaché à un bureau ne peut pas réaffecter ses sites à un autre bureau en masse" });
-  const stmt = db.prepare(`UPDATE sites SET ${field}=?, updated_at=datetime('now')
+  /* `rev=rev+1` n'est pas optionnel : PUT /:id refuse en 409 quand le rev envoyé
+     ne correspond plus (verrou optimiste anti-écrasement). Si le bulk laissait rev
+     inchangé, un éditeur ayant chargé le site avant la modification groupée
+     conserverait le même rev, son PUT passerait le contrôle et écraserait en
+     silence ce que le bulk vient d'écrire. On incrémente donc rev comme le fait
+     PUT /:id et l'import Excel. */
+  const stmt = db.prepare(`UPDATE sites SET ${field}=?, rev=rev+1, updated_at=datetime('now')
                            WHERE id=? ${scope ? "AND office_id=?" : ""}`);
   let n = 0;
-  tx(() => { for(const id of ids) n += stmt.run(value, id, ...(scope?[scope]:[])).changes; })();
+  /* Une valeur que la base refuse — un statut hors ('Active','Inactive'), une clé
+     étrangère inconnue — remontait en « erreur interne » 500, c'est-à-dire en panne
+     du serveur, alors que c'est une saisie à corriger. On la nomme : l'opérateur qui
+     lance une modification sur 500 sites doit lire CE QUI ne passe pas, pas un
+     message qui l'envoie ouvrir un ticket. */
+  try{
+    tx(() => { for(const id of ids) n += stmt.run(value, id, ...(scope?[scope]:[])).changes; })();
+  }catch(e){
+    if(/CHECK constraint|FOREIGN KEY|NOT NULL|UNIQUE/.test(e.message))
+      return res.status(422).json({ error:
+        `la valeur « ${value === null ? "(vide)" : value} » n'est pas admise pour le champ `
+        + `« ${field} » : la base l'a refusée. Aucun site n'a été modifié.` });
+    throw e;
+  }
   audit(req, "bulk", null, `Modification groupée de ${n} site(s) — ${field}`);
   res.json({ updated:n });
 });

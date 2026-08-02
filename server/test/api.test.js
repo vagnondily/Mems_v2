@@ -244,6 +244,52 @@ test("modification groupée : un compte cloisonné ne peut pas réaffecter ses s
   assert.equal(adminTransfert.status, 200);
 });
 
+/* Audit — la modification groupée n'incrémentait PAS `rev`. Or PUT /sites/:id refuse
+   en 409 quand le rev envoyé ne correspond plus : c'est le verrou qui empêche deux
+   éditeurs de s'écraser. Un site touché par un bulk gardait son rev, si bien qu'un
+   éditeur l'ayant chargé AVANT le bulk repassait le contrôle et écrasait en silence ce
+   que le bulk venait d'écrire — le verrou décrit longuement dans le code était contourné
+   dès qu'une modification groupée s'intercalait. */
+test("modification groupée : rev est incrémenté, sans quoi le verrou du PUT est défait", async () => {
+  const site = (await request(app).post("/api/sites").set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:"BULK-REV-1", name:"Site du verrou", activity_tag:"SMP", adm4:"Fkt Verrou" }))
+    .body.site;
+  assert.ok(site, "le site témoin est créé");
+  const revAvant = db.prepare("SELECT rev FROM sites WHERE id=?").get(site.id).rev;
+
+  const bulk = await request(app).post("/api/sites/bulk").set("Authorization", `Bearer ${adminToken}`)
+    .send({ ids:[site.id], field:"status", value:"Inactive" });
+  assert.equal(bulk.status, 200, JSON.stringify(bulk.body));
+  assert.equal(bulk.body.updated, 1);
+  const revApres = db.prepare("SELECT rev FROM sites WHERE id=?").get(site.id).rev;
+  assert.equal(revApres, revAvant + 1, "la modification groupée fait avancer rev");
+
+  /* Le PUT qui repart de la version d'AVANT est désormais refusé, au lieu d'écraser. */
+  const perime = await request(app).put(`/api/sites/${site.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:site.code, name:"Écrasé par une saisie périmée", rev:revAvant });
+  assert.equal(perime.status, 409, JSON.stringify(perime.body));
+  assert.equal(db.prepare("SELECT name FROM sites WHERE id=?").get(site.id).name, "Site du verrou",
+    "la valeur du bulk n'a pas été écrasée");
+  assert.equal(db.prepare("SELECT status FROM sites WHERE id=?").get(site.id).status, "Inactive");
+
+  /* Avec le rev à jour, la même écriture passe : le verrou borne, il n'interdit pas. */
+  const ajour = await request(app).put(`/api/sites/${site.id}`)
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ code:site.code, name:"Renommé en connaissance de cause", rev:revApres });
+  assert.equal(ajour.status, 200, JSON.stringify(ajour.body));
+
+  /* Une valeur que la base refuse se dit en 422 avec le champ et la valeur en cause,
+     et non en « erreur interne » 500 : c'est une saisie à corriger, pas une panne. */
+  const refus = await request(app).post("/api/sites/bulk").set("Authorization", `Bearer ${adminToken}`)
+    .send({ ids:[site.id], field:"status", value:"Inactif" });
+  assert.equal(refus.status, 422, JSON.stringify(refus.body));
+  assert.match(refus.body.error, /Inactif/, "le message nomme la valeur refusée");
+  assert.match(refus.body.error, /status/, "et le champ en cause");
+  assert.equal(db.prepare("SELECT status FROM sites WHERE id=?").get(site.id).status, "Inactive",
+    "rien n'a été modifié");
+});
+
 test("collections : la synchronisation crée, met à jour et supprime en une transaction", async () => {
   const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
   const rows = st.body.reportTemplates.map(t => ({ ...t }));
@@ -357,13 +403,34 @@ test("tirage ODK Central : pagine, aplatit les groupes, met à jour le cache et 
   assert.equal(r.body.truncated, false);
   assert.ok(odkMockRequests.every(q => q.auth === "Bearer jeton-de-test"));
 
+  /* L'état initial rend le COMPTE et les CHAMPS, jamais les lignes : le cache brut
+     — jusqu'à 20 000 soumissions par formulaire — ne voyage plus vers chaque compte
+     à chaque ouverture. Les lignes se demandent à leur route dédiée. */
   const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
   const after1 = st.body.odkForms.find(x => x.id === f.id);
   assert.equal(after1.records, 3);
-  assert.equal(after1.rows.length, 3);
+  assert.equal(after1.rows, undefined, "les lignes brutes ne sont plus dans /state");
+  assert.ok(after1.champs.includes("DPName"), "les colonnes du tirage y sont, elles");
+  assert.ok(!after1.champs.includes("Technical_module"),
+    "et elles reflètent l'aplatissement des groupes");
+
+  const lignes = await request(app).get(`/api/odk-forms/${f.id}/rows`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(lignes.status, 200);
+  assert.equal(lignes.body.total, 3);
+  assert.equal(lignes.body.rows.length, 3);
+  assert.equal(lignes.body.reste, 0);
   /* Le groupe Technical_module > TechnicalDP_submodule est aplati sur DPName seul. */
-  assert.equal(after1.rows[0].DPName, "Site 1");
-  assert.equal(after1.rows[0].Technical_module, undefined);
+  assert.equal(lignes.body.rows[0].DPName, "Site 1");
+  assert.equal(lignes.body.rows[0].Technical_module, undefined);
+
+  /* La tranche est bornée et le reste est annoncé, pour qu'un écran ne prenne pas
+     une page pour un total. */
+  const tranche = await request(app).get(`/api/odk-forms/${f.id}/rows?limit=2`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(tranche.body.rows.length, 2);
+  assert.equal(tranche.body.total, 3);
+  assert.equal(tranche.body.reste, 1);
 
   const audit = await request(app).get("/api/audit").set("Authorization", `Bearer ${adminToken}`);
   assert.ok(audit.body.rows.some(a => a.entity === "odk_forms" && a.action === "pull"));
@@ -483,6 +550,83 @@ test("cloisonnement : un compte rattaché à un bureau ne voit que ses sites", a
   const autre = db.prepare("SELECT id FROM sites WHERE office_id<>? LIMIT 1").get(office.id);
   const r = await request(app).get(`/api/sites/${autre.id}`).set("Authorization", `Bearer ${t}`);
   assert.equal(r.status, 403);
+});
+
+/* Audit — PUT /visits/:id/status chargeait la visite par son SEUL identifiant, puis
+   écrivait son statut. `validate` est une capacité que porte le rôle `validator`, et
+   `validator` est un rôle BORNÉ (lib/scope.js) : un validateur du bureau A qui devinait
+   l'identifiant d'une visite du bureau B la validait — ou la marquait « Erreur » — alors
+   qu'il n'avait jamais eu le droit de la voir. La même IDOR que sites/aliases/ciblage
+   referment déjà ; elle manquait ici. */
+test("cloisonnement : un validateur ne valide pas la visite d'un autre bureau", async () => {
+  const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"valideur@test.local", password:"ValideurMotDePasse1", first_name:"Valideur",
+            role:"validator", office_id:office.id, tabs:["home"], active:true });
+  motDePasseAdopte("valideur@test.local");
+  const t = (await login("valideur@test.local", "ValideurMotDePasse1")).body.token;
+
+  const ailleurs = db.prepare(
+    "SELECT * FROM visits WHERE office_id IS NOT NULL AND office_id<>? LIMIT 1").get(office.id);
+  assert.ok(ailleurs, "le jeu d'essai porte une visite d'un autre bureau");
+  const avant = ailleurs.status;
+
+  const usurpe = await request(app).put(`/api/visits/${ailleurs.id}/status`)
+    .set("Authorization", `Bearer ${t}`).send({ status:"Validé" });
+  assert.equal(usurpe.status, 404, JSON.stringify(usurpe.body));
+  assert.equal(db.prepare("SELECT status FROM visits WHERE id=?").get(ailleurs.id).status, avant,
+    "la visite de l'autre bureau est intacte");
+  assert.equal(db.prepare("SELECT validated_by FROM visits WHERE id=?").get(ailleurs.id).validated_by,
+    null, "et personne n'y est inscrit comme validateur");
+
+  /* Sur les siennes, rien ne change : le cloisonnement borne, il n'interdit pas. */
+  const sienne = db.prepare("SELECT * FROM visits WHERE office_id=? LIMIT 1").get(office.id);
+  assert.ok(sienne, "le bureau porte des visites à lui");
+  const ok = await request(app).put(`/api/visits/${sienne.id}/status`)
+    .set("Authorization", `Bearer ${t}`).send({ status:"Validé" });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(db.prepare("SELECT status FROM visits WHERE id=?").get(sienne.id).status, "Validé");
+});
+
+/* Audit — la frontière super/admin ne vit pas dans CAPS (qui accorde « admin » aux deux)
+   mais dans requireSuper : le super SEUL exécute des scripts R/SPSS, c'est-à-dire du code
+   arbitraire sur le serveur. Un administrateur qui pouvait créer un compte « super » — et
+   en recevoir le mot de passe provisoire, rendu une fois à la création — s'octroyait donc
+   un interpréteur de commandes en trois requêtes. Idem par promotion d'un compte existant :
+   le garde d'alors ne regardait que le rôle ACTUEL de la cible, jamais le rôle VOULU. */
+test("escalade : un administrateur ne crée ni ne promeut un super-utilisateur", async () => {
+  const office = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
+  await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
+    .send({ email:"admin2@test.local", password:"Admin2MotDePasse1", first_name:"Admin2",
+            role:"admin", office_id:null, tabs:["home"], active:true });
+  motDePasseAdopte("admin2@test.local");
+  const a = (await login("admin2@test.local", "Admin2MotDePasse1")).body.token;
+
+  /* 1. Création directe d'un super : refusée. */
+  const cree = await request(app).post("/api/users").set("Authorization", `Bearer ${a}`)
+    .send({ email:"faux-super@test.local", first_name:"Faux", role:"super",
+            office_id:null, tabs:["home"], active:true });
+  assert.equal(cree.status, 403, JSON.stringify(cree.body));
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM users WHERE email=?")
+    .get("faux-super@test.local").c, 0, "aucun compte super n'est né de la tentative");
+
+  /* 2. Promotion d'un compte ORDINAIRE en super : refusée elle aussi — c'est le cas que
+        le garde d'alors laissait passer, puisque la cible n'était pas encore super. */
+  const cible = await request(app).post("/api/users").set("Authorization", `Bearer ${a}`)
+    .send({ email:"a-promouvoir@test.local", first_name:"Cible", role:"editor",
+            office_id:office.id, tabs:["home"], active:true });
+  assert.equal(cible.status, 201, JSON.stringify(cible.body));
+  const promu = await request(app).put(`/api/users/${cible.body.user.id}`)
+    .set("Authorization", `Bearer ${a}`).send({ role:"super" });
+  assert.equal(promu.status, 403, JSON.stringify(promu.body));
+  assert.equal(db.prepare("SELECT role FROM users WHERE id=?").get(cible.body.user.id).role,
+    "editor", "le compte est resté éditeur");
+
+  /* 3. Un super, lui, le fait : la barrière tient sur le rôle de l'appelant, pas sur la route. */
+  const parSuper = await request(app).put(`/api/users/${cible.body.user.id}`)
+    .set("Authorization", `Bearer ${adminToken}`).send({ role:"super" });
+  assert.equal(parSuper.status, 200, JSON.stringify(parSuper.body));
+  assert.equal(db.prepare("SELECT role FROM users WHERE id=?").get(cible.body.user.id).role, "super");
 });
 
 /* Le cloisonnement ne valait que pour les sites : visites, distributions, paramètres et
@@ -3395,6 +3539,36 @@ test("connecteurs : supprimer un connecteur emporte ses correspondances", async 
     .get(c.id).c, 0);
   assert.equal((await request(app).get(`/api/connectors/${c.id}/mappings`)
     .set("Authorization", `Bearer ${adminToken}`)).status, 404);
+});
+
+test("connecteurs MoDa : les 5 sources pré-créées attendent « Token » (API v1), pas « Bearer »", async () => {
+  /* MoDa est un déploiement KoboToolbox : son API v1 lit un GET
+     « /api/v1/data/{n°}?format=json » et n'accepte le justificatif qu'en
+     « Authorization: Token <clé> ». Une clé MoDa présentée en « Bearer »
+     (schéma « porteur ») revient en 401 — la préparation doit donc câbler le
+     schéma « jeton », sans quoi les 5 sources naissent inutilisables. */
+  const r = await request(app).post("/api/connectors/moda-preparer")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.ok(r.body.connectors.length >= 5, "les cinq activités MoDa sont pré-créées");
+
+  const enBase = db.prepare("SELECT name, auth_schema, config, kind FROM connector WHERE name LIKE 'MoDa — %'").all();
+  assert.equal(enBase.length, r.body.connectors.length);
+  for(const c of enBase){
+    assert.equal(c.auth_schema, "jeton",
+      `${c.name} : le schéma est « jeton » (Token), celui que MoDa v1 exige`);
+    assert.equal(c.kind, "kobo");
+    const cfg = JSON.parse(c.config);
+    assert.equal(cfg.apiVersion, "v1", `${c.name} : l'API v1 est pré-réglée`);
+    assert.ok(cfg.activityTag, `${c.name} : la source est liée à son activité`);
+  }
+
+  /* Idempotent : un second appel ne recrée rien. */
+  const r2 = await request(app).post("/api/connectors/moda-preparer")
+    .set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(r2.status, 200);
+  assert.equal(r2.body.crees.length, 0, "un second appel ne duplique aucune source");
+  assert.ok(r2.body.existants.length >= 5);
 });
 
 test("connecteurs : la valeur par défaut passe par la même transformation que la valeur lue", async () => {

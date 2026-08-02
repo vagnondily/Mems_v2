@@ -124,6 +124,32 @@ r.post("/odk-forms/:id/pull", requireCap("admin"), async (req, res, next) => {
   }catch(e){ repondreEchec(res, next, e, f); }
 });
 
+/* ── Les lignes tirées, à la demande et par tranches ──────────────────
+   Le cache brut (`odk_forms.raw`, jusqu'à 20 000 soumissions par formulaire)
+   voyageait dans /api/state, donc vers CHAQUE compte à CHAQUE ouverture de
+   l'application, alors qu'un seul écran s'en sert — « Créer un jeu de données »
+   (Analyses). À l'échelle annoncée, c'était plusieurs méga-octets de données de
+   terrain servies pour rien, et re-sérialisées à chaque appel.
+
+   Elles se demandent désormais ici, quand on en a besoin, par tranches. Réservée
+   à `edit` : ce sont des données de soumission — relevés GPS, identifiants de
+   ménage — et non un référentiel public. La table `odk_forms` ne porte aucun
+   bureau ; à défaut de pouvoir cloisonner, on ne descend pas sous la capacité qui
+   sert déjà à en faire quelque chose. */
+const PLAFOND_LIGNES = 5000;
+r.get("/odk-forms/:id/rows", requireCap("edit"), (req, res) => {
+  const f = charger(req, res); if(!f) return;
+  const limite = Math.min(PLAFOND_LIGNES, Math.max(1, parseInt(req.query.limit, 10) || 1000));
+  const depuis = Math.max(0, parseInt(req.query.offset, 10) || 0);
+  const toutes = J(f.raw, []);
+  const lignes = Array.isArray(toutes) ? toutes : [];
+  res.json({ rows: lignes.slice(depuis, depuis + limite),
+             total: lignes.length, offset: depuis, limit: limite,
+             /* Dire la troncature plutôt que la laisser deviner : un écran qui
+                reçoit 5 000 lignes sur 20 000 sans le savoir affiche un total faux. */
+             reste: Math.max(0, lignes.length - (depuis + limite)) });
+});
+
 /* ── Épreuve de connexion ─────────────────────────────────────────────
    « Tester cette source », en deux étapes qui ne disent pas la même chose, et
    c'est tout l'intérêt :

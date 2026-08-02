@@ -78,6 +78,14 @@ r.post("/", validate(schemas.user), async (req, res) => {
   if(ident.erreur) return res.status(ident.erreur.includes("déjà")?409:422).json({ error:ident.erreur });
   const interdit = tpmInterdit(b);
   if(interdit) return res.status(422).json({ error:interdit });
+  /* La frontière super / admin ne vit pas dans CAPS (qui accorde « admin » aux
+     deux) mais dans requireSuper : le super seul exécute des scripts R/SPSS
+     — c'est-à-dire du code arbitraire sur le serveur. Un administrateur qui
+     pourrait créer un compte « super » et en recevoir le mot de passe provisoire
+     s'octroierait donc un interpréteur de commandes en trois lignes. On l'interdit :
+     seul un super crée ou promeut un super. */
+  if(b.role === "super" && req.user.role !== "super")
+    return res.status(403).json({ error:"seul un super-utilisateur peut créer un compte super-utilisateur" });
   const id = newId("user");
   db.prepare(`INSERT INTO users (id,email,username,pw_hash,first_name,last_name,title,office_id,tpm_id,role,tabs,active,must_change_pw)
               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)`)
@@ -143,6 +151,12 @@ r.put("/:id", validate(userPatch), async (req, res) => {
     return res.status(409).json({ error:"vous ne pouvez pas modifier votre propre rôle ni vous désactiver" });
   if(cur.role === "super" && req.user.role !== "super")
     return res.status(403).json({ error:"seul un super-utilisateur modifie un super-utilisateur" });
+  /* Symétrique du garde ci-dessus, mais sur le rôle VOULU et non le rôle actuel :
+     sans lui, un administrateur promeut un éditeur en « super » (cur.role n'est pas
+     encore super, le test précédent laisse passer) et franchit la frontière que
+     requireSuper trace. Promouvoir vers super est réservé au super. */
+  if(m.role === "super" && cur.role !== "super" && req.user.role !== "super")
+    return res.status(403).json({ error:"seul un super-utilisateur peut promouvoir un compte en super-utilisateur" });
   const dup = db.prepare("SELECT 1 FROM users WHERE email=? AND id<>?").get(m.email, cur.id);
   if(dup) return res.status(409).json({ error:"cette adresse est déjà utilisée" });
   const interdit = tpmInterdit(m);

@@ -31,13 +31,28 @@ function Analytics({ db, set, me, sub, setSub, notify, can }){
 
 function Datasets({ db, set, notify, can }){
   const [open,setOpen] = useState(null); const [creating,setCreating] = useState(false);
-  const create = (formId, name) => {
+  const [tirage,setTirage] = useState("");
+  /* Les lignes brutes ne voyagent plus dans l'état initial — jusqu'à 20 000
+     soumissions par formulaire partaient vers chaque compte à chaque ouverture,
+     pour ce seul geste. On va les chercher AU MOMENT où l'on en fait un jeu de
+     données, ce qui est aussi le seul moment où elles servent. */
+  const create = async (formId, name) => {
     const f = db.odkForms.find(x=>x.id===formId); if(!f) return;
-    const rows = f.rows && f.rows.length ? f.rows : [];
-    if(!rows.length){ notify("Ce formulaire ne contient pas encore de données extraites","warn"); return; }
-    set(d => { d.datasets.push({ id:uid("ds"), name: name || f.name, formId:f.id, formName:f.name,
-      createdAt:new Date().toISOString(), raw: rows, rules: [], formulas: [], version: 1, notes:"" }); return d; });
-    setCreating(false); notify("Jeu de données créé à partir des données brutes","ok"); };
+    if(!f.records){ notify("Ce formulaire ne contient pas encore de données extraites","warn"); return; }
+    setTirage(formId);
+    try{
+      const r = await api.odkFormRows(formId);
+      const rows = r.rows || [];
+      if(!rows.length){ notify("Ce formulaire ne contient pas encore de données extraites","warn"); return; }
+      set(d => { d.datasets.push({ id:uid("ds"), name: name || f.name, formId:f.id, formName:f.name,
+        createdAt:new Date().toISOString(), raw: rows, rules: [], formulas: [], version: 1, notes:"" }); return d; });
+      setCreating(false);
+      notify(r.reste
+        ? `Jeu de données créé — ${fmt(rows.length)} lignes sur ${fmt(r.total)} (plafond de lecture atteint)`
+        : `Jeu de données créé à partir de ${fmt(rows.length)} ligne(s) brutes`, r.reste ? "warn" : "ok");
+    }catch(e){ notify(e.message, "err"); }
+    finally{ setTirage(""); }
+  };
   return (
     <>
       <Note>Un jeu de données fige les <b>données brutes</b> extraites d'un formulaire. Les règles d'apurement
@@ -75,8 +90,9 @@ function Datasets({ db, set, notify, can }){
             <div key={f.id} className="flex items-center gap-3 px-3 py-2.5 border border-slate-200 rounded hover:bg-slate-50">
               <Database size={16} className="text-slate-400" />
               <div className="flex-1 min-w-0"><div className="f13 font-semibold text-slate-800">{f.name}</div>
-                <div className="f115 text-slate-500">{f.formId} · {fmt((f.rows||[]).length)} lignes disponibles</div></div>
-              <Btn size="sm" disabled={!(f.rows||[]).length} onClick={()=>create(f.id)}>Créer</Btn>
+                <div className="f115 text-slate-500">{f.formId} · {fmt(f.records||0)} lignes disponibles</div></div>
+              <Btn size="sm" disabled={!f.records || !!tirage} onClick={()=>create(f.id)}>
+                {tirage===f.id ? "Lecture…" : "Créer"}</Btn>
             </div>))}
         </div>
       </Modal>

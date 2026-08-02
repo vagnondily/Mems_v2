@@ -326,6 +326,11 @@ export const api = {
      HTTP, cause nommée — et jamais le secret : au plus sa présence et sa longueur. */
   connectorTest:      (id)           => call("POST", `/connectors/${encodeURIComponent(id)}/test`),
   odkFormTest:        (id)           => call("POST", `/odk-forms/${encodeURIComponent(id)}/test`),
+  /* Les lignes tirées d'une source ODK, à la demande. Elles ne voyagent plus dans
+     l'état initial : jusqu'à 20 000 soumissions par formulaire y partaient vers
+     chaque compte à chaque ouverture, alors qu'un seul écran s'en sert. */
+  odkFormRows: (id, limit=5000, offset=0) =>
+    call("GET", `/odk-forms/${encodeURIComponent(id)}/rows?limit=${limit}&offset=${offset}`),
 
   /* Chaîne ODK : verser, puis rattacher. Les deux sont réservés à
      l'administration côté serveur — ils écrivent dans le référentiel
@@ -502,7 +507,22 @@ export function createSyncQueue({ onStatus = () => {}, onConflict = null, delay 
         return;
       }
       failures++;
-      onStatus({ state:"error", inflight, failures, message:e.message, collection:name });
+      /* Deux natures d'échec, et elles n'appellent pas la même suite.
+
+         TRANSITOIRE (5xx, réseau coupé) : la modification est encore bonne, on la
+         remet en file avec un délai croissant. C'est ce que le code faisait déjà.
+
+         DÉFINITIF (400, 403, 422 — une ligne que le serveur refuse) : réessayer ne
+         servirait à rien, et c'est là que le silence coûtait cher. Le travail était
+         retiré de la file, la modification restait affichée dans l'état local, et
+         RIEN ne le disait : l'appelant ne notifiait qu'au troisième échec d'affilée,
+         si bien qu'un rejet isolé laissait l'écran montrer une saisie que le serveur
+         n'avait jamais acceptée — jusqu'au prochain rechargement complet, qui la
+         faisait disparaître sans explication. On le remonte immédiatement, marqué
+         comme définitif, pour que l'appelant le dise et propose de recharger. */
+      const definitif = e.status >= 400 && e.status < 500;
+      onStatus({ state:"error", inflight, failures, message:e.message, collection:name,
+                 definitif, rejete: definitif ? job : null });
       if(e.status >= 500 || e.status === 0){
         /* Erreur transitoire : on remet en file avec un délai croissant, plafonné. */
         if(!pending.has(name)) pending.set(name, job);
