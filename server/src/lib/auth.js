@@ -99,8 +99,24 @@ export function authenticate(req, res, next){
     return res.status(403).json({ error:
       "mot de passe provisoire : changez-le avant tout autre accès "
       + "(POST /api/auth/password), puis reconnectez-vous." });
+  /* Le compte « écran de supervision » ne fonctionne qu'aux heures de bureau :
+     hors plage, la session existe mais l'API se ferme — l'écran cesse d'afficher
+     la donnée réelle. Le serveur tranche (l'horloge d'un écran mural n'est pas
+     fiable), sur l'heure de Madagascar. */
+  if(user.role === "dashboard" && !dansPlageAffichage())
+    return res.status(403).json({ error:
+      "Écran de supervision : accès autorisé de 07h30 à 18h00 (heure de Madagascar).",
+      code:"hors_plage_affichage" });
   req.user = user; req.jti = payload.jti;
   return next();
+}
+
+/* L'écran de supervision n'est accessible que de 07h30 à 18h00, heure de
+   Madagascar (UTC+3, sans heure d'été). Calcul sur l'horloge UTC pour être
+   indépendant du fuseau du serveur. */
+export function dansPlageAffichage(d = new Date()){
+  const min = (d.getUTCHours() * 60 + d.getUTCMinutes() + 180) % 1440;
+  return min >= 450 && min < 1080;   // 07:30 → 18:00
 }
 
 const CAPS = {
@@ -109,7 +125,11 @@ const CAPS = {
   validator: { edit:true,  del:false, validate:true,  admin:false },
   editor:    { edit:true,  del:false, validate:false, admin:false },
   viewer:    { edit:false, del:false, validate:false, admin:false },
+  /* Écran de supervision (kiosque) : lecture seule, pour un affichage permanent
+     du tableau de bord. Restreint à une plage horaire (voir dansPlageAffichage). */
+  dashboard: { edit:false, del:false, validate:false, admin:false },
 };
+export const ROLES_VALIDES = Object.keys(CAPS);
 export const can = (user, capability) => !!(CAPS[user?.role]?.[capability]);
 export const requireCap = (capability) => (req, res, next) =>
   can(req.user, capability) ? next()

@@ -167,7 +167,7 @@ export const schemas = {
        intervenant externe : il ne voit que les plans de son prestataire, quel que
        soit son rôle. Voir tpmBound dans lib/scope.js. */
     tpm_id: nullableStr(64),
-    role: z.enum(["super","admin","validator","editor","viewer"]).default("viewer"),
+    role: z.enum(["super","admin","validator","editor","viewer","dashboard"]).default("viewer"),
     tabs: z.array(z.string().max(40)).max(20).default([]),
     active: z.coerce.boolean().default(true),
   }),

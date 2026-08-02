@@ -6,7 +6,7 @@ import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 import { validate, schemas } from "../lib/validate.js";
 import { verifyPassword, hashPassword, issueToken, revoke, authenticate,
-         passwordProblems, requireSuper } from "../lib/auth.js";
+         passwordProblems, requireSuper, dansPlageAffichage } from "../lib/auth.js";
 import { newId } from "../lib/crypto.js";
 
 const r = Router();
@@ -69,6 +69,10 @@ r.post("/login", loginLimiter, validate(schemas.login), async (req, res) => {
     log.warn("échec de connexion", { email: email.replace(/(.).*(@.*)/, "$1***$2"), tentatives: fails });
     return res.status(401).json(generic);
   }
+  /* L'écran de supervision (kiosque) ne se connecte qu'aux heures de bureau. */
+  if(u.role === "dashboard" && !dansPlageAffichage())
+    return res.status(403).json({ code:"hors_plage_affichage",
+      error:"Écran de supervision : accès autorisé de 07h30 à 18h00 (heure de Madagascar)." });
   db.prepare("UPDATE users SET failed_logins=0, locked_until=NULL, last_login=datetime('now') WHERE id=?").run(u.id);
   const { token } = issueToken(u, req);
   db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
