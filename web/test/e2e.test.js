@@ -432,6 +432,75 @@ test("persistance : une formule éditée dans les Paramètres est enregistrée s
   assert.equal(ctx.errors.length, 0, "aucune erreur pendant l'édition du réglage");
 });
 
+test("calculs : les variables de suivi de processus (XLSForm) rejoignent les variables de couverture", async () => {
+  /* « Les indicateurs de l'XLSForm doivent aussi être dans les calculs. »
+     L'écran promettait depuis longtemps que les variables des XLSForms
+     « viendront enrichir cette liste » — une promesse, pas une fonction. Elles y
+     sont : nommées proc_<ACTIVITÉ>_<mesure>, avec leur valeur RÉELLE (le
+     référentiel est semé au démarrage), à côté des variables de couverture dont
+     la valeur reste un jeu d'essai. */
+  const railItem = (l) => all("main nav button").find(b => b.textContent.trim() === l);
+  await click(railItem("Calculs"), "écran Calculs"); await flush(); await flush();
+
+  const varsBtn = all("main button").find(b => b.textContent.trim().startsWith("Variables utilisables"));
+  assert.ok(varsBtn, "l'entrée « Variables utilisables » est au rail");
+  await click(varsBtn, "variables utilisables"); await flush(); await flush();
+
+  const txt = document.body.textContent;
+  assert.ok(txt.includes("riskLevel"), "les variables de couverture y sont toujours");
+  /* Les deux totaux existent QUOI QU'IL ARRIVE — ils comptent le référentiel, même
+     vide. C'est la partie du contrat qui ne dépend d'aucune donnée semée. */
+  assert.ok(txt.includes("procIndicateurs") && txt.includes("procActivites"),
+    "les totaux du suivi de processus sont des variables utilisables");
+  assert.ok(txt.includes("Référentiel XLSForm"),
+    "leur origine est nommée : elles viennent du référentiel extrait des XLSForms");
+
+  /* Les variables PAR ACTIVITÉ n'existent que si un référentiel XLSForm a été
+     semé — c'est le fait de `seed-reel`, pas du jeu de test. On ne l'exige donc
+     pas ; on vérifie la cohérence : autant de familles proc_<TAG>_ que
+     d'activités annoncées par le serveur. */
+  const etat = await (await fetch(`${BASE}/state`)).json();
+  const nbActivites = (etat.processIndicators?.activites || []).length;
+  const familles = new Set([...txt.matchAll(/proc_(\w+)_couverture/g)].map(m => m[1]));
+  assert.equal(familles.size, nbActivites,
+    `une famille de variables par activité dotée d'un XLSForm (${nbActivites})`);
+  assert.equal(ctx.errors.length, 0, "aucune erreur sur l'écran des variables");
+});
+
+test("rapports : un calcul s'insère dans un modèle avec sa visualisation", async () => {
+  /* « Si je crée un Calcul je devrais pouvoir l'insérer dans les rapports comme
+     tous les indicateurs, et sélectionner comment se fera sa visualisation. » */
+  /* Les Rapports sont une destination de premier niveau : elle vit dans la barre
+     du haut, pas dans le rail des Paramètres. */
+  const nav = (l) => all("header nav button").find(b => b.textContent.trim().startsWith(l));
+  await click(nav("Rapports"), "destination Rapports"); await flush(); await flush();
+  const onglet = all("main nav button, main button")
+    .find(b => b.textContent.trim() === "Générateur de rapport");
+  assert.ok(onglet, "l'onglet du générateur est proposé");
+  await click(onglet, "onglet du générateur"); await flush(); await flush();
+
+  assert.ok(document.body.textContent.includes("Calculs"),
+    "le générateur porte une section « Calculs »");
+  assert.ok(document.body.textContent.includes("choisissez sa visualisation")
+    || document.body.textContent.includes("Insérez un calcul"),
+    "elle annonce l'insertion d'un calcul et le choix de sa visualisation");
+
+  /* Le choix de visualisation est une liste fermée, servie par l'écran. */
+  const selects = all("main select");
+  const viz = selects.find(sel => [...sel.options].some(o => o.textContent.includes("Jauge")));
+  assert.ok(viz || document.body.textContent.includes("Aucun calcul inséré"),
+    "la visualisation se choisit dès qu'un calcul est inséré");
+  assert.equal(ctx.errors.length, 0, "aucune erreur sur le générateur de rapports");
+
+  /* Le parcours est SÉQUENTIEL : les tests suivants reprennent dans les
+     Paramètres, là où celui-ci les a trouvés. On y revient plutôt que de les
+     laisser chercher un rail qui n'est plus à l'écran. */
+  const menu = all("header.sticky button").pop();
+  await click(menu, "menu du compte"); await flush();
+  await click(byText("button", "Paramètres de l'application"), "retour aux paramètres");
+  await flush(); await flush();
+});
+
 test("ODK Central : l'écran ne propose plus de « jeton général », et le badge suit ce que le serveur détient", async () => {
   /* Deux affirmations fausses vivaient sur cet écran, et la seconde a remplacé la
      première. « Repris par les sources qui n'ont pas de jeton propre » : ce repli

@@ -323,6 +323,41 @@ test("collections : la synchronisation crée, met à jour et supprime en une tra
   assert.equal(explicite.body.removed, aSupprimer.length);
 });
 
+test("modèles de rapport : un bloc de calcul porte son identifiant ET sa visualisation", async () => {
+  /* « Si je crée un Calcul je devrais pouvoir l'insérer dans le générateur de
+     rapports comme tous les indicateurs, et sélectionner comment se fera sa
+     visualisation. » Une section standard se désigne par une chaîne ; un calcul
+     ne le peut pas — il faut dire LEQUEL et COMMENT le montrer. Les deux formes
+     cohabitent donc dans `blocks`, et l'ORDRE est conservé, ce qui permet
+     d'intercaler un calcul entre deux sections plutôt que de le reléguer à la fin. */
+  const modele = { name:"Modèle avec calcul", intro:"",
+    blocks:["kpi", { b:"calc", id:"minFreq", viz:"jauge" }, "coverage",
+            { b:"calc", id:"adjustedInterval", viz:"barres" }] };
+  const r = await request(app).put("/api/collections/reportTemplates")
+    .set("Authorization", `Bearer ${adminToken}`).send({ rows:[modele] });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+
+  const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
+  const t = st.body.reportTemplates.find(x => x.name === "Modèle avec calcul");
+  assert.ok(t, "le modèle est enregistré");
+  assert.deepEqual(t.blocks, modele.blocks, "les deux formes reviennent telles quelles, dans l'ordre");
+
+  /* La visualisation est une liste FERMÉE : une valeur inventée est refusée plutôt
+     qu'écrite, sans quoi le rapport rendrait un bloc que rien ne sait dessiner. */
+  const faux = await request(app).put("/api/collections/reportTemplates")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ rows:[{ ...t, blocks:[{ b:"calc", id:"minFreq", viz:"camembert3d" }] }] });
+  assert.equal(faux.status, 422, JSON.stringify(faux.body));
+
+  /* Et un bloc de calcul sans identifiant n'a rien à désigner. */
+  const vide = await request(app).put("/api/collections/reportTemplates")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ rows:[{ ...t, blocks:[{ b:"calc", id:"", viz:"nombre" }] }] });
+  assert.equal(vide.status, 422, JSON.stringify(vide.body));
+
+  db.prepare("DELETE FROM report_templates WHERE name=?").run("Modèle avec calcul");
+});
+
 test("collections : une référence inexistante renvoie un conflit, pas une erreur serveur", async () => {
   const r = await request(app).put("/api/collections/outcomes")
     .set("Authorization", `Bearer ${adminToken}`)

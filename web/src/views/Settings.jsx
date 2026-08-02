@@ -6,7 +6,7 @@ import { useGeoCascade, resetGeoCache } from "../lib/geo.js";
 import { Activity, ArrowRightLeft, Building2, CalendarRange, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, FileText, KeyRound, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
 import { Area, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Aide, Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, SideRail, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
-import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, motifLisible, n, pct, r2, r5, siteRequirement, siteScore, uid, visiteOdk } from "../lib/calc.js";
+import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, motifLisible, n, pct, r2, r5, siteRequirement, siteScore, uid, variablesProcessus, visiteOdk } from "../lib/calc.js";
 import { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, DURATIONS, D_FORMULAS, D_SECURITY, D_STATUS, D_URBAN, MONITORING_TYPES, PROG_AREAS, SITE_TYPES, TABS_ALL, siteDerived, sitePriority } from "../lib/constants.js";
 import { collecterLocalites, csvLocalites } from "../lib/exportGeo.js";
 import { niveau, niveaux } from "../lib/levels.js";
@@ -2668,6 +2668,22 @@ function SetCalc({ db, set, notify, can }){
     targetPerMonth:4, feasibilityRatio:2, adjustedFreq:4, adjustedInterval:3, beneficiaries:1500,
     population:85000, visitsDone:3, visitsPlanned:4, score:52 };
   const [edit,setEdit] = useState(null);
+  /* Les variables issues du suivi de processus — celles que les XLSForms MoDa
+     déclarent, activité par activité, plus ce qui a réellement été visité. Elles
+     rejoignent les variables de couverture dans le MÊME jeu : une expression peut
+     donc croiser la structure du formulaire et la réalisation du terrain. */
+  const proc = useMemo(() => variablesProcessus(db), [db]);
+  /* Le jeu d'essai devient : les valeurs fictives de couverture (elles n'ont pas
+     de source réelle hors d'un couple bureau × activité) PLUS les valeurs
+     RÉELLES du processus. Un calcul de processus s'éprouve ainsi sur la donnée
+     du pays, pas sur un nombre inventé. */
+  const scopeEssai = useMemo(() => ({ ...TEST, ...proc.vars }), [proc]);
+  /* « Variable → signification → origine → valeur », toutes origines confondues. */
+  const toutesVars = useMemo(() => [
+    ...CALC_VARS.map(([v, d2, o]) => ({ nom:v, sens:d2, origine:o, valeur: TEST[v], essai:true })),
+    ...proc.meta.map(m => ({ ...m, essai:false })),
+  ], [proc]);
+
   /* « Sous-groupe à gauche, informations à droite, pour ne pas surcharger
      l'écran. » Les calculs se choisissent dans le rail (de base / personnalisés),
      et les variables utilisables deviennent une entrée de rail à part plutôt
@@ -2679,12 +2695,12 @@ function SetCalc({ db, set, notify, can }){
   const groups = [
     { label:"Calculs de base", items: db.formulas.filter(f=>f.core).map(f=>({ value:f.id, label:f.label })) },
     { label:"Calculs personnalisés", items: db.formulas.filter(f=>!f.core).map(f=>({ value:f.id, label:f.label })) },
-    { label:"Références", items:[{ value:"__vars__", label:"Variables utilisables", count:CALC_VARS.length }] },
+    { label:"Références", items:[{ value:"__vars__", label:"Variables utilisables", count:toutesVars.length }] },
   ];
   const isVars = active === "__vars__";
   const cur = isVars ? null : (db.formulas.find(f=>f.id===active) || db.formulas[0]);
   const idx = cur ? db.formulas.findIndex(f=>f.id===cur.id) : -1;
-  const t = cur ? evalFormula(cur.expr, TEST) : null;
+  const t = cur ? evalFormula(cur.expr, scopeEssai) : null;
   return (
     <SideRail groups={groups} active={isVars ? "__vars__" : cur?.id} onPick={setActive}
       right={<>
@@ -2695,16 +2711,22 @@ function SetCalc({ db, set, notify, can }){
         </div>}
         {isVars ? (
           <Card flush title="Variables utilisables"
-            subtitle="Liste complète des variables acceptées dans les expressions">
-            <div className="p-4 pb-0"><Note>Les variables des <b>XLSForms</b> (MoDa/Kobo) viendront enrichir
-              cette liste : une fois un XLSForm téléversé, ses champs deviennent des variables mappables ici.</Note></div>
+            subtitle={`${fmt(toutesVars.length)} variables acceptées dans les expressions`}>
+            <div className="p-4 pb-0"><Note>Deux familles, et elles ne se lisent pas de la même façon.
+              Les variables de <b>couverture</b> (duration, nbSites…) décrivent UN couple bureau × activité :
+              elles n'ont de valeur que dans ce contexte, d'où une valeur d'essai fictive ici.
+              Les variables de <b>suivi de processus</b> (<code>proc_…</code>) sont issues des
+              <b> XLSForms MoDa</b> et du terrain : leur valeur affichée est la valeur RÉELLE du pays.
+              Une expression peut croiser les deux — par exemple la couverture d'une activité rapportée
+              au nombre d'indicateurs que son formulaire déclare.</Note></div>
             <TableWrap max="mh440">
-              <thead><tr><Th>Variable</Th><Th>Signification</Th><Th>Origine</Th><Th num>Valeur d'essai</Th></tr></thead>
-              <tbody>{CALC_VARS.map(([v,d2,o])=>(
-                <tr key={v} className="hover:bg-sky-50">
-                  <Td><code className="bg-slate-100 px-1.5 py-0.5 rounded f115">{v}</code></Td>
-                  <Td className="text-slate-700">{d2}</Td><Td className="text-slate-500">{o}</Td>
-                  <Td num className="tabular-nums">{TEST[v] ?? "—"}</Td></tr>))}</tbody>
+              <thead><tr><Th>Variable</Th><Th>Signification</Th><Th>Origine</Th><Th num>Valeur</Th></tr></thead>
+              <tbody>{toutesVars.map(v=>(
+                <tr key={v.nom} className="hover:bg-sky-50">
+                  <Td><code className="bg-slate-100 px-1.5 py-0.5 rounded f115">{v.nom}</code></Td>
+                  <Td className="text-slate-700">{v.sens}</Td><Td className="text-slate-500">{v.origine}</Td>
+                  <Td num className="tabular-nums" title={v.essai ? "Valeur d'essai" : "Valeur réelle"}>
+                    {v.valeur ?? "—"}{v.essai && <span className="f10 text-slate-400 ml-1">essai</span>}</Td></tr>))}</tbody>
             </TableWrap>
           </Card>
         ) : cur ? (
@@ -2739,12 +2761,26 @@ function SetCalc({ db, set, notify, can }){
               <Field label="Description" className="col-span-2"><Input value={edit.desc||""} onChange={e=>setEdit(p=>({...p,desc:e.target.value}))} /></Field>
             </div>
             <Field label="Expression"><Input value={edit.expr||""} onChange={e=>setEdit(p=>({...p,expr:e.target.value}))} className="f12" /></Field>
+            {/* Les deux familles de variables sont proposées SÉPARÉMENT : mélangées,
+                les cent pastilles « proc_… » d'un pays bien équipé noieraient les
+                quinze variables de couverture, et l'on ne saurait plus laquelle
+                appartient à quel monde. */}
+            <div className="f11 font-bold uppercase tracking-wide text-slate-400 mb-1">Couverture</div>
             <div className="flex flex-wrap gap-1.5 mb-3">
               {CALC_VARS.map(([v])=>(<button key={v} onClick={()=>setEdit(p=>({...p, expr:(p.expr||"")+v,
                 vars:[...new Set([...(p.vars||[]), v])] }))}
                 className="px-2 py-0.5 rounded bg-slate-100 hover:bg-sky-100 f11 text-slate-600 border border-slate-200">{v}</button>))}
             </div>
-            {(()=>{ const tt=evalFormula(edit.expr, TEST);
+            {!!proc.meta.length && (<>
+              <div className="f11 font-bold uppercase tracking-wide text-slate-400 mb-1">
+                Suivi de processus (XLSForm) · {fmt(proc.meta.length)} variables</div>
+              <div className="flex flex-wrap gap-1.5 mb-3 mh190 overflow-auto">
+                {proc.meta.map(m=>(<button key={m.nom} title={`${m.sens} — valeur actuelle : ${m.valeur}`}
+                  onClick={()=>setEdit(p=>({...p, expr:(p.expr||"")+m.nom,
+                    vars:[...new Set([...(p.vars||[]), m.nom])] }))}
+                  className="px-2 py-0.5 rounded bg-sky-50 hover:bg-sky-100 f11 c-bd border border-sky-200">{m.nom}</button>))}
+              </div></>)}
+            {(()=>{ const tt=evalFormula(edit.expr, scopeEssai);
               return <Note tone={tt.ok?"ok":"err"}>{tt.ok ? <>Résultat sur le jeu d'essai : <b>{r2(tt.value)}</b></> : tt.err}</Note>; })()}
           </>)}
         </Modal>
