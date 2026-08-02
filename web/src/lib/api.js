@@ -305,6 +305,9 @@ export const api = {
   connectors:         ()             => call("GET", "/connectors"),
   connectorChamps:    ()             => call("GET", "/connectors/champs"),
   createConnector:    (c)            => call("POST", "/connectors", c),
+  /* Pré-crée les 5 connecteurs MoDa (un par activité de suivi de processus) ;
+     l'admin n'a plus qu'à saisir le numéro de formulaire et le jeton. */
+  preparerConnecteursModa:()          => call("POST", "/connectors/moda-preparer"),
   updateConnector:    (id, c)        => call("PUT", `/connectors/${encodeURIComponent(id)}`, c),
   deleteConnector:    (id)           => call("DELETE", `/connectors/${encodeURIComponent(id)}`),
   connectorMappings:  (id, entity)   => call("GET", `/connectors/${encodeURIComponent(id)}/mappings`
