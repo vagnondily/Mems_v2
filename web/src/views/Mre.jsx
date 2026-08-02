@@ -39,15 +39,17 @@ const KIND_TONE = { suivi:C.brand, revue:"#7C3AED", evaluation:"#D97706",
 /* Bandeau de calendrier : une activité qui court de mars à juin se lit d'un
    coup d'œil. Douze cases, pas un diagramme de Gantt — la précision utile est
    le mois, et une échelle de temps continue laisserait croire à mieux. */
-function Calendrier({ start, end, tone }){
-  if(start == null) return <span className="text-slate-300">—</span>;
-  const fin = end == null ? start : end;
+const rangeMois = (a, b) => Array.from({ length: Math.max(0, b - a + 1) }, (_, i) => a + i);
+function Calendrier({ months, start, end, tone }){
+  /* Les mois cochés — désormais éventuellement discontinus (janvier + août). */
+  const set = new Set(Array.isArray(months) && months.length ? months
+    : (start != null ? rangeMois(start, end == null ? start : end) : []));
+  if(!set.size) return <span className="text-slate-300">—</span>;
   return (
-    <div className="flex gap-px">
+    <div className="flex gap-0.5" title={[...set].sort((a,b)=>a-b).map(i=>MOIS[i]).join(", ")}>
       {MOIS.map((m, i) => (
-        <span key={i} title={m}
-          className={clsx("w-2.5 h-3.5 rounded-sm", i >= start && i <= fin ? "" : "bg-slate-100")}
-          style={i >= start && i <= fin ? { background: tone || C.brand } : undefined} />))}
+        <span key={i} className={clsx("w-2.5 h-3.5 rounded-sm", set.has(i) ? "" : "bg-slate-100")}
+          style={set.has(i) ? { background: tone || C.brand } : undefined} />))}
     </div>);
 }
 
@@ -77,6 +79,9 @@ export default function MreView({ db, me, notify, can }){
       office_id:f.office_id || null, activity_tag:f.activity_tag || null,
       indicator_id:f.indicator_id || null, geo_pcode:f.geo_pcode || null,
       responsible:f.responsible || null,
+      /* Les mois de mise en œuvre, éventuellement discontinus. Ils priment ; le
+         serveur en dérive start/end pour la compatibilité. */
+      months: Array.isArray(f.months) ? [...f.months].sort((a,b)=>a-b) : [],
       start_month: f.start_month === "" || f.start_month == null ? null : n(f.start_month),
       end_month:   f.end_month   === "" || f.end_month   == null ? null : n(f.end_month),
       sample: f.sample === "" || f.sample == null ? null : n(f.sample),
@@ -222,7 +227,7 @@ function Plan({ data, rows, cur, filtres, can, onEdit, onDelete }){
                       {!!a.sample && <><span className="text-slate-300">·</span>
                         <span>échantillon {fmt(a.sample)}</span></>}
                     </div></Td>
-                  <Td className="pt-3"><Calendrier start={a.start_month} end={a.end_month} tone={KIND_TONE[a.kind]} /></Td>
+                  <Td className="pt-3"><Calendrier months={a.months} start={a.start_month} end={a.end_month} tone={KIND_TONE[a.kind]} /></Td>
                   {/* `data-budget` porte la valeur brute : le texte affiché est
                       groupé à la française et suivi du nombre de lignes, donc
                       illisible pour un test — même raison que `data-site` sur la carte. */}
@@ -467,12 +472,22 @@ function MreModal({ open, activity, db, data, busy, onClose, onSave }){
           <Select value={f.indicator_id||""} onChange={e=>u("indicator_id",e.target.value)}
             empty="Aucun en particulier"
             options={(db.indicators||[]).map(i=>[i.id,`${i.code} — ${i.name}`])} /></Field>
-        <Field label="Mois de début">
-          <Select value={f.start_month ?? ""} onChange={e=>u("start_month",e.target.value)}
-            empty="—" options={MOIS.map((m,i)=>[i,m])} /></Field>
-        <Field label="Mois de fin">
-          <Select value={f.end_month ?? ""} onChange={e=>u("end_month",e.target.value)}
-            empty="—" options={MOIS.map((m,i)=>[i,m])} /></Field>
+        {/* Mois de mise en œuvre — cliquez les mois concernés ; la période peut être
+            DISCONTINUE (par exemple janvier + août, sans les mois intermédiaires). */}
+        <Field label="Mois de mise en œuvre" className="col-span-2"
+          hint="Cliquez les mois concernés — la période peut être discontinue (ex. janvier + août).">
+          <div className="flex flex-wrap gap-1.5">
+            {MOIS.map((m,i)=>{ const sel = (f.months||[]).includes(i);
+              return (
+              <button key={i} type="button"
+                onClick={()=>u("months", (() => { const s = new Set(f.months||[]);
+                  s.has(i) ? s.delete(i) : s.add(i); return [...s].sort((a,b)=>a-b); })())}
+                className={clsx("px-2.5 py-1 f115 rounded-lg border font-semibold transition-colors",
+                  sel ? "bg-brand text-white border-transparent shadow-sm"
+                      : "bg-white text-slate-600 border-slate-200 hover:border-slate-300")}>
+                {m.slice(0,4)}</button>); })}
+          </div>
+        </Field>
         <Field label="Taille d'échantillon" hint="Le cas échéant : enquête, revue de dossiers">
           <Input type="number" value={f.sample ?? ""} onChange={e=>u("sample",e.target.value)} /></Field>
         <Field label="Responsable"><Input value={f.responsible||""} onChange={e=>u("responsible",e.target.value)} /></Field>

@@ -65,6 +65,9 @@ const activitySchema = z.object({
   responsible:  S(120),
   start_month:  z.coerce.number().int().min(0).max(11).nullish().transform(v => v ?? null),
   end_month:    z.coerce.number().int().min(0).max(11).nullish().transform(v => v ?? null),
+  /* Les mois de mise en œuvre, éventuellement DISCONTINUS (janvier + août). Quand
+     il est fourni, ce tableau prime sur start/end (qui en deviennent le min/max). */
+  months:       z.array(z.coerce.number().int().min(0).max(11)).max(12).nullish(),
   sample:       z.coerce.number().int().min(0).max(10_000_000).nullish().transform(v => v ?? null),
   status:       z.enum(STATUSES).default("planifie"),
   funding:      S(120),
@@ -127,6 +130,20 @@ function costsOf(ids){
   return out;
 }
 
+/* Normalisation des mois de mise en œuvre — le tableau `months` (éventuellement
+   discontinu) prime ; à défaut, la plage continue start→end. */
+const range = (a, b) => Array.from({ length: Math.max(0, b - a + 1) }, (_, i) => a + i);
+function normaliserMois(b){
+  const mois = Array.isArray(b.months) && b.months.length
+    ? [...new Set(b.months)].sort((x, y) => x - y)
+    : (b.start_month != null ? range(b.start_month, b.end_month ?? b.start_month) : []);
+  return { mois, start: mois.length ? mois[0] : null, end: mois.length ? mois[mois.length - 1] : null,
+    json: mois.length ? JSON.stringify(mois) : null };
+}
+const moisDeLigne = (a) => { try{ const m = a.months ? JSON.parse(a.months) : null;
+    if(Array.isArray(m) && m.length) return m; }catch(e){}
+  return a.start_month != null ? range(a.start_month, a.end_month ?? a.start_month) : []; };
+
 const shape = (a, cost, labels) => {
   const c = cost || { lines:[], budget:0, spent:0, engaged:0 };
   return {
@@ -137,6 +154,7 @@ const shape = (a, cost, labels) => {
     indicator_id:a.indicator_id, indicator:a.indicator_code || "",
     geo_pcode:a.geo_pcode, portee: a.geo_pcode ? (labels?.[a.geo_pcode] || a.geo_pcode) : "National",
     responsible:a.responsible || "", start_month:a.start_month, end_month:a.end_month,
+    months: moisDeLigne(a),
     sample:a.sample, status:a.status, funding:a.funding || "", currency:a.currency,
     note:a.note || "", rev:a.rev, updated_at:a.updated_at,
     costs:c.lines, budget:c.budget, spent:c.engaged ? c.spent : null,
@@ -216,10 +234,11 @@ r.get("/", (req, res) => {
       if(l.spent != null) parMois[l.month].spent += l.spent;
       continue;
     }
-    const d = a.start_month ?? 0;
-    const f = a.end_month ?? a.start_month ?? 11;
-    const span = Math.max(1, f - d + 1);
-    for(let m = d; m <= f; m++){
+    /* Une ligne sans date est répartie sur les MOIS de l'activité — désormais
+       éventuellement discontinus (janvier + août), non plus une plage continue. */
+    const mois = (a.months && a.months.length) ? a.months : range(0, 11);
+    const span = mois.length;
+    for(const m of mois){
       parMois[m].budget += l.total / span;
       if(l.spent != null) parMois[m].spent += l.spent / span;
     }
@@ -275,11 +294,12 @@ r.post("/", requireCap("edit"), (req, res) => {
     return res.status(422).json({ error:"le mois de fin précède le mois de début" });
 
   const id = newId("mre");
+  const nm = normaliserMois(b);
   db.prepare(`INSERT INTO mre_activity (id,year,ref,title,kind,purpose,method,office_id,activity_tag,
-    indicator_id,geo_pcode,responsible,start_month,end_month,sample,status,funding,currency,note,created_by)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    indicator_id,geo_pcode,responsible,start_month,end_month,months,sample,status,funding,currency,note,created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(id, b.year, b.ref, b.title, b.kind, b.purpose, b.method, b.office_id, b.activity_tag,
-         b.indicator_id, b.geo_pcode, b.responsible, b.start_month, b.end_month, b.sample,
+         b.indicator_id, b.geo_pcode, b.responsible, nm.start, nm.end, nm.json, b.sample,
          b.status, b.funding, b.currency, b.note, req.user.id);
   audit(req, "create", id, `Plan MRE ${b.year} — activité créée : ${b.title}`);
   res.status(201).json({ activity: one(req, id) });
@@ -302,12 +322,13 @@ r.put("/:id", requireCap("edit"), (req, res) => {
   if(b.start_month != null && b.end_month != null && b.end_month < b.start_month)
     return res.status(422).json({ error:"le mois de fin précède le mois de début" });
 
+  const nm = normaliserMois(b);
   db.prepare(`UPDATE mre_activity SET year=?, ref=?, title=?, kind=?, purpose=?, method=?,
     office_id=?, activity_tag=?, indicator_id=?, geo_pcode=?, responsible=?, start_month=?,
-    end_month=?, sample=?, status=?, funding=?, currency=?, note=?, rev=rev+1,
+    end_month=?, months=?, sample=?, status=?, funding=?, currency=?, note=?, rev=rev+1,
     updated_at=datetime('now') WHERE id=?`)
     .run(b.year, b.ref, b.title, b.kind, b.purpose, b.method, b.office_id, b.activity_tag,
-         b.indicator_id, b.geo_pcode, b.responsible, b.start_month, b.end_month, b.sample,
+         b.indicator_id, b.geo_pcode, b.responsible, nm.start, nm.end, nm.json, b.sample,
          b.status, b.funding, b.currency, b.note, cur.row.id);
   audit(req, "update", cur.row.id, `Plan MRE ${b.year} — ${b.title}` +
     (b.status !== cur.row.status ? ` (statut : ${b.status})` : ""));
