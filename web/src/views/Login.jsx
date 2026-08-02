@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Lock, Eye, EyeOff, Target, CalendarRange, Activity, Database } from "lucide-react";
+import { Lock, Eye, EyeOff } from "lucide-react";
 import { C } from "../lib/constants.js";
 import { clsx } from "../lib/calc.js";
 import { Btn, Field, BrandMark, inputCls } from "../components/ui.jsx";
@@ -57,40 +57,16 @@ export function Login({ onLogin, notify }){
   };
 
   return (
-    <div className="min-h-screen flex flex-col lg:flex-row" style={{ background:C.bg }}>
-      <div className="hidden lg:flex flex-col justify-between w-2/5 p-12 text-white"
-        style={{ background:`linear-gradient(160deg, ${C.brandD} 0%, ${C.navy} 55%, #02243a 100%)` }}>
-        <div>
-          {/* Même parti que dans l'en-tête : le signe posé sur le fond, sans
-              cadre translucide qui l'aurait réduit à une pastille grise. */}
-          <div className="flex items-center gap-3 mb-10">
-            <BrandMark size={36} tone="light" />
-            <div className="leading-tight">
-              <div className="f15 font-bold tr14">MEMS</div>
-              <div className="f11 opacity-70">Monitoring and Evaluation Management System</div>
-            </div>
-          </div>
-          <h1 className="text-4xl xl:text-5xl font-semibold leading-tight mb-6">
-            Une plateforme moderne pour piloter le suivi et l’évaluation terrain.</h1>
-          <p className="f13 text-slate-100 opacity-85 max-w-lg leading-relaxed mb-8">
-            Planifiez vos visites, suivez les sites et visualisez les performances avec une interface pensée pour les équipes M&E.</p>
-          <ul className="space-y-4 f13 opacity-90">
-            {[["Indicateurs opérationnels", Target],
-              ["Planification des visites", CalendarRange],
-              ["Tableaux de bord visuels", Activity],
-              ["Connexion aux formulaires ODK", Database]].map(([t, I], i) => (
-              <li key={i} className="flex items-start gap-3">
-                <span className="mt-0.5 text-slate-200"><I size={18} /></span>
-                <span>{t}</span>
-              </li>))}
-          </ul>
-        </div>
-        <p className="f11 text-slate-200 opacity-75 leading-relaxed">
-          Accès réservé aux équipes autorisées. Chaque connexion est tracée et sécurisée pour garantir vos données terrain.</p>
-      </div>
-
-      <div className="flex-1 flex items-center justify-center p-6">
-        <div className="w-full max-w-md bg-white border border-slate-200 shadow-[0_25px_75px_rgba(15,23,42,0.08)] rounded-[2rem] p-8">
+    /* Login CENTRÉ, sans panneau latéral : « enlève toute la partie gauche et
+       mets bien au centre le login, avec les ombrages ». Fond institutionnel
+       sobre — un halo bleu discret en haut, une trame de points très légère —
+       qui met la carte en valeur sans bruit. */
+    <div className="min-h-screen flex items-center justify-center p-6 relative overflow-hidden"
+      style={{ background:`radial-gradient(1100px 520px at 50% -12%, ${C.navy}18, transparent 60%), ${C.bg}` }}>
+      <div className="pointer-events-none absolute inset-0 opacity-[0.035]"
+        style={{ backgroundImage:`radial-gradient(${C.brand} 1px, transparent 1px)`, backgroundSize:"22px 22px" }} />
+      <div className="w-full max-w-md relative">
+        <div className="bg-white border border-slate-200 rounded-3xl p-8 shadow-[0_30px_80px_-24px_rgba(15,23,42,0.30)]">
           <div className="flex flex-col items-center gap-2 mb-8 text-center">
             <BrandMark size={40} />
             <div>
@@ -139,6 +115,9 @@ export function Login({ onLogin, notify }){
               {busy ? "Enregistrement…" : "Enregistrer et entrer"}</Btn>
           </>)}
         </div>
+        <p className="text-center f11 text-slate-400 mt-6 leading-relaxed">
+          MEMS · Monitoring and Evaluation Management System<br />
+          Accès réservé aux équipes autorisées · chaque connexion est tracée et sécurisée.</p>
       </div>
     </div>
   );

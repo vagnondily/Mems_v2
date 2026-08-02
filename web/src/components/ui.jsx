@@ -1,5 +1,5 @@
 import { useEffect, useId, useState, useSyncExternalStore } from "react";
-import { ChevronDown, ChevronUp, HelpCircle, Info, Layers, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Eye, EyeOff, HelpCircle, Layers, X } from "lucide-react";
 import { clsx, n } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
 
@@ -14,9 +14,14 @@ import { C } from "../lib/constants.js";
 
    Un magasin externe minuscule plutôt qu'un contexte : `Note` est importée partout
    et n'a pas de fournisseur commun ; `useSyncExternalStore` lui donne l'état sans
-   envelopper toute l'application. L'état survit au rechargement (localStorage). */
+   envelopper toute l'application. L'état survit au rechargement (localStorage).
+
+   MASQUÉES PAR DÉFAUT : « les commentaires colorés ne servent qu'à apprendre, on
+   peut les cacher et les montrer à qui veut voir ». L'écran reste donc épuré par
+   défaut ; le réglage vit dans le menu du compte (en haut à droite), loin des
+   actions de la page qu'il enlaidissait. */
 const NOTES_KEY = "mems.notes.masquees";
-let notesMasquees = (() => { try{ return localStorage.getItem(NOTES_KEY) === "1"; }catch{ return false; } })();
+let notesMasquees = (() => { try{ const v = localStorage.getItem(NOTES_KEY); return v === null ? true : v === "1"; }catch{ return true; } })();
 const notesAbonnes = new Set();
 function setNotesMasquees(v){
   notesMasquees = !!v;
@@ -224,18 +229,17 @@ const Note = ({ tone="info", children }) => {
     tool:"bg-slate-50 bl3 border-slate-300 text-slate-700" }[tone] || "bg-sky-50 bl3 bd-brand text-sky-900";
   return <div className={clsx("px-4 py-3 rounded f125 leading-relaxed mb-4", t)}>{children}</div>;
 };
-/* L'interrupteur lui-même : posé dans la barre du haut. Il ne s'affiche que s'il y
-   a des notes explicatives à gouverner — inutile ailleurs. */
-const NotesToggle = ({ className }) => {
+/* L'interrupteur des notes vit désormais dans le MENU DU COMPTE (en haut à
+   droite) — « cache le bouton dans le popup de l'utilisateur, près de Enregistrer
+   ça enlaidit le site ». C'est une ligne de menu claire, pas une pastille dans la
+   barre : on la trouve quand on la cherche, elle n'encombre pas l'écran sinon. */
+const NotesMenuItem = ({ onDone }) => {
   const masquees = useNotesMasquees();
   return (
-    <button onClick={()=>setNotesMasquees(!masquees)}
-      title={masquees ? "Afficher les notes explicatives" : "Masquer les notes explicatives"}
-      className={clsx("flex items-center gap-1.5 px-2 h-8 rounded-full f115 transition-colors",
-        masquees ? "bg-white/10 text-white/60 hover:bg-white/20" : "bg-white/15 text-white/90 hover:bg-white/25",
-        className)}>
-      <Info size={15} />
-      <span className="hidden md:inline">{masquees ? "Notes masquées" : "Notes"}</span>
+    <button onClick={()=>{ setNotesMasquees(!masquees); onDone?.(); }}
+      className="flex items-center gap-2 w-full px-4 py-2.5 f13 text-slate-700 hover:bg-slate-50 border-t border-slate-100">
+      {masquees ? <Eye size={14} /> : <EyeOff size={14} />}
+      {masquees ? "Afficher les notes explicatives" : "Masquer les notes explicatives"}
     </button>);
 };
 /* Aide repliable — « cache les commentaires en hide/show, ils occupent trop de
@@ -325,4 +329,4 @@ function parseCSV(txt){
   return rows.filter(r=>r.some(c=>c!=="")).map(r=>Object.fromEntries(head.map((h,i)=>[h,(r[i]??"").trim()])));
 }
 
-export { Aide, Badge, Bar2, BrandMark, Btn, Card, Empty, Field, Input, Logo, Modal, Note, NotesToggle, Select, SideRail, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, Toast, download, inputCls, parseCSV, toCSV, useNotesMasquees };
+export { Aide, Badge, Bar2, BrandMark, Btn, Card, Empty, Field, Input, Logo, Modal, Note, NotesMenuItem, Select, SideRail, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, Toast, download, inputCls, parseCSV, setNotesMasquees, toCSV, useNotesMasquees };
