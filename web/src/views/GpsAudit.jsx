@@ -121,6 +121,11 @@ function GpsAudit({ notify, can }){
 }
 
 /* La carte d'ensemble : un point coloré par verdict, cliquable pour corriger. */
+/* Leaflet rend les info-bulles en HTML : le nom d'un site (saisi par l'utilisateur)
+   ou d'une commune doit être échappé avant d'y être posé. */
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+
 function CarteAudit({ points, onPick }){
   const boxRef = useRef(null); const mapRef = useRef(null); const layerRef = useRef(null);
   useEffect(()=>{
@@ -139,7 +144,7 @@ function CarteAudit({ points, onPick }){
     for(const p of points.slice(0, 2000)){
       const c = (VERDICTS[p.verdict]||{}).couleur || "#64748b";
       const m = L.circleMarker([p.lat, p.lon], { radius:4, color:"#fff", weight:1, fillColor:c, fillOpacity:0.9 })
-        .bindTooltip(`${p.name} — ${p.dist!=null?p.dist+" km":"non rattaché"}`, { direction:"top" });
+        .bindTooltip(`${esc(p.name)} — ${p.dist!=null?p.dist+" km":"non rattaché"}`, { direction:"top" });
       if(onPick) m.on("click", ()=>onPick(p));
       m.addTo(g); pts.push([p.lat, p.lon]);
     }

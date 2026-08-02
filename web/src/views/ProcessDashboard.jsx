@@ -39,6 +39,10 @@ const bandePct = (p) => p >= 75 ? { c:VERT, l:"Bon" } : p >= 50 ? { c:AMBRE, l:"
 
 const norm = (s) => String(s || "").toLowerCase().normalize("NFD")
   .replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+/* Leaflet rend les info-bulles en HTML : un nom d'unité administrative contenant
+   « < » ou « & » y serait injecté. On échappe avant de le poser. */
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 
 const jours = (d) => { if(!d) return Infinity; const t = new Date(d).getTime();
   return Number.isFinite(t) ? (Date.now() - t) / 86400000 : Infinity; };
@@ -131,7 +135,7 @@ function CarteEtat({ parRegion, onRegion, selection }){
         weight: sel ? 2.6 : 1, opacity:1, fillColor:b.c, fillOpacity: m.total ? 0.72 : 0.25 } });
       couche.on("click", () => onRegion?.(sel ? "" : nom));
       couche.bindTooltip(
-        `<b>${nom}</b><br>${m.total ? `${m.total} site(s) · ${part}% à jour · ${b.nom}` : "aucun site"}`,
+        `<b>${esc(nom)}</b><br>${m.total ? `${m.total} site(s) · ${part}% à jour · ${esc(b.nom)}` : "aucun site"}`,
         { sticky:true });
       g.addLayer(couche);
     }

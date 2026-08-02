@@ -1773,7 +1773,10 @@ function CarteDecoupage({ db }){
           for(const f of feats){
             const c = L.geoJSON(f, { style:{ color:C.brandD, weight: niv==="adm1"?1.6:0.7,
               opacity:0.9, fillColor:C.brand, fillOpacity:0.12 } });
-            c.bindTooltip(f.properties?.name || "", { sticky:true });
+            /* Leaflet rend l'info-bulle en HTML : on échappe le nom de l'unité. */
+            const nomEsc = String(f.properties?.name || "").replace(/[&<>"']/g,
+              ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch]));
+            c.bindTooltip(nomEsc, { sticky:true });
             c.on("mouseover", () => c.setStyle({ fillOpacity:0.32 }));
             c.on("mouseout", () => c.setStyle({ fillOpacity:0.12 }));
             g.addLayer(c);
