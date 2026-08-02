@@ -9,6 +9,72 @@ let onUnauthorized = () => {};
 export const setToken = (t) => { token = t; };
 export const setUnauthorizedHandler = (fn) => { onUnauthorized = fn; };
 
+/* ══════════════════ Mode démonstration (bac à sable) ══════════════════
+   « En mode démonstration on devrait pouvoir écrire mais pas enregistrer avec
+   les données réelles. » — un interrupteur PROPRE AU NAVIGATEUR, réservé au
+   super. Levé, on charge et on affiche la donnée réelle, on remplit les
+   formulaires, l'application vit ; mais AUCUNE écriture n'atteint le serveur :
+   chaque mutation est absorbée sur place et renvoie une réponse plausible, si
+   bien que les écrans optimistes continuent leur fil. Un rechargement efface
+   tout — la production n'a pas bougé.
+
+   Le drapeau ne transite JAMAIS par les réglages de l'instance : rangé là, il
+   se bloquerait lui-même (on ne pourrait plus l'éteindre). Il vit en
+   localStorage, local au poste, et se relève au chargement. */
+const SANDBOX_KEY = "mems.sandbox";
+let sandbox = (() => { try{ return localStorage.getItem(SANDBOX_KEY) === "1"; }catch{ return false; } })();
+const sandboxSubs = new Set();
+let onSandboxBlocked = () => {};
+export const isSandbox = () => sandbox;
+export const setSandbox = (v) => {
+  sandbox = !!v;
+  try{ localStorage.setItem(SANDBOX_KEY, sandbox ? "1" : "0"); }catch{}
+  sandboxSubs.forEach(fn => { try{ fn(sandbox); }catch{} });
+};
+export const subscribeSandbox = (fn) => { sandboxSubs.add(fn); return () => { sandboxSubs.delete(fn); }; };
+/* L'écran s'abonne pour signaler « non enregistré » — throttlé par l'appelant. */
+export const setSandboxNotifier = (fn) => { onSandboxBlocked = fn || (() => {}); };
+
+/* Mutations qui NE persistent PAS : on les laisse atteindre le serveur même en
+   bac à sable, car elles ne font que lire/analyser (parse XLSForm, aperçu d'un
+   import, épreuve de connexion, suggestions, plan de renommage). Se connecter
+   et se déconnecter passent aussi — sinon le mode n'a plus de sens. */
+const SANDBOX_LAISSER_PASSER = [
+  /^\/auth\/login$/, /^\/auth\/logout$/,
+  /^\/xlsform\/parse$/,
+  /^\/geo\/shapefile\/apercu$/,
+  /\/apercu$/, /\/suggestions$/, /\/variables$/, /\/test$/,
+  /\/renommer-code\/plan$/,
+];
+const MUTATIONS = new Set(["POST","PUT","PATCH","DELETE"]);
+const estMutationBloquee = (method, path) =>
+  sandbox && MUTATIONS.has(method) && !SANDBOX_LAISSER_PASSER.some(re => re.test(path));
+
+let sandboxSeq = 0;
+const idProvisoire = () => `demo-${Date.now().toString(36)}-${(sandboxSeq++).toString(36)}`;
+/* Réponse simulée d'une écriture absorbée. On respecte les enveloppes connues
+   ({ site }, { user }, { office }…) pour que le fil optimiste de l'écran ne
+   casse pas ; à défaut, un écho plat doté d'une identité provisoire. */
+function reponseBacASable(method, path, body){
+  onSandboxBlocked(path);
+  if(method === "DELETE") return null;
+  const corps = (body && typeof body === "object" && !Array.isArray(body)) ? body : {};
+  /* Un PUT porte l'identité dans l'URL, pas dans le corps : on la récupère pour
+     que l'écran retrouve la même ligne (sinon il en créerait un doublon). */
+  const mId = path.match(/\/([^/]+)$/);
+  const idUrl = (method === "PUT" && mId && !/^(current|actif|status|valider|submit|close|checkpoint|vacuum)$/.test(mId[1]))
+    ? decodeURIComponent(mId[1]) : null;
+  const id = idUrl || corps.id || idProvisoire();
+  const rev = (corps.rev || 0) + 1;
+  const base = { ...corps, id, rev };
+  if(/^\/sites(\/[^/]+)?$/.test(path))
+    return { site: { ...base, code: corps.code || id, name: corps.name || corps.poi || "",
+      external_code: corps.external_code || "" } };
+  if(/^\/users(\/[^/]+)?$/.test(path))    return { user:   base };
+  if(/^\/offices(\/[^/]+)?$/.test(path))  return { office: base };
+  return { ...base, ok: true, _demo: true };
+}
+
 export class ApiError extends Error {
   /* Le corps complet de la réponse voyage avec l'erreur. Un refus d'intégrité
      référentielle (409) porte le détail de ce qui retient l'objet — table,
@@ -20,6 +86,7 @@ export class ApiError extends Error {
 }
 
 async function call(method, path, body, opts = {}){
+  if(estMutationBloquee(method, path)) return reponseBacASable(method, path, body);
   const headers = { "Accept": "application/json" };
   if(body !== undefined) headers["Content-Type"] = "application/json";
   if(token) headers["Authorization"] = `Bearer ${token}`;
@@ -58,6 +125,7 @@ async function fetchBlob(path){
 }
 /* Téléversement multipart : le Content-Type est posé par le navigateur, avec sa frontière. */
 async function postFile(path, file, field = "file"){
+  if(estMutationBloquee("POST", path)) return reponseBacASable("POST", path, {});
   const headers = {};
   if(token) headers["Authorization"] = `Bearer ${token}`;
   const body = new FormData(); body.append(field, file, file.name);
@@ -71,6 +139,7 @@ async function postFile(path, file, field = "file"){
    accompagnés de champs texte — la correspondance des colonnes, le nom du
    millésime. Le serveur les classe par extension ; le nom de champ importe peu. */
 async function postFiles(path, files, fields = {}){
+  if(estMutationBloquee("POST", path)) return reponseBacASable("POST", path, {});
   const headers = {};
   if(token) headers["Authorization"] = `Bearer ${token}`;
   const body = new FormData();

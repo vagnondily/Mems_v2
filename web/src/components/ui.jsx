@@ -1,7 +1,8 @@
 import { useEffect, useId, useState, useSyncExternalStore } from "react";
-import { ChevronDown, ChevronUp, Eye, EyeOff, HelpCircle, Layers, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Eye, EyeOff, FlaskConical, HelpCircle, Layers, X } from "lucide-react";
 import { clsx, n } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
+import { isSandbox, setSandbox, subscribeSandbox } from "../lib/api.js";
 
 /* ══════════════════ Notes explicatives : un interrupteur global ══════════════════
    « Pour toutes les petites notes dans chaque view, mettre en show and hide. »
@@ -242,6 +243,22 @@ const NotesMenuItem = ({ onDone }) => {
       {masquees ? "Afficher les notes explicatives" : "Masquer les notes explicatives"}
     </button>);
 };
+/* ── Mode démonstration (bac à sable) ──
+   « En mode démonstration on devrait pouvoir écrire mais pas enregistrer. » Le
+   super lève l'interrupteur depuis son menu ; l'état vit dans la couche d'accès
+   au serveur (lib/api.js), qui absorbe alors toute écriture. On s'y abonne pour
+   refléter le mode dans le bandeau et la ligne de menu. */
+const useSandbox = () => useSyncExternalStore(subscribeSandbox, isSandbox, isSandbox);
+const SandboxMenuItem = ({ onDone }) => {
+  const actif = useSandbox();
+  return (
+    <button onClick={()=>{ setSandbox(!actif); onDone?.(); }}
+      className="flex items-center gap-2 w-full px-4 py-2.5 f13 text-slate-700 hover:bg-slate-50 border-t border-slate-100">
+      <FlaskConical size={14} className={actif ? "text-amber-600" : ""} />
+      {actif ? "Quitter le mode démonstration" : "Activer le mode démonstration"}
+    </button>);
+};
+
 /* Aide repliable — « cache les commentaires en hide/show, ils occupent trop de
    place ». Une longue note explicative ne s'impose plus à l'écran : elle se
    dévoile d'un clic pour qui la veut, et reste repliée par défaut. */
@@ -329,4 +346,4 @@ function parseCSV(txt){
   return rows.filter(r=>r.some(c=>c!=="")).map(r=>Object.fromEntries(head.map((h,i)=>[h,(r[i]??"").trim()])));
 }
 
-export { Aide, Badge, Bar2, BrandMark, Btn, Card, Empty, Field, Input, Logo, Modal, Note, NotesMenuItem, Select, SideRail, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, Toast, download, inputCls, parseCSV, setNotesMasquees, toCSV, useNotesMasquees };
+export { Aide, Badge, Bar2, BrandMark, Btn, Card, Empty, Field, Input, Logo, Modal, Note, NotesMenuItem, SandboxMenuItem, Select, SideRail, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, Toast, download, inputCls, parseCSV, setNotesMasquees, toCSV, useNotesMasquees, useSandbox };
