@@ -1421,6 +1421,15 @@ function SetShapefileServer({ db, notify, can, onCommitted, country, inline }){
     setBusy(false);
   };
 
+  /* Le poids total du dépôt, et l'avertissement qui va avec. Un .shp de fokontany
+     pèse des dizaines de mégaoctets ; MEMS les accepte (MAX_SHAPEFILE_MB, 150 Mo
+     par défaut), mais un proxy en amont refuse souvent bien plus tôt — nginx
+     plafonne le corps à 1 Mo TANT QU'ON NE LUI DIT PAS AUTRE CHOSE. L'échec arrive
+     alors en 413, avant même d'atteindre l'application, et rien à l'écran ne
+     laissait deviner que le remède était ailleurs. On le dit AVANT l'envoi. */
+  const poidsMo = files.reduce((t,f)=>t+(f?.size||0),0) / (1024*1024);
+  const zipDepose = files.some(f => /\.zip$/i.test(f?.name || ""));
+
   const onFiles = (list) => {
     const fs = Array.from(list || []);
     setFiles(fs); setAllowDup(false);
@@ -1490,6 +1499,21 @@ function SetShapefileServer({ db, notify, can, onCommitted, country, inline }){
             className="w-full f125 border border-dashed border-slate-300 rounded p-2 bg-slate-50 cursor-pointer" /></Field>
         <div className="self-center">{stat && <Note tone={stat.kind}>{stat.text}</Note>}</div>
       </div>
+
+      {/* Le poids du dépôt, dit AVANT l'envoi. Un échec en 413 se produit hors de
+          MEMS — chez le proxy d'entrée — et ne laisse aucune trace exploitable
+          dans l'application : autant prévenir pendant qu'on peut encore agir. */}
+      {poidsMo >= 1 && (
+        <Note tone={poidsMo > 40 && !zipDepose ? "warn" : "info"}>
+          <b>Dépôt de {poidsMo.toFixed(1)} Mo.</b>{" "}
+          {zipDepose
+            ? <>L'archive .zip est le format le plus sûr : elle compresse fortement le .shp.</>
+            : <>MEMS accepte jusqu'à 150 Mo, mais un <b>proxy en amont</b> refuse souvent bien plus
+                tôt — sous nginx, la limite par défaut est de <b>1 Mo</b>, et l'envoi échoue alors en
+                erreur 413 sans jamais atteindre l'application. Si c'est le cas :
+                déposez plutôt une <b>archive .zip</b> des mêmes fichiers, ou faites porter
+                « client_max_body_size 200m; » à la configuration du proxy.</>}
+        </Note>)}
 
       {apercu && (<>
         <StatRow>
