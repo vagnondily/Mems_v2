@@ -101,6 +101,10 @@ before(async () => {
     "--outfile=test/_app.mjs", "--log-level=error"], { stdio:"pipe" });
 
   ctx = makeDom(BASE);
+  /* Les notes explicatives sont masquées par défaut ; le module ui.jsx lit ce
+     drapeau à son CHARGEMENT. On les rend visibles AVANT d'importer l'app, pour que
+     le parcours puisse vérifier le texte explicatif propre à chaque écran. */
+  try{ localStorage.setItem("mems.notes.masquees", "0"); }catch(e){}
   React = (await import("react")).default;
   ({ createRoot } = await import("react-dom/client"));
   act = (await import("react")).act;
@@ -436,10 +440,14 @@ test("ODK Central : l'écran ne propose plus de « jeton général », et le bad
      jeton compris, et le serveur le reçoit avant de le jeter. Le champ ne servait
      à rien — aucun code ne le lit —, il ne pouvait donc pas être décrit
      honnêtement : il est parti. */
-  /* La sous-navigation des Paramètres est un rail de catégories (<nav>), plus
-     une rangée d'onglets : on y cherche l'écran par son intitulé. */
-  const onglet = all("main nav button").find(b => b.textContent.trim() === "ODK Central");
-  await click(onglet, "sous-onglet ODK Central");
+  /* ODK Central et les Connecteurs ont été RÉUNIS sous le sujet « Sources de
+     données » (bascule interne à deux positions) : on ouvre ce sujet au rail,
+     puis l'onglet « ODK Central ». */
+  const railItem = (l) => all("main nav button").find(b => b.textContent.trim() === l);
+  await click(railItem("Sources de données"), "sujet Sources de données");
+  await flush(); await flush();
+  const odkTab = all("main button").find(b => b.textContent.trim() === "ODK Central");
+  await click(odkTab, "onglet ODK Central");
   await flush(); await flush();
 
   assert.ok(document.body.textContent.includes("Adresse du serveur"), "l'écran est bien ouvert");
@@ -449,8 +457,10 @@ test("ODK Central : l'écran ne propose plus de « jeton général », et le bad
     "et la promesse qui l'accompagnait est partie avec lui");
   /* Ce que le serveur reçoit réellement en est la preuve : le mot n'apparaît
      nulle part dans le corps envoyé, puisque plus rien ne le produit. */
-  assert.ok(document.body.textContent.includes("justificatif propre à cette source"),
-    "l'écran dit ce qui vaut : chaque source porte le sien");
+  /* Le « chaque source porte son justificatif » est expliqué dans l'aide repliable
+     (titre visible, corps déployable) : on vérifie le titre, toujours à l'écran. */
+  assert.ok(document.body.textContent.includes("Comment sont lues les sources ODK"),
+    "l'écran dit comment une source ODK est lue");
   assert.equal(ctx.errors.length, 0, "aucune erreur sur l'écran ODK Central");
 });
 
@@ -459,14 +469,17 @@ test("connecteurs : la table de correspondance est bâtie sur le registre servi 
      transformations affichés ne sont écrits nulle part dans le navigateur. S'ils
      apparaissent, c'est qu'ils viennent de GET /api/connectors/champs — donc du
      même registre que celui contre lequel l'enregistrement est validé. */
-  /* La sous-navigation des Paramètres est un rail de catégories (<nav>), plus
-     une rangée d'onglets : on y cherche l'écran par son intitulé. */
-  const onglet = all("main nav button").find(b => b.textContent.trim() === "Connecteurs");
-  await click(onglet, "sous-onglet Connecteurs");
+  /* Les Connecteurs vivent sous le sujet « Sources de données » (onglet interne,
+     position par défaut). On ouvre le sujet, puis l'onglet « Connecteurs ». */
+  const railItem = (l) => all("main nav button").find(b => b.textContent.trim() === l);
+  await click(railItem("Sources de données"), "sujet Sources de données");
+  await flush(); await flush();
+  const connTab = all("main button").find(b => b.textContent.trim() === "Connecteurs");
+  await click(connTab, "onglet Connecteurs");
   await flush(); await flush();
 
-  assert.ok(document.body.textContent.includes("Une correspondance, pas du code"),
-    "l'écran explique ce qu'il fait");
+  assert.ok(document.body.textContent.includes("Comment marchent les connecteurs"),
+    "l'écran explique ce qu'il fait (aide repliable, titre visible)");
   assert.ok(byText("h4", "Aucun connecteur"), "aucun connecteur n'est déclaré au départ");
 
   await click(byText("button", "Nouveau"), "nouveau connecteur"); await flush();
@@ -570,9 +583,10 @@ test("paramètres : « Sites » a quitté la configuration, mais le registre res
      de code passe par une correspondance avant d'écrire. */
   await click(railItem("Listes paramétrables"), "écran Listes paramétrables");
   await flush(); await flush();
-  assert.ok(document.body.textContent.includes("Types de liste"),
+  assert.ok(document.body.textContent.includes("Référentiels"),
     "le rail des types de liste s'affiche");
-  const railListes = all("main button").filter(b => b.className.includes("border-b border-slate-100"));
+  const railListes = all("main button")
+    .filter(b => b.className.includes("rounded-full") && b.className.includes("f125"));
   assert.ok(railListes.length >= 8, `le rail porte les types (${railListes.length})`);
   assert.ok(document.body.textContent.includes("Denrées et commodités")
     && document.body.textContent.includes("Types de partenariat"),
