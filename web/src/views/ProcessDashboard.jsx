@@ -237,7 +237,7 @@ function ProcessDashboard({ db, go, notify }){
       cta:"Valider", action:() => go?.("suivi", "monitoring") });
     if(sansGps) list.push({ c:AMBRE, ic:Crosshair, n:sansGps, titre:"Coordonnées GPS manquantes",
       detail:"Sites sans point GPS — vérification impossible.",
-      cta:"Compléter", action:() => go?.("settings", "locations") });
+      cta:"Vérifier", action:() => go?.("settings", "gps") });
     if(integrite) list.push({ c:ROUGE, ic:ShieldAlert, n:integrite, titre:"Signaux d'intégrité",
       detail:"Sites portant une alerte fraude, CFM ou rapport.",
       cta:"Examiner", action:() => go?.("suivi", "monitoring") });
