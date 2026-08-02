@@ -1,4 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 import { api } from "../lib/api.js";
 import { useGeoCascade, resetGeoCache } from "../lib/geo.js";
 import { Activity, ArrowRightLeft, Building2, CalendarRange, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, FileText, KeyRound, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
@@ -12,6 +14,7 @@ import { Sources } from "./ActualData.jsx";
 import { MonthCellModal, MonthGrid, MonthLegend, PDD_ACTS, PDD_COMMODITIES } from "./Planning.jsx";
 import { SetListes, RenommageModal } from "./Listes.jsx";
 import { SetCodeReferentiels } from "./Referentiels.jsx";
+import { GpsAudit } from "./GpsAudit.jsx";
 import { BLOCKS } from "./Reports.jsx";
 import { PageHead } from "./Shell.jsx";
 
@@ -38,7 +41,8 @@ const SETTINGS_GROUPS = (superUser) => [
     ["activities","Activités"], ["listes","Listes paramétrables"],
     ["indicators","Indicateurs"], ["codes","Référentiels de codes"] ] },
   { cle:"org", label:"Organisation & lieux", items:[
-    ["offices","Bureaux"], ["scope","Périmètre des bureaux"], ["locations","Localités"] ] },
+    ["offices","Bureaux"], ["scope","Périmètre des bureaux"], ["locations","Localités"],
+    ["gps","Vérification GPS"] ] },
   { cle:"src", label:"Collecte & sources", items:[
     ["sources","Sources de données"] ] },
   { cle:"calc", label:"Calculs & rations", items:[
@@ -94,6 +98,9 @@ function SettingsView({ db, set, me, sub, setSub, notify, can, reload }){
       {active==="offices" && <SetOffices db={db} notify={notify} can={can} reload={reload} />}
       {active==="about" && <SetAbout db={db} />}
       {active==="locations" && <SetLocations db={db} set={set} notify={notify} can={can} reload={reload} me={me} />}
+      {/* La vérification GPS des sites — déplacée du suivi vers les paramètres,
+          au plus près du référentiel des localités qu'elle contrôle. */}
+      {active==="gps" && <GpsAudit db={db} notify={notify} can={can} />}
       {active==="scope" && <SetScope db={db} notify={notify} can={can} />}
       {active==="activities" && <SetActivities db={db} notify={notify} can={can} reload={reload} me={me} />}
       {active==="listes" && <SetListes notify={notify} can={can} me={me} />}
@@ -691,14 +698,18 @@ function SiteModal({ open, site, db, onClose, onSave }){
       footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
         {/* Enregistrer pendant la lecture du code externe reviendrait à l'écraser
             avec une case vide : le bouton attend que la fiche soit complète. */}
-        <Btn icon={Save} disabled={lecture==="encours"}
+        <Btn icon={Save} disabled={lecture==="encours" || !(f.adm4||"").trim()}
+          title={(f.adm4||"").trim() ? "" : "Renseignez le fokontany (adm4) : c'est le parent obligatoire du site"}
           onClick={()=>onSave({ ...f, geo_pcode: geo.pcode })}>{site?.id?"Mettre à jour":"Créer le site"}</Btn></>}>
       <Tabs className="mb-4" value={tab} onChange={setTab}
         items={[["id","Identification"],["risk","Critères de risque"],["plan","Suivi"]]} />
       {lecture==="echec" && <Note tone="warn">Le code externe de ce site n'a pas pu être lu.
         Fermez la fiche et rouvrez-la : enregistrer maintenant effacerait ce code, et les prochaines
         soumissions de ce site ne se rattacheraient plus automatiquement.</Note>}
-      {tab==="id" && (
+      {tab==="id" && (<>
+        {!(f.adm4||"").trim() && (
+          <div className="mb-3 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2 flex items-center gap-2 f115 text-amber-900">
+            <MapPin size={14} className="shrink-0" /><span>Un site doit être rattaché à un <b>fokontany (adm4)</b> — renseignez-le plus bas pour pouvoir enregistrer.</span></div>)}
         <div className="grid grid-cols-3 gap-x-4">
           <Field label="ID"><Input value={f.id||""} onChange={e=>u("id",e.target.value)} placeholder="Généré si vide" /></Field>
           <Field label="Code externe (ODK)" className="col-span-2"
@@ -731,7 +742,16 @@ function SiteModal({ open, site, db, onClose, onSave }){
           <Field label="Admin level 1"><Select value={f.adm1||""} onChange={e=>{u("adm1",e.target.value);u("adm2","");u("adm3","");}} empty="—" options={adm1s} /></Field>
           <Field label="Admin level 2"><Select value={f.adm2||""} onChange={e=>{u("adm2",e.target.value);u("adm3","");}} empty="—" options={adm2s} /></Field>
           <Field label="Admin level 3 — commune"><Select value={f.adm3||""} onChange={e=>u("adm3",e.target.value)} empty="—" options={adm3s} /></Field>
-          <Field label="Admin level 4 — fokontany"><Select value={f.adm4||""} onChange={e=>u("adm4",e.target.value)} empty="—" options={adm4s} /></Field>
+          {/* adm4 (fokontany) est le PARENT OBLIGATOIRE d'un site — « un site ne peut
+              être inséré sans adm4 comme parent ». Le shapefile fokontany (~80 Mo)
+              n'étant pas chargé, la cascade est vide : on saisit alors le fokontany
+              à la main (liste de suggestions si le niveau est chargé). */}
+          <Field label="Admin level 4 — fokontany" hint="Parent obligatoire du site">
+            {adm4s.length
+              ? <Select value={f.adm4||""} onChange={e=>u("adm4",e.target.value)} empty="— (obligatoire)" options={adm4s} />
+              : <Input value={f.adm4||""} onChange={e=>u("adm4",e.target.value)} placeholder="Fokontany (obligatoire)"
+                  className={(f.adm4||"").trim() ? "" : "border-amber-300 bg-amber-50/40"} />}
+          </Field>
           <Field label="Urban Area"><Select value={f.urbanArea||"Non"} onChange={e=>u("urbanArea",e.target.value)} options={D_URBAN} /></Field>
           <Field label="Modality type"><Select value={f.modality||""} onChange={e=>u("modality",e.target.value)} empty="—" options={db.lists.modalities} /></Field>
           <Field label="GPS Latitude"><Input type="number" step="0.000001" value={f.lat??""} onChange={e=>u("lat",e.target.value)} /></Field>
@@ -739,7 +759,7 @@ function SiteModal({ open, site, db, onClose, onSave }){
           <Field label="Beneficiary number"><Input type="number" value={f.beneficiaries??0} onChange={e=>u("beneficiaries",n(e.target.value))} /></Field>
           <Field label="Security situation" className="col-span-2"><Select value={f.security??0} onChange={e=>u("security",n(e.target.value))} options={D_SECURITY} /></Field>
           <Field label="Partenaire coopérant"><Select value={f.partner||""} onChange={e=>u("partner",e.target.value)} empty="—" options={db.lists.partners} /></Field>
-        </div>)}
+        </div></>)}
       {tab==="risk" && (
         <>
           <div className="grid grid-cols-2 gap-x-4">
@@ -1720,6 +1740,217 @@ function SetContoursNiveaux({ db, notify, can, onCommitted, inline }){
   );
 }
 
+/* ── Carte du découpage : les unités administratives RÉELLES, par niveau ──
+   « Pourquoi il n'y a pas la carte de Madagascar avec les propositions de adm1 à
+   adm4 avec les réellement inscrits ? » — on trace donc les contours du millésime
+   courant, niveau par niveau, tels qu'ils sont enregistrés. Leaflet sans tuiles
+   (le proxy les bloque) : les polygones se dessinent sur fond vide. adm4
+   (fokontany) reste vide tant que son shapefile (~80 Mo) n'est pas chargé. */
+function CarteDecoupage({ db }){
+  const parN = db.geoVersion?.geom?.parNiveau || [];
+  const dispo = new Set(parN.filter(p => p.units > 0).map(p => p.level));
+  const countOf = (lv) => (parN.find(p => p.level === lv)?.units) || 0;
+  const [niv, setNiv] = useState(["adm3","adm2","adm1"].find(l => dispo.has(l)) || "adm1");
+  const boxRef = useRef(null), mapRef = useRef(null), layerRef = useRef(null);
+  const [etat, setEtat] = useState({ loading:true, erreur:"", unites:0 });
+
+  useEffect(() => {
+    if(!boxRef.current || mapRef.current || !L.Browser.svg) return;
+    const map = L.map(boxRef.current, { zoomControl:true, attributionControl:false, scrollWheelZoom:true })
+      .setView([-18.9, 46.9], 5);
+    mapRef.current = map; layerRef.current = L.layerGroup().addTo(map);
+    return () => { try{ map.remove(); }catch(e){} mapRef.current = null; };
+  }, []);
+
+  useEffect(() => {
+    let vivant = true; setEtat(e => ({ ...e, loading:true, erreur:"" }));
+    (async () => {
+      try{
+        const geo = await api.geoGeometry(`?level=${niv}&limit=2500`);
+        if(!vivant) return;
+        const feats = geo?.features || []; const g = layerRef.current;
+        if(g){ g.clearLayers();
+          for(const f of feats){
+            const c = L.geoJSON(f, { style:{ color:C.brandD, weight: niv==="adm1"?1.6:0.7,
+              opacity:0.9, fillColor:C.brand, fillOpacity:0.12 } });
+            c.bindTooltip(f.properties?.name || "", { sticky:true });
+            c.on("mouseover", () => c.setStyle({ fillOpacity:0.32 }));
+            c.on("mouseout", () => c.setStyle({ fillOpacity:0.12 }));
+            g.addLayer(c);
+          }
+        }
+        if(geo?.extent){ const e = geo.extent;
+          try{ mapRef.current.fitBounds([[e.south, e.west], [e.north, e.east]], { padding:[10,10] }); }catch(_){}
+        }
+        setEtat({ loading:false, erreur: feats.length ? "" : "Aucun contour tracé à ce niveau.", unites:feats.length });
+      }catch(e){ if(vivant) setEtat({ loading:false, erreur:e.message, unites:0 }); }
+    })();
+    return () => { vivant = false; };
+  }, [niv]);
+
+  return (
+    <Card flush title="Carte du découpage administratif"
+      subtitle="Les unités réellement enregistrées dans le millésime courant, par niveau">
+      <div className="px-4 pt-3 pb-2 flex items-center gap-2 flex-wrap border-b border-slate-100">
+        <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+          {["adm1","adm2","adm3","adm4"].map(lv => { const ok = dispo.has(lv); const c = countOf(lv);
+            return (
+            <button key={lv} disabled={!ok} onClick={()=>setNiv(lv)}
+              title={ok ? `${fmt(c)} ${niveau(db, lv, true).toLowerCase()}`
+                : "Aucun contour à ce niveau — pour adm4 (fokontany), le shapefile (~80 Mo) n'est pas chargé"}
+              className={clsx("px-3 py-1 f11 rounded-md font-semibold transition-colors",
+                !ok ? "text-slate-300 cursor-not-allowed" : niv===lv ? "bg-brand text-white shadow-sm" : "text-slate-500 hover:text-slate-800")}>
+              {niveau(db, lv, false)}{ok && <span className="ml-1 f10 opacity-70 tabular-nums">{fmt(c)}</span>}</button>); })}
+        </div>
+        <span className="f115 text-slate-500 ml-1">{etat.loading ? "Chargement…"
+          : `${fmt(etat.unites)} ${niveau(db, niv, true).toLowerCase()} tracé(s)`}</span>
+      </div>
+      <div className="relative" style={{ height:340 }}>
+        <div ref={boxRef} className="absolute inset-0 bg-[#eaf1f6]" />
+        {etat.erreur && (
+          <div className="absolute inset-0 grid place-items-center pointer-events-none z-[500]">
+            <div className="bg-white/90 rounded-xl px-4 py-2 f115 text-slate-500 shadow-sm">{etat.erreur}</div></div>)}
+      </div>
+    </Card>);
+}
+
+/* ── Gestion des codes POI : insertion manuelle ou import Excel/CSV ──
+   « Dans localité on gère les POI codes : insertion, mapping via GPS. Soit une
+   insertion manuelle, soit télécharger et insérer via Excel (adm1 à 4 en base de
+   référence). » Un POI EST un site : on réutilise /sites par une porte étroite,
+   centrée sur le code, l'adresse administrative (adm4 obligatoire) et le GPS. */
+const normCol = (s) => String(s||"").toLowerCase().normalize("NFD")
+  .replace(/[̀-ͯ]/g,"").replace(/[^a-z0-9]+/g,"");
+const champCSV = (row, ...noms) => { const keys = Object.keys(row);
+  for(const nom of noms){ const k = keys.find(k => normCol(k) === normCol(nom));
+    if(k && row[k] != null && String(row[k]).trim() !== "") return String(row[k]).trim(); }
+  return ""; };
+
+function PoiModal({ open, db, notify, onClose, onCreated }){
+  const [f,setF] = useState({});
+  useEffect(()=>{ if(open) setF({}); },[open]);
+  const geo = useGeoCascade({ adm1:f.adm1, adm2:f.adm2, adm3:f.adm3 });
+  const [busy,setBusy] = useState(false);
+  if(!open) return null;
+  const u=(k,v)=>setF(p=>({...p,[k]:v}));
+  const [adm1s,adm2s,adm3s]=[geo.adm1,geo.adm2,geo.adm3].map(r=>r.map(x=>x.name));
+  const pret = (f.poi||"").trim() && (f.adm4||"").trim();
+  const creer = async () => { setBusy(true);
+    try{ await api.createSite({ code:(f.code||"").trim()||undefined, external_code:(f.code||"").trim()||null,
+        name:f.poi.trim(), status:"Active", poi_subtype:f.poiSubtype||null, activity_tag:f.activityTag||null,
+        adm1:f.adm1||null, adm2:f.adm2||null, adm3:f.adm3||null, adm4:f.adm4.trim(),
+        lat:f.lat===""||f.lat==null?null:Number(f.lat), lon:f.lon===""||f.lon==null?null:Number(f.lon),
+        geo_pcode:geo.pcode||null });
+      notify("POI enregistré","ok"); onCreated?.(); onClose();
+    }catch(e){ notify(e.message,"err"); } setBusy(false); };
+  return (
+    <Modal open onClose={onClose} title="Insérer un POI"
+      subtitle="Code, adresse administrative (fokontany obligatoire) et point GPS"
+      footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
+        <Btn icon={Plus} disabled={busy||!pret} title={pret?"":"Nom et fokontany (adm4) obligatoires"}
+          onClick={creer}>{busy?"Enregistrement…":"Créer le POI"}</Btn></>}>
+      {!(f.adm4||"").trim() && <Note tone="warn">Un POI (site) exige un <b>fokontany (adm4)</b> comme parent.
+        Le shapefile fokontany (~80 Mo) n'étant pas chargé, saisissez-le à la main.</Note>}
+      <div className="grid grid-cols-2 gap-x-4 mt-1">
+        <Field label="Code POI" hint="Code d'identification / externe (généré si vide)">
+          <Input value={f.code||""} onChange={e=>u("code",e.target.value)} placeholder="ex. MG23210070009001" /></Field>
+        <Field label="Nom du POI"><Input value={f.poi||""} onChange={e=>u("poi",e.target.value)} /></Field>
+        <Field label="Sous-type"><Select value={f.poiSubtype||""} onChange={e=>u("poiSubtype",e.target.value)}
+          empty="—" options={db.lists.poiSub.map(p=>p.label)} /></Field>
+        <Field label="Activité"><Select value={f.activityTag||""} onChange={e=>u("activityTag",e.target.value)}
+          empty="—" options={db.lists.tags.map(t=>[t.code,`${t.code} — ${t.label}`])} /></Field>
+        <Field label="Région (adm1)"><Select value={f.adm1||""} onChange={e=>{u("adm1",e.target.value);u("adm2","");u("adm3","");}} empty="—" options={adm1s} /></Field>
+        <Field label="District (adm2)"><Select value={f.adm2||""} onChange={e=>{u("adm2",e.target.value);u("adm3","");}} empty="—" options={adm2s} /></Field>
+        <Field label="Commune (adm3)"><Select value={f.adm3||""} onChange={e=>u("adm3",e.target.value)} empty="—" options={adm3s} /></Field>
+        <Field label="Fokontany (adm4)" hint="Parent obligatoire">
+          {geo.adm4?.length
+            ? <Select value={f.adm4||""} onChange={e=>u("adm4",e.target.value)} empty="— (obligatoire)" options={geo.adm4.map(x=>x.name)} />
+            : <Input value={f.adm4||""} onChange={e=>u("adm4",e.target.value)} placeholder="Fokontany (obligatoire)"
+                className={(f.adm4||"").trim()?"":"border-amber-300 bg-amber-50/40"} />}</Field>
+        <Field label="Latitude (GPS)"><Input type="number" step="0.000001" value={f.lat??""} onChange={e=>u("lat",e.target.value)} /></Field>
+        <Field label="Longitude (GPS)"><Input type="number" step="0.000001" value={f.lon??""} onChange={e=>u("lon",e.target.value)} /></Field>
+      </div>
+    </Modal>);
+}
+
+function PoiManager({ db, notify, can, reload }){
+  const [modal,setModal] = useState(false);
+  const [imp,setImp] = useState(null);
+  const fileRef = useRef(null);
+  const editable = can?.("edit");
+  const sites = db.sites || [];
+  const avecCode = sites.filter(s => s.externalCode || s.code).length;
+  const sansGps = sites.filter(s => s.lat == null || s.lon == null).length;
+  const sansAdm4 = sites.filter(s => !(s.adm4||"").trim()).length;
+
+  const modele = () => {
+    const head = "code,nom,sous_type,activite,adm1,adm2,adm3,adm4,latitude,longitude";
+    const ex = "MG2321007,École Ambatolampy,École,SMP,Analamanga,Antananarivo,Ambatolampy,Ambatolampy Centre,-18.912,47.531";
+    download("modele_poi.csv", head + "\n" + ex + "\n", "text/csv;charset=utf-8");
+  };
+  const exporter = () => {
+    const rows = sites.map(s => ({ code:s.externalCode || s.code || s.id, nom:s.poi || "",
+      sous_type:s.poiSubtype || "", activite:s.activityTag || "", adm1:s.adm1 || "", adm2:s.adm2 || "",
+      adm3:s.adm3 || "", adm4:s.adm4 || "", latitude:s.lat ?? "", longitude:s.lon ?? "" }));
+    if(!rows.length){ notify("Aucun POI à exporter", "warn"); return; }
+    download("codes_poi.csv", toCSV(rows), "text/csv;charset=utf-8");
+  };
+  const importer = async (file) => {
+    if(!file) return;
+    let lignes = []; try{ lignes = parseCSV(await file.text()); }catch(e){ notify("CSV illisible : " + e.message, "err"); return; }
+    if(!lignes.length){ notify("Fichier vide", "warn"); return; }
+    if(lignes.length > 2000){ notify("Import limité à 2000 lignes par fichier", "warn"); return; }
+    let ok=0, echecs=0, manque=0;
+    setImp({ total:lignes.length, ok, echecs, manque, encours:true });
+    for(const row of lignes){
+      const adm4 = champCSV(row, "adm4", "fokontany");
+      const nom = champCSV(row, "nom", "name", "poi");
+      if(!adm4 || !nom){ echecs++; if(!adm4) manque++; setImp(x=>({ ...x, echecs, manque })); continue; }
+      try{
+        const lat = champCSV(row, "latitude", "lat"), lon = champCSV(row, "longitude", "lon", "lng");
+        await api.createSite({ code:champCSV(row,"code","code_poi")||undefined,
+          external_code:champCSV(row,"code","code_poi")||null, name:nom, status:"Active",
+          poi_subtype:champCSV(row,"sous_type","subtype","poi_subtype")||null,
+          activity_tag:champCSV(row,"activite","activity_tag","tag")||null,
+          adm1:champCSV(row,"adm1","region")||null, adm2:champCSV(row,"adm2","district")||null,
+          adm3:champCSV(row,"adm3","commune")||null, adm4,
+          lat: lat ? Number(lat) : null, lon: lon ? Number(lon) : null });
+        ok++; setImp(x=>({ ...x, ok }));
+      }catch(e){ echecs++; setImp(x=>({ ...x, echecs })); }
+    }
+    setImp(x=>({ ...x, encours:false }));
+    notify(`Import terminé : ${ok} POI créé(s), ${echecs} en échec${manque?` (${manque} sans adm4)`:""}`, echecs?"warn":"ok");
+    await reload?.();
+  };
+
+  return (
+    <Card title="Codes POI (sites)"
+      subtitle="Insertion manuelle ou import Excel/CSV — chaque POI exige un fokontany (adm4)"
+      right={editable && <Btn size="sm" icon={Plus} onClick={()=>setModal(true)}>Insérer un POI</Btn>}>
+      <div className="flex items-center gap-5 flex-wrap">
+        <div className="flex items-center gap-5">
+          {[["POI", fmt(sites.length), false], ["avec code", fmt(avecCode), false],
+            ["sans GPS", fmt(sansGps), sansGps>0], ["sans adm4", fmt(sansAdm4), sansAdm4>0]].map(([l,v,alerte])=>(
+            <div key={l} className="text-center">
+              <div className={clsx("f16 font-bold tabular-nums leading-none", alerte?"text-amber-600":"text-slate-800")}>{v}</div>
+              <div className="f10 text-slate-400 mt-0.5">{l}</div></div>))}
+        </div>
+        <div className="ml-auto flex items-center gap-2 flex-wrap">
+          <Btn size="sm" kind="sec" icon={Download} onClick={modele}>Modèle CSV</Btn>
+          {editable && <Btn size="sm" kind="sec" icon={Upload} onClick={()=>fileRef.current?.click()}>Importer CSV</Btn>}
+          <Btn size="sm" kind="sec" icon={Download} onClick={exporter} disabled={!sites.length}>Exporter</Btn>
+          <input ref={fileRef} type="file" accept=".csv,text/csv" className="hidden"
+            onChange={e=>{ const fl = e.target.files?.[0]; e.target.value=""; importer(fl); }} />
+        </div>
+      </div>
+      {imp && (
+        <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 f115 text-slate-600">
+          {imp.encours ? `Import en cours… ${imp.ok+imp.echecs}/${imp.total}`
+            : `Import terminé : ${fmt(imp.ok)} créé(s), ${fmt(imp.echecs)} en échec${imp.manque?` (${imp.manque} sans adm4)`:""}`}</div>)}
+      <PoiModal open={modal} db={db} notify={notify} onClose={()=>setModal(false)} onCreated={()=>reload?.()} />
+    </Card>);
+}
+
 /* ── Localités : référentiel administratif versionné ──
    Le découpage n'est plus une liste plate éditable ligne à ligne : c'est un arbre
    (région → district → commune → fokontany) chargé par millésime. Sites, population
@@ -1864,6 +2095,12 @@ function SetLocations({ db, set, notify, can, reload, me }){
             onClick={()=>loadRef("decoupage")}>{refBusy==="decoupage"?"Chargement…":"Charger le découpage Madagascar (serveur)"}</Btn></div>}
         </Note>
       )}
+
+      {/* ── La carte du découpage réel : adm1 → adm4 tels qu'ils sont inscrits ── */}
+      {cur && <CarteDecoupage db={db} />}
+
+      {/* ── Gestion des codes POI : insertion manuelle ou import Excel/CSV ── */}
+      {cur && <PoiManager db={db} notify={notify} can={can} reload={reload} />}
 
       {/* ── LE RÉPERTOIRE : priorité à l'écran ── */}
       <Card flush title="Répertoire des localités"
