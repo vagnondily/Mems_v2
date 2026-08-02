@@ -123,6 +123,31 @@ async function fetchBlob(path){
   }
   return res.blob();
 }
+/* ── Le 413, et pourquoi il ne vient jamais de MEMS ───────────────────
+   « Payload Too Large » est presque toujours prononcé par un intermédiaire — et
+   c'est ce qui le rend déroutant : le serveur MEMS accepte les shapefiles jusqu'à
+   MAX_SHAPEFILE_MB (150 Mo par défaut), mais la requête n'arrive jamais jusqu'à
+   lui. Le refus vient d'un proxy en amont, qui répond en HTML : `res.json()`
+   échoue, il ne reste alors qu'un « erreur 413 » nu, sans la moindre piste.
+
+   Les trois plafonds rencontrés en pratique, du plus fréquent au plus rare :
+     · nginx — `client_max_body_size` vaut 1 Mo PAR DÉFAUT. C'est la cause la plus
+       courante, et la plus surprenante : tout dépôt de découpage échoue.
+     · un tunnel de développement (Codespaces, ngrok) — plafond propre au service.
+     · Cloudflare — 100 Mo sur les offres gratuites.
+   Le message le dit, au lieu de laisser chercher côté application ce qui se règle
+   côté serveur d'entrée. */
+const MESSAGE_413 =
+  "fichier refusé AVANT d'atteindre MEMS (413). Le serveur accepte pourtant les découpages "
+  + "volumineux : c'est un intermédiaire (proxy, tunnel de développement) qui plafonne la taille "
+  + "des requêtes. Remèdes, du plus simple au plus durable : (1) déposez une archive .zip — elle "
+  + "compresse fortement le .shp et passe souvent sous le plafond ; (2) faites relever la limite "
+  + "du proxy — sous nginx c'est « client_max_body_size 200m; », dont la valeur PAR DÉFAUT est "
+  + "1 Mo ; (3) importez un niveau administratif à la fois plutôt que le pays entier.";
+
+const messageEnvoi = (res, payload) =>
+  payload?.error || (res.status === 413 ? MESSAGE_413 : `erreur ${res.status}`);
+
 /* Téléversement multipart : le Content-Type est posé par le navigateur, avec sa frontière. */
 async function postFile(path, file, field = "file"){
   if(estMutationBloquee("POST", path)) return reponseBacASable("POST", path, {});
@@ -132,7 +157,7 @@ async function postFile(path, file, field = "file"){
   const res = await fetch(BASE + path, { method:"POST", headers, credentials:"include", body });
   let payload = null;
   try{ payload = await res.json(); }catch(e){}
-  if(!res.ok) throw new ApiError(res.status, payload?.error || `erreur ${res.status}`, payload?.details, payload);
+  if(!res.ok) throw new ApiError(res.status, messageEnvoi(res, payload), payload?.details, payload);
   return payload;
 }
 /* Plusieurs fichiers d'un coup (le shapefile : .shp + .dbf + .prj, ou un .zip),
@@ -148,7 +173,7 @@ async function postFiles(path, files, fields = {}){
   const res = await fetch(BASE + path, { method:"POST", headers, credentials:"include", body });
   let payload = null;
   try{ payload = await res.json(); }catch(e){}
-  if(!res.ok) throw new ApiError(res.status, payload?.error || `erreur ${res.status}`, payload?.details, payload);
+  if(!res.ok) throw new ApiError(res.status, messageEnvoi(res, payload), payload?.details, payload);
   return payload;
 }
 
