@@ -272,17 +272,23 @@ function SetGeneral({ db, set }){
 function SetAbout({ db }){
   return (
     <div className="space-y-4">
-      <Card title="À propos de MEMS">
-        <p className="text-slate-600 leading-relaxed">Cette application est une interface de suivi et de pilotage. La démo hors ligne est disponible sans installation du serveur.</p>
-        <p className="text-slate-600 leading-relaxed">Cliquez sur le lien ci-dessous pour ouvrir la version de présentation indépendante.</p>
-        <a href="/demo.html" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 px-4 py-3 rounded-xl font-semibold text-slate-900 bg-slate-100 hover:bg-slate-200 transition">Ouvrir la démo offline</a>
+      <Card title="À propos de MEMS" subtitle="Monitoring and Evaluation Management System">
+        <p className="text-slate-600 leading-relaxed">MEMS est l'interface de suivi et de pilotage du bureau — planification du suivi
+          fondée sur le risque, réalisation des visites, couverture géographique, indicateurs de résultat et
+          rapports. Elle s'appuie sur un serveur unique : la donnée saisie est la donnée réelle de production.</p>
+        <p className="text-slate-600 leading-relaxed mt-2"><b>Mode démonstration.</b> Pour présenter l'application
+          sans risque, le super-utilisateur active le <b>mode démonstration</b> depuis le menu du compte (en haut à
+          droite) : on peut remplir tous les formulaires, mais rien n'est enregistré sur les données réelles. Un
+          rechargement rétablit la production intacte.</p>
       </Card>
-      <Card title="Informations importantes" subtitle="Démo hors ligne">
-        <ul className="list-disc pl-5 space-y-2 text-slate-600">
-          <li>La démo n'utilise aucun backend serveur.</li>
-          <li>Les écrans et contenus sont simulés pour la présentation.</li>
-          <li>Le fichier <code className="rounded bg-slate-100 px-1 py-0.5">web/demo.html</code> est accessible directement.</li>
-        </ul>
+      <Card title="Instance" subtitle="Contexte courant">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+          {[["Organisation", db.settings?.org || "—"], ["Unité", db.settings?.unit || "—"],
+            ["Exercice", String(db.year)], ["Devise", db.settings?.currency || "—"]].map(([k,v])=>(
+            <div key={k} className="flex flex-col">
+              <span className="f10 uppercase tracking-wide font-bold text-slate-400">{k}</span>
+              <span className="f13 text-slate-800">{v}</span></div>))}
+        </div>
       </Card>
     </div>);
 }
@@ -1720,11 +1726,6 @@ function SetContoursNiveaux({ db, notify, can, onCommitted, inline }){
    et distributions s'y raccrochent, donc il ne se modifie pas à la main — on importe
    un nouveau millésime, et l'ancien reste disponible. */
 function SetLocations({ db, set, notify, can, reload, me }){
-  /* Le mode de données de l'instance : « réel » ou « démonstration ». Le super le
-     déclare ; un bandeau le rappelle partout, pour qu'on ne confonde jamais un
-     jeu de test avec la production. Charger des données réelles rebascule en réel. */
-  const dataMode = db.settings?.dataMode === "demo" ? "demo" : "reel";
-  const setDataMode = (m) => set?.(d => { d.settings.dataMode = m; return d; });
   const [versions,setVersions] = useState([]);
   const [refBusy,setRefBusy]   = useState("");   /* chargement des données de référence */
   /* La suppression des contours reste une action de maintenance (le millésime
@@ -1817,7 +1818,6 @@ function SetLocations({ db, set, notify, can, reload, me }){
       notify(quoi==="decoupage" ? `Découpage chargé : ${fmt(b.geo?.unites||0)} unités, ${fmt(b.geo?.contours||0)} contours`
         : quoi==="indicateurs" ? `Référentiels chargés : ${fmt(b.activites?.lues||0)} activités, ${fmt(b.indicateurs?.lues||0)} indicateurs`
         : `Sites chargés : ${fmt(b.crees||0)} créés, ${fmt(b.majs||0)} mis à jour`, "ok");
-      setDataMode("reel");                 /* charger du réel rebascule l'instance en mode réel */
       await reload?.(); await loadVersions();
     }catch(e){ notify(e.message,"err"); } setRefBusy(""); };
   const cols = niveaux(db, { from:"adm1", to:niveauProfond, plural:false });
@@ -1848,15 +1848,6 @@ function SetLocations({ db, set, notify, can, reload, me }){
               <div className="f10 text-slate-400 mt-0.5">contours</div></div>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            {/* Bascule RÉEL / DÉMONSTRATION — réservée au super. */}
-            {me?.role==="super" && (
-              <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5" title="Mode de données de l'instance">
-                {[["reel","Réelles"],["demo","Démonstration"]].map(([m,l])=>(
-                  <button key={m} onClick={()=>setDataMode(m)}
-                    className={clsx("px-3 py-1 f11 rounded-md font-semibold transition-colors",
-                      dataMode===m ? (m==="demo"?"bg-amber-500 text-white shadow-sm":"bg-brand text-white shadow-sm") : "text-slate-500 hover:text-slate-800")}>
-                    {l}</button>))}
-              </div>)}
             {me?.role==="super" && !geoCount &&
               <Btn size="sm" icon={MapPin} disabled={!!refBusy} onClick={()=>loadRef("decoupage")}>
                 {refBusy==="decoupage"?"Chargement…":"Charger le découpage"}</Btn>}

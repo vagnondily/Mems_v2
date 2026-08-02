@@ -34,12 +34,15 @@ MEMS_DATA_DIR=$(pwd)/data npm --prefix server run seed:reel
 MEMS_DATA_DIR=$(pwd)/data npm --prefix server run seed:sites
 ```
 
-## Réel vs démonstration
+## Mode démonstration (bac à sable)
 
-Le **super-utilisateur** bascule entre **données réelles** et **données de
-démonstration** depuis Paramètres › Localités. Le jeu de démonstration synthétique
-se sème par `npm --prefix server run seed` (il **remplace** la base — à réserver
-à un environnement de test).
+Il n'y a plus de « version démo » ni de jeu de données de démonstration séparé :
+l'instance sert **toujours la donnée réelle**. Pour présenter l'application sans
+risque, le **super-utilisateur** active le **mode démonstration** depuis le menu
+du compte (en haut à droite) : on peut remplir tous les formulaires, mais aucune
+écriture n'atteint le serveur (`web/src/lib/api.js` absorbe les mutations). Un
+rechargement rétablit la production intacte. Le drapeau vit en `localStorage`,
+propre au poste, jamais dans la base.
 
 > Les bases SQLite (`server/data/*.db`) et les gros binaires ne sont pas versionnés
 > ici : ce dossier accueille les **fichiers sources** de référence, pas la base

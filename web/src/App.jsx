@@ -4,7 +4,8 @@ import { Toast, Btn } from "./components/ui.jsx";
 import { uid } from "./lib/calc.js";
 import { ACT_CATEGORIES, C, D_MMR, D_SCORING, D_ROLES, D_FORMULAS, D_WEIGHTS,
          destinationsAutorisees } from "./lib/constants.js";
-import { api, setToken, setUnauthorizedHandler, createSyncQueue } from "./lib/api.js";
+import { api, setToken, setUnauthorizedHandler, createSyncQueue,
+         setSandboxNotifier, subscribeSandbox, isSandbox } from "./lib/api.js";
 import { Admin } from "./views/Admin.jsx";
 import { Analytics } from "./views/Analytics.jsx";
 import { Home } from "./views/Home.jsx";
@@ -104,6 +105,20 @@ export default function App(){
     notify("Session expirée, reconnectez-vous", "warn");
   }); }, [notify]);
 
+  /* Mode démonstration : la couche d'accès signale chaque écriture absorbée. On
+     n'en fait qu'un rappel throttlé — le sync-queue peut pousser plusieurs
+     collections d'affilée, une seule bulle suffit. */
+  useEffect(() => {
+    let dernier = 0;
+    setSandboxNotifier(() => {
+      const t = performance.now();
+      if(t - dernier < 3500) return;
+      dernier = t;
+      notify("Mode démonstration — action non enregistrée", "warn");
+    });
+    return () => setSandboxNotifier(null);
+  }, [notify]);
+
   const hydrate = useCallback((state) => {
     /* Les réglages persistés priment sur les valeurs par défaut ; un compte neuf,
        qui n'a rien enregistré, retombe sur ces défauts et voit une config sensée. */
@@ -181,6 +196,14 @@ export default function App(){
     try{ const { user } = await api.me(); setMe(normalizeMe(user)); await loadState(); setPhase("ready"); }
     catch(e){ setPhase("login"); }
   })(); }, [loadState, notify]);
+
+  /* Basculer le bac à sable resynchronise l'état local sur la vérité du serveur :
+     en sortie, cela efface les saisies de démonstration jamais enregistrées ; en
+     entrée, on repart d'un jeu réel propre. Sans compte connecté, on ne fait rien. */
+  useEffect(() => subscribeSandbox(() => {
+    if(!isSandbox()) notify("Mode démonstration quitté — données réelles rétablies", "ok");
+    loadState().catch(()=>{});
+  }), [loadState, notify]);
 
   const onLogin = async (user, token) => {
     setToken(token); setMe(normalizeMe(user)); await loadState(); setPhase("ready");

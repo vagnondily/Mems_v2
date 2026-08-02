@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { BarChart3, Bell, CalendarRange, Check, ChevronDown, Cog, Database, FileText, KeyRound, LayoutDashboard, LogOut, MapPin, Save, ShieldCheck, UserCog } from "lucide-react";
-import { Badge, Btn, BrandMark, Empty, Field, Input, Modal, Note, NotesMenuItem } from "../components/ui.jsx";
+import { Badge, Btn, BrandMark, Empty, Field, Input, Modal, Note, NotesMenuItem, SandboxMenuItem, useSandbox } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
 import { clsx } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
@@ -230,6 +230,7 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, notify, onM
   const [menu,setMenu] = useState(false);
   const [cloche,setCloche] = useState(false);
   const [compte,setCompte] = useState(false);
+  const sandbox = useSandbox();
   useEffect(()=>{ const h=()=>{setMenu(false);setCloche(false);};
     window.addEventListener("click",h); return ()=>window.removeEventListener("click",h); },[]);
   const initials = (me.firstName?.[0]||"") + (me.lastName?.[0]||"");
@@ -319,6 +320,9 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, notify, onM
                 {/* L'interrupteur des notes explicatives — rangé ici, hors de la
                     vue des pages, pour ne pas les enlaidir. */}
                 <NotesMenuItem onDone={()=>setMenu(false)} />
+                {/* Le bac à sable : réservé au super, il fait vivre l'application
+                    sans jamais toucher la donnée réelle. */}
+                {me.role==="super" && <SandboxMenuItem onDone={()=>setMenu(false)} />}
                 {allowed.includes("settings") && (
                   <button onClick={()=>{setTab("settings");setMenu(false);}}
                     className="flex items-center gap-2 w-full px-4 py-2.5 f13 text-slate-700 hover:bg-slate-50 border-t border-slate-100">
@@ -331,12 +335,13 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, notify, onM
       </header>
       <main className="flex-1 min-h-0 overflow-y-auto w-full">
         <div className="mw1520 w-full mx-auto px-5 py-5">
-          {/* Bandeau MODE DÉMONSTRATION — pour ne jamais confondre un jeu de test
-              avec la production. Le super bascule le mode dans Paramètres › Localités. */}
-          {db.settings?.dataMode === "demo" && (
+          {/* Bandeau MODE DÉMONSTRATION (bac à sable) — on peut tout remplir, rien
+              n'est enregistré. Le super lève le mode depuis son menu (en haut à
+              droite). Un rechargement rétablit la donnée réelle intacte. */}
+          {sandbox && (
             <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 flex items-center gap-2.5 f125 text-amber-900">
-              <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0" />
-              <span><b>Mode démonstration</b> — les données affichées sont un jeu de test, non des données réelles de production.</span>
+              <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0 animate-pulse" />
+              <span><b>Mode démonstration</b> — vous pouvez remplir les formulaires, mais rien n'est enregistré sur les données réelles. Quittez ce mode depuis le menu du compte.</span>
             </div>)}
           {children}
         </div>
