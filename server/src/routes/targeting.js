@@ -16,15 +16,39 @@ import { scopeOf } from "../lib/scope.js";
    figurent — modifiable puis réimportable dans le flux d'import existant. */
 const r = Router();
 
-/* Le chemin d'une unité (pour le cloisonnement par bureau) et son libellé. */
-function chargerUnites(v){
-  return Object.fromEntries(db.prepare(
-    `SELECT u.pcode, u.name, u.path, u.level, p1.name p1, p2.name p2, p3.name p3
+/* Le chemin d'une unité (pour le cloisonnement par bureau) et son libellé.
+
+   `pcodes` borne la lecture aux unités RÉELLEMENT concernées — celles que les
+   ciblages citent, ou celles qu'un enregistrement vise. Sans borne, chaque appel
+   chargeait le découpage ENTIER (à Madagascar, ~18 000 fokontany avec trois
+   jointures d'ancêtres) pour n'en regarder que quelques dizaines, à chaque
+   ouverture de l'écran et à chaque enregistrement. Le découpage est le plus gros
+   référentiel de MEMS ; il n'a pas à traverser la mémoire pour dater un ciblage.
+
+   La liste est DÉCOUPÉE en tranches : SQLite plafonne le nombre de paramètres
+   d'une requête, et un ciblage national portant des milliers de communes ferait
+   sinon échouer l'appel — c'est-à-dire l'écran. */
+const PAR_TRANCHE = 800;
+function chargerUnites(v, pcodes){
+  const sql = (clause) => `SELECT u.pcode, u.name, u.path, u.level, p1.name p1, p2.name p2, p3.name p3
      FROM geo_unit u
      LEFT JOIN geo_unit p1 ON p1.version_id=u.version_id AND p1.pcode=u.parent_pcode
      LEFT JOIN geo_unit p2 ON p2.version_id=u.version_id AND p2.pcode=p1.parent_pcode
      LEFT JOIN geo_unit p3 ON p3.version_id=u.version_id AND p3.pcode=p2.parent_pcode
-     WHERE u.version_id=?`).all(v.id).map(u => [u.pcode, u]));
+     WHERE u.version_id=? ${clause}`;
+  const out = {};
+  if(!pcodes){
+    for(const u of db.prepare(sql("")).all(v.id)) out[u.pcode] = u;
+    return out;
+  }
+  const liste = [...new Set(pcodes)];
+  for(let i = 0; i < liste.length; i += PAR_TRANCHE){
+    const tranche = liste.slice(i, i + PAR_TRANCHE);
+    if(!tranche.length) continue;
+    for(const u of db.prepare(sql(`AND u.pcode IN (${tranche.map(()=>"?").join(",")})`))
+      .all(v.id, ...tranche)) out[u.pcode] = u;
+  }
+  return out;
 }
 
 const dansPerimetre = (scope, path) => scope.unbounded
@@ -37,6 +61,58 @@ function libellesAncetres(u){
     if(lvl && nm != null) out[lvl] = nm; });
   out[u.level] = u.name;
   return out;
+}
+
+/* ── L'état courant suit l'historique ─────────────────────────────────
+   `caseload` porte « les ciblés du moment » et c'est de lui que se calculent les
+   trois taux (ciblage, couverture, réalisation) ; `targeting` porte l'historique
+   daté. La valeur courante d'une unité est, par définition du module, celle de
+   son ciblage le plus RÉCENT — pas celle du dernier enregistrement effectué.
+
+   La nuance décide de la correction : un ciblage saisi en retard, portant une
+   date antérieure à un ciblage déjà connu, ne doit PAS écraser l'état courant, et
+   supprimer le plus récent doit faire remonter celui d'avant. On ne recopie donc
+   jamais la ligne qu'on vient d'écrire : on RECALCULE depuis l'historique.
+
+   La ligne de caseload créée si besoin porte une population de 0 : c'est
+   l'inconnu, pas un zéro affirmé, et le taux de ciblage reste nul (division par
+   zéro rendue `null`) jusqu'à ce que la population soit renseignée. Écrire un
+   ciblage ne prétend pas connaître la population. */
+function reporterCiblageCourant(pcode, year, tag, level){
+  const dernier = db.prepare(
+    `SELECT targeted, targeted_hh, targeted_at FROM targeting
+     WHERE geo_pcode=? AND year=? AND activity_tag=?
+     ORDER BY targeted_at DESC, created_at DESC LIMIT 1`).get(pcode, year, tag);
+  const ligne = db.prepare(
+    `SELECT id, source FROM caseload
+     WHERE geo_pcode=? AND year=? AND activity_tag=? AND month IS NULL`).get(pcode, year, tag);
+
+  /* Plus aucun ciblage daté : l'état courant retombe à zéro plutôt que de garder
+     le chiffre d'un événement effacé. La population, elle, ne se touche pas —
+     elle ne vient pas du ciblage. */
+  const cible = dernier?.targeted ?? 0, menages = dernier?.targeted_hh ?? 0;
+
+  /* La provenance se COMPLÈTE, elle ne s'écrase pas. `source` documente d'où
+     viennent les chiffres de la ligne — « RGPH3 » pour la population, par exemple.
+     Y écrire la date du ciblage à la place ferait perdre l'origine du recensement
+     pour gagner celle du ciblage : deux informations dont une seule tiendrait. On
+     retire l'ancienne mention de ciblage (il n'y en a qu'une à la fois) et on pose
+     la nouvelle à côté de ce qui était déjà là. */
+  const MENTION = /(^|\s·\s)Ciblage daté du \d{4}-\d{2}-\d{2}/g;
+  const reste = String(ligne?.source || "").replace(MENTION, "").replace(/^\s*·\s*/, "").trim();
+  const mention = dernier ? `Ciblage daté du ${dernier.targeted_at}` : "";
+  const source = [reste, mention].filter(Boolean).join(" · ").slice(0, 200);
+
+  if(ligne){
+    db.prepare(`UPDATE caseload SET targeted=?, targeted_hh=?, source=?,
+                rev=rev+1, updated_at=datetime('now') WHERE id=?`)
+      .run(cible, menages, source, ligne.id);
+  } else if(dernier){
+    db.prepare(`INSERT INTO caseload
+      (id,geo_pcode,level,year,month,activity_tag,population,households,targeted,targeted_hh,source)
+      VALUES (?,?,?,?,NULL,?,0,0,?,?,?)`)
+      .run(newId("cl"), pcode, level || "adm3", year, tag, cible, menages, source);
+  }
 }
 
 /* GET /api/targeting — les ciblages datés de l'année, chacun rattaché à son
@@ -52,7 +128,6 @@ r.get("/", (req, res) => {
 
   const v = currentVersion();
   if(!v) return res.json({ year, rows:[], reasons:[] });
-  const unites = chargerUnites(v);
   const scope = scopeOf(req.user);
 
   const where = ["year=?"]; const args = [year];
@@ -60,6 +135,8 @@ r.get("/", (req, res) => {
   const brut = db.prepare(
     `SELECT * FROM targeting WHERE ${where.join(" AND ")} ORDER BY targeted_at DESC, created_at DESC`)
     .all(...args);
+  /* Les unités citées par ces ciblages, et elles seules. */
+  const unites = chargerUnites(v, brut.map(t => t.geo_pcode));
 
   /* Le dernier par (unité, activité) : premier vu en ordre décroissant de date. */
   const vus = new Set();
@@ -80,10 +157,29 @@ r.get("/", (req, res) => {
 
 /* POST /api/targeting — enregistre UN ciblage (une date, une activité, une
    raison, un genre) sur une ou plusieurs unités sélectionnées en amont. */
+/* La date du ciblage est la CLÉ de tout ce module : « le dernier ciblage est la
+   ligne à la `targeted_at` la plus récente ». Elle était pourtant acceptée telle
+   quelle — n'importe quelle chaîne de 4 à 20 caractères. Comme le classement se
+   fait par comparaison de CHAÎNES (`ORDER BY targeted_at DESC`), une valeur non
+   datée se range selon son premier caractère : « pas-une-date » passe devant
+   « 2026-05-01 » et devient le « dernier ciblage » de la commune. L'écran
+   préremplit alors le quota avec elle, l'extract la reprend, et la valeur
+   réellement décidée disparaît sans un mot.
+
+   On exige donc une date ISO complète, ET une date qui existe : `2026-02-31`
+   satisfait l'expression régulière mais n'est pas un jour de l'année. */
+const DATE_ISO = /^\d{4}-\d{2}-\d{2}$/;
+const dateReelle = (v) => {
+  if(!DATE_ISO.test(v)) return false;
+  const d = new Date(v + "T00:00:00Z");
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0,10) === v;
+};
+
 const corpsSchema = z.object({
   year: z.coerce.number().int().min(2000).max(2100),
   activity_tag: z.string().max(20).default(""),
-  targeted_at: z.string().min(4).max(20),        /* ISO date */
+  targeted_at: z.string().refine(dateReelle,
+    { message:"date du ciblage attendue au format AAAA-MM-JJ (et devant exister)" }),
   gender: z.string().max(30).nullish().transform(v => v ?? null),
   reason: z.string().max(60).nullish().transform(v => v ?? null),
   note: z.string().max(500).nullish().transform(v => v ?? null),
@@ -103,14 +199,34 @@ r.post("/", requireCap("edit"), (req, res) => {
 
   const v = currentVersion();
   if(!v) return res.status(409).json({ error:"aucun référentiel courant : chargez un millésime d'abord" });
-  const unites = chargerUnites(v);
+  const unites = chargerUnites(v, d.units.map(x => x.geo_pcode));
   const scope = scopeOf(req.user);
+
+  /* La population connue de l'unité pour cette année et cette activité. Elle sert
+     au même contrôle que celui de `PUT /api/caseload` : on ne cible pas plus de
+     personnes qu'il n'en habite. Ce garde existait d'un côté et manquait de
+     l'autre — deux portes vers le même fait, une seule surveillée. */
+  const popDe = db.prepare(`SELECT population FROM caseload
+    WHERE geo_pcode=? AND year=? AND activity_tag=? AND month IS NULL`);
+  const popToutesActivites = db.prepare(`SELECT MAX(population) p FROM caseload
+    WHERE geo_pcode=? AND year=?`);
 
   const rejets = [];
   const ok = d.units.filter((x, i) => {
     const u = unites[x.geo_pcode];
     if(!u){ rejets.push({ ligne:i+1, pcode:x.geo_pcode, message:"p-code absent du référentiel" }); return false; }
     if(!dansPerimetre(scope, u.path)){ rejets.push({ ligne:i+1, pcode:x.geo_pcode, message:"hors de votre périmètre" }); return false; }
+    /* La population de l'activité si elle est renseignée, sinon la plus grande
+       connue pour l'unité : le ciblage d'une activité donnée s'appuie sur la même
+       population que les autres, et exiger une ligne par activité ferait échouer
+       le contrôle là où la donnée existe pourtant. */
+    const pop = popDe.get(x.geo_pcode, d.year, d.activity_tag)?.population
+      || popToutesActivites.get(x.geo_pcode, d.year)?.p || 0;
+    if(pop > 0 && x.targeted > pop){
+      rejets.push({ ligne:i+1, pcode:x.geo_pcode,
+        message:`${x.targeted} ciblés pour ${pop} habitants (${u.name})` });
+      return false;
+    }
     return true;
   });
 
@@ -122,6 +238,17 @@ r.post("/", requireCap("edit"), (req, res) => {
     ins.run(newId("tg"), x.geo_pcode, x.level, d.year, d.activity_tag, d.targeted_at,
       x.targeted, x.targeted_hh, d.gender, d.reason, d.note, req.user.id);
     crees++;
+    /* ── Et l'état COURANT suit ─────────────────────────────────────
+       `targeting` est l'historique, `caseload` porte « les ciblés du moment »
+       (migration 035) : c'est de LUI que les trois taux de l'écran « Population,
+       ciblage et distribution » sont calculés. Rien ne reliait les deux. Un agent
+       qui saisissait un ciblage de 1 234 personnes voyait donc son taux de
+       ciblage et sa couverture rester inchangés — la valeur qu'il venait de
+       décider n'entrait nulle part dans les chiffres, et il fallait la retaper
+       dans un second écran pour qu'elle compte. Deux vérités pour un seul fait.
+
+       On aligne l'état courant sur l'historique, à chaque écriture. */
+    reporterCiblageCourant(x.geo_pcode, d.year, d.activity_tag, x.level);
   } })();
 
   db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
@@ -141,7 +268,18 @@ r.delete("/:id", requireCap("del"), (req, res) => {
   const v = currentVersion();
   const u = v && db.prepare("SELECT path FROM geo_unit WHERE version_id=? AND pcode=?").get(v.id, row.geo_pcode);
   if(!dansPerimetre(scopeOf(req.user), u?.path)) return res.status(403).json({ error:"hors de votre périmètre" });
-  db.prepare("DELETE FROM targeting WHERE id=?").run(req.params.id);
+  /* Supprimer le ciblage le plus récent fait remonter celui d'avant : l'état
+     courant se recalcule depuis l'historique restant, dans la même transaction
+     que la suppression. Sans cela, effacer une erreur de saisie laissait sa
+     valeur dans les taux — c'est-à-dire que la correction ne corrigeait rien. */
+  tx(() => {
+    db.prepare("DELETE FROM targeting WHERE id=?").run(req.params.id);
+    reporterCiblageCourant(row.geo_pcode, row.year, row.activity_tag, row.level);
+  })();
+  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+              VALUES (?,?,?,'plan','targeting',?,'delete',?)`)
+    .run(newId("aud"), req.user.id, req.user.first_name, req.params.id,
+      `Ciblage du ${row.targeted_at} supprimé${row.activity_tag?` (${row.activity_tag})`:""}`);
   res.json({ ok:true });
 });
 
@@ -158,7 +296,6 @@ r.get("/extract", async (req, res, next) => {
 
   const v = currentVersion();
   if(!v) return res.status(409).json({ error:"aucun référentiel courant" });
-  const unites = chargerUnites(v);
   const scope = scopeOf(req.user);
 
   const where = ["year=?"]; const args = [year];
@@ -166,6 +303,7 @@ r.get("/extract", async (req, res, next) => {
   const brut = db.prepare(
     `SELECT * FROM targeting WHERE ${where.join(" AND ")} ORDER BY targeted_at DESC, created_at DESC`)
     .all(...args);
+  const unites = chargerUnites(v, brut.map(t => t.geo_pcode));
 
   const vus = new Set(); const lignes = [];
   for(const t of brut){

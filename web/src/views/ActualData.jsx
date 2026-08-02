@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api.js";
 import { Activity, Check, ChevronDown, ChevronRight, ClipboardList, Download, Globe, Link2, ListChecks, Pencil, Plus, Save, Target, Trash2, Users } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ComposedChart, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -585,6 +585,15 @@ function TargetingView({ db, notify, can }){
   useEffect(()=>{ api.liste("raison_ciblage")
     .then(r=>setReasons((r.items||[]).filter(x=>x.active!==false).map(x=>x.code))).catch(()=>{}); }, []);
 
+  /* L'empreinte des derniers ciblages : elle change dès qu'une VALEUR change, là
+     où un simple compte ne bougeait pas quand un ciblage en remplaçait un autre.
+     Elle est posée AVANT l'effet qui la surveille — une dépendance se lit au
+     rendu, pas au moment où l'effet s'exécute. */
+  const empreinteDerniers = useMemo(
+    () => rows.filter(r=>r.dernier)
+      .map(r => `${r.pcode}:${r.tag}:${r.targetedAt}:${r.targeted}:${r.targetedHh}`).join("|"),
+    [rows]);
+
   /* Les communes du DISTRICT choisi, avec leur population (contexte) et le dernier
      ciblage déjà connu — pour ne pas repartir de zéro. */
   const districtPcode = geo.codes.adm2 || "";
@@ -603,12 +612,22 @@ function TargetingView({ db, notify, can }){
       }
       setQuotas(dejaCible);
     }).catch(()=>{ setCommunes([]); setQuotas({}); });
-  }, [districtPcode, year, tag, db.geoVersion, rows.length]);
+    /* `rows.length` servait de témoin de changement : c'est un compteur, pas une
+       empreinte. Re-cibler une commune déjà ciblée remplace un « dernier » par un
+       autre SANS changer le nombre de lignes — le préremplissage restait alors sur
+       l'ancien quota, et l'agent réenregistrait la valeur qu'il venait de corriger.
+       On observe les derniers ciblages eux-mêmes. */
+  }, [districtPcode, year, tag, db.geoVersion, empreinteDerniers]);
 
   const setQuota = (pcode, champ, val) => setQuotas(q => ({ ...q,
     [pcode]: { targeted:0, hh:0, ...(q[pcode]||{}), [champ]:Math.max(0, n(val)) } }));
   const communesCiblees = communes.filter(c => (quotas[c.pcode]?.targeted||0) > 0 || (quotas[c.pcode]?.hh||0) > 0);
   const totalCible = communesCiblees.reduce((s,c)=>s+(quotas[c.pcode]?.targeted||0), 0);
+  /* Le serveur refuse un quota supérieur à la population connue — même règle que
+     la saisie de population. On le dit AVANT l'envoi : proposer un enregistrement
+     que le serveur rejettera apprend à l'utilisateur que l'écran ment. */
+  const horsPopulation = communes.filter(c =>
+    c.population > 0 && (quotas[c.pcode]?.targeted||0) > c.population);
 
   const enregistrer = async () => {
     if(!communesCiblees.length){ notify("Renseignez le quota d'au moins une commune","warn"); return; }
@@ -706,13 +725,25 @@ function TargetingView({ db, notify, can }){
                   </tr>); })}</tbody>
               </TableWrap>}
 
-          <div className="flex items-center gap-2">
+          {!!horsPopulation.length && (
+            <Note tone="bad"><b>{fmt(horsPopulation.length)} commune(s) ciblent plus d'habitants
+              qu'elles n'en comptent.</b>{" "}
+              {horsPopulation.slice(0,3).map(c=>`${c.name} (${fmt(quotas[c.pcode]?.targeted||0)} pour ${fmt(c.population)})`).join(", ")}
+              {horsPopulation.length>3?"…":""}. Le serveur refusera ces lignes : corrigez le quota,
+              ou la population dans « Population, ciblage et distribution ».</Note>)}
+
+          <div className="flex items-center gap-2 flex-wrap">
             {can("edit")
-              ? <Btn size="sm" icon={Target} disabled={busy||!communesCiblees.length} onClick={enregistrer}>
+              ? <Btn size="sm" icon={Target} disabled={busy||!communesCiblees.length||!!horsPopulation.length}
+                  onClick={enregistrer}>
                   Enregistrer le ciblage{communesCiblees.length?` (${communesCiblees.length} commune${communesCiblees.length>1?"s":""})`:""}</Btn>
               : <Note tone="warn">La saisie du ciblage est réservée aux comptes ayant le droit d'édition.</Note>}
             <span className="f11 text-slate-400">Raisons éditables dans Paramètres › Listes › Raisons de ciblage.</span>
           </div>
+          <Note>Le ciblage enregistré ici devient le <b>chiffre courant</b> de la commune : il
+            alimente aussitôt le <b>taux de ciblage</b> et la <b>couverture du ciblage</b> de l'onglet
+            « Population, ciblage et distribution ». L'historique est conservé — c'est le ciblage à la
+            date la plus récente qui fait foi, et supprimer celui-ci fait remonter le précédent.</Note>
         </div>
       </Card>
 
