@@ -34,18 +34,39 @@
 --  Le nom des lignes fusionnées est perdu, et c'est assumé : deux lignes
 --  qui portaient le même tag étaient déjà la même activité pour toutes les
 --  données qui s'y rattachent.
+--
+--  ── Portage PostgreSQL : rowid, CHAR() et COLLATE NOCASE ──────────────
+--  `activity_categories` n'a pas de colonne d'horodatage : le SQLite
+--  d'origine s'appuyait sur `rowid`, l'identifiant physique implicite de
+--  chaque ligne, pour désigner « la plus ancienne » d'un groupe de
+--  doublons. PostgreSQL n'a pas de rowid, mais il porte sur chaque ligne
+--  un système column `ctid` (l'identifiant physique de la ligne dans la
+--  table) qui rend le même service ici — un ordre stable, arbitraire mais
+--  déterministe, pour départager le groupe. Cette table étant vide au
+--  premier déploiement (aucune graine n'y écrit avant cette migration), le
+--  choix de « laquelle des deux survit » est sans conséquence en pratique ;
+--  `ctid` en tient néanmoins la place fidèlement.
+--  Pour le tag de repli (`'ACT' || rowid`), un `ctid` concaténé produirait
+--  une chaîne illisible ('(0,1)') : on lui préfère un fragment dérivé de
+--  l'identifiant propre de la ligne (`substr(md5(id),1,8)`), qui rend le
+--  même service — un repli visible et corrigeable, unique par ligne.
+--  `CHAR(9)`/`CHAR(10)` (fonctions SQLite renvoyant le caractère de ce
+--  code) deviennent `CHR(9)`/`CHR(10)`, leurs équivalents PostgreSQL — le
+--  mot-clé `CHAR(n)` y désigne un TYPE, pas une fonction.
+--  `tag COLLATE NOCASE` n'a pas d'équivalent direct : l'insensibilité à la
+--  casse est portée par un index fonctionnel sur lower(tag).
 -- =====================================================================
 
 -- ── 1. Normalisation ────────────────────────────────────────────────
 -- Espaces intérieurs, tabulations et sauts de ligne retirés ; majuscules.
 UPDATE activity_categories
-   SET tag = UPPER(REPLACE(REPLACE(REPLACE(TRIM(tag), ' ', ''), CHAR(9), ''), CHAR(10), ''));
+   SET tag = UPPER(REPLACE(REPLACE(REPLACE(TRIM(tag), ' ', ''), CHR(9), ''), CHR(10), ''));
 
 -- Un tag vide n'est pas un tag : il rendrait l'unicité illusoire (toutes
 -- les lignes vides seraient « la même »). On lui en donne un, dérivé de la
 -- ligne, visible et corrigeable.
 UPDATE activity_categories
-   SET tag = 'ACT' || rowid
+   SET tag = 'ACT' || substr(md5(id), 1, 8)
  WHERE tag IS NULL OR tag = '';
 
 -- ── 2. Fusion des doublons ──────────────────────────────────────────
@@ -55,7 +76,7 @@ UPDATE sites
    SET category_id = (
      SELECT a2.id FROM activity_categories a2
       WHERE a2.tag = (SELECT a1.tag FROM activity_categories a1 WHERE a1.id = sites.category_id)
-      ORDER BY a2.rowid LIMIT 1)
+      ORDER BY a2.ctid LIMIT 1)
  WHERE category_id IS NOT NULL;
 
 UPDATE coverage_params
@@ -63,15 +84,15 @@ UPDATE coverage_params
      SELECT a2.id FROM activity_categories a2
       WHERE a2.tag = (SELECT a1.tag FROM activity_categories a1
                       WHERE a1.id = coverage_params.category_id)
-      ORDER BY a2.rowid LIMIT 1)
+      ORDER BY a2.ctid LIMIT 1)
  WHERE category_id IS NOT NULL;
 
 -- Les lignes en trop peuvent maintenant partir : plus rien ne les désigne.
 DELETE FROM activity_categories
- WHERE rowid NOT IN (SELECT MIN(rowid) FROM activity_categories GROUP BY tag);
+ WHERE ctid NOT IN (SELECT MIN(ctid) FROM activity_categories GROUP BY tag);
 
 -- ── 3. La contrainte ────────────────────────────────────────────────
 -- L'index ordinaire n'a plus lieu d'être : l'unique le remplace et sert les
 -- mêmes recherches.
 DROP INDEX IF EXISTS idx_actcat_tag;
-CREATE UNIQUE INDEX idx_actcat_tag ON activity_categories(tag COLLATE NOCASE);
+CREATE UNIQUE INDEX idx_actcat_tag ON activity_categories(lower(tag));

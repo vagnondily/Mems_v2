@@ -36,8 +36,8 @@ CREATE TABLE ration_catalog (
   note         TEXT,
   sort_order   INTEGER NOT NULL DEFAULT 0,
   rev          INTEGER NOT NULL DEFAULT 1,
-  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  updated_at   timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX ix_ration_catalog_commodity ON ration_catalog(commodity);

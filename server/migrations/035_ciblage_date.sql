@@ -33,7 +33,7 @@ CREATE TABLE targeting (
   reason       TEXT,                                -- raison (code de raison_ciblage)
   note         TEXT,
   created_by   TEXT,
-  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at   timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_targeting_unit ON targeting(geo_pcode, year, activity_tag);

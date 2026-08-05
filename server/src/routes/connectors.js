@@ -57,8 +57,6 @@ const NATURES_RESEAU = new Set(["odk", "kobo", "foundry", "http"]);
    d'appel sortant à sécuriser, pour rien. */
 const NATURES_LUES = new Set(["foundry", "http", "kobo"]);
 
-const J = (v, d) => { try{ return JSON.parse(v); }catch(e){ return d; } };
-
 /* Une configuration ne porte JAMAIS de secret : le jeton a sa colonne chiffrée.
    Sans ce refus, un administrateur pressé collerait son jeton dans `config` —
    d'où il ressortirait en clair par GET /api/connectors, pour tout le bureau. */
@@ -118,30 +116,34 @@ const invalide = (res, parsed, message = "données invalides") =>
 /* La forme publique d'un connecteur. Le jeton n'y figure pas — seulement le fait
    qu'il existe : c'est ce dont l'écran a besoin pour afficher « présent » ou
    « manquant », et rien de plus ne doit sortir. */
-const shape = (c, { administration = false } = {}) => ({
-  id: c.id, name: c.name, kind: c.kind, base_url: c.base_url || "",
-  config: J(c.config, {}),
-  hasSecret: !!c.secret_enc,
-  /* Le schéma sort, le secret jamais : l'écran en a besoin pour demander les bons
-     champs à la prochaine ouverture de la fiche.
+async function shape(c, { administration = false } = {}){
+  return {
+    id: c.id, name: c.name, kind: c.kind, base_url: c.base_url || "",
+    /* `connector.config` est une colonne jsonb : pg la rend déjà comme un objet
+       JS, plus besoin de JSON.parse (contrairement à SQLite où c'était du TEXT). */
+    config: c.config || {},
+    hasSecret: !!c.secret_enc,
+    /* Le schéma sort, le secret jamais : l'écran en a besoin pour demander les bons
+       champs à la prochaine ouverture de la fiche.
 
-     L'IDENTIFIANT, lui, ne sort que vers l'administration. Il n'est pas un secret
-     — c'est ce qui l'accompagne qui en est un — mais c'est la moitié NOMMÉE d'un
-     couple : le courriel du compte de service ODK Central, l'identifiant d'un
-     Basic. Servi à tout compte authentifié, il donnait à un rôle « lecteur »,
-     avec l'adresse du serveur déjà publiée, la moitié du travail d'une attaque
-     par mot de passe menée directement chez la source — hors de portée du
-     limiteur de débit de MEMS. La fiche qui le modifie est réservée à
-     l'administration ; sa lecture le sera aussi. */
-  ...(administration ? { auth_identifiant: c.auth_identifiant || "" } : {}),
-  auth_schema: c.auth_schema || "porteur",
-  office_id: c.office_id || null,
-  active: !!c.active,
-  created_at: c.created_at, updated_at: c.updated_at, rev: c.rev || 1,
-  mappings: db.prepare("SELECT COUNT(*) c FROM connector_mapping WHERE connector_id=?").get(c.id).c,
-});
+       L'IDENTIFIANT, lui, ne sort que vers l'administration. Il n'est pas un secret
+       — c'est ce qui l'accompagne qui en est un — mais c'est la moitié NOMMÉE d'un
+       couple : le courriel du compte de service ODK Central, l'identifiant d'un
+       Basic. Servi à tout compte authentifié, il donnait à un rôle « lecteur »,
+       avec l'adresse du serveur déjà publiée, la moitié du travail d'une attaque
+       par mot de passe menée directement chez la source — hors de portée du
+       limiteur de débit de MEMS. La fiche qui le modifie est réservée à
+       l'administration ; sa lecture le sera aussi. */
+    ...(administration ? { auth_identifiant: c.auth_identifiant || "" } : {}),
+    auth_schema: c.auth_schema || "porteur",
+    office_id: c.office_id || null,
+    active: !!c.active,
+    created_at: c.created_at, updated_at: c.updated_at, rev: c.rev || 1,
+    mappings: (await db.prepare("SELECT COUNT(*) c FROM connector_mapping WHERE connector_id=?").get(c.id)).c,
+  };
+}
 
-const audit = (req, action, id, texte) =>
+const audit = async (req, action, id, texte) =>
   db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'connecteur','connector',?,?,?)`)
     .run(newId("aud"), req.user.id, req.user.email || req.user.first_name, id, action, texte);
@@ -149,10 +151,10 @@ const audit = (req, action, id, texte) =>
 /* Charge un connecteur en appliquant le cloisonnement, ou répond et rend null.
    Le même chemin sert à la lecture et à l'écriture : deux contrôles distincts
    finiraient par ne plus dire la même chose. */
-function charger(req, res){
-  const c = db.prepare("SELECT * FROM connector WHERE id=?").get(req.params.id);
+async function charger(req, res){
+  const c = await db.prepare("SELECT * FROM connector WHERE id=?").get(req.params.id);
   if(!c){ res.status(404).json({ error: "connecteur introuvable" }); return null; }
-  const bureau = officeBound(req.user);
+  const bureau = await officeBound(req.user);
   if(bureau && c.office_id !== bureau){
     /* 404 et non 403 : répondre « interdit » confirmerait l'existence d'un
        connecteur d'un autre bureau, ce que ce compte n'a pas à savoir. */
@@ -187,16 +189,16 @@ r.get("/connectors/champs", (req, res) => {
    connecteurs de son bureau. Les connecteurs sans bureau (portée nationale) ne
    lui sont pas montrés non plus — c'est la règle déjà appliquée à l'écriture des
    collections, où une ligne sans bureau est « ailleurs ». */
-r.get("/connectors", (req, res) => {
-  const bureau = officeBound(req.user);
+r.get("/connectors", async (req, res) => {
+  const bureau = await officeBound(req.user);
   const rows = bureau
-    ? db.prepare("SELECT * FROM connector WHERE office_id=? ORDER BY name").all(bureau)
-    : db.prepare("SELECT * FROM connector ORDER BY name").all();
+    ? await db.prepare("SELECT * FROM connector WHERE office_id=? ORDER BY name").all(bureau)
+    : await db.prepare("SELECT * FROM connector ORDER BY name").all();
   const administration = can(req.user, "admin");
-  res.json({ rows: rows.map(c => shape(c, { administration })) });
+  res.json({ rows: await Promise.all(rows.map(c => shape(c, { administration }))) });
 });
 
-r.post("/connectors", requireCap("admin"), (req, res, next) => {
+r.post("/connectors", requireCap("admin"), async (req, res, next) => {
   const parsed = schemaConnecteur.safeParse(req.body);
   if(!parsed.success) return invalide(res, parsed, "connecteur invalide");
   /* À la création, l'absence de schéma vaut « porteur » : c'est le seul
@@ -210,19 +212,24 @@ r.post("/connectors", requireCap("admin"), (req, res, next) => {
 
   const id = newId("conn");
   try{
-    db.prepare(`INSERT INTO connector
+    await db.prepare(`INSERT INTO connector
                   (id,name,kind,base_url,config,secret_enc,auth_schema,auth_identifiant,office_id,active)
                 VALUES (?,?,?,?,?,?,?,?,?,?)`)
       .run(id, d.name, d.kind, d.base_url, JSON.stringify(d.config),
            d.secret ? encrypt(d.secret) : null, d.auth_schema, d.auth_identifiant,
            d.office_id, d.active ? 1 : 0);
   }catch(e){
+    /* TODO-PG: ce test reconnaissait une violation de clé étrangère au message
+       d'erreur de better-sqlite3 ("FOREIGN KEY..."). Le pilote pg formule cette
+       erreur autrement (message "violates foreign key constraint", code SQLSTATE
+       23503) ; à vérifier contre le comportement réel du driver et ajuster le
+       test — laissé tel quel pour ne pas deviner un nouveau motif. */
     if(/FOREIGN KEY/.test(e.message))
       return res.status(409).json({ error: "bureau inconnu : le connecteur n'a pas été créé" });
     return next(e);
   }
-  audit(req, "create", id, `Connecteur créé — ${d.name} (${d.kind})`);
-  res.status(201).json({ connector: shape(db.prepare("SELECT * FROM connector WHERE id=?").get(id),
+  await audit(req, "create", id, `Connecteur créé — ${d.name} (${d.kind})`);
+  res.status(201).json({ connector: await shape(await db.prepare("SELECT * FROM connector WHERE id=?").get(id),
     { administration: true }) });
 });
 
@@ -239,7 +246,7 @@ const CONNECTEURS_MODA = [
   { tag:"NUT",   label:"Nutrition (PECMAM / AIM)" },
   { tag:"SAMS",  label:"Résilience (SAMS)" },
 ];
-r.post("/connectors/moda-preparer", requireCap("admin"), (req, res, next) => {
+r.post("/connectors/moda-preparer", requireCap("admin"), async (req, res, next) => {
   try{
     const bound = req.user?.office_id && !can(req.user, "admin") ? req.user.office_id : null;
     const ins = db.prepare(`INSERT INTO connector
@@ -248,7 +255,7 @@ r.post("/connectors/moda-preparer", requireCap("admin"), (req, res, next) => {
     const crees = [], existants = [];
     for(const c of CONNECTEURS_MODA){
       const nom = `MoDa — ${c.label}`;
-      const deja = db.prepare("SELECT id FROM connector WHERE name=?").get(nom);
+      const deja = await db.prepare("SELECT id FROM connector WHERE name=?").get(nom);
       if(deja){ existants.push(nom); continue; }
       const id = newId("conn");
       /* MoDa est un déploiement KoboToolbox : son API v1 lit un GET
@@ -256,20 +263,20 @@ r.post("/connectors/moda-preparer", requireCap("admin"), (req, res, next) => {
          — le schéma « jeton », PAS « porteur » (Bearer). Une clé MoDa présentée en
          Bearer revient en 401. On pré-règle donc le bon schéma : l'administrateur
          n'a que le numéro du formulaire et la clé à saisir. */
-      ins.run(id, nom, "kobo", "https://moda.wfp.org",
+      await ins.run(id, nom, "kobo", "https://moda.wfp.org",
         JSON.stringify({ apiVersion:"v1", formId:"", activityTag:c.tag }),
         null, "jeton", null, bound, 0);
       crees.push(nom);
     }
-    if(crees.length) audit(req, "create", "moda", `Connecteurs MoDa préparés — ${crees.length} activité(s)`);
+    if(crees.length) await audit(req, "create", "moda", `Connecteurs MoDa préparés — ${crees.length} activité(s)`);
+    const modaRows = await db.prepare("SELECT * FROM connector WHERE name LIKE 'MoDa — %' ORDER BY name").all();
     res.json({ crees, existants,
-      connectors: db.prepare("SELECT * FROM connector WHERE name LIKE 'MoDa — %' ORDER BY name")
-        .all().map(x => shape(x, { administration: true })) });
+      connectors: await Promise.all(modaRows.map(x => shape(x, { administration: true }))) });
   }catch(e){ next(e); }
 });
 
-r.put("/connectors/:id", requireCap("admin"), (req, res, next) => {
-  const c = charger(req, res); if(!c) return;
+r.put("/connectors/:id", requireCap("admin"), async (req, res, next) => {
+  const c = await charger(req, res); if(!c) return;
   const parsed = schemaConnecteur.safeParse(req.body);
   if(!parsed.success) return invalide(res, parsed, "connecteur invalide");
   const d = parsed.data;
@@ -280,7 +287,7 @@ r.put("/connectors/:id", requireCap("admin"), (req, res, next) => {
   if(d.rev !== undefined && d.rev !== c.rev)
     return res.status(409).json({
       error: "ce connecteur a été modifié pendant votre saisie. Rechargez pour repartir de la version à jour.",
-      courant: shape(c, { administration: true }) });
+      courant: await shape(c, { administration: true }) });
 
   /* Les colonnes d'authentification ne s'écrivent que si le corps les porte.
      Un `UPDATE` qui les nomme toujours remet la valeur par défaut du schéma de
@@ -295,26 +302,29 @@ r.put("/connectors/:id", requireCap("admin"), (req, res, next) => {
   if(d.secret){ colonnes.push("secret_enc=?"); valeurs.push(encrypt(d.secret)); }
 
   try{
-    db.prepare(`UPDATE connector SET ${colonnes.join(", ")},
-                  updated_at=datetime('now'), rev=rev+1
+    await db.prepare(`UPDATE connector SET ${colonnes.join(", ")},
+                  updated_at=now(), rev=rev+1
                 WHERE id=?`).run(...valeurs, c.id);
   }catch(e){
+    /* TODO-PG: même remarque que sur POST /connectors — le motif de détection de
+       la violation de clé étrangère ("FOREIGN KEY") vient de better-sqlite3 et
+       n'est pas garanti de matcher le message d'erreur de pg. */
     if(/FOREIGN KEY/.test(e.message))
       return res.status(409).json({ error: "bureau inconnu : le connecteur n'a pas été modifié" });
     return next(e);
   }
-  audit(req, "update", c.id, `Connecteur modifié — ${d.name} (${d.kind})`);
-  res.json({ connector: shape(db.prepare("SELECT * FROM connector WHERE id=?").get(c.id),
+  await audit(req, "update", c.id, `Connecteur modifié — ${d.name} (${d.kind})`);
+  res.json({ connector: await shape(await db.prepare("SELECT * FROM connector WHERE id=?").get(c.id),
     { administration: true }) });
 });
 
-r.delete("/connectors/:id", requireCap("admin"), (req, res) => {
-  const c = charger(req, res); if(!c) return;
+r.delete("/connectors/:id", requireCap("admin"), async (req, res) => {
+  const c = await charger(req, res); if(!c) return;
   /* Les correspondances partent avec le connecteur (ON DELETE CASCADE,
      migration 016) : elles n'ont aucun sens sans lui. */
-  const n = db.prepare("SELECT COUNT(*) c FROM connector_mapping WHERE connector_id=?").get(c.id).c;
-  db.prepare("DELETE FROM connector WHERE id=?").run(c.id);
-  audit(req, "delete", c.id, `Connecteur supprimé — ${c.name} (${n} correspondance(s) emportée(s))`);
+  const n = (await db.prepare("SELECT COUNT(*) c FROM connector_mapping WHERE connector_id=?").get(c.id)).c;
+  await db.prepare("DELETE FROM connector WHERE id=?").run(c.id);
+  await audit(req, "delete", c.id, `Connecteur supprimé — ${c.name} (${n} correspondance(s) emportée(s))`);
   res.json({ ok: true, mappingsSupprimees: n });
 });
 
@@ -322,7 +332,8 @@ r.delete("/connectors/:id", requireCap("admin"), (req, res) => {
    l'aperçu et l'épreuve de connexion s'en servent tous les deux — et il ne
    déchiffre le secret que là, au moment de sortir. */
 function porteurDeConnecteur(c){
-  const cfg = J(c.config, {});
+  /* `connector.config` est jsonb : déjà un objet côté pg, pas de JSON.parse. */
+  const cfg = c.config || {};
   return porteurAuth({
     nature: "connector", id: c.id,
     schema: c.auth_schema || "porteur",
@@ -348,7 +359,7 @@ function porteurDeConnecteur(c){
    Rend les lignes brutes de la source et le format lu, ou lève une erreur codée
    (SOURCE_*) que `repondreErreurSource` traduit en réponse HTTP. */
 async function lireEchantillonDistant(c, limite){
-  const cfg = J(c.config, {});
+  const cfg = c.config || {};
   const porteur = porteurDeConnecteur(c);
   const lu = c.kind === "foundry"
     ? await lireDatasetFoundry({ baseUrl: c.base_url, datasetRid: cfg.datasetRid,
@@ -408,7 +419,7 @@ function verifierConfig(d, existant){
      les deux — et, comme pour l'uid, seulement lorsque l'existant en portait déjà
      un : un connecteur v2 d'avant ne doit pas devenir immodifiable parce que la
      branche v1 est apparue. */
-  const cfgExistant = existant ? J(existant.config, {}) : null;
+  const cfgExistant = existant ? (existant.config || {}) : null;
   const v1 = d.config?.apiVersion === "v1";
   if(d.kind === "kobo" && v1){
     if(!d.config?.formId && (!existant || cfgExistant?.formId))
@@ -440,14 +451,14 @@ function verifierConfig(d, existant){
 
 /* ── Correspondances ──────────────────────────────────────────────────── */
 
-r.get("/connectors/:id/mappings", (req, res) => {
-  const c = charger(req, res); if(!c) return;
-  const rows = db.prepare(
+r.get("/connectors/:id/mappings", async (req, res) => {
+  const c = await charger(req, res); if(!c) return;
+  const rows = await db.prepare(
     `SELECT * FROM connector_mapping WHERE connector_id=?
       ${req.query.entity ? "AND entity=?" : ""} ORDER BY entity, position, mems_field`)
     .all(...(req.query.entity ? [c.id, String(req.query.entity)] : [c.id]));
   res.json({
-    connector: shape(c),
+    connector: await shape(c),
     rows: rows.map(m => ({ ...m, required: !!m.required })),
   });
 });
@@ -488,8 +499,8 @@ function validerCorrespondances(mappings, entity){
    — sans, toutes celles du connecteur le sont.
    L'écran travaille entité par entité : sans la première forme, éditer les
    correspondances « site » effacerait celles des « réceptions » sans le dire. */
-r.put("/connectors/:id/mappings", requireCap("admin"), (req, res, next) => {
-  const c = charger(req, res); if(!c) return;
+r.put("/connectors/:id/mappings", requireCap("admin"), async (req, res, next) => {
+  const c = await charger(req, res); if(!c) return;
   const parsed = z.object({
     entity: z.string().trim().max(40).optional(),
     mappings: z.array(schemaCorrespondance).max(500).default([]),
@@ -502,23 +513,24 @@ r.put("/connectors/:id/mappings", requireCap("admin"), (req, res, next) => {
     return res.status(422).json({ error: "correspondances refusées", details: erreurs.slice(0, 10) });
 
   try{
-    tx(() => {
-      if(entity) db.prepare("DELETE FROM connector_mapping WHERE connector_id=? AND entity=?")
+    await tx(async (db) => {
+      if(entity) await db.prepare("DELETE FROM connector_mapping WHERE connector_id=? AND entity=?")
         .run(c.id, entity);
-      else db.prepare("DELETE FROM connector_mapping WHERE connector_id=?").run(c.id);
+      else await db.prepare("DELETE FROM connector_mapping WHERE connector_id=?").run(c.id);
       const ins = db.prepare(`INSERT INTO connector_mapping
         (id,connector_id,entity,mems_field,source_path,transform,required,default_value,note,position)
         VALUES (?,?,?,?,?,?,?,?,?,?)`);
-      mappings.forEach((m, i) => ins.run(newId("cmap"), c.id, m.entity, m.mems_field,
-        m.source_path, m.transform, m.required ? 1 : 0, m.default_value, m.note,
-        m.position ?? i));
-      db.prepare("UPDATE connector SET updated_at=datetime('now') WHERE id=?").run(c.id);
-    })();
+      for(const [i, m] of mappings.entries())
+        await ins.run(newId("cmap"), c.id, m.entity, m.mems_field,
+          m.source_path, m.transform, m.required ? 1 : 0, m.default_value, m.note,
+          m.position ?? i);
+      await db.prepare("UPDATE connector SET updated_at=now() WHERE id=?").run(c.id);
+    });
   }catch(e){ return next(e); }
 
-  audit(req, "mappings", c.id,
+  await audit(req, "mappings", c.id,
     `Correspondances enregistrées — ${c.name}${entity ? ` / ${entity}` : ""} : ${mappings.length} ligne(s)`);
-  const rows = db.prepare(
+  const rows = await db.prepare(
     "SELECT * FROM connector_mapping WHERE connector_id=? ORDER BY entity, position, mems_field").all(c.id);
   res.json({ ok: true, enregistrees: mappings.length,
     rows: rows.map(m => ({ ...m, required: !!m.required })) });
@@ -535,7 +547,7 @@ r.put("/connectors/:id/mappings", requireCap("admin"), (req, res, next) => {
    des colonnes que la correspondance ne retient pas forcément. Ce n'est pas de la
    configuration, c'est de la donnée. */
 r.post("/connectors/:id/apercu", requireCap("admin"), async (req, res, next) => {
-  const c = charger(req, res); if(!c) return;
+  const c = await charger(req, res); if(!c) return;
   const parsed = z.object({
     entity: z.string().trim().max(40).optional(),
     echantillon: z.array(z.record(z.any())).max(200).default([]),
@@ -550,8 +562,8 @@ r.post("/connectors/:id/apercu", requireCap("admin"), async (req, res, next) => 
 
   /* L'entité : celle demandée, sinon la seule des correspondances enregistrées.
      S'il y en a plusieurs, on ne choisit pas à la place de l'utilisateur. */
-  const entitesEnregistrees = db.prepare(
-    "SELECT DISTINCT entity FROM connector_mapping WHERE connector_id=?").all(c.id).map(x => x.entity);
+  const entitesEnregistrees = (await db.prepare(
+    "SELECT DISTINCT entity FROM connector_mapping WHERE connector_id=?").all(c.id)).map(x => x.entity);
   const entityDemandee = parsed.data.entity
     || (entitesEnregistrees.length === 1 ? entitesEnregistrees[0] : null);
   if(!entityDemandee) return res.status(422).json({ error: entitesEnregistrees.length
@@ -571,7 +583,7 @@ r.post("/connectors/:id/apercu", requireCap("admin"), async (req, res, next) => 
     mappings = parsed.data.mappings
       .map((m, i) => ({ ...m, required: m.required ? 1 : 0, position: m.position ?? i }));
   } else {
-    mappings = db.prepare(`SELECT * FROM connector_mapping WHERE connector_id=? AND entity=?
+    mappings = await db.prepare(`SELECT * FROM connector_mapping WHERE connector_id=? AND entity=?
                            ORDER BY position, mems_field`).all(c.id, entityDemandee);
   }
 
@@ -636,7 +648,7 @@ r.post("/connectors/:id/apercu", requireCap("admin"), async (req, res, next) => 
    donnée que l'aperçu, et réservée à l'administration pour la même raison :
    elle déchiffre le jeton et déclenche un appel sortant au nom du bureau. */
 r.post("/connectors/:id/variables", requireCap("admin"), async (req, res, next) => {
-  const c = charger(req, res); if(!c) return;
+  const c = await charger(req, res); if(!c) return;
   if(!NATURES_LUES.has(c.kind)) return res.status(422).json({ error:
     `une source de type « ${c.kind} » n'est pas lue par le serveur : joignez le XLSForm `
     + "ou collez un échantillon pour découvrir ses variables." });
@@ -709,11 +721,11 @@ const POINT_EPREUVE = {
 };
 
 r.post("/connectors/:id/test", requireCap("admin"), async (req, res, next) => {
-  const c = charger(req, res); if(!c) return;
+  const c = await charger(req, res); if(!c) return;
   if(!NATURES_RESEAU.has(c.kind)) return res.status(422).json({ error:
     `une source de type « ${c.kind} » ne se joint pas par le réseau : il n'y a rien à éprouver.` });
 
-  const cfg = J(c.config, {});
+  const cfg = c.config || {};
   let porteur;
   try{ porteur = porteurDeConnecteur(c); }
   catch(e){
@@ -731,7 +743,7 @@ r.post("/connectors/:id/test", requireCap("admin"), async (req, res, next) => {
   try{ etape = await sonder({ porteur, etape: "justificatif", ...point }); }
   catch(e){ return next(e); }
 
-  audit(req, "test", c.id, `Épreuve de connexion — ${c.name} : `
+  await audit(req, "test", c.id, `Épreuve de connexion — ${c.name} : `
     + `${etape.ok ? (etape.verdict === "accepte" ? "réussie" : "sans verdict sur le justificatif")
                   : `échouée (${etape.cause || "cause non déterminée"})`}`);
   res.json({ ok: !!etape.ok, connecteur: { id: c.id, name: c.name, kind: c.kind }, etapes: [etape] });
@@ -745,8 +757,8 @@ r.post("/connectors/:id/test", requireCap("admin"), async (req, res, next) => {
    et l'humain valide. Un appariement automatique silencieux sur des noms de
    variables est exactement ce qui fait qu'un import « marche » pendant six mois
    avant qu'on découvre que la colonne « planned » alimentait « atteints ». */
-r.post("/connectors/:id/suggestions", (req, res) => {
-  const c = charger(req, res); if(!c) return;
+r.post("/connectors/:id/suggestions", async (req, res) => {
+  const c = await charger(req, res); if(!c) return;
   const parsed = z.object({
     entity: z.string().trim().min(1).max(40),
     /* Variables d'un XLSForm, telles que POST /api/xlsform/parse les rend. */
@@ -828,7 +840,7 @@ r.post("/connectors/:id/suggestions", (req, res) => {
    Trois mesures, de la plus sûre à la plus faible, et le motif est rendu avec le
    score : un rapprochement qu'on ne peut pas expliquer ne se valide pas. */
 const normaliser = (s) => String(s || "").toLowerCase()
-  .normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
+  .normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]/g, "");
 
 /* Coefficient de Dice sur les bigrammes : « tonnage_recu » et « tonnagerecus »
    se ressemblent, « planifies » et « atteints » non. Simple, symétrique, et sans

@@ -61,7 +61,7 @@ const audit = (req, cle, action, id, texte) =>
    liste. Les accepter sans contrôle rendrait le gestionnaire capable de
    fabriquer les orphelins qu'il est censé empêcher : un partenaire rattaché
    à un type de partenariat qui n'existe pas. */
-function champsValides(def, champs){
+async function champsValides(def, champs){
   const out = {}; const erreurs = [];
   for(const c of def.champs || []){
     const v = (champs[c.cle] ?? "").trim();
@@ -70,7 +70,7 @@ function champsValides(def, champs){
       erreurs.push({ champ:c.cle, message:`${c.label} : ${c.max || 200} caractères au plus` }); continue; }
     if(c.liste){
       const autre = parCle(c.liste);
-      if(autre && !ligneParCode(autre, v))
+      if(autre && !(await ligneParCode(autre, v)))
         erreurs.push({ champ:c.cle, message:`${c.label} : « ${v} » n'existe pas dans la liste « ${autre.label} »` });
     }
     out[c.colonne] = v;
@@ -81,37 +81,42 @@ function champsValides(def, champs){
 /* ── Le rail de gauche : les TYPES ───────────────────────────────────
    Ce que l'écran affiche avant d'avoir choisi une liste — son nom, ce
    qu'elle sert, combien d'items, et si elle a été relue. */
-r.get("/", (req, res) => {
-  res.json({ types: TYPES.filter(def => !def.hidden).map(def => {
-    const rows = lignes(def);
-    return {
+r.get("/", async (req, res) => {
+  const types = [];
+  for(const def of TYPES.filter(def => !def.hidden)){
+    const rows = await lignes(def);
+    types.push({
       cle: def.cle, label: def.label, description: def.description || "",
       items: rows.length,
       actifs: rows.filter(x => x[def.cols.active]).length,
       native: !def.type,
-      validation: validation(def),
-    };
-  }) });
+      validation: await validation(def),
+    });
+  }
+  res.json({ types });
 });
 
 /* ── Le volet de droite : une liste ──────────────────────────────────
    Les items avec leur usage, et la DÉCLARATION du type : ses champs
    propres, et les tables qui le référencent. L'écran ne recopie donc
    aucune de ces deux listes — il les lit. */
-r.get("/:cle", (req, res) => {
+r.get("/:cle", async (req, res) => {
   const def = parCle(req.params.cle);
   if(!def) return res.status(404).json({ error:"type de liste inconnu" });
+  const rows = await lignes(def);
+  const items = [];
+  for(const x of rows) items.push(await forme(def, x));
   res.json({
     type: { cle:def.cle, label:def.label, description:def.description || "",
       native: !def.type, cap: def.cap,
       champs: (def.champs || []).map(c => ({ cle:c.cle, label:c.label, liste:c.liste || null })),
       liens: (def.liens || []).map(l => ({ table:l.table, colonne:l.colonne, par:l.par, label:l.label })) },
-    validation: validation(def),
-    items: lignes(def).map(x => forme(def, x)),
+    validation: await validation(def),
+    items,
   });
 });
 
-r.post("/:cle", garde, (req, res, next) => {
+r.post("/:cle", garde, async (req, res, next) => {
   const def = parCle(req.params.cle);
   if(!def) return res.status(404).json({ error:"type de liste inconnu" });
   const p = corps.safeParse(req.body);
@@ -119,12 +124,12 @@ r.post("/:cle", garde, (req, res, next) => {
     details: p.error.issues.map(i => ({ champ:i.path.join("."), message:i.message })) });
   const b = p.data;
 
-  if(ligneParCode(def, b.code))
+  if(await ligneParCode(def, b.code))
     return res.status(409).json({ error:`le code « ${b.code} » est déjà pris dans cette liste` });
-  if(lignes(def).some(x => (x[def.cols.label] || "").toLowerCase() === b.label.toLowerCase()))
+  if((await lignes(def)).some(x => (x[def.cols.label] || "").toLowerCase() === b.label.toLowerCase()))
     return res.status(409).json({ error:`le libellé « ${b.label} » est déjà pris dans cette liste` });
 
-  const { colonnes, erreurs } = champsValides(def, b.champs);
+  const { colonnes, erreurs } = await champsValides(def, b.champs);
   if(erreurs.length) return res.status(422).json({ error:"champ invalide", details:erreurs });
 
   const cols = { ...colonnes,
@@ -136,15 +141,15 @@ r.post("/:cle", garde, (req, res, next) => {
   const id = newId(def.prefixeId || "li");
   const keys = Object.keys(cols);
   try{
-    db.prepare(`INSERT INTO ${def.table} (id,${keys.join(",")})
+    await db.prepare(`INSERT INTO ${def.table} (id,${keys.join(",")})
                 VALUES (?,${keys.map(() => "?").join(",")})`).run(id, ...keys.map(k => cols[k]));
   }catch(e){
     if(/UNIQUE/.test(e.message)) return res.status(409).json({ error:"doublon : cet item existe déjà" });
     return next(e);
   }
-  invalider(def);
-  audit(req, def.cle, "create", id, `${def.label} — item créé : ${b.label} (${b.code})`);
-  res.status(201).json({ item: forme(def, ligne(def, id)) });
+  await invalider(def);
+  await audit(req, def.cle, "create", id, `${def.label} — item créé : ${b.label} (${b.code})`);
+  res.status(201).json({ item: await forme(def, await ligne(def, id)) });
 });
 
 r.put("/:cle/:id", garde, (req, res, next) => {

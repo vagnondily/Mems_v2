@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS process_indicator (
   var_name     TEXT NOT NULL,        -- name de la variable
   var_type     TEXT,                 -- type XLSForm (select_one, integer, text…)
   label        TEXT,                 -- libellé (français, à défaut anglais)
-  choices_json TEXT,                 -- choix éventuels : [{value,label}]
+  choices_json jsonb,                -- choix éventuels : [{value,label}]
   ord          INTEGER DEFAULT 0,    -- ordre d'apparition dans le formulaire
   active       INTEGER DEFAULT 1,
   rev          INTEGER DEFAULT 1,

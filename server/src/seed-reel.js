@@ -409,7 +409,7 @@ async function semerDecoupage(){
      faire accepter un exécuteur `db` optionnel à ces fonctions, hors périmètre
      des 6 fichiers de cette conversion.
 
-     `parcourirGeometriesShp` (lib/shapefile.js, hors périmètre) reste
+     TODO-PG: `parcourirGeometriesShp` (lib/shapefile.js, hors périmètre) reste
      SYNCHRONE : son callback ne peut donc pas `await writeGeometries(...)`
      directement. Pour garder le flux par lots de LOT features (l'intérêt
      documenté ci-dessous — ne jamais tenir les 1 701 polygones en mémoire),

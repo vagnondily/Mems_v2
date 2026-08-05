@@ -438,11 +438,11 @@ const empreinteDe = (schema, identifiant, secret) =>
     .update(JSON.stringify([schema, identifiant || "", secret || ""]), "utf8")
     .digest("hex");
 
-const ligneSession = (p) => db.prepare(
+const ligneSession = async (p) => db.prepare(
   "SELECT * FROM source_session WHERE source_kind=? AND source_id=?").get(p.nature, p.id);
 
-function ecrireSession(p, { jeton, expireLe }){
-  db.prepare(`INSERT INTO source_session
+async function ecrireSession(p, { jeton, expireLe }){
+  await db.prepare(`INSERT INTO source_session
       (source_kind,source_id,jeton_enc,expire_le,obtenu_le,echec_le,echec_motif,empreinte)
       VALUES (?,?,?,?,?,NULL,NULL,?)
       ON CONFLICT(source_kind,source_id) DO UPDATE SET
@@ -452,8 +452,8 @@ function ecrireSession(p, { jeton, expireLe }){
     .run(p.nature, p.id, encrypt(jeton), expireLe || null, new Date().toISOString(), p.empreinte);
 }
 
-function ecrireEchec(p, motif){
-  db.prepare(`INSERT INTO source_session
+async function ecrireEchec(p, motif){
+  await db.prepare(`INSERT INTO source_session
       (source_kind,source_id,jeton_enc,expire_le,obtenu_le,echec_le,echec_motif,empreinte)
       VALUES (?,?,NULL,NULL,NULL,?,?,?)
       ON CONFLICT(source_kind,source_id) DO UPDATE SET
@@ -477,8 +477,8 @@ function ecrireEchec(p, motif){
    moitié de la durée de vie annoncée, et une ouverture toute fraîche est servie
    quoi qu'il arrive. Le filet reste le 401 : il déclenche un renouvellement
    unique, qui ne passe pas par ici. */
-function etatCache(p){
-  const row = ligneSession(p);
+async function etatCache(p){
+  const row = await ligneSession(p);
   if(!row || row.empreinte !== p.empreinte) return { etat: "vide" };
   if(row.echec_le){
     const depuis = Date.now() - Date.parse(row.echec_le);
@@ -557,7 +557,7 @@ function obtenirSecondSecret(p){
         : (def.session.perissable
               ? new Date(Date.now() + config.authSortante.dureeParDefautMs).toISOString()
               : null);
-      ecrireSession(p, { jeton: obtenu.jeton, expireLe });
+      await ecrireSession(p, { jeton: obtenu.jeton, expireLe });
       log.info("session de source ouverte", { source: p.id, nature: p.nature,
         schema: p.schema, expire_le: expireLe || "sans expiration",
         annoncee: Number.isFinite(annoncee) });
@@ -575,7 +575,7 @@ function obtenirSecondSecret(p){
          source cinq minutes en conseillant de corriger un justificatif qui n'a
          jamais été en cause, c'est punir l'administrateur pour la panne d'un
          tiers. On ne touche donc au cache que lorsque la source a RÉPONDU. */
-      if(e.refusDeLaSource) ecrireEchec(p, motif);
+      if(e.refusDeLaSource) await ecrireEchec(p, motif);
       log.warn("ouverture de session de source en échec",
         { source: p.id, nature: p.nature, schema: p.schema, motif,
           refusee: !!e.refusDeLaSource });
@@ -659,7 +659,7 @@ export function porteurAuth({
   p.enTetes = async ({ forcer = false } = {}) => {
     if(!def.session) return def.enTete(valeurs);
     if(!forcer){
-      const etat = etatCache(p);
+      const etat = await etatCache(p);
       if(etat.etat === "valide") return def.enTete({ ...valeurs, justificatif: etat.jeton });
       if(etat.etat === "bloque")
         throw refus(codeErreur, "AUTH_SESSION",
@@ -675,9 +675,9 @@ export function porteurAuth({
   };
 
   /* Ce que l'écran a le droit de savoir de la session en cours. Jamais le jeton. */
-  p.etatSession = () => {
+  p.etatSession = async () => {
     if(!def.session) return null;
-    const row = ligneSession(p);
+    const row = await ligneSession(p);
     if(!row || row.empreinte !== p.empreinte)
       return { ouverte:false, expire_le:null, obtenue_le:null, echec_le:null, echec_motif:null };
     return { ouverte: !!row.jeton_enc, expire_le: row.expire_le, obtenue_le: row.obtenu_le,
@@ -847,7 +847,7 @@ export async function sonder({ porteur, chemin, etape = "justificatif", forcer =
   const base = { etape, schema_employe: porteur.schema, schema_libelle: porteur.libelle,
     mot_cle: porteur.motCle, hote_verifie: false, joignable: false, code_http: null,
     cause: null, message: "", verdict: "indetermine", indices: porteur.indices,
-    session: porteur.etatSession ? porteur.etatSession() : null };
+    session: porteur.etatSession ? await porteur.etatSession() : null };
 
   let base_url;
   try{ base_url = String(await porteur.verifierBase(porteur.baseUrl)).replace(/\/+$/, ""); }
@@ -863,7 +863,7 @@ export async function sonder({ porteur, chemin, etape = "justificatif", forcer =
   try{ enTetes = await porteur.enTetes({ forcer: forcer && !!porteur.derive }); }
   catch(e){
     return { ...base, ok: false, cause: e.causeAuth || "AUTH_ABSENT", message: e.message,
-      session: porteur.etatSession ? porteur.etatSession() : null };
+      session: porteur.etatSession ? await porteur.etatSession() : null };
   }
 
   const appeler = (entetes) => fetchBorne(base_url + normaliserChemin(chemin),
@@ -874,12 +874,12 @@ export async function sonder({ porteur, chemin, etape = "justificatif", forcer =
   catch(e){
     return { ...base, ok: false, cause: e.causeAuth === "AUTH_HOTE" ? "AUTH_HOTE" : null,
       message: `la source n'a pas répondu correctement : ${e.motifAuth || e.message}`,
-      session: porteur.etatSession ? porteur.etatSession() : null };
+      session: porteur.etatSession ? await porteur.etatSession() : null };
   }
 
   base.joignable = true;
   base.code_http = res.status;
-  base.session = porteur.etatSession ? porteur.etatSession() : null;
+  base.session = porteur.etatSession ? await porteur.etatSession() : null;
 
   if(res.status === 401 || res.status === 403){
     const { cause, message } = await causeRefus({ porteur, res, renouvele: forcer && !!porteur.derive });
