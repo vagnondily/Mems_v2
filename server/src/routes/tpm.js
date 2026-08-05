@@ -162,7 +162,7 @@ r.post("/contracts", requireCap("admin"), async (req, res) => {
   if(b.start_date && b.end_date && b.end_date < b.start_date)
     return res.status(422).json({ error:"la date de fin précède la date de début" });
   const id = newId("tct");
-  const devise = b.currency || localCurrency();
+  const devise = b.currency || await localCurrency();
   await db.prepare(`INSERT INTO tpm_contract (id,tpm_id,ref,ceiling,currency,start_date,end_date,
               status,note,updated_at) VALUES (?,?,?,?,?,?,?,?,?,now())`)
     .run(id, b.tpm_id, b.ref, b.ceiling, devise, b.start_date, b.end_date, b.status, b.note);
@@ -436,7 +436,7 @@ r.put("/plans/:id/zones", requireCap("edit"), async (req, res) => {
     return res.status(409).json({ error:"ce plan a été modifié entre-temps",
       courant: await planDetail(plan.id) });
 
-  const v = currentVersion();
+  const v = await currentVersion();
   if(!v) return res.status(409).json({ error:"aucun référentiel courant" });
   const connus = new Set((await db.prepare("SELECT pcode FROM geo_unit WHERE version_id=?")
     .all(v.id)).map(x => x.pcode));

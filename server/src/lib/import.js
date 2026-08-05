@@ -328,7 +328,7 @@ const codes = {
      fenêtre la dépendance géographique que la portée nationale vient d'ôter. */
   check: async (r) => {
     if(!r.geo_pcode) return null;
-    const v = currentVersion();
+    const v = await currentVersion();
     if(!v) return null;
     const connu = await db.prepare("SELECT 1 FROM geo_unit WHERE version_id=? AND pcode=?")
       .get(v.id, r.geo_pcode);
@@ -603,7 +603,7 @@ export async function analyse(kind, raw, ctx){
      sur une installation sans référentiel chargé, `known` serait vide et tout
      serait rejeté au premier oubli de cette condition. */
   const geo = def.portee === "geo";
-  const v = geo ? currentVersion() : null;
+  const v = geo ? await currentVersion() : null;
   const known = v
     ? new Set((await db.prepare("SELECT pcode FROM geo_unit WHERE version_id=?").all(v.id)).map(x=>x.pcode))
     : new Set();

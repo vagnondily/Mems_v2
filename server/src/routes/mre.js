@@ -102,7 +102,7 @@ const audit = async (req, action, id, text) =>
 async function porteeLabels(pcodes){
   const uniques = [...new Set(pcodes.filter(Boolean))];
   if(!uniques.length) return {};
-  const v = currentVersion(); if(!v) return {};
+  const v = await currentVersion(); if(!v) return {};
   const rows = await db.prepare(
     `SELECT u.pcode, u.name, u.level, p.name parent
      FROM geo_unit u LEFT JOIN geo_unit p ON p.version_id=u.version_id AND p.pcode=u.parent_pcode

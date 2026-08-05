@@ -54,7 +54,7 @@ r.get("/submissions", async (req, res) => {
   }).safeParse(req.query);
   if(!q.success) return res.status(422).json({ error: "filtres invalides" });
   const f = q.data;
-  const bureau = officeBound(req.user);
+  const bureau = await officeBound(req.user);
 
   const where = []; const args = [];
   /* Une soumission NON RÉSOLUE n'appartient à aucun bureau : elle reste visible

@@ -110,7 +110,7 @@ export async function planDetail(planId){
     WHERE p.id = ?`).get(planId);
   if(!plan) return null;
 
-  const v = currentVersion();
+  const v = await currentVersion();
   const noms = v ? Object.fromEntries((await db.prepare(
     `SELECT u.pcode, u.name, p.name parent FROM geo_unit u
      LEFT JOIN geo_unit p ON p.version_id=u.version_id AND p.pcode=u.parent_pcode

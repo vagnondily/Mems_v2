@@ -49,7 +49,7 @@ r.get("/:kind/template", async (req, res, next) => {
     return res.status(403).json({ error:`droit « ${def.cap} » requis` });
   const geo = def.portee === "geo";
 
-  const v = currentVersion();
+  const v = await currentVersion();
   if(geo && !v) return res.status(409).json({
     error:"aucun référentiel géographique courant : chargez un millésime avant d'importer" });
 
@@ -109,7 +109,7 @@ r.post("/:kind", (req, res, next) => {
     if(!req.file) return res.status(422).json({ error:"aucun fichier reçu" });
     const geo = def.portee === "geo";
 
-    const v = currentVersion();
+    const v = await currentVersion();
     if(geo && !v) return res.status(409).json({ error:"aucun référentiel géographique courant" });
 
     try{

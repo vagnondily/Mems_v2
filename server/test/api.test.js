@@ -46,7 +46,13 @@ process.env.CONNECTOR_ALLOWED_HOSTS = "127.0.0.1";
 execFileSync(process.execPath, ["src/seed.js"], { stdio:"pipe", env: process.env });
 
 const { default: app } = await import("../src/index.js");
-const { db } = await import("../src/db.js");
+const { db, close } = await import("../src/db.js");
+
+/* Le pool pg garde des connexions ouvertes : sans le fermer, le process ne rend
+   jamais la main une fois tous les tests passés (better-sqlite3, synchrone, ne
+   gardait rien en vie). On le ferme au tout dernier `after`, sinon `node --test`
+   — et donc la CI — resterait suspendu indéfiniment. */
+after(async () => { await close(); });
 
 const login = async (email, password) => {
   const r = await request(app).post("/api/auth/login").send({ email, password });

@@ -130,7 +130,7 @@ r.get("/", async (req, res) => {
   if(!q.success) return res.status(422).json({ error:"filtres invalides" });
   const { year, tag, onlyLast } = q.data;
 
-  const v = currentVersion();
+  const v = await currentVersion();
   if(!v) return res.json({ year, rows:[], reasons:[] });
   const scope = await scopeOf(req.user);
 
@@ -201,7 +201,7 @@ r.post("/", requireCap("edit"), async (req, res) => {
     details: parsed.error.issues.slice(0,10).map(i => ({ champ:i.path.join("."), message:i.message })) });
   const d = parsed.data;
 
-  const v = currentVersion();
+  const v = await currentVersion();
   if(!v) return res.status(409).json({ error:"aucun référentiel courant : chargez un millésime d'abord" });
   const unites = await chargerUnites(v, d.units.map(x => x.geo_pcode));
   const scope = await scopeOf(req.user);
@@ -274,7 +274,7 @@ r.post("/", requireCap("edit"), async (req, res) => {
 r.delete("/:id", requireCap("del"), async (req, res) => {
   const row = await db.prepare("SELECT * FROM targeting WHERE id=?").get(req.params.id);
   if(!row) return res.status(404).json({ error:"ciblage introuvable" });
-  const v = currentVersion();
+  const v = await currentVersion();
   const u = v && await db.prepare("SELECT path FROM geo_unit WHERE version_id=? AND pcode=?").get(v.id, row.geo_pcode);
   if(!dansPerimetre(await scopeOf(req.user), u?.path)) return res.status(403).json({ error:"hors de votre périmètre" });
   /* Supprimer le ciblage le plus récent fait remonter celui d'avant : l'état
@@ -303,7 +303,7 @@ r.get("/extract", async (req, res, next) => {
   if(!q.success) return res.status(422).json({ error:"filtres invalides" });
   const { year, tag } = q.data;
 
-  const v = currentVersion();
+  const v = await currentVersion();
   if(!v) return res.status(409).json({ error:"aucun référentiel courant" });
   const scope = await scopeOf(req.user);
 

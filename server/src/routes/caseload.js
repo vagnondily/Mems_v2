@@ -26,7 +26,7 @@ r.get("/", async (req, res) => {
   if(!q.success) return res.status(422).json({ error:"filtres invalides" });
   const { year, month, level, parent, tag, limit } = q.data;
 
-  const v = currentVersion();
+  const v = await currentVersion();
   if(!v) return res.json({ year, month:month ?? null, level, rows:[], totals:null, version:null });
 
   /* Unités du niveau demandé, avec leurs ancêtres. */
@@ -181,7 +181,7 @@ r.put("/", requireCap("edit"), async (req, res) => {
   if(!parsed.success) return res.status(422).json({ error:"données invalides",
     details: parsed.error.issues.slice(0,10).map(i => ({ champ:i.path.join("."), message:i.message })) });
 
-  const v = currentVersion();
+  const v = await currentVersion();
   if(!v) return res.status(409).json({ error:"aucun référentiel courant : chargez un millésime d'abord" });
 
   /* Le chemin de l'unité, pas seulement son existence : il faut pouvoir dire si
