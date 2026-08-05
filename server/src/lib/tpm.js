@@ -210,7 +210,7 @@ export async function contractBalance(contractId, exec = db){
    le plan, sites déjà visités, priorité moyenne. Le tri met en tête ce qui est
    à la fois prioritaire et non couvert. */
 export async function suggestZones({ year, month, officeId, limit = 60 }){
-  const v = currentVersion();
+  const v = await currentVersion();
   if(!v) return [];
   /* Paramètres anonymes et dans l'ordre : SQLite refuse de mélanger la numérotation
      explicite (?1) et les points d'interrogation nus dans la même requête. */
@@ -234,8 +234,11 @@ export async function suggestZones({ year, month, officeId, limit = 60 }){
     LEFT JOIN geo_unit p ON p.version_id = u.version_id AND p.pcode = u.parent_pcode
     LEFT JOIN site_months m ON m.site_id = s.id AND m.year = ? AND m.month = ?
     WHERE s.geo_pcode IS NOT NULL ${filtreBureau}
-    GROUP BY u.pcode
-    HAVING actifs > 0
+    -- PostgreSQL exige les colonnes non agrégées dans le GROUP BY (u.name, et
+    -- p.name du parent joint) ; et le HAVING ne voit pas l alias actifs, donc
+    -- l agrégat y est répété tel quel. SQLite tolérait les deux raccourcis.
+    GROUP BY u.pcode, u.name, p.name
+    HAVING SUM(CASE WHEN s.status='Active' THEN 1 ELSE 0 END) > 0
     ORDER BY (planifies - visites) DESC, risque DESC, actifs DESC
     LIMIT ?`).all(...args))
     .map(r => ({

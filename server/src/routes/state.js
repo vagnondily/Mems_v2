@@ -10,7 +10,12 @@ import { can } from "../lib/auth.js";
 import { resumeProcessus } from "./process-indicators.js";
 
 const r = Router();
-const J = (v, d) => { try{ return JSON.parse(v); }catch(e){ return d; } };
+/* Une colonne jsonb est déjà désérialisée en objet par le pilote pg ; une
+   colonne text (réglages) reste une chaîne à analyser. On accepte les deux. */
+const J = (v, d) => {
+  if(v && typeof v === "object") return v;
+  try{ return JSON.parse(v); }catch(e){ return d; }
+};
 
 /* ── Ce que l'état initial a le droit de peser ────────────────────────
    MEMS traitera des milliers de sites et des dizaines de milliers de soumissions.

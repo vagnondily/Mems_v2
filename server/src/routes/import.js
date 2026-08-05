@@ -206,7 +206,8 @@ r.get("/batches", async (req, res) => {
      le schéma Postgres réel : si cette colonne a été déclarée jsonb, le
      JSON.parse doit être retiré (pg la rend déjà en objet). Voir la même remarque
      sur lib/import.js:readBatch, qui lit la même colonne. */
-  res.json({ rows: rows.map(b => ({ ...b, summary: JSON.parse(b.summary || "{}") })) });
+  /* `summary` est jsonb : pg la rend déjà en objet, aucun JSON.parse. */
+  res.json({ rows: rows.map(b => ({ ...b, summary: b.summary ?? {} })) });
 });
 
 /* ── ③ La confirmation : une transaction ───────────────────────────── */

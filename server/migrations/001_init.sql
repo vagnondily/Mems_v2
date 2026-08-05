@@ -112,7 +112,11 @@ CREATE TABLE sites (
   beneficiaries     integer NOT NULL DEFAULT 0 CHECK (beneficiaries >= 0),
   partner_id        text REFERENCES partners(id) ON DELETE SET NULL,
   responsible       text,
-  last_visit        timestamptz,
+  -- `text` : date ISO manipulée comme chaîne (`last_visit.startsWith`, tri et
+  -- comparaison lexicaux, `COALESCE(svy_date, last_visit)`). Les deux colonnes
+  -- rapprochées doivent être du même type ; svy_date est `text` pour la même
+  -- raison. Parité avec le stockage TEXT d'origine sous SQLite.
+  last_visit        text,
   synergies         smallint NOT NULL DEFAULT 0 CHECK (synergies BETWEEN 0 AND 1),
   new_partner       smallint NOT NULL DEFAULT 0 CHECK (new_partner BETWEEN 0 AND 1),
   exp_partner       integer NOT NULL DEFAULT 0 CHECK (exp_partner BETWEEN 0 AND 2),

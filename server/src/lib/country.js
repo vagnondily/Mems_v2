@@ -23,8 +23,11 @@ const REPLI = {
 };
 
 function parseLevels(json){
+  /* `country.levels` est jsonb : pg la rend déjà en objet. On accepte aussi une
+     chaîne, par sûreté (valeur héritée ou déjà sérialisée). */
   let l;
-  try{ l = JSON.parse(json || "{}"); }catch(e){ l = {}; }
+  if(json && typeof json === "object") l = json;
+  else { try{ l = JSON.parse(json || "{}"); }catch(e){ l = {}; } }
   /* Chaque niveau doit avoir ses deux formes : un libellé manquant retombe sur le
      code du niveau, jamais sur le libellé d'un autre pays. */
   return Object.fromEntries(LEVELS.map(k => {

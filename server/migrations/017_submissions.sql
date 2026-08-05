@@ -62,7 +62,9 @@ CREATE TABLE submissions (
   -- créer des doublons. C'est `__id` dans l'API OData d'ODK Central.
   instance_id   text NOT NULL,
   submitted_at  timestamptz,                 -- horodatage du dépôt sur le serveur
-  svy_date      timestamptz,                 -- SvyDate : la date DÉCLARÉE de collecte
+  svy_date      text,                        -- SvyDate : la date DÉCLARÉE de collecte
+                                              -- `text` : rapprochée de sites.last_visit
+                                              -- (COALESCE) et manipulée comme chaîne. Parité SQLite.
   -- Ce que le formulaire portait, avant tout rattachement. Conservé brut : un
   -- code corrigé par le rattachement ferait perdre la trace de ce qui a été saisi.
   site_code_raw text,

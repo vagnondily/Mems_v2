@@ -8,7 +8,10 @@ import { porteurAuth, sonder, indicesSecret, SCHEMAS_AUTH, CHEMIN_SESSION_ODK_DE
          CHEMIN_EPREUVE_ODK_DEFAUT } from "../lib/authSortante.js";
 
 const r = Router();
-const J = (v, d) => { try{ return JSON.parse(v); }catch(e){ return d; } };
+const J = (v, d) => {
+  if(v && typeof v === "object") return v;   /* jsonb déjà désérialisé par pg */
+  try{ return JSON.parse(v); }catch(e){ return d; }
+};
 
 const reglage = async (cle, defaut) =>
   J((await db.prepare("SELECT value FROM settings WHERE key=?").get(cle))?.value, defaut) || defaut;

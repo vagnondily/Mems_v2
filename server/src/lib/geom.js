@@ -262,7 +262,8 @@ export async function readGeometries({ versionId, level, parent, detail = false,
       type:"Feature",
       properties:{ pcode:x.pcode, level:x.level, name:x.name, parent:x.parent_pcode,
                    bbox:[x.min_lon, x.min_lat, x.max_lon, x.max_lat] },
-      geometry: JSON.parse(x.geom),
+      /* `geom` (geometry/simple) est jsonb : pg la rend déjà en objet. */
+      geometry: x.geom,
     })),
   };
 }
@@ -367,8 +368,9 @@ export async function deriverNiveaux({ versionId, source = null, remplacerExista
       premier = false; ecrites += b.écrites; lot = [];
     };
     for(const p of parents){
+      /* `geometry` est jsonb : pg la rend déjà en objet (aucun JSON.parse). */
       const geoms = (await enfantsDe.all(versionId, enfant, p.pcode))
-        .map(x => { try{ return JSON.parse(x.geometry); }catch(e){ return null; } })
+        .map(x => x.geometry)
         .filter(Boolean);
       if(!geoms.length){ sansEnfant++; continue; }
       const d = dissoudre(geoms);

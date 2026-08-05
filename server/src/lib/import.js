@@ -712,15 +712,11 @@ export async function readBatch(id){
   const b = await db.prepare("SELECT * FROM import_batch WHERE id=?").get(id);
   if(!b) return null;
   const rows = await db.prepare("SELECT * FROM import_row WHERE batch_id=? ORDER BY line").all(id);
-  /* TODO-PG: `summary`, `payload` et `before` restent lus ici comme du TEXT JSON
-     (JSON.parse), conformément à la liste des colonnes jsonb communiquée pour ce
-     portage (connector.config, mre_activity.months — import_batch.summary et
-     import_row.payload/before n'y figurent pas). À vérifier contre le schéma
-     Postgres réel : si l'une de ces trois colonnes a été déclarée jsonb, le
-     JSON.parse correspondant doit être retiré (pg la rend déjà en objet/tableau). */
-  return { ...b, summary: JSON.parse(b.summary || "{}"),
+  /* `summary`, `payload` et `before` sont des colonnes jsonb (migration 005) :
+     pg les rend déjà en objet/tableau, aucun JSON.parse. */
+  return { ...b, summary: b.summary ?? {},
     rows: rows.map(r => ({ line:r.line, action:r.action, field:r.field, message:r.message,
-      payload: JSON.parse(r.payload), before: r.before ? JSON.parse(r.before) : null })) };
+      payload: r.payload, before: r.before ?? null })) };
 }
 
 /* ── Application ───────────────────────────────────────────────────── */

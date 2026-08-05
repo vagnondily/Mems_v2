@@ -27,7 +27,10 @@ import { ingerer, suiviParPeriode, appliquerSuivi, positionsObservees,
 import { retirerVisiteDeSoumission } from "../lib/visites.js";
 
 const r = Router();
-const J = (v, d) => { try{ return JSON.parse(v); }catch(e){ return d; } };
+const J = (v, d) => {
+  if(v && typeof v === "object") return v;   /* jsonb déjà désérialisé par pg */
+  try{ return JSON.parse(v); }catch(e){ return d; }
+};
 
 const audit = (req, action, id, texte) =>
   db.prepare(`INSERT INTO audit (id,user_id,user_label,office,kind,entity,entity_id,action,text)
