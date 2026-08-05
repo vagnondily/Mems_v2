@@ -341,17 +341,12 @@ export async function rapprocher({ referentiel, office_id = null }){
            désignation erronée laissait les deux codes en place, le code
            désignait deux sites, et le résolveur cessait de trancher — la
            correction cassait ce qu'elle venait réparer.
-           TODO-PG: poserAliasExclusif (lib/alias.js) ouvre SA PROPRE transaction
-           (son propre client via tx()) au lieu d'utiliser l'exécuteur `db` de la
-           transaction en cours ici. Sur Postgres, ceci casse l'atomicité globale
-           du rapprochement — un DELETE+INSERT d'alias se valide indépendamment
-           de `trace.run` ci-dessus, alors qu'en SQLite/better-sqlite3 les deux
-           partageaient la même connexion. À revoir : soit poserAliasExclusif
-           accepte un exécuteur optionnel, soit ce bloc n'est plus dans une seule
-           transaction — décision hors du périmètre mécanique de ce portage. */
+           L'exécuteur `db` de CETTE transaction est transmis : le retrait de
+           l'ancien alias et la pose du nouveau se valident avec la trace
+           ci-dessus, en un seul tout — comme les SAVEPOINT imbriqués d'origine. */
         const pose = await poserAliasExclusif({ site_id: retenu, code: c.e.code, source: referentiel,
           note: `entrée du référentiel « ${referentiel} »`
-            + (c.e.libelle ? ` — ${c.e.libelle}` : "") });
+            + (c.e.libelle ? ` — ${c.e.libelle}` : "") }, db);
         aliasRetires += pose.retires;
         if(pose.cree) alias++; else dejaPresents++;
       } else if(c.site_id){

@@ -105,16 +105,22 @@ export const supprimerAlias = async (id) =>
    dans UNE source, un code désigne UN site. D'une source à l'autre, l'ambiguïté
    reste possible et reste signalée — deux référentiels qui se contredisent sont
    un fait à porter à la connaissance de l'opérateur, pas une erreur d'écriture. */
-export async function poserAliasExclusif({ site_id, code, source = null, note = null }){
+/* `exec` (optionnel) : un exécuteur `db`-compatible d'une transaction déjà
+   ouverte. Fourni, le retrait ET la pose s'y font, dans la même transaction que
+   l'appelant (le rapprochement de lib/codes.js écrit la trace, retire l'ancien
+   alias et pose le nouveau en un seul tout). Absent, la fonction ouvre sa propre
+   transaction. */
+export async function poserAliasExclusif({ site_id, code, source = null, note = null }, exec = null){
   const c = propre(code);
   if(!c) return { cree:false, retires:0, motif:"code vide" };
   const s = propre(source);
   let retires = 0;
-  const res = await tx(async (db) => {
+  const corps = async (db) => {
     retires = (await db.prepare(`DELETE FROM site_external_code
                           WHERE code=? AND site_id<>? AND source IS ?`).run(c, site_id, s)).changes;
     return ajouterAlias({ site_id, code:c, source:s, note }, db);
-  });
+  };
+  const res = exec ? await corps(exec) : await tx(corps);
   return { ...res, retires };
 }
 

@@ -23,27 +23,27 @@ const ANNEES_RESULTATS     = 3;    /* outcomes : l'année en cours et deux de re
 
 /* Vue agrégée consommée par le client au démarrage.
    Chaque collection provient de sa table : aucune donnée n'est stockée en vrac. */
-r.get("/state", (req, res) => {
+r.get("/state", async (req, res) => {
   const u = req.user;
   /* Une seule définition du cloisonnement par bureau, partagée avec la géographie :
      un bureau déclaré national n'en cloisonne aucun de ses comptes. */
-  const officeFilter = officeBound(u);
+  const officeFilter = await officeBound(u);
   /* Ce que l'état initial dit de plus à un administrateur. La règle de la maison
      est qu'aucun secret ne sort ; celle-ci est plus fine et vaut d'être nommée :
      ce qui n'est pas un secret mais n'est utile qu'à l'administration ne descend
      pas plus bas qu'elle. */
   const admin = can(u, "admin");
 
-  const offices = db.prepare("SELECT * FROM offices ORDER BY name").all();
+  const offices = await db.prepare("SELECT * FROM offices ORDER BY name").all();
   const officeName = Object.fromEntries(offices.map(o=>[o.id, o.name]));
-  const partners = db.prepare("SELECT * FROM partners ORDER BY name").all();
+  const partners = await db.prepare("SELECT * FROM partners ORDER BY name").all();
   const partnerName = Object.fromEntries(partners.map(p=>[p.id, p.name]));
-  const cats = db.prepare("SELECT * FROM activity_categories ORDER BY name").all();
+  const cats = await db.prepare("SELECT * FROM activity_categories ORDER BY name").all();
   const catName = Object.fromEntries(cats.map(c=>[c.id, c.name]));
 
   const siteRows = officeFilter
-    ? db.prepare("SELECT * FROM sites WHERE office_id=? ORDER BY code").all(officeFilter)
-    : db.prepare("SELECT * FROM sites ORDER BY code").all();
+    ? await db.prepare("SELECT * FROM sites WHERE office_id=? ORDER BY code").all(officeFilter)
+    : await db.prepare("SELECT * FROM sites ORDER BY code").all();
   const year = new Date().getFullYear();
   /* « Date de dernière visite = dernière date de suivi disponible dans odk selon
      svydate. » Elle est servie À CÔTÉ de la valeur saisie, jamais à sa place :
@@ -56,7 +56,7 @@ r.get("/state", (req, res) => {
      balayait la table `submissions` ENTIÈRE — des centaines de milliers de lignes à
      grouper à chaque ouverture, pour dater quelques milliers de sites. Avec la liste
      des sites, `idx_submissions_site_date` sert le regroupement. */
-  const odkVisites = dernieresVisitesOdk({ office_id: officeFilter,
+  const odkVisites = await dernieresVisitesOdk({ office_id: officeFilter,
     site_ids: siteRows.map(s => s.id) });
   /* Les fiches mensuelles suivent le cloisonnement des sites qu'elles décrivent.
      Sans la jointure, un compte de terrain chargeait les douze mois de TOUS les
@@ -64,9 +64,9 @@ r.get("/state", (req, res) => {
      siens quelques lignes plus bas, dans `byId`. La clé primaire
      (site_id, year, month) sert la jointure. */
   const months = officeFilter
-    ? db.prepare(`SELECT sm.* FROM site_months sm JOIN sites s ON s.id=sm.site_id
+    ? await db.prepare(`SELECT sm.* FROM site_months sm JOIN sites s ON s.id=sm.site_id
                   WHERE sm.year=? AND s.office_id=?`).all(year, officeFilter)
-    : db.prepare("SELECT * FROM site_months WHERE year=?").all(year);
+    : await db.prepare("SELECT * FROM site_months WHERE year=?").all(year);
   const byId = {};
   siteRows.forEach(s => { byId[s.id] = Array.from({length:12}, () =>
     ({ planned:false, done:false, activeMonth:true, cp:"", monitor:"", report:"", moda:"" })); });
@@ -98,16 +98,16 @@ r.get("/state", (req, res) => {
   }));
 
   const params = (officeFilter
-    ? db.prepare("SELECT * FROM coverage_params WHERE office_id=?").all(officeFilter)
-    : db.prepare("SELECT * FROM coverage_params").all()
+    ? await db.prepare("SELECT * FROM coverage_params WHERE office_id=?").all(officeFilter)
+    : await db.prepare("SELECT * FROM coverage_params").all()
   ).map(p => ({
     id:p.id, rev:p.rev, csp:p.csp||"", office: officeName[p.office_id]||"", office_id:p.office_id,
     tag:p.activity_tag, category: catName[p.category_id]||"", category_id:p.category_id,
     duration:p.duration, riskLevel:p.risk_level, feasiblePerMonth:p.feasible_per_month }));
 
   const visits = (officeFilter
-    ? db.prepare("SELECT * FROM visits WHERE office_id=? ORDER BY visit_date DESC LIMIT 5000").all(officeFilter)
-    : db.prepare("SELECT * FROM visits ORDER BY visit_date DESC LIMIT 5000").all()
+    ? await db.prepare("SELECT * FROM visits WHERE office_id=? ORDER BY visit_date DESC LIMIT 5000").all(officeFilter)
+    : await db.prepare("SELECT * FROM visits ORDER BY visit_date DESC LIMIT 5000").all()
   ).map(v => ({
     id:v.id, siteId:v.site_id, date:v.visit_date, office: officeName[v.office_id]||"",
     tag:v.activity_tag||"", monitor:v.monitor||"", form:v.form_id||"", status:v.status,
@@ -119,7 +119,7 @@ r.get("/state", (req, res) => {
     origin:v.origin, motif:v.manual_reason||"", motifNote:v.manual_note||"",
     submissionId:v.submission_id||"" }));
 
-  const indicators = db.prepare("SELECT * FROM indicators ORDER BY code").all().map(i => ({
+  const indicators = (await db.prepare("SELECT * FROM indicators ORDER BY code").all()).map(i => ({
     id:i.code, key:i.id, rev:i.rev, name:i.name, basket:i.basket||"", unit:i.unit,
     target:i.target, dir:i.direction, method:i.method||"", freq:i.frequency||"",
     /* Deux natures d'un même objet (migration 022) : le CRF porte un `level`
@@ -149,21 +149,21 @@ r.get("/state", (req, res) => {
      servir —, et le TOTAL accompagne la liste pour que l'écran sache dire ce qu'il
      ne montre pas plutôt que d'afficher un historique amputé sans le dire. */
   const depuisAnnee = year - (ANNEES_RESULTATS - 1);
-  const outcomesTotal = db.prepare("SELECT COUNT(*) c FROM outcomes").get().c;
-  const outcomes = db.prepare(
+  const outcomesTotal = (await db.prepare("SELECT COUNT(*) c FROM outcomes").get()).c;
+  const outcomes = (await db.prepare(
     `SELECT * FROM outcomes
      WHERE collected_at IS NULL OR collected_at='' OR CAST(substr(collected_at,1,4) AS INTEGER) >= ?`)
-    .all(depuisAnnee).map(o => ({
+    .all(depuisAnnee)).map(o => ({
       id:o.id, rev:o.rev, indicator: indByKey[o.indicator_id] || "", indicator_id:o.indicator_id,
       adm1:o.adm1||"", round:o.round_label||"", planned:o.planned, value:o.value,
       date:o.collected_at||"", sample:o.sample }));
 
-  const outputs = db.prepare("SELECT * FROM outputs WHERE year=?").all(year).map(o => ({
+  const outputs = (await db.prepare("SELECT * FROM outputs WHERE year=?").all(year)).map(o => ({
     id:o.id, rev:o.rev, tag:o.activity_tag, month:o.month, planned:o.planned,
     actual:o.actual, adjust:o.adjust, note:o.note||"" }));
 
-  const popRows = db.prepare("SELECT * FROM population ORDER BY area_key").all();
-  const popVals = db.prepare("SELECT * FROM population_values").all();
+  const popRows = await db.prepare("SELECT * FROM population ORDER BY area_key").all();
+  const popVals = await db.prepare("SELECT * FROM population_values").all();
   const population = popRows.map(p => ({ id:p.id, rev:p.rev, key:p.area_key, level:p.level,
     base:p.base, rate:p.rate,
     values: Object.fromEntries(popVals.filter(v=>v.population_id===p.id).map(v=>[v.year, v.value])) }));
@@ -173,11 +173,11 @@ r.get("/state", (req, res) => {
      millésimes confondus. Deux années couvrent la saisie courante et la comparaison
      à l'an dernier, ce que les écrans montrent ; au-delà, c'est de l'archive, et
      `idx_pdd_period(year, month)` sert le filtre. */
-  const pddTotal = db.prepare("SELECT COUNT(*) c FROM pdd").get().c;
+  const pddTotal = (await db.prepare("SELECT COUNT(*) c FROM pdd").get()).c;
   const pdd = (officeFilter
-    ? db.prepare("SELECT * FROM pdd WHERE office_id=? AND year>=? ORDER BY year, month, bureau")
+    ? await db.prepare("SELECT * FROM pdd WHERE office_id=? AND year>=? ORDER BY year, month, bureau")
         .all(officeFilter, year - 1)
-    : db.prepare("SELECT * FROM pdd WHERE year>=? ORDER BY year, month, bureau").all(year - 1)
+    : await db.prepare("SELECT * FROM pdd WHERE year>=? ORDER BY year, month, bureau").all(year - 1)
   ).map(p => ({
     /* office_id doit figurer ici : le client renvoie la collection telle qu'il l'a reçue,
        et un champ absent est réécrit à NULL par la synchronisation — le rattachement au
@@ -195,17 +195,17 @@ r.get("/state", (req, res) => {
   /* Le découpage administratif ne transite plus par /state : à ~18 000 fokontany,
      il pesait plus que tout le reste réuni et se retrouvait tronqué à 4 000 lignes.
      L'interface interroge /api/geo/levels au fur et à mesure de ce qu'elle affiche. */
-  const gv = currentVersion();
+  const gv = await currentVersion();
   const geoVersion = gv ? {
     id:gv.id, label:gv.label, units:gv.units, importedAt:gv.imported_at,
-    counts: Object.fromEntries(db.prepare(
+    counts: Object.fromEntries((await db.prepare(
       `SELECT level, COUNT(*) c FROM geo_unit WHERE version_id=? GROUP BY level`)
-      .all(gv.id).map(x => [x.level, x.c])),
+      .all(gv.id)).map(x => [x.level, x.c])),
     /* L'état des contours au démarrage : la cartographie doit savoir dès le premier
        rendu s'il y a un fond de carte, sans un aller-retour supplémentaire dont le
        résultat arriverait après le premier affichage. */
     geom: { units: gv.geom_units || 0, source: gv.geom_source || "", at: gv.geom_at || null,
-      parNiveau: gv.geom_units ? db.prepare(
+      parNiveau: gv.geom_units ? await db.prepare(
         `SELECT level, COUNT(*) units, SUM(points) points, SUM(points_simple) points_simple
          FROM geo_geom WHERE version_id=? GROUP BY level ORDER BY level`).all(gv.id) : [] },
   } : null;
@@ -213,7 +213,7 @@ r.get("/state", (req, res) => {
   /* Le pays courant et le vocabulaire de son découpage. Il part avec l'état
      initial parce que chaque écran en a besoin pour nommer ses colonnes : le
      demander séparément afficherait « adm3 » le temps d'un aller-retour. */
-  const country = currentCountry();
+  const country = await currentCountry();
 
   /* La colonne `raw` n'est PAS lue ici, et c'est le point du SELECT nommé : elle
      porte jusqu'à 20 000 soumissions aplaties par formulaire (lib/odkClient.js), que
@@ -228,16 +228,17 @@ r.get("/state", (req, res) => {
      déjà tenue à jour) et la liste des CHAMPS (les clés de la première ligne), dont
      la fiche du formulaire se sert pour proposer les colonnes de rattachement.
 
-     Les champs sont extraits par `json_extract(raw,'$[0]')`, c'est-à-dire par SQLite
-     lui-même : il rend la PREMIÈRE ligne seule, quelques centaines d'octets, au lieu
-     de faire traverser le blob entier à JSON.parse. Lire les clés d'une ligne ne
-     justifie pas de désérialiser les vingt mille autres. */
-  const odkForms = db.prepare(`SELECT id, rev, name, form_id, project, kind, activity_tag,
+     Les champs sont extraits par `raw->0`, c'est-à-dire par PostgreSQL lui-même : il
+     rend la PREMIÈRE ligne seule, quelques centaines d'octets, au lieu de faire
+     traverser le blob entier. `raw` étant du jsonb, `raw->0` est déjà désérialisé à
+     la lecture — lire les clés d'une ligne ne justifie pas de charger les vingt mille
+     autres. */
+  const odkForms = (await db.prepare(`SELECT id, rev, name, form_id, project, kind, activity_tag,
       site_field, date_field, labels, records, last_pull, token_enc, auth_schema,
-      auth_identifiant, json_extract(raw,'$[0]') AS premiere FROM odk_forms`).all().map(f => ({
+      auth_identifiant, raw->0 AS premiere FROM odk_forms`).all()).map(f => ({
     id:f.id, rev:f.rev, name:f.name, formId:f.form_id, project:f.project||"", kind:f.kind,
     tag:f.activity_tag||"", siteField:f.site_field||"", dateField:f.date_field||"",
-    labels: J(f.labels, {}), records:f.records, last:f.last_pull||"",
+    labels: f.labels || {}, records:f.records, last:f.last_pull||"",
     /* La présence du justificatif, jamais sa valeur — et le schéma sous lequel il
        est présenté, qui n'en est pas un et dont l'écran a besoin pour demander les
        bons champs. Le badge « présent / manquant » se lisait jusqu'ici sur le jeton
@@ -254,10 +255,11 @@ r.get("/state", (req, res) => {
        Ce n'est pas un secret au sens de la maison ; rien n'oblige pour autant à
        le servir plus bas que l'administration. */
     ...(admin ? { authIdentifiant: f.auth_identifiant || "" } : {}),
-    champs: Object.keys(J(f.premiere, {}) || {}) }));
+    /* `raw->0` (jsonb) revient déjà désérialisé : ses clés se lisent directement. */
+    champs: Object.keys(f.premiere || {}) }));
 
   const settings = Object.fromEntries(
-    db.prepare("SELECT key, value FROM settings").all().map(s => [s.key, J(s.value, s.value)]));
+    (await db.prepare("SELECT key, value FROM settings").all()).map(s => [s.key, J(s.value, s.value)]));
 
   res.json({
     year, me: { id:u.id, role:u.role, office_id:u.office_id },
@@ -272,7 +274,7 @@ r.get("/state", (req, res) => {
        par activité, par module — pour que le tableau de bord dessine la structure
        du suivi sans tirer les milliers de variables. La liste complète et l'export
        Excel passent par /api/process-indicators. */
-    processIndicators: resumeProcessus(),
+    processIndicators: await resumeProcessus(),
     /* La liste fermée des motifs de saisie à la main, servie telle qu'elle est
        déclarée dans lib/visites.js. Elle part avec l'état initial pour la même
        raison que `country` et `settings` : la grille mensuelle en a besoin dès
@@ -291,53 +293,53 @@ r.get("/state", (req, res) => {
        affichera un jour un code brut pour une cause ajoutée côté serveur. */
     causesAuth: CAUSES_AUTH,
     outcomePlan: Object.fromEntries(
-      Object.entries(db.prepare("SELECT * FROM outcome_plan WHERE year=?").all(year)
+      Object.entries((await db.prepare("SELECT * FROM outcome_plan WHERE year=?").all(year))
         .reduce((acc,r2) => { const code = indByKey[r2.indicator_id]; if(!code) return acc;
           (acc[code] = acc[code] || Array(12).fill(false))[r2.month] = !!r2.planned; return acc; }, {}))),
-    datasets: db.prepare("SELECT * FROM datasets").all().map(d => ({
-      id:d.id, rev:d.rev, name:d.name, formId:d.form_id, raw:J(d.raw,[]), rules:J(d.rules,[]),
-      formulas:J(d.formulas,[]), createdAt:d.created_at })),
+    datasets: (await db.prepare("SELECT * FROM datasets").all()).map(d => ({
+      id:d.id, rev:d.rev, name:d.name, formId:d.form_id, raw:d.raw ?? [], rules:d.rules ?? [],
+      formulas:d.formulas ?? [], createdAt:d.created_at })),
     /* L'historique d'exécutions ne cesse de grossir — un script lancé chaque jour
        accumule des centaines d'entrées portant chacune sa sortie — et il partait en
        entier. L'écran n'en montre que les dernières : on n'en sert que les dernières.
        Le compte total voyage à côté, pour que l'écran puisse dire qu'il en existe
        davantage plutôt que d'afficher un historique tronqué en silence. */
-    scripts: db.prepare("SELECT * FROM scripts").all().map(s => {
-      const runs = J(s.runs, []);
+    scripts: (await db.prepare("SELECT * FROM scripts").all()).map(s => {
+      const runs = s.runs ?? [];
       const liste = Array.isArray(runs) ? runs : [];
       return { id:s.id, rev:s.rev, name:s.name, lang:s.language, stage:s.stage,
         datasetId:s.dataset_id, code:s.code, notes:s.notes||"",
         runs: liste.slice(-DERNIERES_EXECUTIONS), runsTotal: liste.length };
     }),
-    reportTemplates: db.prepare("SELECT * FROM report_templates").all().map(t => ({
-      id:t.id, rev:t.rev, name:t.name, blocks:J(t.blocks,[]), intro:t.intro||"" })),
+    reportTemplates: (await db.prepare("SELECT * FROM report_templates").all()).map(t => ({
+      id:t.id, rev:t.rev, name:t.name, blocks:t.blocks ?? [], intro:t.intro||"" })),
     /* Le catalogue de rations (migration 031) : « une ration, une ligne ». Sert
        l'onglet Rations et présélectionne le grammage dans le plan de distribution. */
-    rationCatalog: db.prepare("SELECT * FROM ration_catalog ORDER BY sort_order, label").all().map(x => ({
+    rationCatalog: (await db.prepare("SELECT * FROM ration_catalog ORDER BY sort_order, label").all()).map(x => ({
       id:x.id, rev:x.rev, label:x.label, commodity:x.commodity, grams:x.grams,
       modality:x.modality||"Food",
       activityTag:x.activity_tag||"", note:x.note||"", sort:x.sort_order||0 })),
-    dashboards: db.prepare("SELECT * FROM dashboards").all().map(d => ({
-      id:d.id, rev:d.rev, name:d.name, widgets:J(d.widgets,[]) })),
+    dashboards: (await db.prepare("SELECT * FROM dashboards").all()).map(d => ({
+      id:d.id, rev:d.rev, name:d.name, widgets:d.widgets ?? [] })),
     /* Le journal révèle qui fait quoi : il suit le même cloisonnement que les données.
 
-       `rowid DESC` en second critère, et ce n'est pas un ornement : `at` est un
-       `datetime('now')`, donc à la SECONDE. Une minute chargée y écrit soixante
-       lignes portant le même horodatage, et l'index `idx_audit_at` les rend alors
-       dans l'ordre d'insertion CROISSANT — c'est-à-dire que « les 60 plus
-       récentes » retenait, à l'intérieur de la seconde la plus récente, les plus
-       ANCIENNES, et coupait les dernières écrites. Exactement l'inverse de ce que
-       la requête annonce. Le journal de la console d'administration
-       (routes/admin.js) départage déjà ses égalités ; celui-ci ne le faisait pas. */
+       `id DESC` en second critère, et ce n'est pas un ornement : `at` est un
+       `now()`. Deux lignes écrites dans la même transaction chargée peuvent porter
+       le même horodatage, et l'index `idx_audit_at` les rendrait alors dans un ordre
+       arbitraire — c'est-à-dire que « les 60 plus récentes » pourrait retenir les
+       plus ANCIENNES d'un même instant, et couper les dernières écrites. `id` est un
+       identifiant croissant dans le temps (lib/crypto.js:newId), il tranche donc les
+       égalités dans le bon sens. Le journal de la console d'administration
+       (routes/admin.js) départage de la même façon. */
     audit: (officeFilter
-      ? db.prepare(`SELECT * FROM audit WHERE kind<>'securite' AND office=?
-                    ORDER BY at DESC, rowid DESC LIMIT 60`).all(officeName[officeFilter] || "")
-      : db.prepare(`SELECT * FROM audit WHERE kind<>'securite'
-                    ORDER BY at DESC, rowid DESC LIMIT 60`).all()
+      ? await db.prepare(`SELECT * FROM audit WHERE kind<>'securite' AND office=?
+                    ORDER BY at DESC, id DESC LIMIT 60`).all(officeName[officeFilter] || "")
+      : await db.prepare(`SELECT * FROM audit WHERE kind<>'securite'
+                    ORDER BY at DESC, id DESC LIMIT 60`).all()
     ).map(a => ({ id:a.id, at:a.at, user:a.user_label||"", office:a.office||"", kind:a.kind, text:a.text })),
     users: (u.role==="super" || u.role==="admin")
-      ? db.prepare("SELECT id,email,username,first_name,last_name,title,office_id,tpm_id,role,tabs,active FROM users ORDER BY first_name").all()
-          .map(x => ({ ...x, username:x.username||"", tabs:J(x.tabs,[]), active:!!x.active }))
+      ? (await db.prepare("SELECT id,email,username,first_name,last_name,title,office_id,tpm_id,role,tabs,active FROM users ORDER BY first_name").all())
+          .map(x => ({ ...x, username:x.username||"", tabs:x.tabs ?? [], active:!!x.active }))
       : [],
   });
 });

@@ -445,20 +445,13 @@ r.post("/shapefile/commit", requireCap("admin"), (req, res, next) => {
       let versionId, écrites = 0, rejetesGeom = 0;
       const rejetsGeom = [];
       const LOT = 500;   /* un lot de contours reste sous quelques mégaoctets en base */
-      /* TODO-PG: parcourirGeometriesShp (lib/shapefile.js, hors périmètre de cette
-         conversion) appelle son callback de façon SYNCHRONE, lot par lot, en
-         comptant sur le fait qu'écrire un lot pouvait se faire de façon
-         synchrone (better-sqlite3). Avec db.js désormais asynchrone, un appel à
-         `writeGeometries` (async) depuis ce callback synchrone ne peut plus être
-         attendu à cet endroit précis, et lancer plusieurs lots en parallèle sans
-         attendre casserait à la fois l'ordre d'écriture et le drapeau `reset`
-         (premier lot seulement). Le contour est donc collecté ENTIÈREMENT en
-         mémoire ici, puis écrit par lots APRÈS la lecture du .shp — ce qui perd
-         la propriété « jamais tout en RAM » que le commentaire d'origine
-         décrivait, sur les fichiers les plus volumineux (17 500 fokontany).
-         Restaurer le vrai streaming demanderait de rendre parcourirGeometriesShp
-         capable d'attendre un callback async (ou d'itérer en générateur), ce qui
-         est hors du périmètre fichier-par-fichier de ce portage. */
+      /* MÉMOIRE. parcourirGeometriesShp (lib/shapefile.js) appelle son callback de
+         façon SYNCHRONE : impossible d'y attendre writeGeometries, désormais
+         asynchrone. Les contours sont donc collectés en mémoire ici, puis écrits
+         par lots à l'intérieur de la transaction. Sur un fichier de 17 500
+         fokontany cela retient l'ensemble en RAM le temps de l'écriture — un vrai
+         streaming exigerait que parcourirGeometriesShp sache attendre un callback
+         async, ce qui est hors du périmètre de ce portage. */
       const geometries = [];
       if(shp){
         parcourirGeometriesShp(shp, (i, g) => {
@@ -468,29 +461,30 @@ r.post("/shapefile/commit", requireCap("admin"), (req, res, next) => {
           geometries.push({ ...at, geometry: g });
         });
       }
-      /* writeVersion et writeGeometries ouvrent chacun leur propre transaction ;
-         imbriquées dans celle-ci, better-sqlite3 les traitait en points de reprise
-         (SAVEPOINT). Sur Postgres, tx() ouvre une connexion dédiée et le
-         paramètre `db` transmis au callback EST cette connexion : les appels
-         ci-dessous doivent donc passer par lui pour rester dans la même
-         transaction — voir le TODO-PG au-dessus pour writeGeometries/writeVersion
-         qui, eux, gèrent déjà leur propre tx() imbriquée (nouvelle connexion à
-         chaque appel) plutôt que de recevoir cet exécuteur : l'ensemble n'est
-         donc plus strictement atomique comme avant. */
-      versionId = await writeVersion({ label, source, units, userId: req.user.id, makeCurrent: true,
-        country: pays.code });
-      for(let idx = 0; idx < geometries.length; idx += LOT){
-        const lot = geometries.slice(idx, idx + LOT);
-        const b = await writeGeometries({ versionId, features: lot, reset: idx === 0, source });
-        écrites += b.écrites; rejetesGeom += b.rejetes || 0;
-        for(const rj of b.rejets || []) if(rejetsGeom.length < 20) rejetsGeom.push(rj);
-      }
-      await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
-                    VALUES (?,?,?,'plan','geo_version',?,'import',?)`)
-          .run(newId("aud"), req.user.id, req.user.first_name, versionId,
-            `Shapefile importé : ${units.length} unité(s) (${counts.adm3 || 0} communes), `
-            + `${écrites} contour(s) — ${orphelins.orphelins} site(s) orphelin(s)`
-            + (collisions.length ? ` · ${collisions.length} p-code(s) en double conservé(s)` : ""));
+      /* UN SEUL tx() englobe le millésime, ses contours et la trace — comme les
+         SAVEPOINT imbriqués de better-sqlite3 le faisaient. tx() ouvre une
+         connexion dédiée ; l'exécuteur `dbx` qu'il transmet EST cette connexion,
+         et il est passé à writeVersion et writeGeometries pour qu'ils écrivent
+         DESSUS au lieu d'ouvrir la leur — sans quoi, sur Postgres, chacun
+         validerait séparément et l'ensemble ne serait plus tout-ou-rien.
+         writeGeometries lit aussi geo_unit via cet exécuteur : il voit ainsi les
+         unités que writeVersion vient d'écrire dans la même transaction. */
+      await tx(async (dbx) => {
+        versionId = await writeVersion({ label, source, units, userId: req.user.id, makeCurrent: true,
+          country: pays.code }, dbx);
+        for(let idx = 0; idx < geometries.length; idx += LOT){
+          const lot = geometries.slice(idx, idx + LOT);
+          const b = await writeGeometries({ versionId, features: lot, reset: idx === 0, source }, dbx);
+          écrites += b.écrites; rejetesGeom += b.rejetes || 0;
+          for(const rj of b.rejets || []) if(rejetsGeom.length < 20) rejetsGeom.push(rj);
+        }
+        await dbx.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+                      VALUES (?,?,?,'plan','geo_version',?,'import',?)`)
+            .run(newId("aud"), req.user.id, req.user.first_name, versionId,
+              `Shapefile importé : ${units.length} unité(s) (${counts.adm3 || 0} communes), `
+              + `${écrites} contour(s) — ${orphelins.orphelins} site(s) orphelin(s)`
+              + (collisions.length ? ` · ${collisions.length} p-code(s) en double conservé(s)` : ""));
+      });
 
       res.json({
         versionId, imported: units.length, counts,

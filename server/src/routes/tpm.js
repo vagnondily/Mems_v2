@@ -462,12 +462,10 @@ r.put("/plans/:id/zones", requireCap("edit"), async (req, res) => {
       await ins.run(newId("tpz"), plan.id, z.geo_pcode, z.activity_tag, z.team_label,
         z.supervisors, z.agents, z.days, z.travel_days, z.vehicles, z.fuel_litres,
         z.sites, z.note);
-    /* TODO-PG: regenerate() (lib/tpm.js) écrit toujours par le `db` du module —
-       le pool — et non par CE client `db` de transaction. Sous better-sqlite3 la
-       connexion physique unique rendait son DELETE+INSERT atomique avec le reste
-       de ce bloc ; sous pg, ce n'est plus le cas (voir la note laissée sur
-       `regenerate` dans lib/tpm.js). */
-    await regenerate(plan.id);
+    /* On passe CE client de transaction à regenerate : son DELETE+INSERT sur
+       tpm_line reste ainsi atomique avec le reste du bloc (même connexion, même
+       ROLLBACK), ce que le pool par défaut ne garantirait pas. */
+    await regenerate(plan.id, db);
     await db.prepare("UPDATE tpm_plan SET rev=rev+1, updated_at=now() WHERE id=?").run(plan.id);
   });
 

@@ -144,31 +144,38 @@ export function centroid(geometry){
        C'est la garde qui manque le plus : un fichier de communes déposé dans
        l'emplacement des régions s'écrirait sans erreur, et la carte afficherait
        1 701 contours sous l'étiquette « régions » sans que rien ne le dise. */
-export async function writeGeometries({ versionId, features, reset, source, niveau = null }){
-  const unites = Object.fromEntries((await db.prepare(
-    "SELECT pcode, level, lat, lon FROM geo_unit WHERE version_id=?").all(versionId))
-    .map(u => [u.pcode, u]));
-
-  /* Rattachement d'un contour à son unité.
-
-     Par p-code quand le fichier en porte un ET qu'il figure dans le millésime.
-     Sinon PAR LE CHEMIN DE NOMS, comme les sites et le plan de distribution :
-     les p-codes du référentiel sont dérivés du chemin normalisé, et un fichier de
-     contours porte rarement les mêmes que le fichier de découpage dont on a
-     importé l'arbre. Exiger le p-code aurait fait échouer l'import sur un fichier
-     parfaitement valide, sans dire pourquoi. */
-  const resoudre = async (f) => {
-    if(f.pcode && unites[f.pcode]) return f.pcode;
-    if(f.names){
-      const m = await resolveUnit(f.names, versionId);
-      if(m?.pcode) return m.pcode;
-    }
-    return null;
-  };
-
+/* `exec` (optionnel) : un exécuteur `db`-compatible. Fourni, l'écriture des
+   contours se fait DESSUS, dans la transaction déjà ouverte par l'appelant —
+   c'est ce qui permet à l'import de shapefile d'englober l'écriture du millésime
+   ET celle des contours dans un seul tout atomique. Les lectures (le tableau des
+   unités, la résolution par nom) passent aussi par cet exécuteur, pour VOIR les
+   unités que le même appelant vient d'écrire sans les avoir encore validées.
+   Absent, la fonction ouvre sa propre transaction, comportement autonome. */
+export async function writeGeometries({ versionId, features, reset, source, niveau = null }, exec = null){
   let écrites = 0, points = 0, simples = 0;
   const rejets = [];
-  await tx(async (db) => {
+  const corps = async (db) => {
+    const unites = Object.fromEntries((await db.prepare(
+      "SELECT pcode, level, lat, lon FROM geo_unit WHERE version_id=?").all(versionId))
+      .map(u => [u.pcode, u]));
+
+    /* Rattachement d'un contour à son unité.
+
+       Par p-code quand le fichier en porte un ET qu'il figure dans le millésime.
+       Sinon PAR LE CHEMIN DE NOMS, comme les sites et le plan de distribution :
+       les p-codes du référentiel sont dérivés du chemin normalisé, et un fichier de
+       contours porte rarement les mêmes que le fichier de découpage dont on a
+       importé l'arbre. Exiger le p-code aurait fait échouer l'import sur un fichier
+       parfaitement valide, sans dire pourquoi. */
+    const resoudre = async (f) => {
+      if(f.pcode && unites[f.pcode]) return f.pcode;
+      if(f.names){
+        const m = await resolveUnit(f.names, versionId, db);
+        if(m?.pcode) return m.pcode;
+      }
+      return null;
+    };
+
     const ins = db.prepare(`INSERT INTO geo_geom
       (pcode,version_id,level,geometry,simple,min_lon,min_lat,max_lon,max_lat,points,points_simple,source)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
@@ -223,7 +230,9 @@ export async function writeGeometries({ versionId, features, reset, source, nive
     const total = (await db.prepare("SELECT COUNT(*) c FROM geo_geom WHERE version_id=?").get(versionId)).c;
     await db.prepare(`UPDATE geo_version SET geom_units=?, geom_source=COALESCE(?,geom_source),
                 geom_at=now() WHERE id=?`).run(total, source || null, versionId);
-  });
+  };
+  if(exec) await corps(exec);
+  else await tx(corps);
   return { écrites, points, simples, rejets: rejets.slice(0, 20), rejetes: rejets.length };
 }
 
@@ -293,8 +302,14 @@ export async function extent({ versionId, level, parent }){
    Vit ici et non dans la route, parce que le semis des données réelles
    (`seed-reel.js`) en a besoin autant qu'elle : deux implémentations de la
    même remontée finiraient par diverger. */
-export async function deriverNiveaux({ versionId, source = null, remplacerExistants = false, auto = false }){
-  const porte = Object.fromEntries((await geomSummary(versionId)).map(x => [x.level, x.units]));
+/* `exec` (optionnel) : un exécuteur `db`-compatible. Fourni, toutes les lectures
+   ET les écritures (via writeGeometries, à qui il est transmis) passent par lui,
+   pour qu'un appelant ayant déjà ouvert une transaction y englobe la dérivation.
+   Absent, chaque lot d'écriture ouvre sa propre transaction, comme avant — la
+   dérivation n'était pas atomique dans son ensemble à l'origine. */
+export async function deriverNiveaux({ versionId, source = null, remplacerExistants = false, auto = false },
+                                     exec = db){
+  const porte = Object.fromEntries((await geomSummary(versionId, exec)).map(x => [x.level, x.units]));
   const depart = source || [...LEVELS].reverse().find(l => porte[l] > 0);
   if(!depart) return { erreur:"aucun contour dans ce millésime", statut:409 };
   if(!porte[depart]) return { erreur:`le niveau ${depart} ne porte aucun contour`, statut:409 };
@@ -302,7 +317,7 @@ export async function deriverNiveaux({ versionId, source = null, remplacerExista
   if(i0 <= 0) return { erreur:`${depart} est le niveau le plus haut : rien à dériver au-dessus`,
                        statut:409 };
 
-  const enfantsDe = db.prepare(
+  const enfantsDe = exec.prepare(
     `SELECT g.geometry FROM geo_geom g
      JOIN geo_unit u ON u.pcode=g.pcode AND u.version_id=g.version_id
      WHERE g.version_id=? AND g.level=? AND u.parent_pcode=?`);
@@ -311,16 +326,20 @@ export async function deriverNiveaux({ versionId, source = null, remplacerExista
      calculé — jamais un contour importé à la main, qui vaut mieux qu'un
      calcul. La marque est la source, posée par writeGeometries. */
   const estDerive = async (niveau) => {
-    const r = await db.prepare(
+    const r = await exec.prepare(
       "SELECT COUNT(*) c, SUM(source LIKE 'dérivé%') d FROM geo_geom WHERE version_id=? AND level=?")
       .get(versionId, niveau);
     return r.c > 0 && r.d === r.c;
   };
 
+  /* Un lot d'écriture reçoit l'exécuteur seulement si l'appelant en a fourni un :
+     autrement writeGeometries ouvre sa propre transaction par lot (parité). */
+  const execLot = exec === db ? null : exec;
+
   const etapes = [];
   for(let i = i0; i > 0; i--){
     const enfant = LEVELS[i], parent = LEVELS[i - 1];
-    const parents = await db.prepare("SELECT pcode FROM geo_unit WHERE version_id=? AND level=?")
+    const parents = await exec.prepare("SELECT pcode FROM geo_unit WHERE version_id=? AND level=?")
       .all(versionId, parent);
     if(!parents.length){ etapes.push({ niveau:parent, saute:"aucune unité à ce niveau" }); continue; }
     /* Un contour officiel vaut mieux qu'un contour calculé : un niveau déjà
@@ -344,7 +363,7 @@ export async function deriverNiveaux({ versionId, source = null, remplacerExista
     const vider = async () => {
       if(!lot.length) return;
       const b = await writeGeometries({ versionId, features:lot, reset:premier,
-        source:`dérivé de ${enfant}`, niveau:parent });
+        source:`dérivé de ${enfant}`, niveau:parent }, execLot);
       premier = false; ecrites += b.écrites; lot = [];
     };
     for(const p of parents){
@@ -371,8 +390,8 @@ export async function deriverNiveaux({ versionId, source = null, remplacerExista
 
 /* Ce que le millésime porte, par niveau. L'écran de configuration doit pouvoir
    dire « les régions et les districts ont leurs contours, les communes non ». */
-export async function geomSummary(versionId){
-  return db.prepare(`SELECT level, COUNT(*) units, SUM(points) points,
+export async function geomSummary(versionId, exec = db){
+  return exec.prepare(`SELECT level, COUNT(*) units, SUM(points) points,
     SUM(points_simple) points_simple FROM geo_geom WHERE version_id=?
     GROUP BY level ORDER BY level`).all(versionId);
 }

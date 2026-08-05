@@ -29,7 +29,7 @@ const r = Router();
    d'une requête, et un ciblage national portant des milliers de communes ferait
    sinon échouer l'appel — c'est-à-dire l'écran. */
 const PAR_TRANCHE = 800;
-function chargerUnites(v, pcodes){
+async function chargerUnites(v, pcodes){
   const sql = (clause) => `SELECT u.pcode, u.name, u.path, u.level, p1.name p1, p2.name p2, p3.name p3
      FROM geo_unit u
      LEFT JOIN geo_unit p1 ON p1.version_id=u.version_id AND p1.pcode=u.parent_pcode
@@ -38,14 +38,14 @@ function chargerUnites(v, pcodes){
      WHERE u.version_id=? ${clause}`;
   const out = {};
   if(!pcodes){
-    for(const u of db.prepare(sql("")).all(v.id)) out[u.pcode] = u;
+    for(const u of await db.prepare(sql("")).all(v.id)) out[u.pcode] = u;
     return out;
   }
   const liste = [...new Set(pcodes)];
   for(let i = 0; i < liste.length; i += PAR_TRANCHE){
     const tranche = liste.slice(i, i + PAR_TRANCHE);
     if(!tranche.length) continue;
-    for(const u of db.prepare(sql(`AND u.pcode IN (${tranche.map(()=>"?").join(",")})`))
+    for(const u of await db.prepare(sql(`AND u.pcode IN (${tranche.map(()=>"?").join(",")})`))
       .all(v.id, ...tranche)) out[u.pcode] = u;
   }
   return out;
@@ -77,13 +77,17 @@ function libellesAncetres(u){
    La ligne de caseload créée si besoin porte une population de 0 : c'est
    l'inconnu, pas un zéro affirmé, et le taux de ciblage reste nul (division par
    zéro rendue `null`) jusqu'à ce que la population soit renseignée. Écrire un
-   ciblage ne prétend pas connaître la population. */
-function reporterCiblageCourant(pcode, year, tag, level){
-  const dernier = db.prepare(
+   ciblage ne prétend pas connaître la population.
+
+   `exec` : l'exécuteur de requêtes. Les appelants (POST, DELETE) invoquent cette
+   fonction DANS leur transaction et lui passent SON client, pour que le recalcul
+   de l'état courant partage le ROLLBACK de l'écriture qui le déclenche. */
+async function reporterCiblageCourant(pcode, year, tag, level, exec = db){
+  const dernier = await exec.prepare(
     `SELECT targeted, targeted_hh, targeted_at FROM targeting
      WHERE geo_pcode=? AND year=? AND activity_tag=?
      ORDER BY targeted_at DESC, created_at DESC LIMIT 1`).get(pcode, year, tag);
-  const ligne = db.prepare(
+  const ligne = await exec.prepare(
     `SELECT id, source FROM caseload
      WHERE geo_pcode=? AND year=? AND activity_tag=? AND month IS NULL`).get(pcode, year, tag);
 
@@ -104,11 +108,11 @@ function reporterCiblageCourant(pcode, year, tag, level){
   const source = [reste, mention].filter(Boolean).join(" · ").slice(0, 200);
 
   if(ligne){
-    db.prepare(`UPDATE caseload SET targeted=?, targeted_hh=?, source=?,
-                rev=rev+1, updated_at=datetime('now') WHERE id=?`)
+    await exec.prepare(`UPDATE caseload SET targeted=?, targeted_hh=?, source=?,
+                rev=rev+1, updated_at=now() WHERE id=?`)
       .run(cible, menages, source, ligne.id);
   } else if(dernier){
-    db.prepare(`INSERT INTO caseload
+    await exec.prepare(`INSERT INTO caseload
       (id,geo_pcode,level,year,month,activity_tag,population,households,targeted,targeted_hh,source)
       VALUES (?,?,?,?,NULL,?,0,0,?,?,?)`)
       .run(newId("cl"), pcode, level || "adm3", year, tag, cible, menages, source);
@@ -117,7 +121,7 @@ function reporterCiblageCourant(pcode, year, tag, level){
 
 /* GET /api/targeting — les ciblages datés de l'année, chacun rattaché à son
    unité, avec un drapeau « dernier » (le plus récent par unité × activité). */
-r.get("/", (req, res) => {
+r.get("/", async (req, res) => {
   const q = z.object({
     year: z.coerce.number().int().min(2000).max(2100).default(new Date().getFullYear()),
     tag:  z.string().max(20).optional(),
@@ -128,15 +132,15 @@ r.get("/", (req, res) => {
 
   const v = currentVersion();
   if(!v) return res.json({ year, rows:[], reasons:[] });
-  const scope = scopeOf(req.user);
+  const scope = await scopeOf(req.user);
 
   const where = ["year=?"]; const args = [year];
   if(tag !== undefined){ where.push("activity_tag=?"); args.push(tag); }
-  const brut = db.prepare(
+  const brut = await db.prepare(
     `SELECT * FROM targeting WHERE ${where.join(" AND ")} ORDER BY targeted_at DESC, created_at DESC`)
     .all(...args);
   /* Les unités citées par ces ciblages, et elles seules. */
-  const unites = chargerUnites(v, brut.map(t => t.geo_pcode));
+  const unites = await chargerUnites(v, brut.map(t => t.geo_pcode));
 
   /* Le dernier par (unité, activité) : premier vu en ordre décroissant de date. */
   const vus = new Set();
@@ -191,7 +195,7 @@ const corpsSchema = z.object({
   })).min(1).max(5000),
 });
 
-r.post("/", requireCap("edit"), (req, res) => {
+r.post("/", requireCap("edit"), async (req, res) => {
   const parsed = corpsSchema.safeParse(req.body);
   if(!parsed.success) return res.status(422).json({ error:"données invalides",
     details: parsed.error.issues.slice(0,10).map(i => ({ champ:i.path.join("."), message:i.message })) });
@@ -199,8 +203,8 @@ r.post("/", requireCap("edit"), (req, res) => {
 
   const v = currentVersion();
   if(!v) return res.status(409).json({ error:"aucun référentiel courant : chargez un millésime d'abord" });
-  const unites = chargerUnites(v, d.units.map(x => x.geo_pcode));
-  const scope = scopeOf(req.user);
+  const unites = await chargerUnites(v, d.units.map(x => x.geo_pcode));
+  const scope = await scopeOf(req.user);
 
   /* La population connue de l'unité pour cette année et cette activité. Elle sert
      au même contrôle que celui de `PUT /api/caseload` : on ne cible pas plus de
@@ -212,46 +216,51 @@ r.post("/", requireCap("edit"), (req, res) => {
     WHERE geo_pcode=? AND year=?`);
 
   const rejets = [];
-  const ok = d.units.filter((x, i) => {
+  const ok = [];
+  for(const [i, x] of d.units.entries()){
     const u = unites[x.geo_pcode];
-    if(!u){ rejets.push({ ligne:i+1, pcode:x.geo_pcode, message:"p-code absent du référentiel" }); return false; }
-    if(!dansPerimetre(scope, u.path)){ rejets.push({ ligne:i+1, pcode:x.geo_pcode, message:"hors de votre périmètre" }); return false; }
+    if(!u){ rejets.push({ ligne:i+1, pcode:x.geo_pcode, message:"p-code absent du référentiel" }); continue; }
+    if(!dansPerimetre(scope, u.path)){ rejets.push({ ligne:i+1, pcode:x.geo_pcode, message:"hors de votre périmètre" }); continue; }
     /* La population de l'activité si elle est renseignée, sinon la plus grande
        connue pour l'unité : le ciblage d'une activité donnée s'appuie sur la même
        population que les autres, et exiger une ligne par activité ferait échouer
        le contrôle là où la donnée existe pourtant. */
-    const pop = popDe.get(x.geo_pcode, d.year, d.activity_tag)?.population
-      || popToutesActivites.get(x.geo_pcode, d.year)?.p || 0;
+    const pop = (await popDe.get(x.geo_pcode, d.year, d.activity_tag))?.population
+      || (await popToutesActivites.get(x.geo_pcode, d.year))?.p || 0;
     if(pop > 0 && x.targeted > pop){
       rejets.push({ ligne:i+1, pcode:x.geo_pcode,
         message:`${x.targeted} ciblés pour ${pop} habitants (${u.name})` });
-      return false;
+      continue;
     }
-    return true;
+    ok.push(x);
+  }
+
+  let crees = 0;
+  await tx(async (db) => {
+    const ins = db.prepare(`INSERT INTO targeting
+      (id,geo_pcode,level,year,activity_tag,targeted_at,targeted,targeted_hh,gender,reason,note,created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
+    for(const x of ok){
+      await ins.run(newId("tg"), x.geo_pcode, x.level, d.year, d.activity_tag, d.targeted_at,
+        x.targeted, x.targeted_hh, d.gender, d.reason, d.note, req.user.id);
+      crees++;
+      /* ── Et l'état COURANT suit ─────────────────────────────────────
+         `targeting` est l'historique, `caseload` porte « les ciblés du moment »
+         (migration 035) : c'est de LUI que les trois taux de l'écran « Population,
+         ciblage et distribution » sont calculés. Rien ne reliait les deux. Un agent
+         qui saisissait un ciblage de 1 234 personnes voyait donc son taux de
+         ciblage et sa couverture rester inchangés — la valeur qu'il venait de
+         décider n'entrait nulle part dans les chiffres, et il fallait la retaper
+         dans un second écran pour qu'elle compte. Deux vérités pour un seul fait.
+
+         On aligne l'état courant sur l'historique, à chaque écriture — dans CETTE
+         transaction (on passe le client `db`), pour que les deux tables restent
+         cohérentes même si l'écriture échoue en cours de route. */
+      await reporterCiblageCourant(x.geo_pcode, d.year, d.activity_tag, x.level, db);
+    }
   });
 
-  const ins = db.prepare(`INSERT INTO targeting
-    (id,geo_pcode,level,year,activity_tag,targeted_at,targeted,targeted_hh,gender,reason,note,created_by)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
-  let crees = 0;
-  tx(() => { for(const x of ok){
-    ins.run(newId("tg"), x.geo_pcode, x.level, d.year, d.activity_tag, d.targeted_at,
-      x.targeted, x.targeted_hh, d.gender, d.reason, d.note, req.user.id);
-    crees++;
-    /* ── Et l'état COURANT suit ─────────────────────────────────────
-       `targeting` est l'historique, `caseload` porte « les ciblés du moment »
-       (migration 035) : c'est de LUI que les trois taux de l'écran « Population,
-       ciblage et distribution » sont calculés. Rien ne reliait les deux. Un agent
-       qui saisissait un ciblage de 1 234 personnes voyait donc son taux de
-       ciblage et sa couverture rester inchangés — la valeur qu'il venait de
-       décider n'entrait nulle part dans les chiffres, et il fallait la retaper
-       dans un second écran pour qu'elle compte. Deux vérités pour un seul fait.
-
-       On aligne l'état courant sur l'historique, à chaque écriture. */
-    reporterCiblageCourant(x.geo_pcode, d.year, d.activity_tag, x.level);
-  } })();
-
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
               VALUES (?,?,?,'plan','targeting','cibler',?)`)
     .run(newId("aud"), req.user.id, req.user.first_name,
       `Ciblage daté du ${d.targeted_at}${d.activity_tag?` (${d.activity_tag})`:""}${d.reason?` — ${d.reason}`:""} : ${crees} unité(s)`);
@@ -262,21 +271,21 @@ r.post("/", requireCap("edit"), (req, res) => {
 /* Suppression dure d'un ciblage daté : elle exige « del », pas « edit » — un
    module qui conserve délibérément chaque événement daté suit la règle
    suppression ⇒ del, comme sites, mre et tpm. */
-r.delete("/:id", requireCap("del"), (req, res) => {
-  const row = db.prepare("SELECT * FROM targeting WHERE id=?").get(req.params.id);
+r.delete("/:id", requireCap("del"), async (req, res) => {
+  const row = await db.prepare("SELECT * FROM targeting WHERE id=?").get(req.params.id);
   if(!row) return res.status(404).json({ error:"ciblage introuvable" });
   const v = currentVersion();
-  const u = v && db.prepare("SELECT path FROM geo_unit WHERE version_id=? AND pcode=?").get(v.id, row.geo_pcode);
-  if(!dansPerimetre(scopeOf(req.user), u?.path)) return res.status(403).json({ error:"hors de votre périmètre" });
+  const u = v && await db.prepare("SELECT path FROM geo_unit WHERE version_id=? AND pcode=?").get(v.id, row.geo_pcode);
+  if(!dansPerimetre(await scopeOf(req.user), u?.path)) return res.status(403).json({ error:"hors de votre périmètre" });
   /* Supprimer le ciblage le plus récent fait remonter celui d'avant : l'état
      courant se recalcule depuis l'historique restant, dans la même transaction
      que la suppression. Sans cela, effacer une erreur de saisie laissait sa
      valeur dans les taux — c'est-à-dire que la correction ne corrigeait rien. */
-  tx(() => {
-    db.prepare("DELETE FROM targeting WHERE id=?").run(req.params.id);
-    reporterCiblageCourant(row.geo_pcode, row.year, row.activity_tag, row.level);
-  })();
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+  await tx(async (db) => {
+    await db.prepare("DELETE FROM targeting WHERE id=?").run(req.params.id);
+    await reporterCiblageCourant(row.geo_pcode, row.year, row.activity_tag, row.level, db);
+  });
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'plan','targeting',?,'delete',?)`)
     .run(newId("aud"), req.user.id, req.user.first_name, req.params.id,
       `Ciblage du ${row.targeted_at} supprimé${row.activity_tag?` (${row.activity_tag})`:""}`);
@@ -296,14 +305,14 @@ r.get("/extract", async (req, res, next) => {
 
   const v = currentVersion();
   if(!v) return res.status(409).json({ error:"aucun référentiel courant" });
-  const scope = scopeOf(req.user);
+  const scope = await scopeOf(req.user);
 
   const where = ["year=?"]; const args = [year];
   if(tag !== undefined){ where.push("activity_tag=?"); args.push(tag); }
-  const brut = db.prepare(
+  const brut = await db.prepare(
     `SELECT * FROM targeting WHERE ${where.join(" AND ")} ORDER BY targeted_at DESC, created_at DESC`)
     .all(...args);
-  const unites = chargerUnites(v, brut.map(t => t.geo_pcode));
+  const unites = await chargerUnites(v, brut.map(t => t.geo_pcode));
 
   const vus = new Set(); const lignes = [];
   for(const t of brut){

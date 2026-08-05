@@ -48,8 +48,8 @@ const corps = z.object({
   lignes: z.array(z.record(z.any())).optional(),
 });
 
-r.post("/:id/executer", (req, res, next) => {
-  const script = db.prepare("SELECT * FROM scripts WHERE id=?").get(req.params.id);
+r.post("/:id/executer", async (req, res, next) => {
+  const script = await db.prepare("SELECT * FROM scripts WHERE id=?").get(req.params.id);
   if(!script) return res.status(404).json({ error:"script introuvable" });
 
   const moteur = etatMoteur(script.language);
@@ -72,10 +72,11 @@ r.post("/:id/executer", (req, res, next) => {
   let lignes = p.data.lignes;
   if(!lignes){
     const ds = script.dataset_id
-      ? db.prepare("SELECT * FROM datasets WHERE id=?").get(script.dataset_id) : null;
+      ? await db.prepare("SELECT * FROM datasets WHERE id=?").get(script.dataset_id) : null;
     if(!ds) return res.status(422).json({
       error:"ce script n'est relié à aucun jeu de données ; reliez-en un ou transmettez « lignes »" });
-    try{ lignes = JSON.parse(ds.raw); }catch{ lignes = []; }
+    /* `datasets.raw` est du jsonb : pg le renvoie déjà désérialisé, plus de JSON.parse. */
+    lignes = ds.raw;
     if(!Array.isArray(lignes)) lignes = [];
   }
   const lignesMax = config.analyse.lignesMax;
@@ -86,8 +87,8 @@ r.post("/:id/executer", (req, res, next) => {
     error:"une autre analyse est en cours ; réessayez dans un instant" });
 
   executer({ lang:script.language, code:script.code, lignes, userId:req.user.id })
-    .then(x => {
-      journaliser(req, script, x);
+    .then(async x => {
+      await journaliser(req, script, x);
       res.json({ execution: {
         id:x.id, statut:x.statut, moteur:x.moteur, langage:x.lang,
         code:x.code, signal:x.signal, dureeMs:x.dureeMs,
@@ -128,7 +129,7 @@ r.get("/executions/:execId/fichiers/:nom", (req, res) => {
    interpréteur, combien de temps, avec quel code de sortie, et si la sortie a
    été tronquée. Le journal de sécurité — kind='securite' — parce qu'exécuter du
    code sur le serveur en relève, et non de l'activité courante du programme. */
-function journaliser(req, script, x){
+async function journaliser(req, script, x){
   const detail = [
     x.moteur,
     `${(x.dureeMs/1000).toFixed(1)} s`,
@@ -138,7 +139,7 @@ function journaliser(req, script, x){
     `${x.fichiers.length} fichier(s) produit(s)`,
     x.tronque ? "sortie tronquée" : "sortie complète",
   ].join(" — ");
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'securite','scripts',?,'execute',?)`)
     .run(newId("aud"), req.user.id, req.user.email, script.id,
          `Script « ${script.name} » exécuté sur le serveur — ${detail}`);

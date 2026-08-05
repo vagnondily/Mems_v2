@@ -6,21 +6,24 @@ import { validate, schemas } from "../lib/validate.js";
 import { hashPassword, passwordProblems, motDePasseProvisoire } from "../lib/auth.js";
 
 const r = Router();
+/* `users.tabs` est du jsonb : pg le renvoie déjà désérialisé (plus de JSON.parse).
+   L'écriture continue de passer par JSON.stringify — un paramètre jsonb reçoit du
+   texte JSON que Postgres analyse. */
 const shape = (u) => ({ id:u.id, email:u.email, username:u.username || "",
   first_name:u.first_name, last_name:u.last_name,
   title:u.title, office_id:u.office_id, tpm_id:u.tpm_id || null, role:u.role,
-  tabs:JSON.parse(u.tabs||"[]"), active:!!u.active, last_login:u.last_login });
+  tabs:u.tabs ?? [], active:!!u.active, last_login:u.last_login });
 
 /* L'identifiant de connexion facultatif, validé comme dans le self-service
    (routes/auth.js) : même alphabet, même unicité contre courriels ET identifiants.
    Rend soit { value } (à écrire, éventuellement null), soit { erreur }. */
 const IDENTIFIANT = /^[a-z0-9._-]{3,40}$/;
-function verifierIdentifiant(brutIn, idExclu){
+async function verifierIdentifiant(brutIn, idExclu){
   if(brutIn == null || String(brutIn).trim() === "") return { value: null };
   const brut = String(brutIn).trim().toLowerCase();
   if(!IDENTIFIANT.test(brut) || brut.includes("@"))
     return { erreur:"identifiant : 3 à 40 caractères, lettres minuscules, chiffres, point, tiret ou tiret bas, sans « @ »" };
-  const pris = db.prepare(`SELECT 1 FROM users WHERE (username=? OR email=?)${idExclu ? " AND id<>?" : ""}`)
+  const pris = await db.prepare(`SELECT 1 FROM users WHERE (username=? OR email=?)${idExclu ? " AND id<>?" : ""}`)
     .get(...(idExclu ? [brut, brut, idExclu] : [brut, brut]));
   if(pris) return { erreur:"cet identifiant est déjà utilisé" };
   return { value: brut };
@@ -56,8 +59,8 @@ const fusion = (envoye, actuel) => envoye === undefined ? actuel : envoye;
 
 r.use(requireCap("admin"));
 
-r.get("/", (req, res) => res.json({ users:
-  db.prepare("SELECT * FROM users ORDER BY first_name").all().map(shape) }));
+r.get("/", async (req, res) => res.json({ users:
+  (await db.prepare("SELECT * FROM users ORDER BY first_name").all()).map(shape) }));
 
 r.post("/", validate(schemas.user), async (req, res) => {
   const b = req.body;
@@ -72,9 +75,9 @@ r.post("/", validate(schemas.user), async (req, res) => {
       error:"le mot de passe doit contenir " + problems.join(", ") });
   }
   const clair = b.password || motDePasseProvisoire();
-  if(db.prepare("SELECT 1 FROM users WHERE email=?").get(b.email))
+  if(await db.prepare("SELECT 1 FROM users WHERE email=?").get(b.email))
     return res.status(409).json({ error:"cette adresse est déjà utilisée" });
-  const ident = verifierIdentifiant(b.username, null);
+  const ident = await verifierIdentifiant(b.username, null);
   if(ident.erreur) return res.status(ident.erreur.includes("déjà")?409:422).json({ error:ident.erreur });
   const interdit = tpmInterdit(b);
   if(interdit) return res.status(422).json({ error:interdit });
@@ -87,15 +90,15 @@ r.post("/", validate(schemas.user), async (req, res) => {
   if(b.role === "super" && req.user.role !== "super")
     return res.status(403).json({ error:"seul un super-utilisateur peut créer un compte super-utilisateur" });
   const id = newId("user");
-  db.prepare(`INSERT INTO users (id,email,username,pw_hash,first_name,last_name,title,office_id,tpm_id,role,tabs,active,must_change_pw)
+  await db.prepare(`INSERT INTO users (id,email,username,pw_hash,first_name,last_name,title,office_id,tpm_id,role,tabs,active,must_change_pw)
               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)`)
     .run(id, b.email, ident.value, await hashPassword(clair), b.first_name, b.last_name, b.title,
          b.office_id, b.tpm_id, b.role, JSON.stringify(b.tabs), b.active?1:0);
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'securite','users',?,'create',?)`)
     .run(newId("aud"), req.user.id, req.user.email, id, `Compte créé — ${b.email}`);
   res.status(201).json({
-    user: shape(db.prepare("SELECT * FROM users WHERE id=?").get(id)),
+    user: shape(await db.prepare("SELECT * FROM users WHERE id=?").get(id)),
     /* Le provisoire ne sort QUE s'il a été généré, et jamais une seconde fois. */
     provisionalPassword: genere ? clair : undefined });
 });
@@ -105,22 +108,22 @@ r.post("/", validate(schemas.user), async (req, res) => {
    affiché une seule fois ici pour qu'il le communique. À la connexion suivante,
    `must_change_pw` impose son remplacement, et toutes les sessions ouvertes tombent. */
 r.post("/:id/reset-password", async (req, res) => {
-  const cur = db.prepare("SELECT * FROM users WHERE id=?").get(req.params.id);
+  const cur = await db.prepare("SELECT * FROM users WHERE id=?").get(req.params.id);
   if(!cur) return res.status(404).json({ error:"compte introuvable" });
   if(cur.role === "super" && req.user.role !== "super")
     return res.status(403).json({ error:"seul un super-utilisateur réinitialise un super-utilisateur" });
   const clair = motDePasseProvisoire();
-  db.prepare("UPDATE users SET pw_hash=?, must_change_pw=1, updated_at=datetime('now') WHERE id=?")
+  await db.prepare("UPDATE users SET pw_hash=?, must_change_pw=1, updated_at=now() WHERE id=?")
     .run(await hashPassword(clair), cur.id);
-  db.prepare("UPDATE sessions SET revoked=1 WHERE user_id=?").run(cur.id);
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+  await db.prepare("UPDATE sessions SET revoked=1 WHERE user_id=?").run(cur.id);
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'securite','users',?,'password_reset',?)`)
     .run(newId("aud"), req.user.id, req.user.email, cur.id, `Mot de passe réinitialisé — ${cur.email}`);
   res.json({ provisionalPassword: clair });
 });
 
 r.put("/:id", validate(userPatch), async (req, res) => {
-  const cur = db.prepare("SELECT * FROM users WHERE id=?").get(req.params.id);
+  const cur = await db.prepare("SELECT * FROM users WHERE id=?").get(req.params.id);
   if(!cur) return res.status(404).json({ error:"compte introuvable" });
   const b = req.body;
   /* Le compte tel qu'il sera : l'envoi par-dessus l'existant. Tous les contrôles
@@ -130,7 +133,7 @@ r.put("/:id", validate(userPatch), async (req, res) => {
      le reste — même règle qu'à la création et qu'en self-service. */
   let username = cur.username;
   if(b.username !== undefined){
-    const ident = verifierIdentifiant(b.username, cur.id);
+    const ident = await verifierIdentifiant(b.username, cur.id);
     if(ident.erreur) return res.status(ident.erreur.includes("déjà")?409:422).json({ error:ident.erreur });
     username = ident.value;
   }
@@ -157,7 +160,7 @@ r.put("/:id", validate(userPatch), async (req, res) => {
      requireSuper trace. Promouvoir vers super est réservé au super. */
   if(m.role === "super" && cur.role !== "super" && req.user.role !== "super")
     return res.status(403).json({ error:"seul un super-utilisateur peut promouvoir un compte en super-utilisateur" });
-  const dup = db.prepare("SELECT 1 FROM users WHERE email=? AND id<>?").get(m.email, cur.id);
+  const dup = await db.prepare("SELECT 1 FROM users WHERE email=? AND id<>?").get(m.email, cur.id);
   if(dup) return res.status(409).json({ error:"cette adresse est déjà utilisée" });
   const interdit = tpmInterdit(m);
   if(interdit) return res.status(422).json({ error:interdit });
@@ -167,28 +170,28 @@ r.put("/:id", validate(userPatch), async (req, res) => {
     if(problems.length) return res.status(422).json({
       error:"le mot de passe doit contenir " + problems.join(", ") });
     pwSql = ", pw_hash=?, must_change_pw=1"; pwArg = [await hashPassword(b.password)];
-    db.prepare("UPDATE sessions SET revoked=1 WHERE user_id=?").run(cur.id);
+    await db.prepare("UPDATE sessions SET revoked=1 WHERE user_id=?").run(cur.id);
   }
-  db.prepare(`UPDATE users SET email=?, username=?, first_name=?, last_name=?, title=?, office_id=?,
-              tpm_id=?, role=?, tabs=?, active=?, updated_at=datetime('now') ${pwSql} WHERE id=?`)
+  await db.prepare(`UPDATE users SET email=?, username=?, first_name=?, last_name=?, title=?, office_id=?,
+              tpm_id=?, role=?, tabs=?, active=?, updated_at=now() ${pwSql} WHERE id=?`)
     .run(m.email, username, m.first_name, m.last_name, m.title, m.office_id, m.tpm_id, m.role,
          m.tabs, m.active, ...pwArg, cur.id);
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'securite','users',?,'update',?)`)
     .run(newId("aud"), req.user.id, req.user.email, cur.id, `Compte modifié — ${m.email}`);
-  res.json({ user: shape(db.prepare("SELECT * FROM users WHERE id=?").get(cur.id)) });
+  res.json({ user: shape(await db.prepare("SELECT * FROM users WHERE id=?").get(cur.id)) });
 });
 
-r.delete("/:id", (req, res) => {
+r.delete("/:id", async (req, res) => {
   if(req.params.id === req.user.id)
     return res.status(409).json({ error:"vous ne pouvez pas supprimer votre propre compte" });
-  const cur = db.prepare("SELECT * FROM users WHERE id=?").get(req.params.id);
+  const cur = await db.prepare("SELECT * FROM users WHERE id=?").get(req.params.id);
   if(!cur) return res.status(404).json({ error:"compte introuvable" });
-  const supers = db.prepare("SELECT COUNT(*) c FROM users WHERE role='super' AND active=1").get().c;
+  const supers = (await db.prepare("SELECT COUNT(*) c FROM users WHERE role='super' AND active=1").get()).c;
   if(cur.role === "super" && supers <= 1)
     return res.status(409).json({ error:"il doit rester au moins un super-utilisateur actif" });
-  db.prepare("DELETE FROM users WHERE id=?").run(cur.id);
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+  await db.prepare("DELETE FROM users WHERE id=?").run(cur.id);
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'securite','users',?,'delete',?)`)
     .run(newId("aud"), req.user.id, req.user.email, cur.id, `Compte supprimé — ${cur.email}`);
   res.json({ ok:true });

@@ -143,9 +143,19 @@ r.get("/base", async (req, res) => {
     `SELECT conname, conrelid::regclass::text AS table
      FROM pg_constraint WHERE NOT convalidated AND connamespace = 'public'::regnamespace`).all();
 
-  const tables = await db.prepare(
-    `SELECT relname AS nom, n_live_tup AS lignes
-     FROM pg_stat_user_tables WHERE schemaname='public' ORDER BY relname`).all();
+  /* Un COUNT(*) EXACT par table, comme le faisait la version SQLite — pas
+     l'estimation `n_live_tup` de pg_stat_user_tables, qui reste à zéro tant
+     qu'aucun ANALYZE/autovacuum n'est passé (donc juste après un amorçage).
+     On compte des LIGNES, jamais leur contenu : cette route ne doit rien
+     laisser filtrer, surtout pas des tables à colonnes chiffrées. Le nom de
+     table vient du catalogue, jamais de l'appelant — pas d'injection possible. */
+  const noms = (await db.prepare(
+    `SELECT table_name FROM information_schema.tables
+     WHERE table_schema='public' AND table_type='BASE TABLE' ORDER BY table_name`).all())
+    .map(r => r.table_name);
+  const tables = [];
+  for(const nom of noms)
+    tables.push({ nom, lignes: (await db.prepare(`SELECT COUNT(*) c FROM "${nom}"`).get()).c });
 
   const { rows:[taille] } = await pool.query(
     "SELECT pg_database_size(current_database()) AS octets");
@@ -160,9 +170,6 @@ r.get("/base", async (req, res) => {
       detail: nonValidees.slice(0, 50),
       conforme: nonValidees.length === 0,
     },
-    /* Comptage approximatif (statistiques d'autovacuum), pas un COUNT(*) par
-       table : cette route sert un diagnostic instantané sur 57 tables, pas un
-       chiffre exact — n_live_tup est rafraîchi à chaque ANALYZE/autovacuum. */
     tables,
     migrations: await db.prepare("SELECT name, applied_at FROM _migrations ORDER BY name").all(),
     entretien_en_cours: entretienEnCours(),

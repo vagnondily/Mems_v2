@@ -62,27 +62,23 @@ export function derivedLines(zone, rates){
 
 /* Régénère les lignes dérivées d'un plan à partir de ses zones et du barème.
    Les lignes saisies à la main (`derived = 0`) sont conservées : c'est tout
-   l'intérêt du drapeau — recalculer ne doit pas effacer un ajustement voulu. */
-/* TODO-PG: cette fonction écrit toujours par le `db` importé au niveau du
-   module (le pool), jamais par un client de transaction. Elle est appelée à la
-   fois HORS transaction (routes/tpm.js, PUT /contracts/:id/rates, après la
-   sienne) et DEDANS (routes/tpm.js, PUT /plans/:id/zones) : dans ce second cas,
-   sous better-sqlite3 la connexion physique unique rendait le DELETE+INSERT
-   ci-dessous atomique avec le reste du bloc `tx()` appelant ; sous pg, ces
-   écritures passent par une connexion distincte du pool et ne feraient plus
-   partie du même ROLLBACK. Le corriger proprement suppose de faire accepter à
-   `regenerate` un exécuteur `db` optionnel (le client de transaction, à défaut
-   le pool) — un changement de signature plus large qu'un portage mécanique,
-   donc signalé ici plutôt que deviné. */
-export async function regenerate(planId){
-  const plan = await db.prepare("SELECT * FROM tpm_plan WHERE id=?").get(planId);
-  if(!plan) return 0;
-  const rates = await db.prepare("SELECT * FROM tpm_rate WHERE contract_id=? ORDER BY sort, label")
-    .all(plan.contract_id);
-  const zones = await db.prepare("SELECT * FROM tpm_zone WHERE plan_id=? ORDER BY rowid").all(planId);
+   l'intérêt du drapeau — recalculer ne doit pas effacer un ajustement voulu.
 
-  await db.prepare("DELETE FROM tpm_line WHERE plan_id=? AND derived=1").run(planId);
-  const ins = db.prepare(`INSERT INTO tpm_line
+   `exec` est l'exécuteur de requêtes : par défaut le pool (`db`), mais un
+   appelant DÉJÀ dans une transaction (routes/tpm.js, PUT /plans/:id/zones) doit
+   lui passer SON client de transaction, sans quoi le DELETE+INSERT ci-dessous
+   passerait par une connexion distincte du pool et ne ferait plus partie du même
+   ROLLBACK. Sous better-sqlite3 la connexion physique unique rendait cette
+   atomicité gratuite ; sous pg elle doit être portée explicitement. */
+export async function regenerate(planId, exec = db){
+  const plan = await exec.prepare("SELECT * FROM tpm_plan WHERE id=?").get(planId);
+  if(!plan) return 0;
+  const rates = await exec.prepare("SELECT * FROM tpm_rate WHERE contract_id=? ORDER BY sort, label")
+    .all(plan.contract_id);
+  const zones = await exec.prepare("SELECT * FROM tpm_zone WHERE plan_id=? ORDER BY rowid").all(planId);
+
+  await exec.prepare("DELETE FROM tpm_line WHERE plan_id=? AND derived=1").run(planId);
+  const ins = exec.prepare(`INSERT INTO tpm_line
     (id,plan_id,zone_id,driver,label,unit,qty1,qty2,unit_cost,derived,sort)
     VALUES (?,?,?,?,?,?,?,?,?,1,?)`);
   let n = 0;
@@ -96,9 +92,10 @@ export async function regenerate(planId){
 
 /* ── Le budget d'un plan ─────────────────────────────────────────────
    Rendu par zone, parce que c'est ainsi qu'on le relit et qu'on l'arbitre :
-   « quatre équipes, voici le sous-total de chacune ». */
-export async function planAmount(planId){
-  const lignes = await db.prepare("SELECT * FROM tpm_line WHERE plan_id=?").all(planId);
+   « quatre équipes, voici le sous-total de chacune ». `exec` : même rôle que
+   pour `regenerate` — un appelant sous transaction passe son client. */
+export async function planAmount(planId, exec = db){
+  const lignes = await exec.prepare("SELECT * FROM tpm_line WHERE plan_id=?").all(planId);
   return r2(lignes.reduce((t, l) => t + lineTotal(l), 0));
 }
 
@@ -175,21 +172,21 @@ export async function planDetail(planId){
    Confondre engagé et en cours ferait apparaître comme dépassé un plafond qui ne
    l'est pas encore ; les confondre dans l'autre sens laisserait valider un plan
    qui le dépasse. */
-export async function contractBalance(contractId){
-  const c = await db.prepare("SELECT * FROM tpm_contract WHERE id=?").get(contractId);
+export async function contractBalance(contractId, exec = db){
+  const c = await exec.prepare("SELECT * FROM tpm_contract WHERE id=?").get(contractId);
   if(!c) return null;
-  const avenants = r2((await db.prepare(
+  const avenants = r2((await exec.prepare(
     "SELECT COALESCE(SUM(delta),0) s FROM tpm_amendment WHERE contract_id=?").get(contractId)).s);
-  const plans = await db.prepare("SELECT id, status FROM tpm_plan WHERE contract_id=?").all(contractId);
+  const plans = await exec.prepare("SELECT id, status FROM tpm_plan WHERE contract_id=?").all(contractId);
   const somme = async (filtre) => {
     let t = 0;
-    for(const p of plans.filter(filtre)) t += await planAmount(p.id);
+    for(const p of plans.filter(filtre)) t += await planAmount(p.id, exec);
     return r2(t);
   };
 
   const engage  = await somme(p => ["valide_pays", "cloture"].includes(p.status));
   const enCours = await somme(p => ["soumis", "valide_tpm", "valide_bureau"].includes(p.status));
-  const depense = r2((await db.prepare(`SELECT COALESCE(SUM(e.amount),0) s FROM tpm_expense e
+  const depense = r2((await exec.prepare(`SELECT COALESCE(SUM(e.amount),0) s FROM tpm_expense e
     JOIN tpm_plan p ON p.id = e.plan_id WHERE p.contract_id=?`).get(contractId)).s);
 
   const plafond = r2(c.ceiling + avenants);

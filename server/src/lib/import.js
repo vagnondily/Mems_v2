@@ -106,13 +106,16 @@ const caseload = {
      l'utilisateur ne remplit pas ne doivent pas créer de lignes à zéro : elles
      n'ont rien à dire, ce n'est pas la même chose qu'un chiffre nul mesuré. */
   blank: (r) => !r.population && !r.households && !r.targeted && !r.targeted_hh && !r.source,
-  apply: async (rows) => {
-    const find = db.prepare(`SELECT id FROM caseload
+  /* `exec` : l'exécuteur de requêtes. commitBatch nous passe SON client de
+     transaction pour que ces écritures partagent le même ROLLBACK que la mise à
+     jour du lot ; à défaut (appel direct), le pool. */
+  apply: async (rows, ctx, exec = db) => {
+    const find = exec.prepare(`SELECT id FROM caseload
       WHERE geo_pcode=? AND year=? AND activity_tag=? AND month IS ?`);
-    const ins = db.prepare(`INSERT INTO caseload
+    const ins = exec.prepare(`INSERT INTO caseload
       (id,geo_pcode,level,year,month,activity_tag,population,households,targeted,targeted_hh,source)
       VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
-    const upd = db.prepare(`UPDATE caseload SET population=?, households=?, targeted=?,
+    const upd = exec.prepare(`UPDATE caseload SET population=?, households=?, targeted=?,
       targeted_hh=?, source=?, rev=rev+1, updated_at=now() WHERE id=?`);
     let crees = 0, modifies = 0;
     for(const x of rows){
@@ -208,15 +211,17 @@ const pdd = {
             "benef_actual","received","distributed","status"],
   blank: (r) => !r.benef_planned && !r.benef_actual && !r.households
              && !r.tonnage && !r.amount && !r.days,
-  apply: async (rows, ctx) => {
-    const find = db.prepare(`SELECT id FROM pdd
+  /* `exec` : cf. caseload.apply — le client de transaction de commitBatch, ou le
+     pool à défaut. */
+  apply: async (rows, ctx, exec = db) => {
+    const find = exec.prepare(`SELECT id FROM pdd
       WHERE geo_pcode=? AND year=? AND month=? AND act_type=? AND modality=?`);
-    const ins = db.prepare(`INSERT INTO pdd
+    const ins = exec.prepare(`INSERT INTO pdd
       (id,year,month,act_type,activity_tag,office_id,bureau,geo_pcode,region,district,commune,
        modality,commodity,days,benef_planned,households,tonnage,amount,benef_actual,received,
        distributed,status)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-    const upd = db.prepare(`UPDATE pdd SET bureau=?, commodity=?, days=?, benef_planned=?,
+    const upd = exec.prepare(`UPDATE pdd SET bureau=?, commodity=?, days=?, benef_planned=?,
       households=?, tonnage=?, amount=?, benef_actual=?, received=?, distributed=?, status=?,
       rev=rev+1, updated_at=now() WHERE id=?`);
     let crees = 0, modifies = 0;
@@ -343,7 +348,14 @@ const codes = {
   /* Pas de `blank` : une entrée sans libellé reste une entrée. Un code seul, sans
      rien d'autre, est déjà une information — c'est le code que la source emploie,
      et le rapprochement saura peut-être le rattacher par son seul préfixe. */
-  apply: async (rows, ctx) => ecrireEntrees(rows, ctx),
+  /* TODO-PG: `ecrireEntrees` vit dans lib/codes.js (hors du périmètre de ce
+     passage) et écrit encore par le `db` importé au niveau de SON module — le
+     pool — sans accepter d'exécuteur. On lui relaie donc `exec`, mais tant que
+     lib/codes.js ne le prend pas en compte, l'écriture d'un référentiel de codes
+     ne partage PAS le ROLLBACK de commitBatch (contrairement à caseload/pdd
+     ci-dessus). À corriger côté lib/codes.js : faire accepter à `ecrireEntrees`
+     un exécuteur optionnel, exactement comme regenerate() dans lib/tpm.js. */
+  apply: async (rows, ctx, exec = db) => ecrireEntrees(rows, ctx, exec),
   /* Les entrées DÉJÀ chargées pour ce référentiel : le modèle sert donc aussi à
      corriger une liste existante. Au tout premier chargement il rend zéro ligne,
      et c'est pour ce cas que `completer` existe — sans lui, aucune ligne collée
@@ -724,20 +736,14 @@ export async function commitBatch(id, user){
 
   let res = { crees:0, modifies:0 };
   await tx(async (db) => {
-    /* TODO-PG: `def.apply` (caseload.apply / pdd.apply ici, ecrireEntrees() de
-       lib/codes.js pour le type « codes ») écrit encore par le `db` importé au
-       niveau du module — c'est-à-dire par le pool, pas par CE client de
-       transaction. Sous better-sqlite3, une connexion physique unique rendait
-       cette écriture atomique avec l'UPDATE/INSERT ci-dessous « gratuitement » ;
-       sous pg, ces lignes ne feraient plus partie du ROLLBACK en cas d'échec
-       plus bas. Le corriger correctement suppose de faire descendre CE `db`
-       transactionnel jusque dans caseload.apply/pdd.apply (ce fichier) et dans
-       ecrireEntrees (lib/codes.js, hors du périmètre de ce passage) — un
-       changement de signature plus large qu'un portage mécanique, donc signalé
-       ici plutôt que deviné. */
+    /* CE client de transaction (`db`) est passé à `def.apply` comme troisième
+       argument : caseload.apply et pdd.apply (ce fichier) écrivent ainsi sur la
+       même connexion que l'UPDATE/INSERT ci-dessous, donc dans le même ROLLBACK.
+       Le type « codes » relaie l'exécuteur à `ecrireEntrees` (lib/codes.js), qui
+       ne le prend pas encore en compte — voir le TODO-PG sur codes.apply. */
     if(aEcrire.length) res = await def.apply(aEcrire,
       { officeId: user.office_id || b.office_id, batchId: id,
-        absentes: b.summary.absentes || [] });
+        absentes: b.summary.absentes || [] }, db);
     await db.prepare(`UPDATE import_batch SET status='committed', committed_at=now() WHERE id=?`)
       .run(id);
     await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)

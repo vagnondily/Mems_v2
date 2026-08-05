@@ -130,9 +130,16 @@ export function buildUnits(rows, { allowDuplicates = false } = {}){
     counts: Object.fromEntries(LEVELS.map(l => [l, units.filter(u=>u.level===l).length])) };
 }
 
-/* Écrit un millésime complet en une transaction, et le rend courant. */
+/* Écrit un millésime complet en une transaction, et le rend courant.
+
+   `exec` (optionnel) : un exécuteur `db`-compatible. Fourni, la fonction écrit
+   DESSUS sans ouvrir sa propre transaction — c'est le cas quand un appelant
+   (l'import de shapefile) a déjà ouvert un `tx()` et veut que l'écriture du
+   millésime ET des contours qui suivent forment un seul tout atomique, comme le
+   faisaient les SAVEPOINT imbriqués de better-sqlite3. Absent, la fonction ouvre
+   sa propre transaction, comportement autonome inchangé. */
 export async function writeVersion({ label, source, units, userId = null, makeCurrent = true,
-                              country = null }){
+                              country = null }, exec = null){
   const id = newId("gv");
   /* Le millésime appartient à un pays. À défaut de précision, c'est le pays
      courant : un découpage importé décrit le pays qu'on est en train de servir.
@@ -140,9 +147,9 @@ export async function writeVersion({ label, source, units, userId = null, makeCu
      le script en ligne de commande et le jeu de démonstration passent tous par
      cette fonction, et trois rattachements séparés finiraient par diverger. */
   const pays = country
-    || (await db.prepare("SELECT code FROM country WHERE is_current=1").get())?.code
+    || (await (exec || db).prepare("SELECT code FROM country WHERE is_current=1").get())?.code
     || null;
-  await tx(async (db) => {
+  const corps = async (db) => {
     await db.prepare(`INSERT INTO geo_version (id,label,source,imported_by,units,is_current,country)
                 VALUES (?,?,?,?,?,0,?)`).run(id, label, source ?? null, userId, units.length, pays);
     const ins = db.prepare(`INSERT INTO geo_unit
@@ -157,7 +164,9 @@ export async function writeVersion({ label, source, units, userId = null, makeCu
       await db.prepare("UPDATE geo_version SET is_current=0 WHERE is_current=1 AND country IS ?").run(pays);
       await db.prepare("UPDATE geo_version SET is_current=1 WHERE id=?").run(id);
     }
-  });
+  };
+  if(exec) await corps(exec);
+  else await tx(corps);
   return id;
 }
 
@@ -191,13 +200,13 @@ export async function currentVersion(){
    Retourne l'unité la plus profonde atteinte, et à quel niveau la descente s'est
    arrêtée. Un rattachement partiel (commune trouvée, fokontany inconnu) vaut mieux
    qu'un rattachement faux : l'appelant décide s'il l'accepte. */
-export async function resolveUnit(names, versionId){
+export async function resolveUnit(names, versionId, exec = db){
   const v = versionId || (await currentVersion())?.id;
   if(!v) return { pcode:null, level:null, matched:[], ambiguous:false };
 
-  const byParent = db.prepare(
+  const byParent = exec.prepare(
     `SELECT pcode, name, level FROM geo_unit WHERE version_id=? AND parent_pcode IS ? AND name_norm=?`);
-  const byLevel = db.prepare(
+  const byLevel = exec.prepare(
     `SELECT pcode, name, level FROM geo_unit WHERE version_id=? AND level=? AND name_norm=?`);
 
   let parent = null, found = null, matched = [], ambiguous = false;
@@ -223,16 +232,16 @@ export async function resolveUnit(names, versionId){
 
 /* Les libellés d'affichage redescendent du rattachement : ils ne sont plus saisis,
    donc ils ne peuvent plus diverger du référentiel. */
-export async function labelsFor(pcode, versionId){
+export async function labelsFor(pcode, versionId, exec = db){
   const v = versionId || (await currentVersion())?.id;
   const out = { adm1:"", adm2:"", adm3:"", adm4:"", lat:null, lon:null };
   if(!v || !pcode) return out;
-  let cur = await db.prepare("SELECT * FROM geo_unit WHERE version_id=? AND pcode=?").get(v, pcode);
+  let cur = await exec.prepare("SELECT * FROM geo_unit WHERE version_id=? AND pcode=?").get(v, pcode);
   if(cur){ out.lat = cur.lat; out.lon = cur.lon; }
   while(cur){
     if(cur.level in out) out[cur.level] = cur.name;
     cur = cur.parent_pcode
-      ? await db.prepare("SELECT * FROM geo_unit WHERE version_id=? AND pcode=?").get(v, cur.parent_pcode)
+      ? await exec.prepare("SELECT * FROM geo_unit WHERE version_id=? AND pcode=?").get(v, cur.parent_pcode)
       : null;
   }
   return out;
