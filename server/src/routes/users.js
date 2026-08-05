@@ -145,7 +145,11 @@ r.put("/:id", validate(userPatch), async (req, res) => {
     office_id:  fusion(b.office_id, cur.office_id),
     tpm_id:     fusion(b.tpm_id, cur.tpm_id),
     role:       fusion(b.role, cur.role),
-    tabs:       b.tabs === undefined ? cur.tabs : JSON.stringify(b.tabs),
+    /* `tabs` est jsonb : le paramètre doit être du JSON en chaîne. `cur.tabs`
+       est déjà un tableau JS (pg l'a désérialisé), on le re-sérialise donc dans
+       les deux cas — un tableau JS passé nu deviendrait un littéral de tableau
+       PostgreSQL « {…} », refusé par la colonne jsonb. */
+    tabs:       JSON.stringify(b.tabs === undefined ? (cur.tabs ?? []) : b.tabs),
     active:     b.active === undefined ? cur.active : (b.active ? 1 : 0),
   };
   /* Un administrateur ne peut ni se retirer ses propres droits ni se désactiver :

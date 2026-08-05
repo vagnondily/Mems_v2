@@ -224,7 +224,7 @@ r.post("/connectors", requireCap("admin"), async (req, res, next) => {
        erreur autrement (message "violates foreign key constraint", code SQLSTATE
        23503) ; à vérifier contre le comportement réel du driver et ajuster le
        test — laissé tel quel pour ne pas deviner un nouveau motif. */
-    if(/FOREIGN KEY/.test(e.message))
+    if(/foreign key/i.test(e.message))
       return res.status(409).json({ error: "bureau inconnu : le connecteur n'a pas été créé" });
     return next(e);
   }
@@ -309,7 +309,7 @@ r.put("/connectors/:id", requireCap("admin"), async (req, res, next) => {
     /* TODO-PG: même remarque que sur POST /connectors — le motif de détection de
        la violation de clé étrangère ("FOREIGN KEY") vient de better-sqlite3 et
        n'est pas garanti de matcher le message d'erreur de pg. */
-    if(/FOREIGN KEY/.test(e.message))
+    if(/foreign key/i.test(e.message))
       return res.status(409).json({ error: "bureau inconnu : le connecteur n'a pas été modifié" });
     return next(e);
   }

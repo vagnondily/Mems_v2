@@ -144,7 +144,7 @@ r.post("/:cle", garde, async (req, res, next) => {
     await db.prepare(`INSERT INTO ${def.table} (id,${keys.join(",")})
                 VALUES (?,${keys.map(() => "?").join(",")})`).run(id, ...keys.map(k => cols[k]));
   }catch(e){
-    if(/UNIQUE/.test(e.message)) return res.status(409).json({ error:"doublon : cet item existe déjà" });
+    if(/unique|duplicate key/i.test(e.message)) return res.status(409).json({ error:"doublon : cet item existe déjà" });
     return next(e);
   }
   await invalider(def);
@@ -203,7 +203,7 @@ r.put("/:cle/:id", garde, (req, res, next) => {
     db.prepare(`UPDATE ${def.table} SET ${keys.map(k => k + "=?").join(",")},
                 ${def.cols.rev}=${def.cols.rev}+1 WHERE id=?`).run(...keys.map(k => cols[k]), cur.id);
   }catch(e){
-    if(/UNIQUE/.test(e.message)) return res.status(409).json({ error:"doublon : cet item existe déjà" });
+    if(/unique|duplicate key/i.test(e.message)) return res.status(409).json({ error:"doublon : cet item existe déjà" });
     return next(e);
   }
 
@@ -258,7 +258,7 @@ r.delete("/:cle/:id", garde, (req, res, next) => {
   try{
     db.prepare(`DELETE FROM ${def.table} WHERE id=?`).run(cur.id);
   }catch(e){
-    if(/FOREIGN KEY/.test(e.message)) return res.status(409).json({
+    if(/foreign key/i.test(e.message)) return res.status(409).json({
       error:"cet item est référencé par une clé étrangère ; désactivez-le plutôt que de le supprimer" });
     return next(e);
   }
@@ -338,7 +338,7 @@ r.post("/:cle/:id/renommer-code", requireSuper, (req, res, next) => {
       + `${bilan.tables.length} table(s)`);
     res.json({ ok:true, ...bilan });
   }catch(e){
-    if(/UNIQUE/.test(e.message)) return res.status(409).json({
+    if(/unique|duplicate key/i.test(e.message)) return res.status(409).json({
       error:"le nouveau code heurte une contrainte d'unicité ; rien n'a été écrit" });
     return next(e);
   }

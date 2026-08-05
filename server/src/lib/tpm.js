@@ -219,26 +219,31 @@ export async function suggestZones({ year, month, officeId, limit = 60 }){
   if(officeId) args.push(officeId);
   args.push(limit);
 
+  /* Requête enveloppée dans un SELECT extérieur : PostgreSQL n'admet pas un
+     alias d'agrégat DANS une expression d'ORDER BY (`planifies - visites`),
+     alors que SQLite le tolérait. L'agrégation se fait au niveau intérieur
+     (avec les colonnes non agrégées dans le GROUP BY, et le HAVING qui répète
+     l'agrégat puisqu'il ne voit pas l'alias), et le tri par écart de couverture
+     s'applique dehors, où les alias sont des colonnes ordinaires. */
   return (await db.prepare(`
-    SELECT u.pcode geo_pcode, u.name zone, p.name district,
-           COUNT(*) sites,
-           SUM(CASE WHEN s.status='Active' THEN 1 ELSE 0 END) actifs,
-           SUM(CASE WHEN m.planned=1 THEN 1 ELSE 0 END) planifies,
-           SUM(CASE WHEN m.done=1 THEN 1 ELSE 0 END) visites,
-           AVG(COALESCE(s.issue_ipm,0) + COALESCE(s.issue_report,0)
-               + COALESCE(s.issue_cfm,0) + COALESCE(s.fraud,0)) risque,
-           SUM(COALESCE(s.beneficiaries,0)) beneficiaires,
-           string_agg(DISTINCT s.activity_tag, ',') tags
-    FROM sites s
-    JOIN geo_unit u ON u.pcode = s.geo_pcode AND u.version_id = ?
-    LEFT JOIN geo_unit p ON p.version_id = u.version_id AND p.pcode = u.parent_pcode
-    LEFT JOIN site_months m ON m.site_id = s.id AND m.year = ? AND m.month = ?
-    WHERE s.geo_pcode IS NOT NULL ${filtreBureau}
-    -- PostgreSQL exige les colonnes non agrégées dans le GROUP BY (u.name, et
-    -- p.name du parent joint) ; et le HAVING ne voit pas l alias actifs, donc
-    -- l agrégat y est répété tel quel. SQLite tolérait les deux raccourcis.
-    GROUP BY u.pcode, u.name, p.name
-    HAVING SUM(CASE WHEN s.status='Active' THEN 1 ELSE 0 END) > 0
+    SELECT * FROM (
+      SELECT u.pcode geo_pcode, u.name zone, p.name district,
+             COUNT(*) sites,
+             SUM(CASE WHEN s.status='Active' THEN 1 ELSE 0 END) actifs,
+             SUM(CASE WHEN m.planned=1 THEN 1 ELSE 0 END) planifies,
+             SUM(CASE WHEN m.done=1 THEN 1 ELSE 0 END) visites,
+             AVG(COALESCE(s.issue_ipm,0) + COALESCE(s.issue_report,0)
+                 + COALESCE(s.issue_cfm,0) + COALESCE(s.fraud,0)) risque,
+             SUM(COALESCE(s.beneficiaries,0)) beneficiaires,
+             string_agg(DISTINCT s.activity_tag, ',') tags
+      FROM sites s
+      JOIN geo_unit u ON u.pcode = s.geo_pcode AND u.version_id = ?
+      LEFT JOIN geo_unit p ON p.version_id = u.version_id AND p.pcode = u.parent_pcode
+      LEFT JOIN site_months m ON m.site_id = s.id AND m.year = ? AND m.month = ?
+      WHERE s.geo_pcode IS NOT NULL ${filtreBureau}
+      GROUP BY u.pcode, u.name, p.name
+      HAVING SUM(CASE WHEN s.status='Active' THEN 1 ELSE 0 END) > 0
+    ) z
     ORDER BY (planifies - visites) DESC, risque DESC, actifs DESC
     LIMIT ?`).all(...args))
     .map(r => ({

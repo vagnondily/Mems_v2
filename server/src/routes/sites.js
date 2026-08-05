@@ -498,7 +498,9 @@ r.post("/bulk", requireCap("edit"), async (req, res) => {
       for(const id of ids) n += (await stmt.run(value, id, ...(scope?[scope]:[]))).changes;
     });
   }catch(e){
-    if(/CHECK constraint|FOREIGN KEY|NOT NULL|UNIQUE/.test(e.message))
+    /* Wording PostgreSQL : « violates check/foreign key/not-null/unique
+       constraint » (SQLite disait « CHECK constraint »…). Insensible à la casse. */
+    if(/check constraint|foreign key|not[- ]null|unique|violates/i.test(e.message))
       return res.status(422).json({ error:
         `la valeur « ${value === null ? "(vide)" : value} » n'est pas admise pour le champ `
         + `« ${field} » : la base l'a refusée. Aucun site n'a été modifié.` });
