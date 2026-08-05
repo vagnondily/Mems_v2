@@ -200,7 +200,7 @@ const COLLECTIONS = {
    — Chaque ligne peut porter la révision qu'elle avait à la lecture (`rev`).
      Si elle a changé depuis, l'écriture est refusée avec la valeur courante :
      le second à enregistrer est averti au lieu d'écraser en silence. */
-r.put("/collections/:name", (req, res, next) => {
+r.put("/collections/:name", async (req, res, next) => {
   const def = COLLECTIONS[req.params.name];
   if(!def) return res.status(404).json({ error:"collection inconnue" });
   if(!can(req.user, def.cap))
@@ -234,15 +234,15 @@ r.put("/collections/:name", (req, res, next) => {
      bureau qu'on n'a jamais eu le droit de voir. Le périmètre se calcule avec la
      même fonction que la lecture, pour que les deux ne puissent pas diverger ;
      un administrateur (officeBound = null) n'est borné par rien. */
-  const bureau = def.office ? officeBound(req.user) : null;
+  const bureau = def.office ? await officeBound(req.user) : null;
 
   if(bureau){
     /* Toucher la ligne d'un autre bureau se refuse explicitement plutôt que de se
        taire : sans ce contrôle, une ligne absente de `existing` retomberait dans la
        branche INSERT et échouerait sur une contrainte d'unicité — un 409 « doublon »
        parfaitement incompréhensible pour qui vient de tenter une modification. */
-    const ailleurs = new Set(db.prepare(
-      `SELECT id FROM ${def.table} WHERE office_id IS NULL OR office_id<>?`).all(bureau)
+    const ailleurs = new Set((await db.prepare(
+      `SELECT id FROM ${def.table} WHERE office_id IS NULL OR office_id<>?`).all(bureau))
       .map(x => x.id));
     const touchees = [...new Set([...rows.map(x => x.id), ...deletes]
       .filter(id => id && ailleurs.has(id)))];
@@ -253,8 +253,8 @@ r.put("/collections/:name", (req, res, next) => {
 
   /* Les conflits se détectent avant d'écrire : soit l'ensemble passe, soit rien. */
   const existing = new Map((bureau
-    ? db.prepare(`SELECT id, rev FROM ${def.table} WHERE office_id=?`).all(bureau)
-    : db.prepare(`SELECT id, rev FROM ${def.table}`).all()).map(x => [x.id, x.rev]));
+    ? await db.prepare(`SELECT id, rev FROM ${def.table} WHERE office_id=?`).all(bureau)
+    : await db.prepare(`SELECT id, rev FROM ${def.table}`).all()).map(x => [x.id, x.rev]));
   for(const raw of rows){
     if(!raw.id || !existing.has(raw.id)) continue;
     const courante = existing.get(raw.id);
@@ -262,20 +262,20 @@ r.put("/collections/:name", (req, res, next) => {
       conflits.push({ id:raw.id, revEnvoyee:raw.rev, revCourante:courante });
   }
   if(conflits.length){
-    const qui = db.prepare(`SELECT user_label, at FROM audit
+    const qui = await db.prepare(`SELECT user_label, at FROM audit
       WHERE entity=? AND action='sync' ORDER BY at DESC LIMIT 1`).get(req.params.name);
     return res.status(409).json({
       error: `cette collection a été modifiée${qui?.user_label ? ` par ${qui.user_label}` : ""} `
         + "pendant votre saisie. Rechargez pour repartir de la version à jour.",
       conflits: conflits.slice(0, 20),
       /* Le client peut ainsi afficher ce qui a changé sans recharger tout l'état. */
-      courant: conflits.slice(0, 20).map(c =>
-        db.prepare(`SELECT * FROM ${def.table} WHERE id=?`).get(c.id)),
+      courant: await Promise.all(conflits.slice(0, 20).map(c =>
+        db.prepare(`SELECT * FROM ${def.table} WHERE id=?`).get(c.id))),
     });
   }
 
   try{
-    tx(() => {
+    await tx(async (db) => {
       for(const raw of rows){
         const cols = def.map(raw);
         /* Le rattachement au bureau n'est pas une donnée que l'appelant choisit :
@@ -288,13 +288,13 @@ r.put("/collections/:name", (req, res, next) => {
           /* Le bureau est répété dans le WHERE, alors que `existing` le garantit déjà :
              la règle doit tenir dans le SQL lui-même, pour qu'aucune refonte future de
              la détection de conflits ne puisse la faire disparaître sans qu'on le voie. */
-          db.prepare(`UPDATE ${def.table} SET ${keys.map(k=>k+"=?").join(",")}, rev=rev+1
+          await db.prepare(`UPDATE ${def.table} SET ${keys.map(k=>k+"=?").join(",")}, rev=rev+1
                       WHERE id=?${bureau ? " AND office_id=?" : ""}`)
             .run(...keys.map(k=>cols[k]), raw.id, ...(bureau ? [bureau] : []));
           updated++;
         } else {
           const nid = raw.id || newId(req.params.name.slice(0,4));
-          db.prepare(`INSERT INTO ${def.table} (id,${keys.join(",")})
+          await db.prepare(`INSERT INTO ${def.table} (id,${keys.join(",")})
                       VALUES (?,${keys.map(()=>"?").join(",")})`)
             .run(nid, ...keys.map(k=>cols[k]));
           created++;
@@ -305,18 +305,18 @@ r.put("/collections/:name", (req, res, next) => {
       const del = db.prepare(
         `DELETE FROM ${def.table} WHERE id=?${bureau ? " AND office_id=?" : ""}`);
       for(const id of deletes) if(existing.has(id))
-        removed += del.run(id, ...(bureau ? [bureau] : [])).changes;
-    })();
+        removed += (await del.run(id, ...(bureau ? [bureau] : []))).changes;
+    });
   }catch(e){
-    if(/FOREIGN KEY/.test(e.message))
+    if(/foreign key|violates foreign key/i.test(e.message))
       return res.status(409).json({ error:"référence invalide : une clé étrangère ne correspond à aucun enregistrement" });
-    if(/UNIQUE/.test(e.message))
+    if(/UNIQUE|unique constraint|duplicate key/i.test(e.message))
       return res.status(409).json({ error:"doublon : une contrainte d'unicité est violée" });
     return next(e);
   }
   /* Une synchronisation qui ne change rien n'a pas à polluer le journal. */
   if(created || updated || removed)
-    db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
+    await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
                 VALUES (?,?,?,'plan',?,'sync',?)`)
       .run(newId("aud"), req.user.id, req.user.first_name, req.params.name,
            `${req.params.name} : ${created} créé(s), ${updated} modifié(s), ${removed} supprimé(s)`);
@@ -324,15 +324,19 @@ r.put("/collections/:name", (req, res, next) => {
 });
 
 /* Réglages : dictionnaire clé-valeur, réservé aux administrateurs. */
-r.put("/settings", requireCap("admin"), (req, res) => {
+r.put("/settings", requireCap("admin"), async (req, res) => {
   const parsed = z.record(z.any()).safeParse(req.body);
   if(!parsed.success) return res.status(422).json({ error:"réglages invalides" });
   const FORBIDDEN = new Set(["apiToken","odkToken","jwtSecret"]);
-  const stmt = db.prepare(`INSERT INTO settings (key,value) VALUES (?,?)
-                           ON CONFLICT(key) DO UPDATE SET value=excluded.value`);
-  tx(() => { for(const [k,v] of Object.entries(parsed.data)){
-    if(FORBIDDEN.has(k)) continue;                     /* aucun secret ne transite par ici */
-    stmt.run(k, JSON.stringify(v)); } })();
+  await tx(async (db) => {
+    /* `stmt` est préparé DANS la transaction : préparé sur le pool, il tomberait
+       sur une autre connexion que le BEGIN/COMMIT et perdrait l'atomicité. */
+    const stmt = db.prepare(`INSERT INTO settings (key,value) VALUES (?,?)
+                             ON CONFLICT(key) DO UPDATE SET value=excluded.value`);
+    for(const [k,v] of Object.entries(parsed.data)){
+      if(FORBIDDEN.has(k)) continue;                     /* aucun secret ne transite par ici */
+      await stmt.run(k, JSON.stringify(v)); }
+  });
   res.json({ ok:true });
 });
 
@@ -351,65 +355,66 @@ const planningConfigSchema = z.object({
   mmr: z.array(mmrRow).max(200).optional(),
   outcomePlan: z.record(z.array(z.boolean()).max(12)).optional(),
 });
-r.put("/planning-config", requireCap("edit"), (req, res, next) => {
+r.put("/planning-config", requireCap("edit"), async (req, res, next) => {
   const p = planningConfigSchema.safeParse(req.body);
   if(!p.success) return res.status(422).json({ error:"configuration de planification invalide",
     details: p.error.issues.slice(0,8).map(i=>({ champ:i.path.join("."), message:i.message })) });
   const year = new Date().getFullYear();
   try{
-    tx(() => {
+    await tx(async (db) => {
       if(p.data.mmr !== undefined)
-        db.prepare(`INSERT INTO settings (key,value) VALUES ('mmr',?)
+        await db.prepare(`INSERT INTO settings (key,value) VALUES ('mmr',?)
                     ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(p.data.mmr));
       if(p.data.outcomePlan !== undefined){
         /* Remplacement de l'année entière : une case décochée doit DISPARAÎTRE,
            pas seulement les cochées apparaître. */
-        db.prepare("DELETE FROM outcome_plan WHERE year=?").run(year);
+        await db.prepare("DELETE FROM outcome_plan WHERE year=?").run(year);
         const ins = db.prepare(`INSERT INTO outcome_plan (indicator_id,year,month,planned) VALUES (?,?,?,1)
                                 ON CONFLICT(indicator_id,year,month) DO UPDATE SET planned=1`);
         const idDe = db.prepare("SELECT id FROM indicators WHERE code=?");
         for(const [code, mois] of Object.entries(p.data.outcomePlan)){
-          const ind = idDe.get(code); if(!ind) continue;      /* un code inconnu est ignoré, pas une erreur */
-          mois.forEach((on, m) => { if(on && m >= 0 && m < 12) ins.run(ind.id, year, m); });
+          const ind = await idDe.get(code); if(!ind) continue;      /* un code inconnu est ignoré, pas une erreur */
+          for(let m = 0; m < mois.length; m++){ if(mois[m] && m >= 0 && m < 12) await ins.run(ind.id, year, m); }
         }
         /* Purge de l'ancien reflet dans settings : il ne doit plus ombrer la table. */
-        db.prepare("DELETE FROM settings WHERE key='outcomePlan'").run();
+        await db.prepare("DELETE FROM settings WHERE key='outcomePlan'").run();
       }
-    })();
+    });
   }catch(e){ return next(e); }
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
               VALUES (?,?,?,'plan','planning','config',?)`)
     .run(newId("aud"), req.user.id, req.user.first_name, "Configuration de planification mise à jour");
   res.json({ ok:true });
 });
 
 /* Validation d'une visite : action métier distincte, tracée et réservée. */
-r.put("/visits/:id/status", requireCap("validate"), (req, res) => {
+r.put("/visits/:id/status", requireCap("validate"), async (req, res) => {
   const p = z.object({ status: z.enum(["Validé","À valider","Erreur"]) }).safeParse(req.body);
   if(!p.success) return res.status(422).json({ error:"statut invalide" });
-  const v = db.prepare("SELECT * FROM visits WHERE id=?").get(req.params.id);
+  const v = await db.prepare("SELECT * FROM visits WHERE id=?").get(req.params.id);
   if(!v) return res.status(404).json({ error:"visite introuvable" });
   /* Cloisonnement par bureau : `validator` est un rôle borné (lib/scope.js), et
      valider est une écriture. Sans cette garde, un validateur du bureau A qui
      devine l'identifiant d'une visite du bureau B pouvait la valider ou la marquer
      « Erreur » — la même IDOR que les routes de sites/aliases/ciblage referment.
      404 plutôt que 403, pour ne pas confirmer l'existence d'une visite hors périmètre. */
-  const bureau = officeBound(req.user);
+  const bureau = await officeBound(req.user);
   if(bureau && v.office_id !== bureau) return res.status(404).json({ error:"visite introuvable" });
-  db.prepare("UPDATE visits SET status=?, validated_by=?, validated_at=datetime('now') WHERE id=?")
+  await db.prepare("UPDATE visits SET status=?, validated_by=?, validated_at=now() WHERE id=?")
     .run(p.data.status, req.user.id, v.id);
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'odk','visits',?,'validate',?)`)
     .run(newId("aud"), req.user.id, req.user.first_name, v.id,
          `Visite ${p.data.status.toLowerCase()} — ${v.visit_date}`);
   res.json({ ok:true });
 });
 
-r.get("/audit", requireCap("admin"), (req, res) => {
+r.get("/audit", requireCap("admin"), async (req, res) => {
   const limit = Math.min(500, parseInt(req.query.limit,10) || 100);
   /* Même départage qu'à /api/state : `at` est à la seconde, et sans second critère
-     ce « N plus récentes » rendait les plus anciennes de la seconde la plus récente. */
-  res.json({ rows: db.prepare("SELECT * FROM audit ORDER BY at DESC, rowid DESC LIMIT ?")
+     ce « N plus récentes » rendait les plus anciennes de la seconde la plus récente.
+     `id` (ULID triable) remplace `rowid`, qui n'existe pas en PostgreSQL. */
+  res.json({ rows: await db.prepare("SELECT * FROM audit ORDER BY at DESC, id DESC LIMIT ?")
     .all(limit) });
 });
 export default r;

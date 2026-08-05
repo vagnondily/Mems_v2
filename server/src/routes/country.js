@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { db } from "../db.js";
+import { db, tx } from "../db.js";
 import { requireCap } from "../lib/auth.js";
 import { LEVELS } from "../lib/geo.js";
 import { allCountries, currentCountry } from "../lib/country.js";
@@ -40,29 +40,29 @@ const audit = (req, action, code, text) =>
               VALUES (?,?,?,'securite','country',?,?,?)`)
     .run(newId("aud"), req.user.id, req.user.email || req.user.first_name, code, action, text);
 
-r.get("/", (req, res) => res.json({
-  rows: allCountries(), current: currentCountry(),
+r.get("/", async (req, res) => res.json({
+  rows: await allCountries(), current: await currentCountry(),
   /* Les codes de niveaux du schéma, pour que l'écran de configuration sache
      lesquels nommer sans les redéclarer de son côté. */
   levels: LEVELS,
 }));
 
-r.post("/", requireCap("admin"), (req, res) => {
+r.post("/", requireCap("admin"), async (req, res) => {
   const p = schema.safeParse(req.body);
   if(!p.success) return res.status(422).json({ error:"pays invalide",
     details:p.error.issues.map(i => ({ champ:i.path.join("."), message:i.message })) });
   const b = p.data;
-  if(db.prepare("SELECT 1 FROM country WHERE code=?").get(b.code))
+  if(await db.prepare("SELECT 1 FROM country WHERE code=?").get(b.code))
     return res.status(409).json({ error:`le pays ${b.code} est déjà configuré` });
-  db.prepare(`INSERT INTO country (code,name,currency,levels,lat,lon,note,active,updated_at)
-              VALUES (?,?,?,?,?,?,?,?,datetime('now'))`)
+  await db.prepare(`INSERT INTO country (code,name,currency,levels,lat,lon,note,active,updated_at)
+              VALUES (?,?,?,?,?,?,?,?,now())`)
     .run(b.code, b.name, b.currency, JSON.stringify(b.levels), b.lat, b.lon, b.note, b.active?1:0);
-  audit(req, "create", b.code, `Pays configuré — ${b.name} (${b.code}), devise ${b.currency}`);
-  res.status(201).json({ country: allCountries().find(c => c.code === b.code) });
+  await audit(req, "create", b.code, `Pays configuré — ${b.name} (${b.code}), devise ${b.currency}`);
+  res.status(201).json({ country: (await allCountries()).find(c => c.code === b.code) });
 });
 
-r.put("/:code", requireCap("admin"), (req, res) => {
-  const cur = db.prepare("SELECT * FROM country WHERE code=?").get(req.params.code.toUpperCase());
+r.put("/:code", requireCap("admin"), async (req, res) => {
+  const cur = await db.prepare("SELECT * FROM country WHERE code=?").get(req.params.code.toUpperCase());
   if(!cur) return res.status(404).json({ error:"pays introuvable" });
   const p = schema.safeParse({ ...req.body, code:cur.code });
   if(!p.success) return res.status(422).json({ error:"pays invalide",
@@ -76,18 +76,18 @@ r.put("/:code", requireCap("admin"), (req, res) => {
     return res.status(409).json({
       error:"le pays courant ne peut pas être désactivé : rendez d'abord un autre pays courant" });
 
-  db.prepare(`UPDATE country SET name=?, currency=?, levels=?, lat=?, lon=?, note=?, active=?,
-              rev=rev+1, updated_at=datetime('now') WHERE code=?`)
+  await db.prepare(`UPDATE country SET name=?, currency=?, levels=?, lat=?, lon=?, note=?, active=?,
+              rev=rev+1, updated_at=now() WHERE code=?`)
     .run(b.name, b.currency, JSON.stringify(b.levels), b.lat, b.lon, b.note, b.active?1:0, cur.code);
-  audit(req, "update", cur.code, `Pays ${b.name} modifié — devise ${b.currency}`);
-  res.json({ country: allCountries().find(c => c.code === cur.code) });
+  await audit(req, "update", cur.code, `Pays ${b.name} modifié — devise ${b.currency}`);
+  res.json({ country: (await allCountries()).find(c => c.code === cur.code) });
 });
 
 /* Rendre un pays courant. Le découpage suit : le millésime courant doit appartenir
    au pays courant, sinon l'application afficherait le vocabulaire d'un pays sur la
    géographie d'un autre — l'erreur la plus difficile à voir de toutes. */
-r.put("/:code/current", requireCap("admin"), (req, res) => {
-  const c = db.prepare("SELECT * FROM country WHERE code=?").get(req.params.code.toUpperCase());
+r.put("/:code/current", requireCap("admin"), async (req, res) => {
+  const c = await db.prepare("SELECT * FROM country WHERE code=?").get(req.params.code.toUpperCase());
   if(!c) return res.status(404).json({ error:"pays introuvable" });
   if(!c.active) return res.status(409).json({ error:"ce pays est désactivé" });
 
@@ -96,35 +96,34 @@ r.put("/:code/current", requireCap("admin"), (req, res) => {
      plus récemment importé » du pays rejoint. C'était faux : on peut avoir
      délibérément activé un millésime plus ancien parce que les données de l'année
      s'y raccrochent, et un aller-retour l'aurait remplacé sans le dire. */
-  const actif = db.prepare("SELECT * FROM geo_version WHERE country=? AND is_current=1").get(c.code);
-  const total = db.prepare("SELECT COUNT(*) n FROM geo_version WHERE country=?").get(c.code).n;
-  db.transaction(() => {
-    db.prepare("UPDATE country SET is_current=0 WHERE is_current=1").run();
-    db.prepare("UPDATE country SET is_current=1 WHERE code=?").run(c.code);
-  })();
-  const millesimes = actif ? [actif] : [];
-  audit(req, "update", c.code, `Pays courant : ${c.name}` +
+  const actif = await db.prepare("SELECT * FROM geo_version WHERE country=? AND is_current=1").get(c.code);
+  const total = (await db.prepare("SELECT COUNT(*) n FROM geo_version WHERE country=?").get(c.code)).n;
+  await tx(async (db) => {
+    await db.prepare("UPDATE country SET is_current=0 WHERE is_current=1").run();
+    await db.prepare("UPDATE country SET is_current=1 WHERE code=?").run(c.code);
+  });
+  await audit(req, "update", c.code, `Pays courant : ${c.name}` +
     (actif ? ` — référentiel « ${actif.label} »`
            : total ? ` — ${total} découpage(s) chargé(s), aucun activé`
                    : " — aucun découpage chargé pour ce pays"));
-  res.json({ current: currentCountry(),
+  res.json({ current: await currentCountry(),
     referentiel: actif ? { id:actif.id, label:actif.label } : null,
     avertissement: actif ? null
       : total ? `${total} découpage(s) existent pour ce pays mais aucun n'est activé : choisissez-en un dans Localités.`
               : "Aucun découpage administratif n'est chargé pour ce pays : importez-en un avant de saisir." });
 });
 
-r.delete("/:code", requireCap("admin"), (req, res) => {
-  const c = db.prepare("SELECT * FROM country WHERE code=?").get(req.params.code.toUpperCase());
+r.delete("/:code", requireCap("admin"), async (req, res) => {
+  const c = await db.prepare("SELECT * FROM country WHERE code=?").get(req.params.code.toUpperCase());
   if(!c) return res.status(404).json({ error:"pays introuvable" });
   if(c.is_current) return res.status(409).json({ error:"le pays courant ne se supprime pas" });
-  const v = db.prepare("SELECT COUNT(*) n FROM geo_version WHERE country=?").get(c.code).n;
+  const v = (await db.prepare("SELECT COUNT(*) n FROM geo_version WHERE country=?").get(c.code)).n;
   /* Un pays qui porte un découpage porte, à travers lui, des sites et des plans :
      la suppression en cascade effacerait des données par un geste de configuration. */
   if(v) return res.status(409).json({
     error:`ce pays porte ${v} millésime(s) de découpage ; désactivez-le plutôt`, versions:v });
-  db.prepare("DELETE FROM country WHERE code=?").run(c.code);
-  audit(req, "delete", c.code, `Pays retiré de la configuration — ${c.name}`);
+  await db.prepare("DELETE FROM country WHERE code=?").run(c.code);
+  await audit(req, "delete", c.code, `Pays retiré de la configuration — ${c.name}`);
   res.json({ ok:true });
 });
 

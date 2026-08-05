@@ -75,7 +75,7 @@ export async function regenerate(planId, exec = db){
   if(!plan) return 0;
   const rates = await exec.prepare("SELECT * FROM tpm_rate WHERE contract_id=? ORDER BY sort, label")
     .all(plan.contract_id);
-  const zones = await exec.prepare("SELECT * FROM tpm_zone WHERE plan_id=? ORDER BY rowid").all(planId);
+  const zones = await exec.prepare("SELECT * FROM tpm_zone WHERE plan_id=? ORDER BY id").all(planId);
 
   await exec.prepare("DELETE FROM tpm_line WHERE plan_id=? AND derived=1").run(planId);
   const ins = exec.prepare(`INSERT INTO tpm_line
@@ -116,8 +116,8 @@ export async function planDetail(planId){
      LEFT JOIN geo_unit p ON p.version_id=u.version_id AND p.pcode=u.parent_pcode
      WHERE u.version_id=?`).all(v.id)).map(x => [x.pcode, x.parent ? `${x.name} (${x.parent})` : x.name])) : {};
 
-  const lignes = await db.prepare("SELECT * FROM tpm_line WHERE plan_id=? ORDER BY sort, rowid").all(planId);
-  const depenses = await db.prepare("SELECT * FROM tpm_expense WHERE plan_id=? ORDER BY spent_on, rowid").all(planId);
+  const lignes = await db.prepare("SELECT * FROM tpm_line WHERE plan_id=? ORDER BY sort, id").all(planId);
+  const depenses = await db.prepare("SELECT * FROM tpm_expense WHERE plan_id=? ORDER BY spent_on, id").all(planId);
   const parLigne = {};
   for(const d of depenses) if(d.line_id) parLigne[d.line_id] = r2((parLigne[d.line_id] || 0) + d.amount);
 
@@ -127,7 +127,7 @@ export async function planDetail(planId){
     total: lineTotal(l), spent: parLigne[l.id] ?? null,
   });
 
-  const zones = (await db.prepare("SELECT * FROM tpm_zone WHERE plan_id=? ORDER BY rowid").all(planId))
+  const zones = (await db.prepare("SELECT * FROM tpm_zone WHERE plan_id=? ORDER BY id").all(planId))
     .map(z => {
       const mien = lignes.filter(l => l.zone_id === z.id);
       return {

@@ -43,13 +43,24 @@ pool.on("error", (err) => {
 });
 
 /* `?` → `$1, $2, …` — un seul endroit traduit la syntaxe, mis en cache par
-   texte de requête pour ne pas répéter le travail à chaque appel. */
+   texte de requête pour ne pas répéter le travail à chaque appel.
+
+   Deux différences de dialecte sont absorbées ici, pour la même raison qu'on
+   traduit les placeholders au lieu de réécrire 600 requêtes : SQLite accepte
+   `col IS ?` comme une égalité NULL-safe (NULL comparé à NULL vaut vrai), que
+   Postgres écrit `IS NOT DISTINCT FROM`, et `col IS NOT ?` que Postgres écrit
+   `IS DISTINCT FROM`. La substitution garde le `?` en place, donc la
+   numérotation qui suit reste juste. `IS NULL` / `IS NOT NULL` (sans `?`) ne
+   sont pas touchés. */
 const positional = new Map();
 function translate(sql){
   let t = positional.get(sql);
   if(t === undefined){
     let i = 0;
-    t = sql.replace(/\?/g, () => `$${++i}`);
+    t = sql
+      .replace(/\bIS\s+NOT\s+\?/gi, "IS DISTINCT FROM ?")
+      .replace(/\bIS\s+\?/gi, "IS NOT DISTINCT FROM ?")
+      .replace(/\?/g, () => `$${++i}`);
     positional.set(sql, t);
   }
   return t;

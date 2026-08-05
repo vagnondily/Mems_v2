@@ -55,26 +55,26 @@ const audit = (req, action, id, text) =>
    le total et le détail : deux énumérations parallèles auraient fini par
    diverger, et la divergence se paierait en lignes orphelines. */
 const DEF = parCle("activites");
-const usage = (id) => ({
-  sites:  db.prepare("SELECT COUNT(*) c FROM sites WHERE category_id=?").get(id).c,
-  params: db.prepare("SELECT COUNT(*) c FROM coverage_params WHERE category_id=?").get(id).c,
+const usage = async (id) => ({
+  sites:  (await db.prepare("SELECT COUNT(*) c FROM sites WHERE category_id=?").get(id)).c,
+  params: (await db.prepare("SELECT COUNT(*) c FROM coverage_params WHERE category_id=?").get(id)).c,
 });
 
-const shape = (a) => {
-  const detail = usageRegistre(DEF, a);
+const shape = async (a) => {
+  const detail = await usageRegistre(DEF, a);
   return {
     id:a.id, name:a.name, tag:a.tag, program_area:a.program_area || "",
-    active:!!a.active, rev:a.rev || 1, usage: usage(a.id),
+    active:!!a.active, rev:a.rev || 1, usage: await usage(a.id),
     /* Le décompte complet, table par table : c'est lui qui décide de la
        suppression, et c'est lui que l'écran doit montrer. */
     usageDetail: detail, usageTotal: totalUsage(detail),
   };
 };
 
-r.get("/", (req, res) => res.json({ activities:
-  db.prepare("SELECT * FROM activity_categories ORDER BY active DESC, name").all().map(shape) }));
+r.get("/", async (req, res) => res.json({ activities:
+  await Promise.all((await db.prepare("SELECT * FROM activity_categories ORDER BY active DESC, name").all()).map(shape)) }));
 
-r.post("/", requireCap("admin"), (req, res) => {
+r.post("/", requireCap("admin"), async (req, res) => {
   const p = schema.safeParse(req.body);
   if(!p.success) return res.status(422).json({ error:"activité invalide",
     details: p.error.issues.map(i => ({ champ:i.path.join("."), message:i.message })) });
@@ -82,23 +82,23 @@ r.post("/", requireCap("admin"), (req, res) => {
   /* L'activité EST son tag : le doublon se refuse ici, avec un message qui
      nomme l'activité déjà en place, plutôt que de laisser remonter la
      violation d'index sous la forme d'un « doublon » anonyme. */
-  const memeTag = db.prepare("SELECT * FROM activity_categories WHERE tag=? COLLATE NOCASE").get(b.tag);
+  const memeTag = await db.prepare("SELECT * FROM activity_categories WHERE lower(tag)=lower(?)").get(b.tag);
   if(memeTag) return res.status(409).json({
     error:`le tag « ${b.tag} » est déjà celui de « ${memeTag.name} » — un tag désigne une activité `
       + "et une seule, puisque dix tables le portent comme clé de jointure",
-    activity: shape(memeTag) });
-  if(db.prepare("SELECT 1 FROM activity_categories WHERE name=? COLLATE NOCASE").get(b.name))
+    activity: await shape(memeTag) });
+  if(await db.prepare("SELECT 1 FROM activity_categories WHERE lower(name)=lower(?)").get(b.name))
     return res.status(409).json({ error:"une activité porte déjà ce nom" });
   const id = newId("act");
-  db.prepare(`INSERT INTO activity_categories (id,name,tag,program_area,active)
+  await db.prepare(`INSERT INTO activity_categories (id,name,tag,program_area,active)
               VALUES (?,?,?,?,?)`)
     .run(id, b.name, b.tag, b.program_area, b.active?1:0);
-  audit(req, "create", id, `Activité créée — ${b.name} (${b.tag})`);
-  res.status(201).json({ activity: shape(db.prepare("SELECT * FROM activity_categories WHERE id=?").get(id)) });
+  await audit(req, "create", id, `Activité créée — ${b.name} (${b.tag})`);
+  res.status(201).json({ activity: await shape(await db.prepare("SELECT * FROM activity_categories WHERE id=?").get(id)) });
 });
 
-r.put("/:id", requireCap("admin"), (req, res) => {
-  const cur = db.prepare("SELECT * FROM activity_categories WHERE id=?").get(req.params.id);
+r.put("/:id", requireCap("admin"), async (req, res) => {
+  const cur = await db.prepare("SELECT * FROM activity_categories WHERE id=?").get(req.params.id);
   if(!cur) return res.status(404).json({ error:"activité introuvable" });
   const p = schema.safeParse(req.body);
   if(!p.success) return res.status(422).json({ error:"activité invalide",
@@ -106,8 +106,8 @@ r.put("/:id", requireCap("admin"), (req, res) => {
   const b = p.data;
   /* Verrouillage optimiste, comme les bureaux : on rend la valeur courante. */
   if(b.rev && b.rev !== (cur.rev || 1))
-    return res.status(409).json({ error:"cette activité a été modifiée entre-temps", courant: shape(cur) });
-  if(db.prepare("SELECT 1 FROM activity_categories WHERE name=? COLLATE NOCASE AND id<>?").get(b.name, cur.id))
+    return res.status(409).json({ error:"cette activité a été modifiée entre-temps", courant: await shape(cur) });
+  if(await db.prepare("SELECT 1 FROM activity_categories WHERE lower(name)=lower(?) AND id<>?").get(b.name, cur.id))
     return res.status(409).json({ error:"une activité porte déjà ce nom" });
 
   /* LE TAG EST PRÉSERVÉ. Il était réécrit ici, et ce n'était pas anodin :
@@ -124,32 +124,32 @@ r.put("/:id", requireCap("admin"), (req, res) => {
       + "renommer en cascade, ce qui réécrit du même coup toutes les lignes qui le portent.",
     code: cur.tag, voie: `POST /api/listes/activites/${cur.id}/renommer-code` });
 
-  db.prepare(`UPDATE activity_categories SET name=?, program_area=?, active=?, rev=rev+1 WHERE id=?`)
+  await db.prepare(`UPDATE activity_categories SET name=?, program_area=?, active=?, rev=rev+1 WHERE id=?`)
     .run(b.name, b.program_area, b.active?1:0, cur.id);
   const chg = [];
   if(b.name !== cur.name) chg.push(`renommée « ${cur.name} » → « ${b.name} »`);
   if(b.active !== !!cur.active) chg.push(b.active ? "réactivée" : "désactivée");
-  audit(req, "update", cur.id, `Activité ${b.name}${chg.length ? ` — ${chg.join(", ")}` : " modifiée"}`);
-  res.json({ activity: shape(db.prepare("SELECT * FROM activity_categories WHERE id=?").get(cur.id)) });
+  await audit(req, "update", cur.id, `Activité ${b.name}${chg.length ? ` — ${chg.join(", ")}` : " modifiée"}`);
+  res.json({ activity: await shape(await db.prepare("SELECT * FROM activity_categories WHERE id=?").get(cur.id)) });
 });
 
-r.delete("/:id", requireCap("admin"), (req, res) => {
-  const cur = db.prepare("SELECT * FROM activity_categories WHERE id=?").get(req.params.id);
+r.delete("/:id", requireCap("admin"), async (req, res) => {
+  const cur = await db.prepare("SELECT * FROM activity_categories WHERE id=?").get(req.params.id);
   if(!cur) return res.status(404).json({ error:"activité introuvable" });
-  const u = usage(cur.id);
+  const u = await usage(cur.id);
   /* Le schéma détacherait les lignes portant `category_id` (ON DELETE SET
      NULL) : des sites sans activité, invisibles des filtres par activité. Il
      ne dirait RIEN des dix colonnes qui portent le tag en texte — elles
      survivraient à l'activité, désignant un code disparu. Le refus se fonde
      donc sur le décompte complet du registre, pas sur les deux clés
      étrangères, et il énumère ce qui retient l'activité. */
-  const detail = usageRegistre(DEF, cur);
+  const detail = await usageRegistre(DEF, cur);
   const total = totalUsage(detail);
   if(total) return res.status(409).json({
     error:"cette activité est encore référencée ; désactivez-la plutôt que de la supprimer",
     usage:u, usageDetail:detail, usageTotal:total });
-  db.prepare("DELETE FROM activity_categories WHERE id=?").run(cur.id);
-  audit(req, "delete", cur.id, `Activité supprimée — ${cur.name}`);
+  await db.prepare("DELETE FROM activity_categories WHERE id=?").run(cur.id);
+  await audit(req, "delete", cur.id, `Activité supprimée — ${cur.name}`);
   res.json({ ok:true });
 });
 

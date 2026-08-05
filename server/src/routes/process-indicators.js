@@ -13,7 +13,13 @@ const r = Router();
 /* Résumé compact, par activité puis par module. Assez léger pour /state, assez
    riche pour dessiner la structure du suivi de processus sur le tableau de bord. */
 export async function resumeProcessus(){
-  const rows = await db.prepare(`SELECT activity_tag, activity_label, form_file, form_title,
+  /* PostgreSQL exige que toute colonne du SELECT non agrégée figure dans le
+     GROUP BY (SQLite l'admettait implicitement). Le regroupement porte sur
+     (activity_tag, module) ; libellé, fichier et titre sont des attributs du
+     tag — un MAX() en rend une valeur déterministe par groupe sans changer le
+     regroupement, exactement ce que SQLite « choisissait » arbitrairement. */
+  const rows = await db.prepare(`SELECT activity_tag,
+      MAX(activity_label) activity_label, MAX(form_file) form_file, MAX(form_title) form_title,
       module, COUNT(*) n FROM process_indicator WHERE active=1
       GROUP BY activity_tag, module ORDER BY activity_tag, n DESC`).all();
   const total = (await db.prepare("SELECT COUNT(*) c FROM process_indicator WHERE active=1").get()).c;

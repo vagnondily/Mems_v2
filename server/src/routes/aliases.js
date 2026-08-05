@@ -67,10 +67,10 @@ const audit = (req, action, id, texte) =>
 /* Le site, sous réserve qu'il relève du bureau de l'appelant. Un site d'un autre
    bureau est rendu « introuvable » plutôt qu'« interdit » : répondre 403
    confirmerait son existence à quelqu'un qui n'a pas à la connaître. */
-function siteAccessible(req, id){
-  const s = db.prepare("SELECT id, code, name, office_id, external_code FROM sites WHERE id=?").get(id);
+async function siteAccessible(req, id){
+  const s = await db.prepare("SELECT id, code, name, office_id, external_code FROM sites WHERE id=?").get(id);
   if(!s) return null;
-  const bureau = officeBound(req.user);
+  const bureau = await officeBound(req.user);
   if(bureau && s.office_id !== bureau) return null;
   return s;
 }
@@ -79,22 +79,22 @@ function siteAccessible(req, id){
    Le code par défaut y figure, sous la source réservée « fiche du site » : la
    liste servie est la liste COMPLÈTE, sans quoi l'écran devrait recoller deux
    provenances et finirait par en oublier une. */
-r.get("/sites/:id/aliases", (req, res) => {
-  const s = siteAccessible(req, req.params.id);
+r.get("/sites/:id/aliases", async (req, res) => {
+  const s = await siteAccessible(req, req.params.id);
   if(!s) return res.status(404).json({ error: "site introuvable" });
   res.json({ site: { id: s.id, code: s.code, name: s.name },
     defaut: s.external_code || null, sourceDefaut: SOURCE_FICHE,
-    rows: listerAlias(s.id) });
+    rows: await listerAlias(s.id) });
 });
 
-r.post("/sites/:id/aliases", requireCap("edit"), (req, res) => {
+r.post("/sites/:id/aliases", requireCap("edit"), async (req, res) => {
   const p = z.object({
     code: z.string().min(1).max(80),
     source: z.string().max(120).nullish(),
     note: z.string().max(300).nullish(),
   }).safeParse(req.body || {});
   if(!p.success) return res.status(422).json({ error: "code externe invalide" });
-  const s = siteAccessible(req, req.params.id);
+  const s = await siteAccessible(req, req.params.id);
   if(!s) return res.status(404).json({ error: "site introuvable" });
   /* La source réservée est refusée en saisie libre : elle appartient au miroir
      de la fiche, et une ligne posée à la main sous ce nom serait effacée à la
@@ -103,32 +103,32 @@ r.post("/sites/:id/aliases", requireCap("edit"), (req, res) => {
     return res.status(422).json({ error:
       `« ${SOURCE_FICHE} » désigne le code par défaut : modifiez-le sur la fiche du site.` });
 
-  const { cree } = ajouterAlias({ site_id: s.id, ...p.data });
-  if(cree) audit(req, "alias", s.id,
+  const { cree } = await ajouterAlias({ site_id: s.id, ...p.data });
+  if(cree) await audit(req, "alias", s.id,
     `Code externe ajouté — ${s.name} : « ${p.data.code} »`
     + (p.data.source ? ` pour la source « ${p.data.source} »` : ""));
-  res.status(cree ? 201 : 200).json({ cree, rows: listerAlias(s.id) });
+  res.status(cree ? 201 : 200).json({ cree, rows: await listerAlias(s.id) });
 });
 
-r.delete("/site-aliases/:aliasId", requireCap("edit"), (req, res) => {
-  const a = db.prepare("SELECT * FROM site_external_code WHERE id=?").get(req.params.aliasId);
+r.delete("/site-aliases/:aliasId", requireCap("edit"), async (req, res) => {
+  const a = await db.prepare("SELECT * FROM site_external_code WHERE id=?").get(req.params.aliasId);
   if(!a) return res.status(404).json({ error: "code externe introuvable" });
-  const s = siteAccessible(req, a.site_id);
+  const s = await siteAccessible(req, a.site_id);
   if(!s) return res.status(404).json({ error: "code externe introuvable" });
   if(a.source === SOURCE_FICHE)
     return res.status(409).json({ error:
       "ce code est le code par défaut du site : videz-le sur la fiche du site, "
       + "pour que la fiche et la liste des codes ne se contredisent pas." });
-  supprimerAlias(a.id);
-  audit(req, "alias", s.id, `Code externe retiré — ${s.name} : « ${a.code} »`);
-  res.json({ ok: true, rows: listerAlias(s.id) });
+  await supprimerAlias(a.id);
+  await audit(req, "alias", s.id, `Code externe retiré — ${s.name} : « ${a.code} »`);
+  res.json({ ok: true, rows: await listerAlias(s.id) });
 });
 
 /* ── Import d'une table de correspondance ─────────────────────────────
    Le droit exigé est « edit », le même que celui de la fiche de site qui porte
    le code par défaut : déclarer 1 251 codes d'un coup est le même acte que d'en
    déclarer un, fait en une fois. */
-r.post("/site-aliases/import", requireCap("edit"), (req, res) => {
+r.post("/site-aliases/import", requireCap("edit"), async (req, res) => {
   const p = z.object({
     /* La source commune à tout le lot, quand le fichier ne la porte pas
        ligne à ligne : c'est le cas normal — un fichier, un formulaire. */
@@ -151,10 +151,10 @@ r.post("/site-aliases/import", requireCap("edit"), (req, res) => {
   const lignes = p.data.lignes.map(l => ({ ...l,
     code: l.code === null || l.code === undefined ? null : String(l.code) }));
 
-  const bilan = importerCorrespondances({ lignes,
-    office_id: officeBound(req.user), source: p.data.source });
+  const bilan = await importerCorrespondances({ lignes,
+    office_id: await officeBound(req.user), source: p.data.source });
 
-  audit(req, "import", null,
+  await audit(req, "import", null,
     `Table de correspondance importée${p.data.source ? ` — ${p.data.source}` : ""} : `
     + `${bilan.lues} ligne(s), ${bilan.crees} créée(s), ${bilan.dejaPresents} déjà présente(s), `
     + `${bilan.sitesIntrouvables.length} site(s) introuvable(s), `

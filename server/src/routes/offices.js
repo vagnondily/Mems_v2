@@ -55,56 +55,57 @@ const audit = (req, action, id, text) =>
 
 /* Ce qui référence un bureau. Sert deux fois : à informer l'écran de
    configuration, et à refuser une suppression destructrice. */
-const usage = (id) => {
-  const c = (t) => db.prepare(`SELECT COUNT(*) c FROM ${t} WHERE office_id=?`).get(id).c;
-  return { sites:c("sites"), users:c("users"), params:c("coverage_params"),
-           visits:c("visits"), pdd:c("pdd") };
+const usage = async (id) => {
+  const c = async (t) => (await db.prepare(`SELECT COUNT(*) c FROM ${t} WHERE office_id=?`).get(id)).c;
+  return { sites:await c("sites"), users:await c("users"), params:await c("coverage_params"),
+           visits:await c("visits"), pdd:await c("pdd") };
 };
 
-const shape = (o) => {
-  const v = currentVersion();
-  const sc = scopeOf({ role:"editor", office_id:o.id });
-  const hors = outsideDeclared(o.id);
+const shape = async (o) => {
+  const v = await currentVersion();
+  const sc = await scopeOf({ role:"editor", office_id:o.id });
+  const hors = await outsideDeclared(o.id);
   return {
     id:o.id, name:o.name, code:o.code || "", kind:o.kind, scope_mode:o.scope_mode || "geo",
-    antennes: (() => { try{ return JSON.parse(o.antennes || "[]"); }catch(e){ return []; } })(),
+    /* `antennes` est jsonb : le pilote pg le rend déjà comme tableau JS. */
+    antennes: Array.isArray(o.antennes) ? o.antennes : [],
     manager:o.manager || "", email:o.email || "", phone:o.phone || "",
     lat:o.lat, lon:o.lon, note:o.note || "", active:!!o.active, rev:o.rev || 1,
     /* Le périmètre effectif, calculé : c'est la seule réponse fiable à
        « ce bureau voit-il vraiment ce qu'on croit ? ». */
     scope: {
       source: sc.source,
-      declared: declaredFor(o.id).length,
-      communes: v ? unitsIn(sc, "adm3").length : 0,
+      declared: (await declaredFor(o.id)).length,
+      communes: v ? (await unitsIn(sc, "adm3")).length : 0,
       horsPerimetre: hors.declared ? { sites:hors.sites, pdd:hors.pdd } : null,
     },
-    usage: usage(o.id),
+    usage: await usage(o.id),
   };
 };
 
-r.get("/", (req, res) => res.json({ offices:
-  db.prepare("SELECT * FROM offices ORDER BY kind DESC, name").all().map(shape) }));
+r.get("/", async (req, res) => res.json({ offices:
+  await Promise.all((await db.prepare("SELECT * FROM offices ORDER BY kind DESC, name").all()).map(shape)) }));
 
-r.post("/", requireCap("admin"), (req, res) => {
+r.post("/", requireCap("admin"), async (req, res) => {
   const p = schema.safeParse(req.body);
   if(!p.success) return res.status(422).json({ error:"bureau invalide",
     details: p.error.issues.map(i => ({ champ:i.path.join("."), message:i.message })) });
   const b = p.data;
-  if(db.prepare("SELECT 1 FROM offices WHERE name=? COLLATE NOCASE").get(b.name))
+  if(await db.prepare("SELECT 1 FROM offices WHERE lower(name)=lower(?)").get(b.name))
     return res.status(409).json({ error:"un bureau porte déjà ce nom" });
 
   const id = newId("off");
-  db.prepare(`INSERT INTO offices (id,name,code,kind,scope_mode,antennes,manager,email,phone,
-              lat,lon,note,active,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`)
+  await db.prepare(`INSERT INTO offices (id,name,code,kind,scope_mode,antennes,manager,email,phone,
+              lat,lon,note,active,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,now())`)
     .run(id, b.name, b.code, b.kind, b.scope_mode, JSON.stringify(b.antennes),
          b.manager, b.email, b.phone, b.lat ?? null, b.lon ?? null, b.note, b.active?1:0);
-  audit(req, "create", id, `Bureau créé — ${b.name}` +
+  await audit(req, "create", id, `Bureau créé — ${b.name}` +
     (b.scope_mode === "national" ? " (périmètre national)" : ""));
-  res.status(201).json({ office: shape(db.prepare("SELECT * FROM offices WHERE id=?").get(id)) });
+  res.status(201).json({ office: await shape(await db.prepare("SELECT * FROM offices WHERE id=?").get(id)) });
 });
 
-r.put("/:id", requireCap("admin"), (req, res) => {
-  const cur = db.prepare("SELECT * FROM offices WHERE id=?").get(req.params.id);
+r.put("/:id", requireCap("admin"), async (req, res) => {
+  const cur = await db.prepare("SELECT * FROM offices WHERE id=?").get(req.params.id);
   if(!cur) return res.status(404).json({ error:"bureau introuvable" });
   const p = schema.safeParse(req.body);
   if(!p.success) return res.status(422).json({ error:"bureau invalide",
@@ -115,23 +116,23 @@ r.put("/:id", requireCap("admin"), (req, res) => {
      valeur courante pour que l'écran puisse montrer ce qui a changé. */
   if(b.rev && b.rev !== (cur.rev || 1))
     return res.status(409).json({ error:"ce bureau a été modifié entre-temps",
-      courant: shape(cur) });
+      courant: await shape(cur) });
 
-  if(db.prepare("SELECT 1 FROM offices WHERE name=? COLLATE NOCASE AND id<>?").get(b.name, cur.id))
+  if(await db.prepare("SELECT 1 FROM offices WHERE lower(name)=lower(?) AND id<>?").get(b.name, cur.id))
     return res.status(409).json({ error:"un bureau porte déjà ce nom" });
 
   /* Désactiver un bureau qui porte encore des comptes actifs les enfermerait :
      ils resteraient rattachés à un bureau inexistant du point de vue des
      filtres, sans que personne ne le voie. */
   if(!b.active && cur.active){
-    const actifs = db.prepare("SELECT COUNT(*) c FROM users WHERE office_id=? AND active=1").get(cur.id).c;
+    const actifs = (await db.prepare("SELECT COUNT(*) c FROM users WHERE office_id=? AND active=1").get(cur.id)).c;
     if(actifs) return res.status(409).json({
       error:`${actifs} compte(s) actif(s) dépendent de ce bureau : rattachez-les ailleurs d'abord` });
   }
 
-  db.prepare(`UPDATE offices SET name=?, code=?, kind=?, scope_mode=?, antennes=?, manager=?,
+  await db.prepare(`UPDATE offices SET name=?, code=?, kind=?, scope_mode=?, antennes=?, manager=?,
               email=?, phone=?, lat=?, lon=?, note=?, active=?, rev=rev+1,
-              updated_at=datetime('now') WHERE id=?`)
+              updated_at=now() WHERE id=?`)
     .run(b.name, b.code, b.kind, b.scope_mode, JSON.stringify(b.antennes), b.manager,
          b.email, b.phone, b.lat ?? null, b.lon ?? null, b.note, b.active?1:0, cur.id);
 
@@ -140,16 +141,16 @@ r.put("/:id", requireCap("admin"), (req, res) => {
   if(b.scope_mode !== (cur.scope_mode || "geo"))
     changements.push(`périmètre ${b.scope_mode === "national" ? "porté au national" : "ramené au périmètre déclaré"}`);
   if(b.active !== !!cur.active) changements.push(b.active ? "réactivé" : "désactivé");
-  audit(req, "update", cur.id, `Bureau ${b.name}` +
+  await audit(req, "update", cur.id, `Bureau ${b.name}` +
     (changements.length ? ` — ${changements.join(", ")}` : " modifié"));
 
-  res.json({ office: shape(db.prepare("SELECT * FROM offices WHERE id=?").get(cur.id)) });
+  res.json({ office: await shape(await db.prepare("SELECT * FROM offices WHERE id=?").get(cur.id)) });
 });
 
-r.delete("/:id", requireCap("admin"), (req, res) => {
-  const cur = db.prepare("SELECT * FROM offices WHERE id=?").get(req.params.id);
+r.delete("/:id", requireCap("admin"), async (req, res) => {
+  const cur = await db.prepare("SELECT * FROM offices WHERE id=?").get(req.params.id);
   if(!cur) return res.status(404).json({ error:"bureau introuvable" });
-  const u = usage(cur.id);
+  const u = await usage(cur.id);
   const total = Object.values(u).reduce((a,b)=>a+b, 0);
   /* Le schéma détacherait les lignes (ON DELETE SET NULL) : des sites sans
      bureau, invisibles de tous les filtres. On refuse et on propose la
@@ -157,8 +158,8 @@ r.delete("/:id", requireCap("admin"), (req, res) => {
   if(total) return res.status(409).json({
     error:"ce bureau est encore référencé ; désactivez-le plutôt que de le supprimer",
     usage:u });
-  db.prepare("DELETE FROM offices WHERE id=?").run(cur.id);
-  audit(req, "delete", cur.id, `Bureau supprimé — ${cur.name}`);
+  await db.prepare("DELETE FROM offices WHERE id=?").run(cur.id);
+  await audit(req, "delete", cur.id, `Bureau supprimé — ${cur.name}`);
   res.json({ ok:true });
 });
 

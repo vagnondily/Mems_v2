@@ -163,7 +163,11 @@ CREATE TABLE visits (
   id         text PRIMARY KEY,
   site_id    text NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
   office_id  text REFERENCES offices(id) ON DELETE SET NULL,
-  visit_date timestamptz NOT NULL,
+  -- Conservé en `text` (et non `timestamptz`) : l'application y stocke une date
+  -- ISO comme chaîne et l'interroge par opérations de chaîne — `visit_date LIKE
+  -- '2026%'` (visites.js, sites.js, analytics.js). Une colonne timestamptz
+  -- refuserait LIKE. Parité avec le stockage TEXT d'origine sous SQLite.
+  visit_date text NOT NULL,
   activity_tag text,
   monitor    text,
   form_id    text,
@@ -224,7 +228,10 @@ CREATE TABLE outcomes (
   round_label  text,
   planned      double precision NOT NULL DEFAULT 0,
   value        double precision NOT NULL DEFAULT 0,
-  collected_at timestamptz,
+  -- `text` et non `timestamptz` : interrogée par opérations de chaîne
+  -- (`collected_at=''`, `substr(collected_at,1,4)` dans state.js) et pouvant
+  -- valoir la chaîne vide. Parité avec le stockage TEXT d'origine sous SQLite.
+  collected_at text,
   sample       integer NOT NULL DEFAULT 0 CHECK (sample >= 0)
 );
 CREATE INDEX idx_outcomes_ind ON outcomes(indicator_id);

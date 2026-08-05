@@ -69,7 +69,7 @@ r.get("/", async (req, res) => {
         rates: (await db.prepare("SELECT * FROM tpm_rate WHERE contract_id=? ORDER BY sort, label")
           .all(c.id)).map(x => ({ id:x.id, driver:x.driver, label:x.label, unit:x.unit || "",
             unit_cost:x.unit_cost, active:!!x.active, sort:x.sort })),
-        amendments: (await db.prepare("SELECT * FROM tpm_amendment WHERE contract_id=? ORDER BY signed_at, rowid")
+        amendments: (await db.prepare("SELECT * FROM tpm_amendment WHERE contract_id=? ORDER BY signed_at, id")
           .all(c.id)).map(a => ({ id:a.id, ref:a.ref || "", delta:a.delta, reason:a.reason,
             signed_at:a.signed_at })),
       })));
