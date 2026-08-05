@@ -85,7 +85,10 @@ export default function App(){
   const [db, setDb] = useState(null);
   const [me, setMe] = useState(null);
   const [tab, setTabState] = useState("home");
-  const [subs, setSubs] = useState({ suivi:"summary", programme:"distribution",
+  /* Suivi-évaluation ouvre sur le tableau de bord (mis en tête dans Merged.jsx) :
+     c'est la vue de synthèse la plus consultée, elle est ce qu'on veut voir en
+     arrivant plutôt que le résumé global tabulaire. */
+  const [subs, setSubs] = useState({ suivi:"dashboard", programme:"distribution",
     analytics:"datasets", reports:"extract", settings:"general", admin:"sessions" });
   /* Volet demandé par la dernière navigation, par destination (« plan » / « reel »). */
   const [volets, setVolets] = useState({});
