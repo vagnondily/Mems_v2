@@ -131,7 +131,7 @@ export function buildUnits(rows, { allowDuplicates = false } = {}){
 }
 
 /* Écrit un millésime complet en une transaction, et le rend courant. */
-export function writeVersion({ label, source, units, userId = null, makeCurrent = true,
+export async function writeVersion({ label, source, units, userId = null, makeCurrent = true,
                               country = null }){
   const id = newId("gv");
   /* Le millésime appartient à un pays. À défaut de précision, c'est le pays
@@ -140,24 +140,24 @@ export function writeVersion({ label, source, units, userId = null, makeCurrent 
      le script en ligne de commande et le jeu de démonstration passent tous par
      cette fonction, et trois rattachements séparés finiraient par diverger. */
   const pays = country
-    || db.prepare("SELECT code FROM country WHERE is_current=1").get()?.code
+    || (await db.prepare("SELECT code FROM country WHERE is_current=1").get())?.code
     || null;
-  tx(() => {
-    db.prepare(`INSERT INTO geo_version (id,label,source,imported_by,units,is_current,country)
+  await tx(async (db) => {
+    await db.prepare(`INSERT INTO geo_version (id,label,source,imported_by,units,is_current,country)
                 VALUES (?,?,?,?,?,0,?)`).run(id, label, source ?? null, userId, units.length, pays);
     const ins = db.prepare(`INSERT INTO geo_unit
       (pcode,version_id,parent_pcode,level,name,name_norm,path,lat,lon)
       VALUES (?,?,?,?,?,?,?,?,?)`);
     for(const u of units)
-      ins.run(u.pcode, id, u.parent_pcode, u.level, u.name, u.name_norm, u.path, u.lat, u.lon);
+      await ins.run(u.pcode, id, u.parent_pcode, u.level, u.name, u.name_norm, u.path, u.lat, u.lon);
     if(makeCurrent){
       /* On ne désactive que le millésime du même pays : activer un découpage
          congolais ne doit pas retirer le référentiel malgache à ceux qui
          travaillent dessus. */
-      db.prepare("UPDATE geo_version SET is_current=0 WHERE is_current=1 AND country IS ?").run(pays);
-      db.prepare("UPDATE geo_version SET is_current=1 WHERE id=?").run(id);
+      await db.prepare("UPDATE geo_version SET is_current=0 WHERE is_current=1 AND country IS ?").run(pays);
+      await db.prepare("UPDATE geo_version SET is_current=1 WHERE id=?").run(id);
     }
-  })();
+  });
   return id;
 }
 
@@ -169,17 +169,17 @@ export function writeVersion({ label, source, units, userId = null, makeCurrent 
    Le repli sur « n'importe quel millésime courant » couvre la base dont aucun
    pays n'est configuré — migration non appliquée, ou millésime importé avant
    qu'elle le soit. */
-export function currentVersion(){
-  const pays = db.prepare("SELECT code FROM country WHERE is_current=1").get()?.code;
+export async function currentVersion(){
+  const pays = (await db.prepare("SELECT code FROM country WHERE is_current=1").get())?.code;
   if(pays){
-    const v = db.prepare("SELECT * FROM geo_version WHERE is_current=1 AND country=?").get(pays);
+    const v = await db.prepare("SELECT * FROM geo_version WHERE is_current=1 AND country=?").get(pays);
     if(v) return v;
     /* Le pays courant n'a pas de découpage : on ne rend PAS celui d'un autre pays.
        Afficher la géographie du Congo sous le vocabulaire malgache serait l'erreur
        la plus difficile à voir de toutes. */
     return null;
   }
-  return db.prepare("SELECT * FROM geo_version WHERE is_current=1").get() || null;
+  return (await db.prepare("SELECT * FROM geo_version WHERE is_current=1").get()) || null;
 }
 
 /* ── Rapprochement d'un libellé vers le référentiel ────────────────────
@@ -191,8 +191,8 @@ export function currentVersion(){
    Retourne l'unité la plus profonde atteinte, et à quel niveau la descente s'est
    arrêtée. Un rattachement partiel (commune trouvée, fokontany inconnu) vaut mieux
    qu'un rattachement faux : l'appelant décide s'il l'accepte. */
-export function resolveUnit(names, versionId){
-  const v = versionId || currentVersion()?.id;
+export async function resolveUnit(names, versionId){
+  const v = versionId || (await currentVersion())?.id;
   if(!v) return { pcode:null, level:null, matched:[], ambiguous:false };
 
   const byParent = db.prepare(
@@ -209,8 +209,8 @@ export function resolveUnit(names, versionId){
     /* Au premier niveau rencontré on cherche par niveau ; ensuite, uniquement
        parmi les enfants de ce qui a déjà été retenu. */
     const hits = parent === null && !found
-      ? byLevel.all(v, level, norm)
-      : byParent.all(v, parent, norm);
+      ? await byLevel.all(v, level, norm)
+      : await byParent.all(v, parent, norm);
     if(hits.length !== 1){
       if(hits.length > 1) ambiguous = true;
       break;                     /* inconnu ou ambigu : on s'arrête à ce qu'on tient */
@@ -223,16 +223,16 @@ export function resolveUnit(names, versionId){
 
 /* Les libellés d'affichage redescendent du rattachement : ils ne sont plus saisis,
    donc ils ne peuvent plus diverger du référentiel. */
-export function labelsFor(pcode, versionId){
-  const v = versionId || currentVersion()?.id;
+export async function labelsFor(pcode, versionId){
+  const v = versionId || (await currentVersion())?.id;
   const out = { adm1:"", adm2:"", adm3:"", adm4:"", lat:null, lon:null };
   if(!v || !pcode) return out;
-  let cur = db.prepare("SELECT * FROM geo_unit WHERE version_id=? AND pcode=?").get(v, pcode);
+  let cur = await db.prepare("SELECT * FROM geo_unit WHERE version_id=? AND pcode=?").get(v, pcode);
   if(cur){ out.lat = cur.lat; out.lon = cur.lon; }
   while(cur){
     if(cur.level in out) out[cur.level] = cur.name;
     cur = cur.parent_pcode
-      ? db.prepare("SELECT * FROM geo_unit WHERE version_id=? AND pcode=?").get(v, cur.parent_pcode)
+      ? await db.prepare("SELECT * FROM geo_unit WHERE version_id=? AND pcode=?").get(v, cur.parent_pcode)
       : null;
   }
   return out;
@@ -240,15 +240,15 @@ export function labelsFor(pcode, versionId){
 
 /* Reprise de l'ancienne table plate `geo` vers l'arbre, une seule fois.
    Sans elle, une base existante se retrouverait avec un référentiel vide. */
-export function backfillFromLegacy(){
-  if(db.prepare("SELECT COUNT(*) c FROM geo_version").get().c > 0) return null;
-  const legacy = db.prepare("SELECT * FROM geo").all();
+export async function backfillFromLegacy(){
+  if((await db.prepare("SELECT COUNT(*) c FROM geo_version").get()).c > 0) return null;
+  const legacy = await db.prepare("SELECT * FROM geo").all();
   if(!legacy.length) return null;
   const { units } = buildUnits(legacy.map(g => ({
     adm0:g.adm0, adm1:g.adm1, adm2:g.adm2, adm3:g.adm3, adm4:g.adm4,
     pcode:g.pcode, lat:g.lat, lon:g.lon })));
   if(!units.length) return null;
-  const id = writeVersion({ label:"Reprise de l'ancien référentiel",
+  const id = await writeVersion({ label:"Reprise de l'ancien référentiel",
     source:"table geo (migration 002)", units });
   return { versionId:id, units:units.length, legacy:legacy.length };
 }

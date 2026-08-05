@@ -127,7 +127,7 @@ async function readRows(){
 
 /* ── Exécution ────────────────────────────────────────────────────── */
 const here = path.dirname(fileURLToPath(import.meta.url));
-migrate(path.join(here, "..", "migrations"));
+await migrate(path.join(here, "..", "migrations"));
 
 const { rows, skipped } = await readRows();
 console.log(`\n${rows.length.toLocaleString("fr-FR")} ligne(s) lue(s)${skipped?` · ${skipped} ignorée(s) (malformées)`:""}`);
@@ -156,7 +156,7 @@ if(collisions.length){
 if(dry){ console.log("\n--dry : rien n'a été écrit."); process.exit(0); }
 if(!units.length){ console.error("\nAucune unité exploitable, rien à écrire."); process.exit(1); }
 
-const versionId = writeVersion({ label:String(label), source: flag("source") === true ? null : flag("source"),
+const versionId = await writeVersion({ label:String(label), source: flag("source") === true ? null : flag("source"),
   units, makeCurrent: !keepCurrent });
 
 log.info("référentiel géographique importé",
@@ -164,5 +164,5 @@ log.info("référentiel géographique importé",
 console.log(`\n✓ Millésime « ${label} » créé : ${units.length.toLocaleString("fr-FR")} unités${
   keepCurrent ? " (non activé, --keep-current)" : ", activé comme référentiel courant"}.`);
 console.log(`  identifiant : ${versionId}`);
-const cur = db.prepare("SELECT label, units FROM geo_version WHERE is_current=1").get();
+const cur = await db.prepare("SELECT label, units FROM geo_version WHERE is_current=1").get();
 if(cur) console.log(`  référentiel courant : « ${cur.label} » — ${cur.units.toLocaleString("fr-FR")} unités`);

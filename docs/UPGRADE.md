@@ -31,8 +31,9 @@ exécuté dans l'ordre, une seule fois, et tracé dans la table `schema_migratio
   IF NOT EXISTS`, `ALTER TABLE … ADD COLUMN` gardé par un test d'existence dans le
   code si besoin). Ne jamais éditer une migration déjà publiée : en ajouter une
   nouvelle qui corrige.
-- Le schéma est du SQLite (better-sqlite3). Pas d'ORM : les routes lisent/écrivent
-  en SQL paramétré.
+- Le schéma est du PostgreSQL. Pas d'ORM : les routes lisent/écrivent en SQL
+  paramétré via `server/src/db.js`, qui traduit les `?` en `$1,$2,…` et rend une
+  API `.all/.get/.run` asynchrone.
 
 ## 3. Recharger la donnée de référence (renflouement)
 
@@ -83,13 +84,14 @@ et vérifier `npm --prefix web run build` + `npm test` avant de committer un bum
 - **Secrets** (jetons ODK/MoDa, `DATA_KEY`, `JWT_SECRET`) → variables
   d'environnement / chiffrés en base ; **jamais** dans le dépôt.
 
-Variables d'environnement principales : `DB_FILE`, `DATA_KEY` (chiffrement au
-repos), `JWT_SECRET`, `PORT`, `CORS_ORIGINS`, `MEMS_DATA_DIR`.
+Variables d'environnement principales : `DATABASE_URL`, `DATA_KEY` (chiffrement au
+repos), `JWT_SECRET`, `PORT`, `CORS_ORIGINS`, `BACKUP_DIR`.
 
 ## 6. Vers un miroir `mems-dev`
 
 L'instance sert **toujours la donnée réelle** ; il n'y a plus de « version démo »
 séparée (le mode démonstration est un bac à sable côté navigateur, cf.
 `data/README.md`). Pour un environnement de développement, cloner le dépôt,
-pointer un `DB_FILE` distinct, et recharger le référentiel : la même base de code
-sert les deux, la seule différence est la configuration (env + `DB_FILE`).
+pointer un `DATABASE_URL` distinct, et recharger le référentiel : la même base
+de code sert les deux, la seule différence est la configuration (env +
+`DATABASE_URL`).

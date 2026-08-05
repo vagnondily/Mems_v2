@@ -43,7 +43,7 @@ import { log } from "./lib/logger.js";
 import { newId } from "./lib/crypto.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-migrate(path.join(here, "..", "migrations"));
+await migrate(path.join(here, "..", "migrations"));
 
 const args = process.argv.slice(2);
 const flag = (name, def=null) => { const i = args.indexOf(`--${name}`);
@@ -154,9 +154,13 @@ if(!write){
 }
 
 let created = 0, updated = 0;
-tx(() => {
+await tx(async (db) => {
   for(const r of results){
-    const existing = db.prepare("SELECT id FROM odk_forms WHERE form_id=? AND project IS ?").get(r.formId, project);
+    /* SQLite traite `IS ?` comme une égalité NULL-safe (NULL = NULL vaut vrai) ;
+       Postgres n'accepte `IS` qu'avec NULL/TRUE/FALSE/UNKNOWN littéraux, pas avec
+       un paramètre lié. `IS NOT DISTINCT FROM` est l'opérateur standard exact
+       pour la même sémantique — correction de dialecte, pas de logique. */
+    const existing = await db.prepare("SELECT id FROM odk_forms WHERE form_id=? AND project IS NOT DISTINCT FROM ?").get(r.formId, project);
     const cols = {
       name: r.name, form_id: r.formId, project, kind,
       activity_tag: forceTag || null, site_field: r.siteField, date_field: r.dateField,
@@ -164,17 +168,17 @@ tx(() => {
     };
     const keys = Object.keys(cols);
     if(existing){
-      db.prepare(`UPDATE odk_forms SET ${keys.map(k=>k+"=?").join(",")}, rev=rev+1 WHERE id=?`)
+      await db.prepare(`UPDATE odk_forms SET ${keys.map(k=>k+"=?").join(",")}, rev=rev+1 WHERE id=?`)
         .run(...keys.map(k=>cols[k]), existing.id);
       updated++;
     } else {
       const id = newId("odkf");
-      db.prepare(`INSERT INTO odk_forms (id,${keys.join(",")}) VALUES (?,${keys.map(()=>"?").join(",")})`)
+      await db.prepare(`INSERT INTO odk_forms (id,${keys.join(",")}) VALUES (?,${keys.map(()=>"?").join(",")})`)
         .run(id, ...keys.map(k=>cols[k]));
       created++;
     }
   }
-})();
+});
 log.info("sources ODK Central enregistrées", { created, updated });
 console.log(`✓ ${created} créée(s), ${updated} mise(s) à jour.`);
 console.log("Complétez le jeton d'accès (et l'identifiant de projet si nécessaire) dans Paramètres → ODK Central : "

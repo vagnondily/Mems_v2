@@ -200,29 +200,29 @@ export const parCle = (cle) => TYPES.find(t => t.cle === cle) || null;
    denrées dans les modalités. */
 const restriction = (def) => def.type ? { sql:" AND type=?", args:[def.type] } : { sql:"", args:[] };
 
-export function lignes(def){
+export async function lignes(def){
   const r = restriction(def);
   const ordre = def.cols.ordre ? `${def.cols.ordre}, ` : "";
   return db.prepare(`SELECT * FROM ${def.table} WHERE 1=1${r.sql}
                      ORDER BY ${def.cols.active} DESC, ${ordre}${def.cols.label}`).all(...r.args);
 }
 
-export function ligne(def, id){
+export async function ligne(def, id){
   const r = restriction(def);
-  return db.prepare(`SELECT * FROM ${def.table} WHERE id=?${r.sql}`).get(id, ...r.args) || null;
+  return (await db.prepare(`SELECT * FROM ${def.table} WHERE id=?${r.sql}`).get(id, ...r.args)) || null;
 }
 
-export function ligneParCode(def, code){
+export async function ligneParCode(def, code){
   const r = restriction(def);
-  return db.prepare(`SELECT * FROM ${def.table} WHERE ${def.cols.code}=? COLLATE NOCASE${r.sql}`)
-    .get(code, ...r.args) || null;
+  return (await db.prepare(`SELECT * FROM ${def.table} WHERE lower(${def.cols.code})=lower(?)${r.sql}`)
+    .get(code, ...r.args)) || null;
 }
 
 /* Ce qui référence un item, lien par lien. Sert trois fois : informer
    l'écran, refuser une suppression destructrice, et chiffrer l'impact d'un
    renommage avant de l'appliquer. Une entrée par lien NON VIDE — un tableau
    de zéros n'apprend rien à personne. */
-export function usage(def, row){
+export async function usage(def, row){
   const valeur = (l) => l.par === "id" ? row.id
     : l.par === "code" ? row[def.cols.code]
     : row[def.cols.label];
@@ -230,7 +230,7 @@ export function usage(def, row){
   for(const l of def.liens || []){
     const v = valeur(l);
     if(v == null || v === "") continue;
-    const c = db.prepare(`SELECT COUNT(*) c FROM ${l.table} WHERE ${l.colonne}=?`).get(v).c;
+    const c = (await db.prepare(`SELECT COUNT(*) c FROM ${l.table} WHERE ${l.colonne}=?`).get(v)).c;
     if(c) out.push({ table:l.table, colonne:l.colonne, par:l.par, label:l.label, lignes:c });
   }
   return out;
@@ -241,7 +241,7 @@ export const totalUsage = (u) => u.reduce((a, x) => a + x.lignes, 0);
 /* Projection d'un item vers le client. Les noms de colonnes physiques ne
    sortent jamais : l'écran manipule `code`, `label`, `active`, `rev` quelle
    que soit la table dessous. */
-export function forme(def, row, { avecUsage = true } = {}){
+export async function forme(def, row, { avecUsage = true } = {}){
   const out = {
     id: row.id,
     code: row[def.cols.code] || "",
@@ -252,7 +252,7 @@ export function forme(def, row, { avecUsage = true } = {}){
     rev: row[def.cols.rev] || 1,
     champs: Object.fromEntries((def.champs || []).map(c => [c.cle, row[c.colonne] ?? ""])),
   };
-  if(avecUsage){ out.usage = usage(def, row); out.usageTotal = totalUsage(out.usage); }
+  if(avecUsage){ out.usage = await usage(def, row); out.usageTotal = totalUsage(out.usage); }
   return out;
 }
 
@@ -261,8 +261,8 @@ export function forme(def, row, { avecUsage = true } = {}){
    sur l'item : quelqu'un a relu la liste entière et l'a déclarée bonne.
    Toute écriture sur un item l'efface (voir `invalider`), sans quoi le
    badge « validée » survivrait à ce qu'il certifie. */
-export function validation(def){
-  const v = db.prepare("SELECT * FROM list_validation WHERE type=?").get(def.cle);
+export async function validation(def){
+  const v = await db.prepare("SELECT * FROM list_validation WHERE type=?").get(def.cle);
   return v ? { at:v.validated_at, par:v.user_label || "", items:v.items, note:v.note || "" } : null;
 }
 

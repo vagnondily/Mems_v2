@@ -18,19 +18,19 @@
 --  d'écrire par-dessus une révision plus récente.
 -- =====================================================================
 
-ALTER TABLE coverage_params  ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE outputs          ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE indicators       ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE outcomes         ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE population       ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE pdd              ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE report_templates ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE dashboards       ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE datasets         ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE scripts          ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE odk_forms        ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE coverage_params  ADD COLUMN rev integer NOT NULL DEFAULT 1;
+ALTER TABLE outputs          ADD COLUMN rev integer NOT NULL DEFAULT 1;
+ALTER TABLE indicators       ADD COLUMN rev integer NOT NULL DEFAULT 1;
+ALTER TABLE outcomes         ADD COLUMN rev integer NOT NULL DEFAULT 1;
+ALTER TABLE population       ADD COLUMN rev integer NOT NULL DEFAULT 1;
+ALTER TABLE pdd              ADD COLUMN rev integer NOT NULL DEFAULT 1;
+ALTER TABLE report_templates ADD COLUMN rev integer NOT NULL DEFAULT 1;
+ALTER TABLE dashboards       ADD COLUMN rev integer NOT NULL DEFAULT 1;
+ALTER TABLE datasets         ADD COLUMN rev integer NOT NULL DEFAULT 1;
+ALTER TABLE scripts          ADD COLUMN rev integer NOT NULL DEFAULT 1;
+ALTER TABLE odk_forms        ADD COLUMN rev integer NOT NULL DEFAULT 1;
 
 -- Les sites et la grille mensuelle passent déjà par des routes ligne à ligne,
 -- mais rien n'y détectait l'écriture concurrente sur la même ligne.
-ALTER TABLE sites            ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE caseload         ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE sites            ADD COLUMN rev integer NOT NULL DEFAULT 1;
+ALTER TABLE caseload         ADD COLUMN rev integer NOT NULL DEFAULT 1;

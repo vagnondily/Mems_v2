@@ -11,36 +11,36 @@
 -- =====================================================================
 
 CREATE TABLE import_batch (
-  id           TEXT PRIMARY KEY,
-  kind         TEXT NOT NULL,                -- caseload | pdd | sites
-  user_id      TEXT REFERENCES users(id) ON DELETE SET NULL,
-  user_label   TEXT,
-  office_id    TEXT REFERENCES offices(id) ON DELETE SET NULL,
-  filename     TEXT,
-  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-  status       TEXT NOT NULL DEFAULT 'preview'
+  id           text PRIMARY KEY,
+  kind         text NOT NULL,                -- caseload | pdd | sites
+  user_id      text REFERENCES users(id) ON DELETE SET NULL,
+  user_label   text,
+  office_id    text REFERENCES offices(id) ON DELETE SET NULL,
+  filename     text,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  status       text NOT NULL DEFAULT 'preview'
       CHECK (status IN ('preview','committed','cancelled')),
-  committed_at TEXT,
-  summary      TEXT NOT NULL DEFAULT '{}'    -- JSON : créés, modifiés, inchangés, rejetés
+  committed_at timestamptz,
+  summary      jsonb NOT NULL DEFAULT '{}'::jsonb    -- JSON : créés, modifiés, inchangés, rejetés
 );
 CREATE INDEX idx_import_batch_user ON import_batch(user_id, created_at DESC);
 
 CREATE TABLE import_row (
-  batch_id TEXT NOT NULL REFERENCES import_batch(id) ON DELETE CASCADE,
-  line     INTEGER NOT NULL,                 -- numéro de ligne dans le fichier
-  action   TEXT NOT NULL
+  batch_id text NOT NULL REFERENCES import_batch(id) ON DELETE CASCADE,
+  line     integer NOT NULL,                 -- numéro de ligne dans le fichier
+  action   text NOT NULL
       CHECK (action IN ('create','update','unchanged','reject')),
-  field    TEXT,                             -- champ en cause pour un rejet
-  message  TEXT,
-  payload  TEXT NOT NULL,                    -- JSON de la ligne validée
-  before   TEXT,                             -- JSON de l'état précédent, pour un update
+  field    text,                             -- champ en cause pour un rejet
+  message  text,
+  payload  jsonb NOT NULL,                    -- JSON de la ligne validée
+  before   jsonb,                             -- JSON de l'état précédent, pour un update
   PRIMARY KEY (batch_id, line)
 );
 
 -- Verrou consultatif : deux téléversements du même type et du même périmètre
 -- s'enchaînent au lieu de s'entrelacer.
 CREATE TABLE import_lock (
-  scope      TEXT PRIMARY KEY,               -- kind + périmètre
-  batch_id   TEXT,
-  taken_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  scope      text PRIMARY KEY,               -- kind + périmètre
+  batch_id   text,
+  taken_at   timestamptz NOT NULL DEFAULT now()
 );

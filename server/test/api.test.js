@@ -6,11 +6,14 @@ import path from "node:path";
 import http from "node:http";
 import { execFileSync } from "node:child_process";
 import request from "supertest";
+import pg from "pg";
 
-/* Base isolée, recréée à chaque exécution. */
-const DB = path.resolve("./data/test.db");
+/* Base isolée, remise à zéro à chaque exécution. Postgres n'a pas d'équivalent
+   à « supprimer le fichier .db » : on repart d'un schéma `public` vide sur une
+   base dédiée aux tests, migrée puis semée à chaque lancement. */
 process.env.NODE_ENV = "test";
-process.env.DB_FILE = DB;
+process.env.DATABASE_URL = process.env.DATABASE_URL
+  || "postgres://mems:mems_dev_pw@127.0.0.1:5432/mems_test";
 process.env.JWT_SECRET = "x".repeat(48);
 process.env.DATA_KEY = "y".repeat(48);
 process.env.BOOTSTRAP_EMAIL = "admin@test.local";
@@ -34,8 +37,12 @@ process.env.ODK_ALLOWED_HOSTS = "127.0.0.1";
    absent de la liste est refusé, sans dépendre d'une résolution DNS réelle. */
 process.env.CONNECTOR_ALLOWED_HOSTS = "127.0.0.1";
 
-for(const f of [DB, DB+"-wal", DB+"-shm"]) if(fs.existsSync(f)) fs.unlinkSync(f);
-fs.mkdirSync(path.dirname(DB), { recursive:true });
+{
+  const admin = new pg.Client({ connectionString: process.env.DATABASE_URL });
+  await admin.connect();
+  await admin.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+  await admin.end();
+}
 execFileSync(process.execPath, ["src/seed.js"], { stdio:"pipe", env: process.env });
 
 const { default: app } = await import("../src/index.js");
@@ -53,7 +60,7 @@ const login = async (email, password) => {
    connexion. Le parcours de changement a son propre test, plus bas. */
 const motDePasseAdopte = (email) =>
   db.prepare("UPDATE users SET must_change_pw=0 WHERE email=?").run(email);
-motDePasseAdopte("admin@test.local");
+await motDePasseAdopte("admin@test.local");
 let adminToken;
 const asAdmin = () => request(app).set ? null : null;
 
@@ -219,7 +226,7 @@ test("modification groupée : un compte cloisonné ne peut pas réaffecter ses s
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"bulk-borne@test.local", password:"BulkBorneMotDePasse1", first_name:"Borné",
             role:"editor", office_id:officeA.id, tabs:["home"], active:true });
-  motDePasseAdopte("bulk-borne@test.local");
+  await motDePasseAdopte("bulk-borne@test.local");
   const t = (await login("bulk-borne@test.local", "BulkBorneMotDePasse1")).body.token;
   const mesSites = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`))
     .body.sites.slice(0, 3).map(s => s.id);
@@ -512,7 +519,7 @@ test("tirage ODK Central : réservé aux administrateurs", async () => {
   const create = await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"lecteur-odk@test.local", password:"LecteurMotDePasse1", first_name:"Lecteur",
             role:"viewer", tabs:["home"], active:true });
-  motDePasseAdopte("lecteur-odk@test.local");
+  await motDePasseAdopte("lecteur-odk@test.local");
   const login2 = await login("lecteur-odk@test.local", "LecteurMotDePasse1");
   const f = await odkForm({ name:"Droits", formId:"testform-droits" });
   const r = await request(app).post(`/api/odk-forms/${f.id}/pull`)
@@ -558,7 +565,7 @@ test("droits : un lecteur peut consulter mais ne peut rien écrire", async () =>
     .send({ email:"lecteur@test.local", password:"LecteurMotDePasse1", first_name:"Lecteur",
             role:"viewer", tabs:["home"], active:true });
   assert.equal(create.status, 201);
-  motDePasseAdopte("lecteur@test.local");
+  await motDePasseAdopte("lecteur@test.local");
   const lr = await login("lecteur@test.local", "LecteurMotDePasse1");
   assert.equal(lr.status, 200);
   const t = lr.body.token;
@@ -575,7 +582,7 @@ test("cloisonnement : un compte rattaché à un bureau ne voit que ses sites", a
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"terrain@test.local", password:"TerrainMotDePasse1", first_name:"Terrain",
             role:"editor", office_id:office.id, tabs:["home"], active:true });
-  motDePasseAdopte("terrain@test.local");
+  await motDePasseAdopte("terrain@test.local");
   const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
   const st = await request(app).get("/api/state").set("Authorization", `Bearer ${t}`);
   assert.ok(st.body.sites.length > 0);
@@ -598,7 +605,7 @@ test("cloisonnement : un validateur ne valide pas la visite d'un autre bureau", 
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"valideur@test.local", password:"ValideurMotDePasse1", first_name:"Valideur",
             role:"validator", office_id:office.id, tabs:["home"], active:true });
-  motDePasseAdopte("valideur@test.local");
+  await motDePasseAdopte("valideur@test.local");
   const t = (await login("valideur@test.local", "ValideurMotDePasse1")).body.token;
 
   const ailleurs = db.prepare(
@@ -634,7 +641,7 @@ test("escalade : un administrateur ne crée ni ne promeut un super-utilisateur",
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"admin2@test.local", password:"Admin2MotDePasse1", first_name:"Admin2",
             role:"admin", office_id:null, tabs:["home"], active:true });
-  motDePasseAdopte("admin2@test.local");
+  await motDePasseAdopte("admin2@test.local");
   const a = (await login("admin2@test.local", "Admin2MotDePasse1")).body.token;
 
   /* 1. Création directe d'un super : refusée. */
@@ -856,26 +863,26 @@ test("connexion : un verrou expiré rend son compteur au compte, il ne se referm
     .send({ email:"verrou@test.local", password:"VerrouMotDePasse1", first_name:"Verrou",
             role:"viewer", tabs:["home"], active:true });
   assert.equal(create.status, 201);
-  motDePasseAdopte("verrou@test.local");
-  const etat = () => db.prepare(
+  await motDePasseAdopte("verrou@test.local");
+  const etat = async () => await db.prepare(
     "SELECT failed_logins, locked_until FROM users WHERE email='verrou@test.local'").get();
 
   /* L'état exact que laisse un verrou qui vient d'expirer : compteur au seuil
      (LOCK_AFTER_FAILED, 8 par défaut) et échéance dans le passé. */
-  db.prepare("UPDATE users SET failed_logins=8, locked_until=? WHERE email='verrou@test.local'")
+  await db.prepare("UPDATE users SET failed_logins=8, locked_until=? WHERE email='verrou@test.local'")
     .run(new Date(Date.now() - 60_000).toISOString());
 
   const rate = await login("verrou@test.local", "PasLeBonMotDePasse1");
   assert.equal(rate.status, 401, "c'est un échec de connexion ordinaire, pas un verrou");
-  assert.equal(etat().failed_logins, 1, "le compteur repart de zéro, pas du seuil");
-  assert.equal(etat().locked_until, null, "aucun nouveau verrou n'a été posé");
+  assert.equal((await etat()).failed_logins, 1, "le compteur repart de zéro, pas du seuil");
+  assert.equal((await etat()).locked_until, null, "aucun nouveau verrou n'a été posé");
 
   /* Et le titulaire retrouve son compte, sans passer par un administrateur. */
   assert.equal((await login("verrou@test.local", "VerrouMotDePasse1")).status, 200);
-  assert.equal(etat().failed_logins, 0);
+  assert.equal((await etat()).failed_logins, 0);
 
   /* Un verrou encore valide, lui, tient : le correctif lève l'expiré, pas le verrou. */
-  db.prepare("UPDATE users SET failed_logins=8, locked_until=? WHERE email='verrou@test.local'")
+  await db.prepare("UPDATE users SET failed_logins=8, locked_until=? WHERE email='verrou@test.local'")
     .run(new Date(Date.now() + 60_000).toISOString());
   assert.equal((await login("verrou@test.local", "VerrouMotDePasse1")).status, 423);
 });
@@ -960,7 +967,7 @@ test("réinitialisation admin : provisoire généré, sessions fermées, changem
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"reset@test.local", password:"ResetMotDePasse1", first_name:"Reset",
             role:"editor", tabs:["home"], active:true });
-  motDePasseAdopte("reset@test.local");
+  await motDePasseAdopte("reset@test.local");
   const ouverte = (await login("reset@test.local", "ResetMotDePasse1")).body.token;
   assert.equal((await request(app).get("/api/state").set("Authorization", `Bearer ${ouverte}`)).status, 200);
 
@@ -989,7 +996,7 @@ test("identifiant : self-service, unicité, et connexion par identifiant", async
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"ident@test.local", password:"IdentMotDePasse1", first_name:"Ident",
             role:"editor", tabs:["home"], active:true });
-  motDePasseAdopte("ident@test.local");
+  await motDePasseAdopte("ident@test.local");
   const t = (await login("ident@test.local", "IdentMotDePasse1")).body.token;
 
   const set = await request(app).put("/api/auth/username").set("Authorization", `Bearer ${t}`)
@@ -1008,7 +1015,7 @@ test("identifiant : self-service, unicité, et connexion par identifiant", async
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"ident2@test.local", password:"Ident2MotDePasse1", first_name:"Ident2",
             role:"editor", tabs:["home"], active:true });
-  motDePasseAdopte("ident2@test.local");
+  await motDePasseAdopte("ident2@test.local");
   const t2 = (await login("ident2@test.local", "Ident2MotDePasse1")).body.token;
   const collision = await request(app).put("/api/auth/username").set("Authorization", `Bearer ${t2}`)
     .send({ username:"ident.field" });
@@ -1942,7 +1949,7 @@ test("planification : un éditeur enregistre MRE et calendrier, hors des réglag
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"planif@test.local", password:"PlanifMotDePasse1", first_name:"Planif",
             role:"editor", tabs:["home","suivi"], active:true });
-  motDePasseAdopte("planif@test.local");
+  await motDePasseAdopte("planif@test.local");
   const t = (await login("planif@test.local", "PlanifMotDePasse1")).body.token;
 
   /* L'éditeur n'a PAS le droit sur les réglages admin : la séparation est réelle. */
@@ -1985,7 +1992,7 @@ test("planification : un éditeur enregistre MRE et calendrier, hors des réglag
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"lecplan@test.local", password:"LecPlanMotDePasse1", first_name:"LecPlan",
             role:"viewer", tabs:["home"], active:true });
-  motDePasseAdopte("lecplan@test.local");
+  await motDePasseAdopte("lecplan@test.local");
   const tv = (await login("lecplan@test.local", "LecPlanMotDePasse1")).body.token;
   const refus = await request(app).put("/api/planning-config").set("Authorization", `Bearer ${tv}`)
     .send({ mmr:[{ id:"y" }] });
@@ -2213,16 +2220,16 @@ test("bureaux : révision périmée refusée, valeur courante renvoyée", async 
 test("bureaux : un bureau référencé ne peut pas être supprimé, seulement désactivé", async () => {
   const référencé = db.prepare(
     "SELECT id FROM offices WHERE id IN (SELECT office_id FROM sites) LIMIT 1").get();
-  const orphelins = () => db.prepare("SELECT COUNT(*) c FROM sites WHERE office_id IS NULL").get().c;
-  const avant = orphelins();
+  const orphelins = async () => (await db.prepare("SELECT COUNT(*) c FROM sites WHERE office_id IS NULL").get()).c;
+  const avant = await orphelins();
   const refus = await request(app).delete(`/api/offices/${référencé.id}`)
     .set("Authorization", `Bearer ${adminToken}`);
   assert.equal(refus.status, 409);
   assert.ok(refus.body.usage.sites > 0);
-  assert.ok(db.prepare("SELECT 1 FROM offices WHERE id=?").get(référencé.id), "rien n'a été supprimé");
+  assert.ok(await db.prepare("SELECT 1 FROM offices WHERE id=?").get(référencé.id), "rien n'a été supprimé");
   /* Et aucun site n'a été détaché au passage — c'est ce que ferait le ON DELETE SET NULL
      du schéma : des sites sans bureau, invisibles de tous les filtres. */
-  assert.equal(orphelins(), avant, "aucun site détaché");
+  assert.equal(await orphelins(), avant, "aucun site détaché");
 
   /* Un bureau neuf, sans référence, se supprime bien. */
   const neuf = await request(app).post("/api/offices").set("Authorization", `Bearer ${adminToken}`)
@@ -2263,13 +2270,13 @@ test("activités : lecture, création, révision optimiste et refus de suppressi
   const référencée = db.prepare(
     "SELECT id FROM activity_categories WHERE id IN (SELECT category_id FROM sites) LIMIT 1").get();
   if(référencée){
-    const orphelins = () => db.prepare("SELECT COUNT(*) c FROM sites WHERE category_id IS NULL").get().c;
-    const avant = orphelins();
+    const orphelins = async () => (await db.prepare("SELECT COUNT(*) c FROM sites WHERE category_id IS NULL").get()).c;
+    const avant = await orphelins();
     const refus = await request(app).delete(`/api/activities/${référencée.id}`)
       .set("Authorization", `Bearer ${adminToken}`);
     assert.equal(refus.status, 409);
     assert.ok(refus.body.usage.sites > 0);
-    assert.equal(orphelins(), avant, "aucun site détaché");
+    assert.equal(await orphelins(), avant, "aucun site détaché");
   }
 
   /* L'activité neuve, sans référence, se supprime. */
@@ -2280,7 +2287,7 @@ test("activités : lecture, création, révision optimiste et refus de suppressi
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"actedit@test.local", password:"ActEditMotDePasse1", first_name:"ActEdit",
             role:"editor", tabs:["home"], active:true });
-  motDePasseAdopte("actedit@test.local");
+  await motDePasseAdopte("actedit@test.local");
   const te = (await login("actedit@test.local", "ActEditMotDePasse1")).body.token;
   assert.equal((await request(app).get("/api/activities").set("Authorization", `Bearer ${te}`)).status, 200);
   const refusEdit = await request(app).post("/api/activities").set("Authorization", `Bearer ${te}`)
@@ -2314,7 +2321,7 @@ test("bureau pays : un compte de Tana voit tous les sites sans être administrat
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"tana@test.local", password:"TanaMotDePasse1", first_name:"Tana",
             role:"editor", office_id:hq.id, tabs:["home"], active:true });
-  motDePasseAdopte("tana@test.local");
+  await motDePasseAdopte("tana@test.local");
   const t = (await login("tana@test.local", "TanaMotDePasse1")).body.token;
 
   const st = await request(app).get("/api/state").set("Authorization", `Bearer ${t}`);
@@ -2671,7 +2678,7 @@ test("TPM : le circuit se franchit dans l'ordre et par le bon acteur", async () 
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"prestataire@test.local", password:"PrestataireMotDePasse1",
             first_name:"Presta", role:"editor", tpm_id:tpmCtx.tpm, tabs:["home"], active:true });
-  motDePasseAdopte("prestataire@test.local");
+  await motDePasseAdopte("prestataire@test.local");
   const tp = (await login("prestataire@test.local", "PrestataireMotDePasse1")).body.token;
   /* Le deuxième niveau est « le responsable suivi-évaluation du bureau » : un compte
      du bureau qui a le droit de valider. Un éditeur du même bureau ne l'a pas —
@@ -2680,7 +2687,7 @@ test("TPM : le circuit se franchit dans l'ordre et par le bon acteur", async () 
     .send({ email:"se-bureau@test.local", password:"SeBureauMotDePasse1",
             first_name:"Valid", role:"validator", office_id:tpmCtx.office.id,
             tabs:["home"], active:true });
-  motDePasseAdopte("se-bureau@test.local");
+  await motDePasseAdopte("se-bureau@test.local");
   const te = (await login("se-bureau@test.local", "SeBureauMotDePasse1")).body.token;
   const editeur = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
   const tana = (await login("tana@test.local", "TanaMotDePasse1")).body.token;
@@ -4414,7 +4421,7 @@ test("épreuve de connexion : un diagnostic utilisable, et jamais le secret", as
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"lecteur-epreuve@test.local", password:"LecteurEpreuve2026", first_name:"Lecteur",
             role:"viewer", tabs:["home"], active:true });
-  motDePasseAdopte("lecteur-epreuve@test.local");
+  await motDePasseAdopte("lecteur-epreuve@test.local");
   const lr = await login("lecteur-epreuve@test.local", "LecteurEpreuve2026");
   assert.equal(lr.status, 200, JSON.stringify(lr.body));
   assert.equal((await request(app).post(`/api/connectors/${c.id}/test`)
@@ -4631,7 +4638,7 @@ test("identifiant du compte de service : servi à l'administration, pas au premi
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"lecteur-ident@test.local", password:"LecteurIdent2026", first_name:"Lecteur",
             role:"viewer", tabs:["home"], active:true });
-  motDePasseAdopte("lecteur-ident@test.local");
+  await motDePasseAdopte("lecteur-ident@test.local");
   const jetonLecteur = (await login("lecteur-ident@test.local", "LecteurIdent2026")).body.token;
 
   const etatLecteur = await request(app).get("/api/state").set("Authorization", `Bearer ${jetonLecteur}`);
@@ -5575,13 +5582,13 @@ test("grille mensuelle : corriger un motif ne perd pas la précision écrite, et
   const envoyer = (corps) => request(app).put(`/api/sites/${site.id}/months`)
     .set("Authorization", `Bearer ${adminToken}`)
     .send({ year:2026, month:3, active:true, planned:true, done:true, ...corps });
-  const ligne = () => db.prepare("SELECT manual_reason, manual_note FROM visits WHERE site_id=?")
+  const ligne = async () => await db.prepare("SELECT manual_reason, manual_note FROM visits WHERE site_id=?")
     .get(site.id);
-  const corrections = () => db.prepare("SELECT COUNT(*) c FROM audit WHERE entity_id=? AND text LIKE ?")
-    .get(site.id, "%(motif corrigé)%").c;
+  const corrections = async () => (await db.prepare("SELECT COUNT(*) c FROM audit WHERE entity_id=? AND text LIKE ?")
+    .get(site.id, "%(motif corrigé)%")).c;
 
   await envoyer({ manual_reason:"formulaire_non_rempli", manual_note:"pluie battante, piste coupée" });
-  assert.deepEqual(ligne(), { manual_reason:"formulaire_non_rempli",
+  assert.deepEqual(await ligne(), { manual_reason:"formulaire_non_rempli",
     manual_note:"pluie battante, piste coupée" });
 
   /* Un appel qui ne corrige QUE le motif ne parle pas de la note : l'effacer
@@ -5590,24 +5597,24 @@ test("grille mensuelle : corriger un motif ne perd pas la précision écrite, et
      visites étant plafonnée et filtrée par bureau. */
   const corr = await envoyer({ manual_reason:"soumission_perdue" });
   assert.equal(corr.body.visite, "corrigee");
-  assert.deepEqual(ligne(), { manual_reason:"soumission_perdue",
+  assert.deepEqual(await ligne(), { manual_reason:"soumission_perdue",
     manual_note:"pluie battante, piste coupée" });
-  assert.equal(corrections(), 1);
+  assert.equal(await corrections(), 1);
 
   /* Ré-enregistrer la fiche sans rien changer au motif n'est pas une correction :
      le journal n'est rendu qu'à ses soixante dernières lignes, et trois agents
      qui complètent leurs fiches en évacueraient tout le reste. */
   const rien = await envoyer({ manual_reason:"soumission_perdue", report:"MR-2026-04" });
   assert.equal(rien.body.visite, "conservee");
-  assert.equal(corrections(), 1, "aucune ligne « motif corrigé » pour une correction qui n'a pas eu lieu");
-  assert.equal(db.prepare("SELECT report FROM site_months WHERE site_id=? AND year=2026 AND month=3")
-    .get(site.id).report, "MR-2026-04", "le reste de la fiche est bien enregistré");
+  assert.equal(await corrections(), 1, "aucune ligne « motif corrigé » pour une correction qui n'a pas eu lieu");
+  assert.equal((await db.prepare("SELECT report FROM site_months WHERE site_id=? AND year=2026 AND month=3")
+    .get(site.id)).report, "MR-2026-04", "le reste de la fiche est bien enregistré");
 
   /* Effacer la note reste possible, mais explicitement. */
   const vide = await envoyer({ manual_reason:"soumission_perdue", manual_note:null });
   assert.equal(vide.body.visite, "corrigee");
-  assert.equal(ligne().manual_note, null);
-  assert.equal(corrections(), 2);
+  assert.equal((await ligne()).manual_note, null);
+  assert.equal(await corrections(), 2);
 });
 
 test("soumissions : un connecteur porteur de correspondances passe par appliquer(), pas par la détection", async () => {
@@ -5978,7 +5985,7 @@ const ajouterEntree = (ws, c, code, libelle, extra = {}) => {
 const rapprocherCodes = (token = adminToken, ref = REF_CODES) =>
   request(app).post(`/api/code-referentiels/${encodeURIComponent(ref)}/rapprocher`)
     .set("Authorization", `Bearer ${token}`).send({});
-const entree = (code) => db.prepare("SELECT * FROM code_referentiel WHERE referentiel=? AND code=?")
+const entree = async (code) => await db.prepare("SELECT * FROM code_referentiel WHERE referentiel=? AND code=?")
   .get(REF_CODES, code);
 
 test("référentiel de codes : le registre de sites du lot est en place", async () => {
@@ -6055,9 +6062,9 @@ test("référentiel de codes : la prévisualisation n'écrit rien, la confirmati
     .set("Authorization", `Bearer ${adminToken}`);
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   assert.equal(ok.body.crees, 5);
-  assert.equal(entree("603140001").libelle, "EPP Lot B Désignée");
-  assert.equal(entree("603140001").site_code, "LOTB-1");
-  assert.ok(entree("603140001").import_batch_id, "l'entrée garde le lot qui l'a écrite");
+  assert.equal((await entree("603140001")).libelle, "EPP Lot B Désignée");
+  assert.equal((await entree("603140001")).site_code, "LOTB-1");
+  assert.ok((await entree("603140001")).import_batch_id, "l'entrée garde le lot qui l'a écrite");
 
   /* Rejouer le MÊME fichier : la réconciliation se fait par la clé métier
      (référentiel, code), donc plus rien ne change. */
@@ -6095,7 +6102,7 @@ test("référentiel de codes : une ligne sans référentiel hérite de celui du 
   assert.equal(prev.body.resume.crees, 1, JSON.stringify(prev.body.rejets));
   await request(app).post(`/api/import/batches/${prev.body.batch}/commit`)
     .set("Authorization", `Bearer ${adminToken}`);
-  assert.equal(entree("603140006").referentiel, REF_CODES,
+  assert.equal((await entree("603140006")).referentiel, REF_CODES,
     "la ligne a hérité du référentiel porté par la feuille d'identification");
 
   /* Un fichier reconstruit à la main n'a pas cette feuille : il n'y a alors rien
@@ -6123,10 +6130,10 @@ test("référentiel de codes : le rapprochement pose les alias, est idempotent, 
      la désignation explicite, et le p-code du fokontany. */
   assert.equal(b.rattachees, 2, JSON.stringify(b));
   assert.equal(b.alias, 2);
-  assert.equal(entree("603140001").site_id, siteLotB.designe.id);
-  assert.equal(entree("603140001").rapproche_passe, "designe");
-  assert.equal(entree("MG23288880002").site_id, siteLotB.parPcode.id);
-  assert.equal(entree("MG23288880002").rapproche_passe, "pcode_adm4");
+  assert.equal((await entree("603140001")).site_id, siteLotB.designe.id);
+  assert.equal((await entree("603140001")).rapproche_passe, "designe");
+  assert.equal((await entree("MG23288880002")).site_id, siteLotB.parPcode.id);
+  assert.equal((await entree("MG23288880002")).rapproche_passe, "pcode_adm4");
 
   /* L'alias porte la SOURCE du référentiel : c'est ce qui rend le rattachement
      relisible six mois plus tard, et ce qui distingue un code importé en masse
@@ -6146,8 +6153,8 @@ test("référentiel de codes : le rapprochement pose les alias, est idempotent, 
   assert.ok(faible, JSON.stringify(b.aConfirmer));
   assert.equal(faible.passe, "nom_seul");
   assert.ok(faible.confiance < b.seuil, `${faible.confiance} doit rester sous ${b.seuil}`);
-  assert.equal(entree("603140003").site_id, null, "une piste faible ne rattache rien");
-  assert.equal(entree("603140003").rapproche_passe, "nom_seul",
+  assert.equal((await entree("603140003")).site_id, null, "une piste faible ne rattache rien");
+  assert.equal((await entree("603140003")).rapproche_passe, "nom_seul",
     "elle est tout de même enregistrée : c'est ce qui permet de la confirmer à la main");
   assert.equal(db.prepare("SELECT COUNT(*) c FROM site_external_code WHERE code=?")
     .get("603140003").c, 0, "aucun alias n'est posé sous le seuil");
@@ -6317,7 +6324,7 @@ test("référentiel de codes : corriger une désignation retire l'alias devenu f
   const r = await rapprocherCodes();
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.aliasRetires, 1, "l'alias périmé est retiré, et le bilan le dit");
-  assert.equal(entree("603140001").site_id, siteLotB.parNom.id);
+  assert.equal((await entree("603140001")).site_id, siteLotB.parNom.id);
 
   const alias = db.prepare("SELECT site_id FROM site_external_code WHERE code=? AND source=?")
     .all("603140001", REF_CODES);
@@ -6351,7 +6358,7 @@ test("référentiel de codes : une entrée qui PERD son site est comptée et nom
   assert.match(r.body.detachees[0].motif, /ne désigne aucun site/,
     "le motif dit pourquoi, et donc quoi corriger");
   assert.match(r.body.detachement, /ont PERDU le site/);
-  assert.equal(entree("603140001").site_id, null);
+  assert.equal((await entree("603140001")).site_id, null);
 
   const trace = db.prepare(`SELECT * FROM audit WHERE entity='code_referentiel' AND entity_id=?
                             ORDER BY rowid DESC`).get(REF_CODES);
@@ -6366,7 +6373,7 @@ test("référentiel de codes : une entrée qui PERD son site est comptée et nom
   assert.equal((await renommer("LOTB-3")).status, 200);
   const remis = await rapprocherCodes();
   assert.equal(remis.body.detacheesTotal, 0);
-  assert.equal(entree("603140001").site_id, site.id, "le fichier corrigé, le rattachement revient");
+  assert.equal((await entree("603140001")).site_id, site.id, "le fichier corrigé, le rattachement revient");
 });
 
 test("référentiel de codes : le motif ne nomme pas les sites d'un autre bureau", async () => {
@@ -6440,7 +6447,7 @@ test("référentiel de codes : recharger un fichier amputé d'une colonne ne vid
   const pose = await televerser(adminToken, wb, "codes");
   await request(app).post(`/api/import/batches/${pose.body.batch}/commit`)
     .set("Authorization", `Bearer ${adminToken}`);
-  assert.equal(entree("603140011").site_code, "LOTB-2");
+  assert.equal((await entree("603140011")).site_code, "LOTB-2");
 
   const nu = new ExcelJS.Workbook();
   const wsn = nu.addWorksheet("Saisie");
@@ -6457,7 +6464,7 @@ test("référentiel de codes : recharger un fichier amputé d'une colonne ne vid
   const ok = await request(app).post(`/api/import/batches/${prev.body.batch}/commit`)
     .set("Authorization", `Bearer ${adminToken}`);
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
-  const e = entree("603140011");
+  const e = await entree("603140011");
   assert.equal(e.libelle, "EPP Colonne Absente (corrigée)", "ce que le fichier dit est écrit");
   assert.equal(e.site_code, "LOTB-2", "ce dont il ne parle pas est conservé");
   assert.equal(e.source, "fichier du bureau");
@@ -6605,7 +6612,7 @@ test("scripts d'analyse : un administrateur qui n'est pas super-utilisateur est 
     .send({ email:"admin-simple@test.local", password:"AdminSimple2026x", first_name:"Admin",
             last_name:"Simple", role:"admin", tabs:["home"], active:true });
   assert.equal(cree.status, 201, JSON.stringify(cree.body));
-  motDePasseAdopte("admin-simple@test.local");
+  await motDePasseAdopte("admin-simple@test.local");
   const jeton = (await login("admin-simple@test.local", "AdminSimple2026x")).body.token;
 
   /* Ce compte a bel et bien la capacité « admin » : le journal de sécurité,
@@ -6797,7 +6804,7 @@ test("scripts d'analyse : données transmises par CSV local, fichiers produits s
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"super-deux@test.local", password:"SuperDeuxMdp2026", first_name:"Super",
             last_name:"Deux", role:"super", tabs:["home"], active:true });
-  motDePasseAdopte("super-deux@test.local");
+  await motDePasseAdopte("super-deux@test.local");
   const autre = (await login("super-deux@test.local", "SuperDeuxMdp2026")).body.token;
   assert.equal((await request(app).get(csv.url).set("Authorization", `Bearer ${autre}`)).status, 404);
 });
@@ -6889,7 +6896,7 @@ const { encrypt } = await import("../src/lib/crypto.js");
 const jtiDe = (jeton) =>
   JSON.parse(Buffer.from(jeton.split(".")[1], "base64url").toString()).jti;
 
-const superId = () => db.prepare("SELECT id FROM users WHERE email='admin@test.local'").get().id;
+const superId = async () => (await db.prepare("SELECT id FROM users WHERE email='admin@test.local'").get()).id;
 const auSuper = (r) => r.set("Authorization", `Bearer ${adminToken}`);
 
 after(() => fs.rmSync(dossierSauvegardes(), { recursive:true, force:true }));
@@ -6899,7 +6906,7 @@ test("instance : un administrateur non super est refusé sur CHACUNE des routes"
     .send({ email:"admin-instance@test.local", password:"AdminInstanceMotDePasse1",
             first_name:"Admin", last_name:"Simple", role:"admin", tabs:["home"], active:true });
   assert.equal(r.status, 201, JSON.stringify(r.body));
-  motDePasseAdopte("admin-instance@test.local");
+  await motDePasseAdopte("admin-instance@test.local");
   const t = (await login("admin-instance@test.local", "AdminInstanceMotDePasse1")).body.token;
   const lui = db.prepare("SELECT id FROM users WHERE email='admin-instance@test.local'").get().id;
 
@@ -6936,7 +6943,7 @@ test("instance : un administrateur non super est refusé sur CHACUNE des routes"
 
   /* Le refus vaut aussi pour REGARDER les sessions d'autrui — fermer la
      session d'un tiers commence par savoir qu'elle existe. */
-  for(const q of ["?tous=1", `?user_id=${superId()}`]){
+  for(const q of ["?tous=1", `?user_id=${await superId()}`]){
     const rep = await request(app).get(`/api/auth/sessions${q}`)
       .set("Authorization", `Bearer ${t}`);
     assert.equal(rep.status, 403, `GET /api/auth/sessions${q}`);
@@ -6999,7 +7006,7 @@ test("sessions : révocation en masse, et la protection de sa propre session", a
     .send({ email:"super2@test.local", password:"SecondSuperMotDePasse1", first_name:"Second",
             last_name:"Super", role:"super", tabs:["home"], active:true });
   assert.equal(r.status, 201, JSON.stringify(r.body));
-  motDePasseAdopte("super2@test.local");
+  await motDePasseAdopte("super2@test.local");
   const moi = db.prepare("SELECT id FROM users WHERE email='super2@test.local'").get().id;
 
   const a = (await login("super2@test.local", "SecondSuperMotDePasse1")).body.token;
@@ -7050,7 +7057,7 @@ test("sessions : révocation en masse, et la protection de sa propre session", a
 });
 
 test("sessions : la purge efface les sessions closes et n'effleure pas les vivantes", async () => {
-  const moi = superId();
+  const moi = await superId();
   const monJti = jtiDe(adminToken);
   db.prepare(`INSERT INTO sessions (id,user_id,issued_at,expires_at,revoked)
               VALUES ('sess_expiree_essai',?,datetime('now','-9 hours'),datetime('now','-1 hour'),0)`).run(moi);
@@ -7120,7 +7127,7 @@ test("journal d'audit : filtres, période, recherche et pagination", async () =>
   assert.ok(parEntite.body.total > 0);
   assert.ok(parEntite.body.lignes.every(l => l.entity === "sites"));
 
-  const moi = superId();
+  const moi = await superId();
   const parCompte = await auSuper(request(app).get(`${ADMIN}/journal?user_id=${moi}`));
   assert.ok(parCompte.body.total > 0);
   assert.ok(parCompte.body.lignes.every(l => l.user_id === moi));
@@ -8154,7 +8161,7 @@ test("listes typées : lecture ouverte, écriture réservée à l'administration
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"listedit@test.local", password:"ListEditMotDePasse1", first_name:"ListEdit",
             role:"editor", tabs:["home"], active:true });
-  motDePasseAdopte("listedit@test.local");
+  await motDePasseAdopte("listedit@test.local");
   const t = (await login("listedit@test.local", "ListEditMotDePasse1")).body.token;
   assert.equal((await request(app).get("/api/listes").set("Authorization", `Bearer ${t}`)).status, 200);
   assert.equal((await request(app).get("/api/listes/denrees").set("Authorization", `Bearer ${t}`)).status, 200);
@@ -8313,7 +8320,7 @@ test("renommage : préparation d'un compte super pour la cascade", async () => {
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"supercode@test.local", password:"SuperCodeMotDePasse1", first_name:"SuperCode",
             role:"super", tabs:["home"], active:true });
-  motDePasseAdopte("supercode@test.local");
+  await motDePasseAdopte("supercode@test.local");
   superToken = (await login("supercode@test.local", "SuperCodeMotDePasse1")).body.token;
   assert.ok(superToken);
 });
@@ -8324,7 +8331,7 @@ test("renommage : un administrateur ne renomme pas un code, seul le super le peu
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"admincode@test.local", password:"AdminCodeMotDePasse1", first_name:"AdminCode",
             role:"admin", tabs:["home"], active:true });
-  motDePasseAdopte("admincode@test.local");
+  await motDePasseAdopte("admincode@test.local");
   const t = (await login("admincode@test.local", "AdminCodeMotDePasse1")).body.token;
 
   const it = (await request(app).get("/api/listes/denrees")
@@ -8368,22 +8375,22 @@ test("renommage : la cascade réécrit la table maîtresse ET toutes ses filles,
 test("renommage : un tag d'activité entraîne les dix colonnes qui le portent", async () => {
   const act = db.prepare(
     "SELECT * FROM activity_categories WHERE tag IN (SELECT activity_tag FROM sites) LIMIT 1").get();
-  const compter = (t, c, v) => db.prepare(`SELECT COUNT(*) c FROM ${t} WHERE ${c}=?`).get(v).c;
+  const compter = async (t, c, v) => (await db.prepare(`SELECT COUNT(*) c FROM ${t} WHERE ${c}=?`).get(v)).c;
   const avant = {
-    sites:  compter("sites", "activity_tag", act.tag),
-    params: compter("coverage_params", "activity_tag", act.tag),
-    fk:     compter("sites", "category_id", act.id),
+    sites:  await compter("sites", "activity_tag", act.tag),
+    params: await compter("coverage_params", "activity_tag", act.tag),
+    fk:     await compter("sites", "category_id", act.id),
   };
   assert.ok(avant.sites > 0, "des sites portent ce tag");
 
   const nouveau = act.tag + "_2026";
   const r = await renommer("activites", act.id, nouveau, "renommer", superToken);
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  assert.equal(compter("sites", "activity_tag", act.tag), 0, "plus aucun site sur l'ancien tag");
-  assert.equal(compter("sites", "activity_tag", nouveau), avant.sites);
-  assert.equal(compter("coverage_params", "activity_tag", nouveau), avant.params);
+  assert.equal(await compter("sites", "activity_tag", act.tag), 0, "plus aucun site sur l'ancien tag");
+  assert.equal(await compter("sites", "activity_tag", nouveau), avant.sites);
+  assert.equal(await compter("coverage_params", "activity_tag", nouveau), avant.params);
   /* La clé étrangère n'a PAS bougé : ce n'est pas une fusion, l'item est le même. */
-  assert.equal(compter("sites", "category_id", act.id), avant.fk);
+  assert.equal(await compter("sites", "category_id", act.id), avant.fk);
   assert.equal(r.body.reliquat, 0);
 
   /* Et l'intégrité de la base n'a pas souffert du passage. */
@@ -8392,7 +8399,7 @@ test("renommage : un tag d'activité entraîne les dix colonnes qui le portent",
 
   /* Retour à l'état d'origine, pour ne pas troubler les tests suivants. */
   await renommer("activites", act.id, act.tag, "renommer", superToken);
-  assert.equal(compter("sites", "activity_tag", act.tag), avant.sites);
+  assert.equal(await compter("sites", "activity_tag", act.tag), avant.sites);
 });
 
 test("renommage : viser un code déjà pris est une FUSION, qui ne se devine pas", async () => {
@@ -8883,18 +8890,18 @@ test("dérivation : les districts et la région naissent des communes du millés
   const commit = await commitShp(t, { label:"Millésime pour dérivation" });
   assert.equal(commit.status, 200, JSON.stringify(commit.body));
   const vid = commit.body.versionId;
-  const compte = (l) => db.prepare(
-    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level=?").get(vid, l).c;
-  assert.equal(compte("adm3"), 3);
-  assert.equal(compte("adm2"), 0, "rien au-dessus avant la dérivation");
+  const compte = async (l) => (await db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level=?").get(vid, l)).c;
+  assert.equal(await compte("adm3"), 3);
+  assert.equal(await compte("adm2"), 0, "rien au-dessus avant la dérivation");
 
   const r = await request(app).post("/api/geo/geometry/deriver")
     .set("Authorization", `Bearer ${t}`).send({});
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.source, "adm3", "le niveau le plus fin sert de départ");
-  assert.equal(compte("adm2"), 1, "le district est dérivé");
-  assert.equal(compte("adm1"), 1, "la région aussi");
-  assert.equal(compte("adm3"), 3, "et les communes sont intactes");
+  assert.equal(await compte("adm2"), 1, "le district est dérivé");
+  assert.equal(await compte("adm1"), 1, "la région aussi");
+  assert.equal(await compte("adm3"), 3, "et les communes sont intactes");
 
   /* Le cadre d'un parent dérivé est exactement celui de ses enfants réunis :
      c'est ce qui dit que rien n'a été perdu ni ajouté. */
@@ -8948,11 +8955,11 @@ test("contours : redéposer un niveau fin dérive AUTOMATIQUEMENT les niveaux au
   const commit = await commitShp(t, { label:"Millésime pour dérivation auto" });
   assert.equal(commit.status, 200, JSON.stringify(commit.body));
   const vid = commit.body.versionId;
-  const compte = (l) => db.prepare(
-    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level=?").get(vid, l).c;
-  assert.equal(compte("adm3"), 3);
-  assert.equal(compte("adm2"), 0, "rien au-dessus au départ");
-  assert.equal(compte("adm1"), 0);
+  const compte = async (l) => (await db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level=?").get(vid, l)).c;
+  assert.equal(await compte("adm3"), 3);
+  assert.equal(await compte("adm2"), 0, "rien au-dessus au départ");
+  assert.equal(await compte("adm1"), 0);
 
   /* Un dépôt du niveau le plus fin (les communes), remplaçant. Aucune requête
      de dérivation n'est envoyée : elle doit partir seule. */
@@ -8960,8 +8967,8 @@ test("contours : redéposer un niveau fin dérive AUTOMATIQUEMENT les niveaux au
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.ok(r.body.écrites > 0, JSON.stringify(r.body));
   /* Le district et la région sont nés sans qu'on les demande. */
-  assert.equal(compte("adm2"), 1, "le district dérivé automatiquement");
-  assert.equal(compte("adm1"), 1, "la région dérivée automatiquement");
+  assert.equal(await compte("adm2"), 1, "le district dérivé automatiquement");
+  assert.equal(await compte("adm1"), 1, "la région dérivée automatiquement");
   /* Et la réponse le dit, en clair et par niveau. */
   assert.ok(r.body.derivation, "la réponse porte le compte-rendu de dérivation");
   assert.ok(r.body.derivation.etapes.some(e => e.niveau === "adm2" && e.ecrites > 0),

@@ -55,7 +55,7 @@ export const libelleMotif = (id) => motifParId(id)?.libelle || "";
    rend `Date#getMonth()` côté navigateur — d'où le +1 ici et nulle part ailleurs. */
 export const cleMois = (year, month) => `${year}-${String(month + 1).padStart(2, "0")}`;
 
-export const visitesDuMois = (site_id, year, month) =>
+export const visitesDuMois = async (site_id, year, month) =>
   db.prepare(`SELECT id, origin, submission_id, manual_reason, manual_note
               FROM visits WHERE site_id=? AND visit_date LIKE ?`)
     .all(site_id, `${cleMois(year, month)}%`);
@@ -80,11 +80,11 @@ export const estProtegee = (v) => !!v.submission_id || v.origin === "odk";
    La visite manuelle du même mois n'est pas touchée : elle n'est pas née de
    cette soumission, et le geste inverse de « appliquer le suivi » ne va pas
    au-delà de ce que « appliquer le suivi » avait écrit. */
-export function retirerVisiteDeSoumission(submission_id){
-  const visites = db.prepare(
+export async function retirerVisiteDeSoumission(submission_id){
+  const visites = await db.prepare(
     "SELECT id, site_id, visit_date FROM visits WHERE submission_id=?").all(submission_id);
   if(!visites.length) return { visites:0, mois:[] };
-  db.prepare("DELETE FROM visits WHERE submission_id=?").run(submission_id);
+  await db.prepare("DELETE FROM visits WHERE submission_id=?").run(submission_id);
 
   /* Le mois retombe à « non réalisé » SEULEMENT s'il ne reste rien pour le
      soutenir : une saisie à la main faite avant l'ingestion documente toujours
@@ -98,8 +98,8 @@ export function retirerVisiteDeSoumission(submission_id){
     const cle = String(v.visit_date || "").slice(0, 7);
     const [an, m] = cle.split("-").map(Number);
     if(!an || !m) continue;
-    if(reste.get(v.site_id, `${cle}%`).c) continue;
-    if(demarquer.run(v.site_id, an, m - 1).changes) mois.push({ site_id:v.site_id, mois:cle });
+    if((await reste.get(v.site_id, `${cle}%`)).c) continue;
+    if((await demarquer.run(v.site_id, an, m - 1)).changes) mois.push({ site_id:v.site_id, mois:cle });
   }
   return { visites: visites.length, mois };
 }

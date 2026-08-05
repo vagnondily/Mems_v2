@@ -1,4 +1,22 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: mems-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mems
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?définissez POSTGRES_PASSWORD dans .env}
+      POSTGRES_DB: mems
+    volumes:
+      - mems-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mems -d mems"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+
   mems:
     build: .
     image: mems:1.0.0
@@ -6,8 +24,11 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DB_FILE: /app/server/data/mems.db
+      DATABASE_URL: postgres://mems:${POSTGRES_PASSWORD}@postgres:5432/mems
       TRUST_PROXY: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "127.0.0.1:4000:4000"     # exposé en local ; publiez via un reverse proxy TLS
     volumes:
@@ -24,4 +45,5 @@ services:
       - /tmp
 
 volumes:
+  mems-postgres-data:
   mems-data:

@@ -7,10 +7,10 @@ COPY web/ ./
 RUN npm run build
 
 # ── Étape 2 : dépendances du serveur ─────────────────────────────────
+# `pg` est un client JavaScript pur — contrairement à better-sqlite3, plus
+# aucun compilateur natif (python3/make/g++) n'est nécessaire ici.
 FROM node:20-bookworm-slim AS deps
 WORKDIR /app/server
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
- && rm -rf /var/lib/apt/lists/*
 COPY server/package*.json ./
 RUN npm ci --omit=dev
 
@@ -19,7 +19,9 @@ FROM node:20-bookworm-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends tini \
+# tini : signal 1 propre. postgresql-client : pg_dump/pg_restore, utilisés par
+# Paramètres → Administration → Sauvegarde et restauration (lib/sauvegarde.js).
+RUN apt-get update && apt-get install -y --no-install-recommends tini postgresql-client \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=deps /app/server/node_modules ./server/node_modules

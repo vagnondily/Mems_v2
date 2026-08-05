@@ -144,9 +144,9 @@ export function centroid(geometry){
        C'est la garde qui manque le plus : un fichier de communes déposé dans
        l'emplacement des régions s'écrirait sans erreur, et la carte afficherait
        1 701 contours sous l'étiquette « régions » sans que rien ne le dise. */
-export function writeGeometries({ versionId, features, reset, source, niveau = null }){
-  const unites = Object.fromEntries(db.prepare(
-    "SELECT pcode, level, lat, lon FROM geo_unit WHERE version_id=?").all(versionId)
+export async function writeGeometries({ versionId, features, reset, source, niveau = null }){
+  const unites = Object.fromEntries((await db.prepare(
+    "SELECT pcode, level, lat, lon FROM geo_unit WHERE version_id=?").all(versionId))
     .map(u => [u.pcode, u]));
 
   /* Rattachement d'un contour à son unité.
@@ -157,39 +157,39 @@ export function writeGeometries({ versionId, features, reset, source, niveau = n
      contours porte rarement les mêmes que le fichier de découpage dont on a
      importé l'arbre. Exiger le p-code aurait fait échouer l'import sur un fichier
      parfaitement valide, sans dire pourquoi. */
-  const resoudre = (f) => {
+  const resoudre = async (f) => {
     if(f.pcode && unites[f.pcode]) return f.pcode;
     if(f.names){
-      const m = resolveUnit(f.names, versionId);
+      const m = await resolveUnit(f.names, versionId);
       if(m?.pcode) return m.pcode;
     }
     return null;
   };
 
-  const ins = db.prepare(`INSERT INTO geo_geom
-    (pcode,version_id,level,geometry,simple,min_lon,min_lat,max_lon,max_lat,points,points_simple,source)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(pcode,version_id) DO UPDATE SET
-      level=excluded.level, geometry=excluded.geometry, simple=excluded.simple,
-      min_lon=excluded.min_lon, min_lat=excluded.min_lat,
-      max_lon=excluded.max_lon, max_lat=excluded.max_lat,
-      points=excluded.points, points_simple=excluded.points_simple, source=excluded.source`);
-  /* Un contour donne un point : on comble les unités sans coordonnées, sans
-     écraser celles qui en ont déjà — le référentiel peut porter des centroïdes
-     officiels, meilleurs qu'un calcul. */
-  const majPoint = db.prepare(
-    "UPDATE geo_unit SET lat=?, lon=? WHERE pcode=? AND version_id=? AND (lat IS NULL OR lon IS NULL)");
-
   let écrites = 0, points = 0, simples = 0;
   const rejets = [];
-  tx(() => {
+  await tx(async (db) => {
+    const ins = db.prepare(`INSERT INTO geo_geom
+      (pcode,version_id,level,geometry,simple,min_lon,min_lat,max_lon,max_lat,points,points_simple,source)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(pcode,version_id) DO UPDATE SET
+        level=excluded.level, geometry=excluded.geometry, simple=excluded.simple,
+        min_lon=excluded.min_lon, min_lat=excluded.min_lat,
+        max_lon=excluded.max_lon, max_lat=excluded.max_lat,
+        points=excluded.points, points_simple=excluded.points_simple, source=excluded.source`);
+    /* Un contour donne un point : on comble les unités sans coordonnées, sans
+       écraser celles qui en ont déjà — le référentiel peut porter des centroïdes
+       officiels, meilleurs qu'un calcul. */
+    const majPoint = db.prepare(
+      "UPDATE geo_unit SET lat=?, lon=? WHERE pcode=? AND version_id=? AND (lat IS NULL OR lon IS NULL)");
+
     if(reset){
-      if(niveau) db.prepare("DELETE FROM geo_geom WHERE version_id=? AND level=?")
+      if(niveau) await db.prepare("DELETE FROM geo_geom WHERE version_id=? AND level=?")
         .run(versionId, niveau);
-      else db.prepare("DELETE FROM geo_geom WHERE version_id=?").run(versionId);
+      else await db.prepare("DELETE FROM geo_geom WHERE version_id=?").run(versionId);
     }
     for(const f of features){
-      const pcode = resoudre(f);
+      const pcode = await resoudre(f);
       const u = pcode ? unites[pcode] : null;
       if(!u){ rejets.push({ pcode: f.pcode || Object.values(f.names || {}).filter(Boolean).join(" / "),
         message:"unité introuvable dans le millésime — ni par p-code ni par chemin de noms" });
@@ -214,16 +214,16 @@ export function writeGeometries({ versionId, features, reset, source, niveau = n
       }
       const s = simplify(g, TOLERANCE[u.level] ?? 0.002);
       const np = compte(g), ns = compte(s);
-      ins.run(pcode, versionId, u.level, JSON.stringify(g), JSON.stringify(s),
+      await ins.run(pcode, versionId, u.level, JSON.stringify(g), JSON.stringify(s),
         box.min_lon, box.min_lat, box.max_lon, box.max_lat, np, ns, source || null);
       const c = centroid(s);
-      if(c) majPoint.run(c[1], c[0], pcode, versionId);
+      if(c) await majPoint.run(c[1], c[0], pcode, versionId);
       écrites++; points += np; simples += ns;
     }
-    const total = db.prepare("SELECT COUNT(*) c FROM geo_geom WHERE version_id=?").get(versionId).c;
-    db.prepare(`UPDATE geo_version SET geom_units=?, geom_source=COALESCE(?,geom_source),
-                geom_at=datetime('now') WHERE id=?`).run(total, source || null, versionId);
-  })();
+    const total = (await db.prepare("SELECT COUNT(*) c FROM geo_geom WHERE version_id=?").get(versionId)).c;
+    await db.prepare(`UPDATE geo_version SET geom_units=?, geom_source=COALESCE(?,geom_source),
+                geom_at=now() WHERE id=?`).run(total, source || null, versionId);
+  });
   return { écrites, points, simples, rejets: rejets.slice(0, 20), rejetes: rejets.length };
 }
 
@@ -231,16 +231,16 @@ export function writeGeometries({ versionId, features, reset, source, niveau = n
    Un niveau, éventuellement sous un parent. `detail` demande la pleine
    résolution ; par défaut on rend la version simplifiée, qui est celle dont un
    écran a besoin neuf fois sur dix. */
-export function readGeometries({ versionId, level, parent, detail = false, limit = 2000 }){
+export async function readGeometries({ versionId, level, parent, detail = false, limit = 2000 }){
   const where = ["g.version_id = ?"]; const args = [versionId];
   if(level){ where.push("g.level = ?"); args.push(level); }
   if(parent){
-    const p = db.prepare("SELECT path FROM geo_unit WHERE version_id=? AND pcode=?")
+    const p = await db.prepare("SELECT path FROM geo_unit WHERE version_id=? AND pcode=?")
       .get(versionId, parent);
     if(!p) return { features:[], tronque:false };
     where.push("(u.path = ? OR u.path LIKE ?)"); args.push(p.path, p.path + "/%");
   }
-  const rows = db.prepare(`
+  const rows = await db.prepare(`
     SELECT g.pcode, g.level, ${detail ? "g.geometry" : "COALESCE(g.simple, g.geometry)"} geom,
            g.min_lon, g.min_lat, g.max_lon, g.max_lat, u.name, u.parent_pcode
     FROM geo_geom g JOIN geo_unit u ON u.pcode = g.pcode AND u.version_id = g.version_id
@@ -260,15 +260,15 @@ export function readGeometries({ versionId, level, parent, detail = false, limit
 
 /* Le cadre d'un ensemble d'unités : ce sur quoi la carte doit se caler. Calculé
    en SQL sur les cadres déjà stockés, jamais en parcourant les contours. */
-export function extent({ versionId, level, parent }){
+export async function extent({ versionId, level, parent }){
   const where = ["g.version_id = ?"]; const args = [versionId];
   if(level){ where.push("g.level = ?"); args.push(level); }
   if(parent){
-    const p = db.prepare("SELECT path FROM geo_unit WHERE version_id=? AND pcode=?")
+    const p = await db.prepare("SELECT path FROM geo_unit WHERE version_id=? AND pcode=?")
       .get(versionId, parent);
     if(p){ where.push("(u.path = ? OR u.path LIKE ?)"); args.push(p.path, p.path + "/%"); }
   }
-  const b = db.prepare(`SELECT MIN(g.min_lon) w, MIN(g.min_lat) s, MAX(g.max_lon) e,
+  const b = await db.prepare(`SELECT MIN(g.min_lon) w, MIN(g.min_lat) s, MAX(g.max_lon) e,
     MAX(g.max_lat) n, COUNT(*) c FROM geo_geom g
     JOIN geo_unit u ON u.pcode=g.pcode AND u.version_id=g.version_id
     WHERE ${where.join(" AND ")}`).get(...args);
@@ -293,8 +293,8 @@ export function extent({ versionId, level, parent }){
    Vit ici et non dans la route, parce que le semis des données réelles
    (`seed-reel.js`) en a besoin autant qu'elle : deux implémentations de la
    même remontée finiraient par diverger. */
-export function deriverNiveaux({ versionId, source = null, remplacerExistants = false, auto = false }){
-  const porte = Object.fromEntries(geomSummary(versionId).map(x => [x.level, x.units]));
+export async function deriverNiveaux({ versionId, source = null, remplacerExistants = false, auto = false }){
+  const porte = Object.fromEntries((await geomSummary(versionId)).map(x => [x.level, x.units]));
   const depart = source || [...LEVELS].reverse().find(l => porte[l] > 0);
   if(!depart) return { erreur:"aucun contour dans ce millésime", statut:409 };
   if(!porte[depart]) return { erreur:`le niveau ${depart} ne porte aucun contour`, statut:409 };
@@ -310,8 +310,8 @@ export function deriverNiveaux({ versionId, source = null, remplacerExistants = 
      officiel) ? La dérivation automatique ne rafraîchit QUE ce qui a été
      calculé — jamais un contour importé à la main, qui vaut mieux qu'un
      calcul. La marque est la source, posée par writeGeometries. */
-  const estDerive = (niveau) => {
-    const r = db.prepare(
+  const estDerive = async (niveau) => {
+    const r = await db.prepare(
       "SELECT COUNT(*) c, SUM(source LIKE 'dérivé%') d FROM geo_geom WHERE version_id=? AND level=?")
       .get(versionId, niveau);
     return r.c > 0 && r.d === r.c;
@@ -320,7 +320,7 @@ export function deriverNiveaux({ versionId, source = null, remplacerExistants = 
   const etapes = [];
   for(let i = i0; i > 0; i--){
     const enfant = LEVELS[i], parent = LEVELS[i - 1];
-    const parents = db.prepare("SELECT pcode FROM geo_unit WHERE version_id=? AND level=?")
+    const parents = await db.prepare("SELECT pcode FROM geo_unit WHERE version_id=? AND level=?")
       .all(versionId, parent);
     if(!parents.length){ etapes.push({ niveau:parent, saute:"aucune unité à ce niveau" }); continue; }
     /* Un contour officiel vaut mieux qu'un contour calculé : un niveau déjà
@@ -330,7 +330,7 @@ export function deriverNiveaux({ versionId, source = null, remplacerExistants = 
          niveau supérieur s'il est VIDE ou entièrement DÉRIVÉ, jamais s'il
          porte des contours officiels. */
     const bloque = porte[parent]
-      && (auto ? !estDerive(parent) : !remplacerExistants);
+      && (auto ? !(await estDerive(parent)) : !remplacerExistants);
     if(bloque){
       etapes.push({ niveau:parent,
         saute: auto
@@ -341,14 +341,14 @@ export function deriverNiveaux({ versionId, source = null, remplacerExistants = 
 
     let ecrites = 0, approximatifs = 0, sansEnfant = 0, premier = true, lot = [];
     const motifs = [];
-    const vider = () => {
+    const vider = async () => {
       if(!lot.length) return;
-      const b = writeGeometries({ versionId, features:lot, reset:premier,
+      const b = await writeGeometries({ versionId, features:lot, reset:premier,
         source:`dérivé de ${enfant}`, niveau:parent });
       premier = false; ecrites += b.écrites; lot = [];
     };
     for(const p of parents){
-      const geoms = enfantsDe.all(versionId, enfant, p.pcode)
+      const geoms = (await enfantsDe.all(versionId, enfant, p.pcode))
         .map(x => { try{ return JSON.parse(x.geometry); }catch(e){ return null; } })
         .filter(Boolean);
       if(!geoms.length){ sansEnfant++; continue; }
@@ -357,9 +357,9 @@ export function deriverNiveaux({ versionId, source = null, remplacerExistants = 
       if(d.approximatif){ approximatifs++;
         if(motifs.length < 5) motifs.push({ pcode:p.pcode, motif:d.motif }); }
       lot.push({ pcode:p.pcode, geometry:d.geometry });
-      if(lot.length >= 20) vider();
+      if(lot.length >= 20) await vider();
     }
-    vider();
+    await vider();
     porte[parent] = ecrites;
     etapes.push({ niveau:parent, depuis:enfant, unites:parents.length, ecrites,
       approximatifs, sansEnfant, motifs });
@@ -371,7 +371,7 @@ export function deriverNiveaux({ versionId, source = null, remplacerExistants = 
 
 /* Ce que le millésime porte, par niveau. L'écran de configuration doit pouvoir
    dire « les régions et les districts ont leurs contours, les communes non ». */
-export function geomSummary(versionId){
+export async function geomSummary(versionId){
   return db.prepare(`SELECT level, COUNT(*) units, SUM(points) points,
     SUM(points_simple) points_simple FROM geo_geom WHERE version_id=?
     GROUP BY level ORDER BY level`).all(versionId);

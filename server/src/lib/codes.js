@@ -92,7 +92,14 @@ const propre = (v) => {
    DISTINGUER une création d'une modification pour le compte rendu — il ne
    garantit rien, et c'est voulu : deux imports simultanés ne peuvent pas passer
    entre les gouttes d'un contrôle applicatif. */
-export function ecrireEntrees(rows, ctx = {}){
+/* TODO-PG: appelée par apply() du type d'import « codes » (lib/import.js, hors
+   périmètre de cette conversion), qui l'exécute aujourd'hui dans SA PROPRE
+   transaction via l'objet `db` importé globalement ici, pas via un exécuteur
+   transmis par l'appelant. Tant que lib/import.js n'est pas lui-même porté au
+   contrat async de db.js, les requêtes ci-dessous passeront par le pool plutôt
+   que par la connexion de la transaction d'import — à vérifier une fois ce
+   fichier converti. */
+export async function ecrireEntrees(rows, ctx = {}){
   const existe = db.prepare("SELECT id FROM code_referentiel WHERE referentiel=? AND code=?");
   /* Les colonnes que le fichier ne portait pas ne sont pas réécrites. `readUpload`
      rend "" pour une colonne absente de la feuille, ce qui est indiscernable
@@ -111,15 +118,15 @@ export function ecrireEntrees(rows, ctx = {}){
     ON CONFLICT(referentiel, code) DO UPDATE SET
       ${ecrites.map(f => `${f}=excluded.${f}`).join(", ")}${ecrites.length ? "," : ""}
       import_batch_id=excluded.import_batch_id,
-      updated_at=datetime('now'), rev=rev+1`);
+      updated_at=now(), rev=rev+1`);
 
   let crees = 0, modifies = 0;
   for(const r of rows){
     const referentiel = propre(r.referentiel);
     const code = propre(r.code);
     if(!referentiel || !code) continue;      /* déjà refusé par zod en amont */
-    if(existe.get(referentiel, code)) modifies++; else crees++;
-    ecrire.run(newId("cref"), referentiel, code, propre(r.libelle), propre(r.geo_pcode),
+    if(await existe.get(referentiel, code)) modifies++; else crees++;
+    await ecrire.run(newId("cref"), referentiel, code, propre(r.libelle), propre(r.geo_pcode),
       propre(r.adm1), propre(r.adm2), propre(r.adm3), propre(r.adm4),
       propre(r.site_code), propre(r.source), propre(r.note), ctx.batchId || null);
   }
@@ -170,8 +177,8 @@ export function sitesSansEntree(referentiel, office_id = null){
 /* L'état, lu sans rien recalculer ni écrire. C'est ce que l'écran interroge à
    l'ouverture ; relancer un rapprochement pour connaître son résultat serait
    payer une écriture pour une lecture. */
-export function etatRapprochement(referentiel, office_id = null){
-  const c = db.prepare(`SELECT ${COMPTEURS} FROM code_referentiel WHERE referentiel=?`)
+export async function etatRapprochement(referentiel, office_id = null){
+  const c = await db.prepare(`SELECT ${COMPTEURS} FROM code_referentiel WHERE referentiel=?`)
     .get(referentiel);
   /* Sur un référentiel inconnu, SQLite rend 0 pour le COUNT et NULL pour chaque
      SUM. Un « — » à l'écran là où l'on attend « 0 » se lit comme une panne. */
@@ -181,7 +188,7 @@ export function etatRapprochement(referentiel, office_id = null){
     sansSite: n(c.sansSite), jamaisRapprochees: n(c.jamaisRapprochees),
     dernierRapprochement: c.dernierRapprochement || null,
     dernierChargement: c.dernierChargement || null,
-    sitesSansEntree: sitesSansEntree(referentiel, office_id),
+    sitesSansEntree: await sitesSansEntree(referentiel, office_id),
     seuil: SEUIL_ALIAS };
 }
 
@@ -205,7 +212,7 @@ export function etatRapprochement(referentiel, office_id = null){
    qu'il a le droit de voir ; sinon il apprend qu'une conclusion existe, et à qui
    la demander. Le rapprochement, lui, construit son index avec le même bornage :
    ce qu'un bureau écrit ne nomme jamais que ses propres sites. */
-export function lister({ referentiel, q = "", rattache = "", limit = 100, offset = 0,
+export async function lister({ referentiel, q = "", rattache = "", limit = 100, offset = 0,
                          office_id = null } = {}){
   const where = ["c.referentiel = ?"];
   const args = [referentiel];
@@ -217,9 +224,9 @@ export function lister({ referentiel, q = "", rattache = "", limit = 100, offset
   if(rattache === "oui") where.push("c.site_id IS NOT NULL");
   if(rattache === "non") where.push("c.site_id IS NULL");
 
-  const total = db.prepare(`SELECT COUNT(*) c FROM code_referentiel c WHERE ${where.join(" AND ")}`)
-    .get(...args).c;
-  const rows = db.prepare(`
+  const total = (await db.prepare(`SELECT COUNT(*) c FROM code_referentiel c WHERE ${where.join(" AND ")}`)
+    .get(...args)).c;
+  const rows = await db.prepare(`
     SELECT c.id, c.referentiel, c.code, c.libelle, c.geo_pcode, c.adm1, c.adm2, c.adm3, c.adm4,
            c.site_code, c.source, c.note, c.site_id, c.rapproche_passe, c.rapproche_confiance,
            c.rapproche_motif, c.rapproche_at, c.updated_at,
@@ -250,37 +257,40 @@ export function lister({ referentiel, q = "", rattache = "", limit = 100, offset
    déclare pas les codes des sites d'un autre, même par homonymie. Le référentiel,
    lui, n'a pas de bureau — c'est la lecture qui est nationale, pas l'écriture
    dans `sites`. */
-export function rapprocher({ referentiel, office_id = null }){
-  const entrees = db.prepare(`SELECT id, code, libelle, geo_pcode, site_code, site_id
+export async function rapprocher({ referentiel, office_id = null }){
+  const entrees = await db.prepare(`SELECT id, code, libelle, geo_pcode, site_code, site_id
                               FROM code_referentiel WHERE referentiel=? ORDER BY code`)
     .all(referentiel);
 
   const vide = { referentiel, lues:0, rattachees:0, alias:0, aliasRetires:0, dejaPresents:0,
     detachees:[], detacheesTotal:0,
     aConfirmer:[], aConfirmerTotal:0, sansSite:[], sansSiteTotal:0,
-    sitesSansEntree: sitesSansEntree(referentiel, office_id), codesAmbigus:[],
+    sitesSansEntree: await sitesSansEntree(referentiel, office_id), codesAmbigus:[],
     seuil: SEUIL_ALIAS };
   if(!entrees.length) return vide;
 
-  const index = construireIndex({ office_id });
+  const index = await construireIndex({ office_id });
   const siteDesigne = db.prepare(`SELECT id, code, name FROM sites WHERE code = ?
     ${office_id ? "AND office_id = ?" : ""}`);
 
   /* La conclusion, entrée par entrée. Aucune écriture ici : on décide d'abord,
      on écrit ensuite en une transaction. */
-  const conclusions = entrees.map(e => {
+  const conclusions = [];
+  for(const e of entrees){
     const designation = propre(e.site_code);
     if(designation){
-      const s = siteDesigne.get(...(office_id ? [designation, office_id] : [designation]));
+      const s = await siteDesigne.get(...(office_id ? [designation, office_id] : [designation]));
       /* Désignation explicite mais introuvable : PAS de repli sur le résolveur.
          Quelqu'un a écrit « ce site-là » ; deviner autre chose à sa place
          reviendrait à passer outre la seule instruction humaine de la ligne. */
-      if(!s) return { e, site_id:null, passe:null, confiance:0,
+      if(!s){ conclusions.push({ e, site_id:null, passe:null, confiance:0,
         motif:`le code de site MEMS « ${designation} » écrit dans le fichier ne désigne `
-          + `aucun site${office_id ? " de votre bureau" : ""} : créez le site, ou corrigez la colonne` };
-      return { e, site_id:s.id, passe:PASSE_DESIGNEE, confiance:1,
+          + `aucun site${office_id ? " de votre bureau" : ""} : créez le site, ou corrigez la colonne` });
+        continue; }
+      conclusions.push({ e, site_id:s.id, passe:PASSE_DESIGNEE, confiance:1,
         motif:`site désigné explicitement dans le fichier par son code MEMS « ${s.code} » `
-          + `— « ${s.name} »` };
+          + `— « ${s.name} »` });
+      continue;
     }
     /* L'activité est volontairement nulle : une entrée de référentiel dit un
        code et un nom, elle ne dit pas au titre de quel programme le site est
@@ -291,15 +301,10 @@ export function rapprocher({ referentiel, office_id = null }){
        soumissions, et servir « la soumission ne porte aucun nom de site » à un
        opérateur qui vient de charger un tableur lui parle d'un objet qu'il n'a
        jamais manipulé. Même règle, même code, même motif — un mot près. */
-    const r = resoudre({ site_code_raw: e.code, site_name_raw: e.libelle,
+    const r = await resoudre({ site_code_raw: e.code, site_name_raw: e.libelle,
       activity_tag: null, geo_pcode: e.geo_pcode }, index, { sujet: "l'entrée" });
-    return { e, site_id:r.site_id, passe:r.passe, confiance:r.confiance, motif:r.motif };
-  });
-
-  const trace = db.prepare(`UPDATE code_referentiel
-    SET site_id=?, rapproche_passe=?, rapproche_confiance=?, rapproche_motif=?,
-        rapproche_at=datetime('now'), updated_at=datetime('now')
-    WHERE id=?`);
+    conclusions.push({ e, site_id:r.site_id, passe:r.passe, confiance:r.confiance, motif:r.motif });
+  }
 
   /* Ce qui sera RETENU, décidé avant toute écriture. Le seuil de preuve ne dépend
      que de la conclusion : le rejouer une seconde fois pour compter ferait deux
@@ -310,12 +315,16 @@ export function rapprocher({ referentiel, office_id = null }){
   let alias = 0, aliasRetires = 0, dejaPresents = 0, rattachees = 0;
   const aConfirmer = [], sansSite = [], detachees = [];
 
-  tx(() => {
+  await tx(async (db) => {
+    const trace = db.prepare(`UPDATE code_referentiel
+      SET site_id=?, rapproche_passe=?, rapproche_confiance=?, rapproche_motif=?,
+          rapproche_at=now(), updated_at=now()
+      WHERE id=?`);
     for(const c of conclusions){
       const retenu = retenus.get(c.e.id);
       /* La trace AVANT l'alias, jamais après : si la pose échouait, l'entrée
          dirait tout de même ce qui a été conclu et sur quelle preuve. */
-      trace.run(retenu, c.passe, c.confiance || 0, c.motif, c.e.id);
+      await trace.run(retenu, c.passe, c.confiance || 0, c.motif, c.e.id);
 
       /* Une entrée qui PERD son site est un événement, pas un non-résultat : le
          fichier a changé, ou le site a été renommé, et personne ne le saurait
@@ -331,8 +340,16 @@ export function rapprocher({ referentiel, office_id = null }){
            REMPLACE celle d'hier pour cette source. Sans cela, corriger une
            désignation erronée laissait les deux codes en place, le code
            désignait deux sites, et le résolveur cessait de trancher — la
-           correction cassait ce qu'elle venait réparer. */
-        const pose = poserAliasExclusif({ site_id: retenu, code: c.e.code, source: referentiel,
+           correction cassait ce qu'elle venait réparer.
+           TODO-PG: poserAliasExclusif (lib/alias.js) ouvre SA PROPRE transaction
+           (son propre client via tx()) au lieu d'utiliser l'exécuteur `db` de la
+           transaction en cours ici. Sur Postgres, ceci casse l'atomicité globale
+           du rapprochement — un DELETE+INSERT d'alias se valide indépendamment
+           de `trace.run` ci-dessus, alors qu'en SQLite/better-sqlite3 les deux
+           partageaient la même connexion. À revoir : soit poserAliasExclusif
+           accepte un exécuteur optionnel, soit ce bloc n'est plus dans une seule
+           transaction — décision hors du périmètre mécanique de ce portage. */
+        const pose = await poserAliasExclusif({ site_id: retenu, code: c.e.code, source: referentiel,
           note: `entrée du référentiel « ${referentiel} »`
             + (c.e.libelle ? ` — ${c.e.libelle}` : "") });
         aliasRetires += pose.retires;
@@ -345,7 +362,7 @@ export function rapprocher({ referentiel, office_id = null }){
         sansSite.push({ code:c.e.code, libelle:c.e.libelle, motif:c.motif });
       }
     }
-  })();
+  });
 
   const aConfirmerTotal = conclusions.filter(c =>
     c.site_id && c.passe !== PASSE_DESIGNEE && c.confiance < SEUIL_ALIAS).length;
@@ -360,7 +377,7 @@ export function rapprocher({ referentiel, office_id = null }){
      reconstruit quand des alias viennent d'être posés — celui du début les
      ignore, et signaler l'ambiguïté d'après un état périmé serait pire que se
      taire. */
-  const apres = alias ? construireIndex({ office_id }) : index;
+  const apres = alias ? await construireIndex({ office_id }) : index;
   const vus = new Set();
   const codesAmbigus = [];
   for(const e of entrees){
@@ -376,6 +393,6 @@ export function rapprocher({ referentiel, office_id = null }){
   return { referentiel, lues: entrees.length, rattachees, alias, aliasRetires, dejaPresents,
     detachees, detacheesTotal,
     aConfirmer, aConfirmerTotal, sansSite, sansSiteTotal,
-    sitesSansEntree: sitesSansEntree(referentiel, office_id),
+    sitesSansEntree: await sitesSansEntree(referentiel, office_id),
     codesAmbigus, seuil: SEUIL_ALIAS, limiteListe: LIMITE_LISTE };
 }

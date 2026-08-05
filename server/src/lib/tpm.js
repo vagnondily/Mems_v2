@@ -63,20 +63,31 @@ export function derivedLines(zone, rates){
 /* Régénère les lignes dérivées d'un plan à partir de ses zones et du barème.
    Les lignes saisies à la main (`derived = 0`) sont conservées : c'est tout
    l'intérêt du drapeau — recalculer ne doit pas effacer un ajustement voulu. */
-export function regenerate(planId){
-  const plan = db.prepare("SELECT * FROM tpm_plan WHERE id=?").get(planId);
+/* TODO-PG: cette fonction écrit toujours par le `db` importé au niveau du
+   module (le pool), jamais par un client de transaction. Elle est appelée à la
+   fois HORS transaction (routes/tpm.js, PUT /contracts/:id/rates, après la
+   sienne) et DEDANS (routes/tpm.js, PUT /plans/:id/zones) : dans ce second cas,
+   sous better-sqlite3 la connexion physique unique rendait le DELETE+INSERT
+   ci-dessous atomique avec le reste du bloc `tx()` appelant ; sous pg, ces
+   écritures passent par une connexion distincte du pool et ne feraient plus
+   partie du même ROLLBACK. Le corriger proprement suppose de faire accepter à
+   `regenerate` un exécuteur `db` optionnel (le client de transaction, à défaut
+   le pool) — un changement de signature plus large qu'un portage mécanique,
+   donc signalé ici plutôt que deviné. */
+export async function regenerate(planId){
+  const plan = await db.prepare("SELECT * FROM tpm_plan WHERE id=?").get(planId);
   if(!plan) return 0;
-  const rates = db.prepare("SELECT * FROM tpm_rate WHERE contract_id=? ORDER BY sort, label")
+  const rates = await db.prepare("SELECT * FROM tpm_rate WHERE contract_id=? ORDER BY sort, label")
     .all(plan.contract_id);
-  const zones = db.prepare("SELECT * FROM tpm_zone WHERE plan_id=? ORDER BY rowid").all(planId);
+  const zones = await db.prepare("SELECT * FROM tpm_zone WHERE plan_id=? ORDER BY rowid").all(planId);
 
-  db.prepare("DELETE FROM tpm_line WHERE plan_id=? AND derived=1").run(planId);
+  await db.prepare("DELETE FROM tpm_line WHERE plan_id=? AND derived=1").run(planId);
   const ins = db.prepare(`INSERT INTO tpm_line
     (id,plan_id,zone_id,driver,label,unit,qty1,qty2,unit_cost,derived,sort)
     VALUES (?,?,?,?,?,?,?,?,?,1,?)`);
   let n = 0;
   for(const z of zones) for(const l of derivedLines(z, rates)){
-    ins.run(newId("tpl"), planId, z.id, l.driver, l.label, l.unit,
+    await ins.run(newId("tpl"), planId, z.id, l.driver, l.label, l.unit,
             l.qty1, l.qty2, l.unit_cost, l.sort);
     n++;
   }
@@ -86,13 +97,13 @@ export function regenerate(planId){
 /* ── Le budget d'un plan ─────────────────────────────────────────────
    Rendu par zone, parce que c'est ainsi qu'on le relit et qu'on l'arbitre :
    « quatre équipes, voici le sous-total de chacune ». */
-export function planAmount(planId){
-  const lignes = db.prepare("SELECT * FROM tpm_line WHERE plan_id=?").all(planId);
+export async function planAmount(planId){
+  const lignes = await db.prepare("SELECT * FROM tpm_line WHERE plan_id=?").all(planId);
   return r2(lignes.reduce((t, l) => t + lineTotal(l), 0));
 }
 
-export function planDetail(planId){
-  const plan = db.prepare(`
+export async function planDetail(planId){
+  const plan = await db.prepare(`
     SELECT p.*, t.name tpm_name, t.office_id tpm_office, c.ref contract_ref,
            c.currency, c.ceiling, o.name office_name
     FROM tpm_plan p
@@ -103,13 +114,13 @@ export function planDetail(planId){
   if(!plan) return null;
 
   const v = currentVersion();
-  const noms = v ? Object.fromEntries(db.prepare(
+  const noms = v ? Object.fromEntries((await db.prepare(
     `SELECT u.pcode, u.name, p.name parent FROM geo_unit u
      LEFT JOIN geo_unit p ON p.version_id=u.version_id AND p.pcode=u.parent_pcode
-     WHERE u.version_id=?`).all(v.id).map(x => [x.pcode, x.parent ? `${x.name} (${x.parent})` : x.name])) : {};
+     WHERE u.version_id=?`).all(v.id)).map(x => [x.pcode, x.parent ? `${x.name} (${x.parent})` : x.name])) : {};
 
-  const lignes = db.prepare("SELECT * FROM tpm_line WHERE plan_id=? ORDER BY sort, rowid").all(planId);
-  const depenses = db.prepare("SELECT * FROM tpm_expense WHERE plan_id=? ORDER BY spent_on, rowid").all(planId);
+  const lignes = await db.prepare("SELECT * FROM tpm_line WHERE plan_id=? ORDER BY sort, rowid").all(planId);
+  const depenses = await db.prepare("SELECT * FROM tpm_expense WHERE plan_id=? ORDER BY spent_on, rowid").all(planId);
   const parLigne = {};
   for(const d of depenses) if(d.line_id) parLigne[d.line_id] = r2((parLigne[d.line_id] || 0) + d.amount);
 
@@ -119,7 +130,7 @@ export function planDetail(planId){
     total: lineTotal(l), spent: parLigne[l.id] ?? null,
   });
 
-  const zones = db.prepare("SELECT * FROM tpm_zone WHERE plan_id=? ORDER BY rowid").all(planId)
+  const zones = (await db.prepare("SELECT * FROM tpm_zone WHERE plan_id=? ORDER BY rowid").all(planId))
     .map(z => {
       const mien = lignes.filter(l => l.zone_id === z.id);
       return {
@@ -147,7 +158,7 @@ export function planDetail(planId){
     execution: budget && depenses.length ? Math.round((spent / budget) * 1000) / 10 : null,
     expenses: depenses.map(d => ({ id:d.id, line_id:d.line_id, spent_on:d.spent_on,
       amount:d.amount, ref:d.ref || "", note:d.note || "" })),
-    reviews: db.prepare("SELECT * FROM tpm_review WHERE plan_id=? ORDER BY at").all(planId)
+    reviews: (await db.prepare("SELECT * FROM tpm_review WHERE plan_id=? ORDER BY at").all(planId))
       .map(r => ({ level:r.level, decision:r.decision, comment:r.comment || "",
         amount:r.amount, at:r.at, by:r.user_label || "" })),
   };
@@ -164,18 +175,22 @@ export function planDetail(planId){
    Confondre engagé et en cours ferait apparaître comme dépassé un plafond qui ne
    l'est pas encore ; les confondre dans l'autre sens laisserait valider un plan
    qui le dépasse. */
-export function contractBalance(contractId){
-  const c = db.prepare("SELECT * FROM tpm_contract WHERE id=?").get(contractId);
+export async function contractBalance(contractId){
+  const c = await db.prepare("SELECT * FROM tpm_contract WHERE id=?").get(contractId);
   if(!c) return null;
-  const avenants = r2(db.prepare(
-    "SELECT COALESCE(SUM(delta),0) s FROM tpm_amendment WHERE contract_id=?").get(contractId).s);
-  const plans = db.prepare("SELECT id, status FROM tpm_plan WHERE contract_id=?").all(contractId);
-  const somme = (filtre) => r2(plans.filter(filtre).reduce((t, p) => t + planAmount(p.id), 0));
+  const avenants = r2((await db.prepare(
+    "SELECT COALESCE(SUM(delta),0) s FROM tpm_amendment WHERE contract_id=?").get(contractId)).s);
+  const plans = await db.prepare("SELECT id, status FROM tpm_plan WHERE contract_id=?").all(contractId);
+  const somme = async (filtre) => {
+    let t = 0;
+    for(const p of plans.filter(filtre)) t += await planAmount(p.id);
+    return r2(t);
+  };
 
-  const engage  = somme(p => ["valide_pays", "cloture"].includes(p.status));
-  const enCours = somme(p => ["soumis", "valide_tpm", "valide_bureau"].includes(p.status));
-  const depense = r2(db.prepare(`SELECT COALESCE(SUM(e.amount),0) s FROM tpm_expense e
-    JOIN tpm_plan p ON p.id = e.plan_id WHERE p.contract_id=?`).get(contractId).s);
+  const engage  = await somme(p => ["valide_pays", "cloture"].includes(p.status));
+  const enCours = await somme(p => ["soumis", "valide_tpm", "valide_bureau"].includes(p.status));
+  const depense = r2((await db.prepare(`SELECT COALESCE(SUM(e.amount),0) s FROM tpm_expense e
+    JOIN tpm_plan p ON p.id = e.plan_id WHERE p.contract_id=?`).get(contractId)).s);
 
   const plafond = r2(c.ceiling + avenants);
   return {
@@ -197,7 +212,7 @@ export function contractBalance(contractId){
    On agrège donc par commune : sites actifs, sites à visiter dans le mois selon
    le plan, sites déjà visités, priorité moyenne. Le tri met en tête ce qui est
    à la fois prioritaire et non couvert. */
-export function suggestZones({ year, month, officeId, limit = 60 }){
+export async function suggestZones({ year, month, officeId, limit = 60 }){
   const v = currentVersion();
   if(!v) return [];
   /* Paramètres anonymes et dans l'ordre : SQLite refuse de mélanger la numérotation
@@ -207,7 +222,7 @@ export function suggestZones({ year, month, officeId, limit = 60 }){
   if(officeId) args.push(officeId);
   args.push(limit);
 
-  return db.prepare(`
+  return (await db.prepare(`
     SELECT u.pcode geo_pcode, u.name zone, p.name district,
            COUNT(*) sites,
            SUM(CASE WHEN s.status='Active' THEN 1 ELSE 0 END) actifs,
@@ -216,7 +231,7 @@ export function suggestZones({ year, month, officeId, limit = 60 }){
            AVG(COALESCE(s.issue_ipm,0) + COALESCE(s.issue_report,0)
                + COALESCE(s.issue_cfm,0) + COALESCE(s.fraud,0)) risque,
            SUM(COALESCE(s.beneficiaries,0)) beneficiaires,
-           GROUP_CONCAT(DISTINCT s.activity_tag) tags
+           string_agg(DISTINCT s.activity_tag, ',') tags
     FROM sites s
     JOIN geo_unit u ON u.pcode = s.geo_pcode AND u.version_id = ?
     LEFT JOIN geo_unit p ON p.version_id = u.version_id AND p.pcode = u.parent_pcode
@@ -225,7 +240,7 @@ export function suggestZones({ year, month, officeId, limit = 60 }){
     GROUP BY u.pcode
     HAVING actifs > 0
     ORDER BY (planifies - visites) DESC, risque DESC, actifs DESC
-    LIMIT ?`).all(...args)
+    LIMIT ?`).all(...args))
     .map(r => ({
       ...r,
       tags: (r.tags || "").split(",").filter(Boolean),

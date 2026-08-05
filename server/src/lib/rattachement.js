@@ -111,8 +111,8 @@ export const PASSE_MANUELLE = "manuel";
    qui ingère : un bureau ne doit pas rattacher ses soumissions aux sites d'un
    autre, même par homonymie — c'est la même règle de cloisonnement que partout
    ailleurs (lib/scope.js), appliquée ici au rapprochement lui-même. */
-export function construireIndex({ office_id = null } = {}){
-  const sites = db.prepare(`SELECT id, code, external_code, name, geo_pcode, activity_tag, office_id
+export async function construireIndex({ office_id = null } = {}){
+  const sites = await db.prepare(`SELECT id, code, external_code, name, geo_pcode, activity_tag, office_id
                             FROM sites ${office_id ? "WHERE office_id = ?" : ""}`)
     .all(...(office_id ? [office_id] : []));
 
@@ -169,7 +169,7 @@ export function construireIndex({ office_id = null } = {}){
 
      Deux sites portant le même code restent non résolus exactement comme avant :
      `pousser` empile les deux candidats, et la passe (a) refuse de trancher. */
-  const alias = db.prepare(`SELECT a.site_id, a.code, a.source
+  const alias = await db.prepare(`SELECT a.site_id, a.code, a.source
                             FROM site_external_code a JOIN sites s ON s.id = a.site_id
                             ${office_id ? "WHERE s.office_id = ?" : ""}`)
     .all(...(office_id ? [office_id] : []));
@@ -227,8 +227,8 @@ const nommer = (ids, index) => ids
    son tableur : lui écrire « la soumission ne porte aucun nom de site » le
    renvoie à un objet qu'il n'a jamais manipulé. Un mot paramétré vaut mieux
    qu'une seconde rédaction des motifs, qui divergerait au premier ajout. */
-export function resoudre(entree, index, { sujet = "la soumission" } = {}){
-  const idx = index || construireIndex();
+export async function resoudre(entree, index, { sujet = "la soumission" } = {}){
+  const idx = index || await construireIndex();
   const code = normaliserCode(entree?.site_code_raw);
   const nom  = normaliserNom(entree?.site_name_raw);
   const act  = normaliserActivite(entree?.activity_tag);
@@ -364,7 +364,7 @@ export function resoudre(entree, index, { sujet = "la soumission" } = {}){
    Défaire une décision manuelle reste possible, mais par un geste explicite et
    journalisé : POST /api/submissions/:id/detacher. C'est la différence entre
    « on ne peut pas revenir dessus » et « on ne revient pas dessus par accident ». */
-export function rejouerRattachement({ ids = null, seulementNonResolues = true, office_id = null } = {}){
+export async function rejouerRattachement({ ids = null, seulementNonResolues = true, office_id = null } = {}){
   const where = [];
   const args = [];
   if(seulementNonResolues) where.push("site_id IS NULL");
@@ -375,47 +375,52 @@ export function rejouerRattachement({ ids = null, seulementNonResolues = true, o
   where.push("(resolution_passe IS NULL OR resolution_passe <> ?)");
   args.push(PASSE_MANUELLE);
 
-  const lignes = db.prepare(`SELECT id, site_code_raw, site_name_raw, activity_tag, geo_pcode, site_id
+  const lignes = await db.prepare(`SELECT id, site_code_raw, site_name_raw, activity_tag, geo_pcode, site_id
                              FROM submissions WHERE ${where.join(" AND ")}`)
     .all(...args);
   /* Combien de décisions humaines ont été laissées de côté. Le silence serait
      ici la pire réponse : un opérateur qui relance le rattachement et voit
      « 0 rattachée » doit pouvoir distinguer « rien à faire » de « tout ce qui
      restait était déjà tranché à la main ». */
-  const protegees = db.prepare(`SELECT COUNT(*) c FROM submissions s
+  const protegees = (await db.prepare(`SELECT COUNT(*) c FROM submissions s
     LEFT JOIN sites si ON si.id = s.site_id
     WHERE s.resolution_passe = ?
       ${office_id ? "AND si.office_id = ?" : ""}
       ${ids?.length ? `AND s.id IN (${ids.map(() => "?").join(",")})` : ""}`)
-    .get(PASSE_MANUELLE, ...(office_id ? [office_id] : []), ...(ids?.length ? ids : [])).c;
+    .get(PASSE_MANUELLE, ...(office_id ? [office_id] : []), ...(ids?.length ? ids : []))).c;
   if(!lignes.length)
     return { examinees: 0, rattachees: 0, detachees: 0, nonResolues: 0, protegees };
 
-  const index = construireIndex({ office_id });
-  const maj = db.prepare(`UPDATE submissions
-                          SET site_id=?, resolution_passe=?, resolution_motif=?,
-                              resolution_confiance=?, resolution_at=datetime('now'),
-                              updated_at=datetime('now')
-                          WHERE id=?`);
+  const index = await construireIndex({ office_id });
   let rattachees = 0, detachees = 0, nonResolues = 0;
   /* En une transaction : sur des milliers de soumissions, l'écriture ligne à ligne
      hors transaction est lente ET non atomique — un rejeu interrompu laisserait la
      moitié des soumissions réécrites et l'autre non. */
-  tx(() => {
+  await tx(async (db) => {
+    const maj = db.prepare(`UPDATE submissions
+                            SET site_id=?, resolution_passe=?, resolution_motif=?,
+                                resolution_confiance=?, resolution_at=now(),
+                                updated_at=now()
+                            WHERE id=?`);
     for(const l of lignes){
-      const r = resoudre(l, index);
+      const r = await resoudre(l, index);
       if(r.site_id && !l.site_id) rattachees++;
       else if(!r.site_id && l.site_id) detachees++;
       if(!r.site_id) nonResolues++;
-      maj.run(r.site_id, r.passe, r.motif, r.confiance, l.id);
+      await maj.run(r.site_id, r.passe, r.motif, r.confiance, l.id);
       /* La soumission a changé de site (ou est détachée) : la visite ODK qu'elle
          avait fait naître sur l'ANCIEN site n'a plus de fondement. Sans ce retrait,
          le rejeu en masse laissait une VISITE FANTÔME et un mois « réalisé »
          indélébile sur l'ancien site — ce que /detacher et /rattacher-a évitent
          déjà à la main. À l'échelle de milliers de soumissions re-résolues (un
-         site ajouté rend un code ambigu), ces fantômes gonflent la couverture. */
+         site ajouté rend un code ambigu), ces fantômes gonflent la couverture.
+         TODO-PG: lib/visites.js n'est pas encore converti au contrat async de
+         db.js (hors périmètre de cette conversion) ; une fois qu'il le sera,
+         cet appel devra être `await`é, et il s'exécute ici sur la connexion de
+         la transaction en cours (paramètre `db`), pas sur le pool global —
+         vérifier que retirerVisiteDeSoumission accepte bien cet exécuteur. */
       if(l.site_id && l.site_id !== r.site_id) retirerVisiteDeSoumission(l.id);
     }
-  })();
+  });
   return { examinees: lignes.length, rattachees, detachees, nonResolues, protegees };
 }

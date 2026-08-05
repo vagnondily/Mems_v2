@@ -22,11 +22,11 @@
 -- =====================================================================
 
 CREATE TABLE office_scope (
-  office_id  TEXT NOT NULL REFERENCES offices(id) ON DELETE CASCADE,
-  geo_pcode  TEXT NOT NULL,
-  note       TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  office_id  text NOT NULL REFERENCES offices(id) ON DELETE CASCADE,
+  geo_pcode  text NOT NULL,
+  note       text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by text REFERENCES users(id) ON DELETE SET NULL,
   PRIMARY KEY (office_id, geo_pcode)
 );
 CREATE INDEX idx_office_scope_pcode ON office_scope(geo_pcode);

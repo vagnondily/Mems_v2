@@ -39,10 +39,13 @@ import scriptRoutes from "./routes/scripts.js";
 import adminRoutes from "./routes/admin.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-migrate(path.join(here, "..", "migrations"));
+/* `await` de haut niveau (module ESM) : tout code qui importe cette app —
+   y compris les tests — attend que les migrations soient posées avant que le
+   module ne finisse de se charger. */
+await migrate(path.join(here, "..", "migrations"));
 /* Une base créée avant la migration 002 a son découpage dans l'ancienne table plate :
    on le reprend une seule fois vers l'arbre, sinon le référentiel apparaîtrait vide. */
-const _geoBackfill = backfillFromLegacy();
+const _geoBackfill = await backfillFromLegacy();
 if(_geoBackfill) log.info("référentiel repris depuis l'ancienne table", _geoBackfill);
 
 export const app = express();
@@ -116,9 +119,9 @@ const apiLimiter = rateLimit({ windowMs: 60_000, limit: config.rateApiMax,
   message: { error:"trop de requêtes, patientez une minute" } });
 app.use("/api", apiLimiter);
 
-app.get("/api/health", (req, res) => {
-  const i = integrity();
-  res.json({ status: i.foreignKeyViolations===0 && i.integrity==="ok" ? "ok" : "dégradé",
+app.get("/api/health", async (req, res) => {
+  const i = await integrity();
+  res.json({ status: i.status === "ok" ? "ok" : "dégradé",
     version:"1.0.0", uptime: Math.round(process.uptime()), database: i });
 });
 
@@ -190,9 +193,10 @@ app.use((err, req, res, next) => {
 });
 
 if(process.env.NODE_ENV !== "test"){
-  app.listen(config.port, config.host, () => {
-    log.info("MEMS démarré", { port:config.port, base:config.dbFile, production:config.isProd });
-    const n = db.prepare("SELECT COUNT(*) c FROM users").get().c;
+  const { hostname, pathname } = new URL(config.databaseUrl);
+  app.listen(config.port, config.host, async () => {
+    log.info("MEMS démarré", { port:config.port, base:`${hostname}${pathname}`, production:config.isProd });
+    const n = (await db.prepare("SELECT COUNT(*) c FROM users").get()).c;
     if(!n) log.warn("aucun compte : lancez « npm run seed » pour créer l'administrateur initial");
   });
 }

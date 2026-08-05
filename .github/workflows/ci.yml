@@ -7,6 +7,17 @@ on:
 jobs:
   verification:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mems
+          POSTGRES_PASSWORD: mems_ci_pw
+          POSTGRES_DB: mems_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U mems -d mems_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,6 +32,7 @@ jobs:
         env:
           JWT_SECRET: ${{ '0123456789abcdef0123456789abcdef0123456789abcdef' }}
           DATA_KEY:   ${{ 'fedcba9876543210fedcba9876543210fedcba9876543210' }}
+          DATABASE_URL: postgres://mems:mems_ci_pw@127.0.0.1:5432/mems_test
         run: npm test
 
       - name: Dépendances du frontend

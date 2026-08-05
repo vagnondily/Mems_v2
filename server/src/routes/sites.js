@@ -21,14 +21,14 @@ const audit = (req, action, entity_id, text) =>
    sauf si ce bureau est déclaré national. La règle vient de lib/scope.js : elle
    était réécrite ici et dans analytics.js, et ces copies auraient ignoré le
    bureau pays. */
-function assertScope(req, site){
-  const s = scopeOf(req.user);
+async function assertScope(req, site){
+  const s = await scopeOf(req.user);
   if(s && site && site.office_id !== s){
     const e = new Error("ce site relève d'un autre bureau"); e.status = 403; throw e;
   }
 }
 
-r.get("/", (req, res) => {
+r.get("/", async (req, res) => {
   const q = z.object({
     search: z.string().max(120).optional(), office_id: z.string().max(64).optional(),
     status: z.enum(["Active","Inactive"]).optional(),
@@ -37,7 +37,7 @@ r.get("/", (req, res) => {
   }).safeParse(req.query);
   if(!q.success) return res.status(422).json({ error:"filtres invalides" });
   const f = q.data;
-  const scope = scopeOf(req.user);
+  const scope = await scopeOf(req.user);
   const where = []; const args = [];
   if(scope){ where.push("office_id = ?"); args.push(scope); }
   else if(f.office_id){ where.push("office_id = ?"); args.push(f.office_id); }
@@ -66,9 +66,9 @@ r.get("/", (req, res) => {
                FROM sites
                ${where.length ? "WHERE "+where.join(" AND ") : ""}
                ORDER BY code LIMIT ? OFFSET ?`;
-  const rows = db.prepare(sql).all(...args, f.limit, f.offset);
-  const total = db.prepare(`SELECT COUNT(*) c FROM sites ${where.length ? "WHERE "+where.join(" AND ") : ""}`)
-    .get(...args).c;
+  const rows = await db.prepare(sql).all(...args, f.limit, f.offset);
+  const total = (await db.prepare(`SELECT COUNT(*) c FROM sites ${where.length ? "WHERE "+where.join(" AND ") : ""}`)
+    .get(...args)).c;
   res.json({ total, rows });
 });
 
@@ -111,22 +111,22 @@ const RANG_VERDICT = { unmatched:3, outside:2, far:1, ok:0 };
    qu'elle se lance AUTOMATIQUEMENT à l'ajout ou à la correction d'un site (« qu'il
    lance ce genre d'audit dans l'ajout des sites »). Rend null s'il n'y a pas de
    GPS ou pas de référentiel — l'appelant n'a alors rien à signaler. */
-function auditerPointUnique(site, seuil = 15){
+async function auditerPointUnique(site, seuil = 15){
   if(site.lat == null || site.lon == null) return null;
-  const v = currentVersion(); if(!v) return null;
-  let u = db.prepare("SELECT pcode, name, lat, lon FROM geo_unit WHERE version_id=? AND level='adm3' AND pcode=?")
+  const v = await currentVersion(); if(!v) return null;
+  let u = await db.prepare("SELECT pcode, name, lat, lon FROM geo_unit WHERE version_id=? AND level='adm3' AND pcode=?")
     .get(v.id, site.geo_pcode);
-  if(!u){ const rr = resolveUnit({ adm1:site.adm1, adm2:site.adm2, adm3:site.adm3 }, v.id);
-    if(rr.pcode) u = db.prepare("SELECT pcode, name, lat, lon FROM geo_unit WHERE version_id=? AND pcode=?").get(v.id, rr.pcode); }
+  if(!u){ const rr = await resolveUnit({ adm1:site.adm1, adm2:site.adm2, adm3:site.adm3 }, v.id);
+    if(rr.pcode) u = await db.prepare("SELECT pcode, name, lat, lon FROM geo_unit WHERE version_id=? AND pcode=?").get(v.id, rr.pcode); }
   if(!u || u.lat == null) return { verdict:"unmatched", commune:null, dist:null, inBbox:null };
   const dist = Math.round(haversineKm(site.lat, site.lon, u.lat, u.lon) * FACTEUR_ROUTIER * 100) / 100;
-  const bb = db.prepare("SELECT min_lon,min_lat,max_lon,max_lat FROM geo_geom WHERE version_id=? AND pcode=?").get(v.id, u.pcode);
+  const bb = await db.prepare("SELECT min_lon,min_lat,max_lon,max_lat FROM geo_geom WHERE version_id=? AND pcode=?").get(v.id, u.pcode);
   const inBbox = bb ? (site.lon>=bb.min_lon && site.lon<=bb.max_lon && site.lat>=bb.min_lat && site.lat<=bb.max_lat) : null;
   const verdict = inBbox === false ? "outside" : dist > seuil ? "far" : "ok";
   return { verdict, commune:u.name, dist, inBbox, cLat:u.lat, cLon:u.lon };
 }
 
-r.get("/gps-audit", (req, res) => {
+r.get("/gps-audit", async (req, res) => {
   const q = z.object({
     seuil: z.coerce.number().min(0.5).max(500).default(15),   /* km au-delà desquels on alerte */
     limit: z.coerce.number().int().min(1).max(6000).default(4000),
@@ -134,27 +134,27 @@ r.get("/gps-audit", (req, res) => {
   if(!q.success) return res.status(422).json({ error:"paramètres invalides" });
   const { seuil, limit } = q.data;
 
-  const v = currentVersion();
+  const v = await currentVersion();
   if(!v) return res.status(409).json({ error:"aucun référentiel géographique courant" });
 
-  const scope = scopeOf(req.user);
+  const scope = await scopeOf(req.user);
   const where = ["lat IS NOT NULL", "lon IS NOT NULL"]; const args = [];
   if(scope){ where.push("office_id = ?"); args.push(scope); }
-  const sites = db.prepare(
+  const sites = await db.prepare(
     `SELECT id, name, code, adm1, adm2, adm3, adm4, lat, lon, geo_pcode, activity_tag, office_id
      FROM sites WHERE ${where.join(" AND ")} LIMIT ?`).all(...args, limit);
 
   /* Les communes (adm3) du millésime courant, avec leur centroïde (geo_unit.lat/lon)
      et leur boîte englobante (geo_geom). */
-  const communes = Object.fromEntries(db.prepare(
-    "SELECT pcode, name, lat, lon FROM geo_unit WHERE version_id=? AND level='adm3'").all(v.id)
+  const communes = Object.fromEntries((await db.prepare(
+    "SELECT pcode, name, lat, lon FROM geo_unit WHERE version_id=? AND level='adm3'").all(v.id))
     .map(u => [u.pcode, u]));
-  const bbox = Object.fromEntries(db.prepare(
-    "SELECT pcode, min_lon, min_lat, max_lon, max_lat FROM geo_geom WHERE version_id=? AND level='adm3'").all(v.id)
+  const bbox = Object.fromEntries((await db.prepare(
+    "SELECT pcode, min_lon, min_lat, max_lon, max_lat FROM geo_geom WHERE version_id=? AND level='adm3'").all(v.id))
     .map(g => [g.pcode, g]));
   /* Le bureau (Field Office) de chaque site — l'attribution qu'app.R fait par
      fo_name_lookup ; MEMS la tient déjà par office_id. */
-  const bureaux = Object.fromEntries(db.prepare("SELECT id, name FROM offices").all().map(o => [o.id, o.name]));
+  const bureaux = Object.fromEntries((await db.prepare("SELECT id, name FROM offices").all()).map(o => [o.id, o.name]));
 
   const bilan = { total:0, ok:0, far:0, outside:0, unmatched:0, sansContour:0 };
   const rows = [];
@@ -164,7 +164,7 @@ r.get("/gps-audit", (req, res) => {
     /* La commune d'accueil : par p-code s'il désigne une commune, sinon résolue
        par le NOM (adm1→adm3), exactement comme le rattachement du registre. */
     let u = communes[s.geo_pcode];
-    if(!u){ const rr = resolveUnit({ adm1:s.adm1, adm2:s.adm2, adm3:s.adm3 }, v.id);
+    if(!u){ const rr = await resolveUnit({ adm1:s.adm1, adm2:s.adm2, adm3:s.adm3 }, v.id);
       if(rr.pcode) u = communes[rr.pcode]; }
     if(!u || u.lat == null || u.lon == null){
       bilan.unmatched++;
@@ -190,10 +190,10 @@ r.get("/gps-audit", (req, res) => {
     version:{ id:v.id, label:v.label }, bilan, rows: rows.slice(0, 2500) });
 });
 
-r.get("/:id", (req, res) => {
-  const s = db.prepare("SELECT * FROM sites WHERE id=?").get(req.params.id);
+r.get("/:id", async (req, res) => {
+  const s = await db.prepare("SELECT * FROM sites WHERE id=?").get(req.params.id);
   if(!s) return res.status(404).json({ error:"site introuvable" });
-  assertScope(req, s);
+  await assertScope(req, s);
   /* La fiche porte les DEUX dates de dernière visite. Le site garde la sienne,
      saisie ; la date issue des soumissions ODK est calculée à la demande et
      prime à l'affichage — voir lib/soumissions.js pour le pourquoi. */
@@ -201,18 +201,18 @@ r.get("/:id", (req, res) => {
      par défaut que la fiche affiche et modifie. Un site désigné autrement par
      chaque formulaire porte plusieurs codes (migration 018), et la fiche est le
      seul endroit où l'on peut les voir tous. */
-  res.json({ site:s, months: db.prepare("SELECT * FROM site_months WHERE site_id=?").all(s.id),
+  res.json({ site:s, months: await db.prepare("SELECT * FROM site_months WHERE site_id=?").all(s.id),
     aliases: listerAlias(s.id),
-    derniereVisite: combinerDerniereVisite(s.last_visit, derniereVisiteOdk(s.id)) });
+    derniereVisite: combinerDerniereVisite(s.last_visit, await derniereVisiteOdk(s.id)) });
 });
 
 
 /* Le rattachement fait foi : quand un site porte un geo_pcode, ses libellés
    administratifs et ses coordonnées en descendent, plutôt que d'être saisis
    séparément — c'est ce qui les empêche de diverger du référentiel. */
-function applyGeo(b){
+async function applyGeo(b){
   if(!b.geo_pcode) return b;
-  const l = labelsFor(b.geo_pcode);
+  const l = await labelsFor(b.geo_pcode);
   if(!l.adm1 && !l.adm2 && !l.adm3 && !l.adm4) return b;   /* p-code inconnu : on n'écrase rien */
   b.adm1 = l.adm1 || null; b.adm2 = l.adm2 || null;
   b.adm3 = l.adm3 || null; b.adm4 = l.adm4 || null;
@@ -223,25 +223,25 @@ function applyGeo(b){
   return b;
 }
 
-r.post("/", requireCap("edit"), validate(schemas.site), (req, res) => {
-  const b = applyGeo(req.body);
-  const scope = scopeOf(req.user);
+r.post("/", requireCap("edit"), validate(schemas.site), async (req, res) => {
+  const b = await applyGeo(req.body);
+  const scope = await scopeOf(req.user);
   if(scope) b.office_id = scope;
-  if(db.prepare("SELECT 1 FROM sites WHERE code=?").get(b.code))
+  if(await db.prepare("SELECT 1 FROM sites WHERE code=?").get(b.code))
     return res.status(409).json({ error:"un site porte déjà ce code" });
   const id = newId("site");
   const cols = Object.keys(b).filter(k=>k!=="id");
-  db.prepare(`INSERT INTO sites (id,${cols.join(",")}) VALUES (?,${cols.map(()=>"?").join(",")})`)
+  await db.prepare(`INSERT INTO sites (id,${cols.join(",")}) VALUES (?,${cols.map(()=>"?").join(",")})`)
     .run(id, ...cols.map(k=>b[k]));
   /* Le code par défaut est miroité dans la table des codes externes, pour que la
      liste des codes d'un site soit complète en une requête. Voir lib/alias.js. */
   synchroniserCodeParDefaut(id, b.external_code);
-  audit(req, "create", id, `Site créé — ${b.name}`);
-  const nouveau = db.prepare("SELECT * FROM sites WHERE id=?").get(id);
+  await audit(req, "create", id, `Site créé — ${b.name}`);
+  const nouveau = await db.prepare("SELECT * FROM sites WHERE id=?").get(id);
   /* Audit GPS automatique à l'ajout : le point est jugé contre le centroïde de sa
      commune d'accueil (méthode app.R) ; l'écran peut alerter si le verdict n'est
      pas « conforme », sans que l'utilisateur ait à lancer l'audit à la main. */
-  res.status(201).json({ site: nouveau, gpsCheck: auditerPointUnique(nouveau) });
+  res.status(201).json({ site: nouveau, gpsCheck: await auditerPointUnique(nouveau) });
 });
 
 /* Modification : schéma PARTIEL, et c'est essentiel.
@@ -257,11 +257,11 @@ r.post("/", requireCap("edit"), validate(schemas.site), (req, res) => {
  * En partiel, un champ absent reste `undefined` et n'entre pas dans l'UPDATE,
  * tandis qu'un `null` ENVOYÉ reste un null : effacer volontairement une valeur
  * reste possible, ce qui n'aurait pas été le cas avec une simple fusion. */
-r.put("/:id", requireCap("edit"), validate(schemas.site.partial()), (req, res) => {
-  const cur = db.prepare("SELECT * FROM sites WHERE id=?").get(req.params.id);
+r.put("/:id", requireCap("edit"), validate(schemas.site.partial()), async (req, res) => {
+  const cur = await db.prepare("SELECT * FROM sites WHERE id=?").get(req.params.id);
   if(!cur) return res.status(404).json({ error:"site introuvable" });
-  assertScope(req, cur);
-  const b = applyGeo(req.body); const scope = scopeOf(req.user);
+  await assertScope(req, cur);
+  const b = await applyGeo(req.body); const scope = await scopeOf(req.user);
   if(scope) b.office_id = scope;
   /* Révision : si le client renvoie celle qu'il a lue et qu'elle a changé depuis,
      quelqu'un d'autre a modifié ce site pendant sa saisie. On refuse plutôt que
@@ -276,27 +276,27 @@ r.put("/:id", requireCap("edit"), validate(schemas.site.partial()), (req, res) =
      un `undefined` et laisseraient passer un doublon de code. */
   const code = b.code !== undefined ? b.code : cur.code;
   const nom  = b.name !== undefined ? b.name : cur.name;
-  const dup = db.prepare("SELECT id FROM sites WHERE code=? AND id<>?").get(code, cur.id);
+  const dup = await db.prepare("SELECT id FROM sites WHERE code=? AND id<>?").get(code, cur.id);
   if(dup) return res.status(409).json({ error:"un autre site porte déjà ce code" });
   const cols = Object.keys(b).filter(k => k !== "id" && b[k] !== undefined);
   if(!cols.length) return res.json({ site: cur });   /* rien à écrire, rien à incrémenter */
-  db.prepare(`UPDATE sites SET ${cols.map(k=>k+"=?").join(",")}, rev=rev+1, updated_at=datetime('now') WHERE id=?`)
+  await db.prepare(`UPDATE sites SET ${cols.map(k=>k+"=?").join(",")}, rev=rev+1, updated_at=now() WHERE id=?`)
     .run(...cols.map(k=>b[k]), cur.id);
   /* Seulement si le code par défaut est ENVOYÉ : un PUT partiel qui ne le
      mentionne pas n'a pas à toucher aux codes du site. Et corriger ce code
      retire l'ancien du jeu — un code désavoué ne doit pas continuer à rattacher
      des soumissions en douce. Les alias importés, eux, ne bougent pas. */
   if(b.external_code !== undefined) synchroniserCodeParDefaut(cur.id, b.external_code);
-  audit(req, "update", cur.id, `Site modifié — ${nom}`);
-  res.json({ site: db.prepare("SELECT * FROM sites WHERE id=?").get(cur.id) });
+  await audit(req, "update", cur.id, `Site modifié — ${nom}`);
+  res.json({ site: await db.prepare("SELECT * FROM sites WHERE id=?").get(cur.id) });
 });
 
-r.delete("/:id", requireCap("del"), (req, res) => {
-  const cur = db.prepare("SELECT * FROM sites WHERE id=?").get(req.params.id);
+r.delete("/:id", requireCap("del"), async (req, res) => {
+  const cur = await db.prepare("SELECT * FROM sites WHERE id=?").get(req.params.id);
   if(!cur) return res.status(404).json({ error:"site introuvable" });
-  assertScope(req, cur);
-  db.prepare("DELETE FROM sites WHERE id=?").run(cur.id);   /* cascade sur site_months et visits */
-  audit(req, "delete", cur.id, `Site supprimé — ${cur.name}`);
+  await assertScope(req, cur);
+  await db.prepare("DELETE FROM sites WHERE id=?").run(cur.id);   /* cascade sur site_months et visits */
+  await audit(req, "delete", cur.id, `Site supprimé — ${cur.name}`);
   res.json({ ok:true });
 });
 
@@ -318,13 +318,13 @@ r.delete("/:id", requireCap("del"), (req, res) => {
  * pour pouvoir DIRE pourquoi c'est refusé, la clause WHERE du DELETE pour le
  * GARANTIR — une protection qui ne tient qu'à un SELECT préalable se perd à la
  * première exécution concurrente (migration 017, ligne 122). */
-r.put("/:id/months", requireCap("edit"), validate(schemas.siteMonth), (req, res) => {
-  const site = db.prepare("SELECT * FROM sites WHERE id=?").get(req.params.id);
+r.put("/:id/months", requireCap("edit"), validate(schemas.siteMonth), async (req, res) => {
+  const site = await db.prepare("SELECT * FROM sites WHERE id=?").get(req.params.id);
   if(!site) return res.status(404).json({ error:"site introuvable" });
-  assertScope(req, site);
+  await assertScope(req, site);
   const m = req.body;
   const mois = cleMois(m.year, m.month);
-  const visites = visitesDuMois(site.id, m.year, m.month);
+  const visites = await visitesDuMois(site.id, m.year, m.month);
   const protegees = visites.filter(estProtegee);
   const manuelles = visites.filter(v => !estProtegee(v));
 
@@ -368,15 +368,14 @@ r.put("/:id/months", requireCap("edit"), validate(schemas.siteMonth), (req, res)
      exiger — ce n'est pas une exception, c'est le cas normal. */
   const couvertParOdk = m.done && protegees.length > 0;
   let visite = "aucune";
-  tx(() => {
-    db.prepare(`INSERT INTO site_months (site_id,year,month,active,planned,done,cp_name,monitor,report,moda)
-                VALUES (@site_id,@year,@month,@active,@planned,@done,@cp_name,@monitor,@report,@moda)
+  await tx(async (db) => {
+    await db.prepare(`INSERT INTO site_months (site_id,year,month,active,planned,done,cp_name,monitor,report,moda)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(site_id,year,month) DO UPDATE SET
-                  active=@active, planned=@planned, done=@done, cp_name=@cp_name,
-                  monitor=@monitor, report=@report, moda=@moda`)
-      .run({ site_id:site.id, year:m.year, month:m.month,
-             active:m.active?1:0, planned:m.planned?1:0, done:m.done?1:0,
-             cp_name:m.cp_name, monitor:m.monitor, report:m.report, moda:m.moda });
+                  active=?, planned=?, done=?, cp_name=?,
+                  monitor=?, report=?, moda=?`)
+      .run(site.id, m.year, m.month, m.active?1:0, m.planned?1:0, m.done?1:0, m.cp_name, m.monitor, m.report, m.moda,
+           m.active?1:0, m.planned?1:0, m.done?1:0, m.cp_name, m.monitor, m.report, m.moda);
     if(couvertParOdk){ /* (b) : la soumission fait foi, la grille se contente de la refléter */ }
     /* (d) Une saisie existe déjà : pas de doublon. Mais un motif envoyé REMPLACE
        celui de la ligne — sans quoi corriger un motif choisi par erreur
@@ -401,7 +400,7 @@ r.put("/:id/months", requireCap("edit"), validate(schemas.siteMonth), (req, res)
            cette route peut réécrire est exactement ce qu'elle a pu créer. Une
            ligne issue d'un formulaire ne se voit pas attribuer un motif de
            rattrapage, fût-ce par une transaction concurrente. */
-        db.prepare(`UPDATE visits SET manual_reason=?${noteRecue ? ", manual_note=?" : ""}
+        await db.prepare(`UPDATE visits SET manual_reason=?${noteRecue ? ", manual_note=?" : ""}
                     WHERE site_id=? AND visit_date LIKE ?
                       AND origin='manuelle' AND submission_id IS NULL`)
           .run(m.manual_reason, ...(noteRecue ? [note] : []), site.id, `${mois}%`);
@@ -412,12 +411,12 @@ r.put("/:id/months", requireCap("edit"), validate(schemas.siteMonth), (req, res)
       /* Le 15 du mois est une convention : la saisie ne sait pas quel jour. La
          visite issue d'ODK, elle, porte la date déclarée de collecte. */
       const date = `${mois}-15`;
-      db.prepare(`INSERT INTO visits (id,site_id,office_id,visit_date,activity_tag,monitor,
+      await db.prepare(`INSERT INTO visits (id,site_id,office_id,visit_date,activity_tag,monitor,
                                       form_id,status,origin,manual_reason,manual_note,created_by)
                   VALUES (?,?,?,?,?,?,'saisie','À valider','manuelle',?,?,?)`)
         .run(newId("visit"), site.id, site.office_id, date, site.activity_tag, m.monitor,
              m.manual_reason, m.manual_note ?? null, req.user.id);
-      db.prepare("UPDATE sites SET last_visit=? WHERE id=? AND (last_visit IS NULL OR last_visit < ?)")
+      await db.prepare("UPDATE sites SET last_visit=? WHERE id=? AND (last_visit IS NULL OR last_visit < ?)")
         .run(date, site.id, date);
       visite = "creee";
     }
@@ -425,9 +424,9 @@ r.put("/:id/months", requireCap("edit"), validate(schemas.siteMonth), (req, res)
        et elle vaut au pluriel : sur une base ayant accumulé deux saisies le même
        mois, décocher les retire toutes — ce que l'ancien `.get()` sans ORDER BY
        ne faisait qu'au hasard, en en laissant une derrière lui. */
-    else if(db.prepare(`DELETE FROM visits WHERE site_id=? AND visit_date LIKE ?
+    else if((await db.prepare(`DELETE FROM visits WHERE site_id=? AND visit_date LIKE ?
                         AND origin='manuelle' AND submission_id IS NULL`)
-      .run(site.id, `${mois}%`).changes){
+      .run(site.id, `${mois}%`)).changes){
       visite = "supprimee";
       /* La date de dernière visite saisie ne survit pas à la visite qui l'a
          posée : sans cela le site continuait d'annoncer le 15 d'un mois vide, et
@@ -436,22 +435,22 @@ r.put("/:id/months", requireCap("edit"), validate(schemas.siteMonth), (req, res)
          — la convention du 15 du mois — et on la remplace par la dernière saisie
          restante, jamais par une date ODK, qui est servie à côté et non à la
          place (voir `combinerDerniereVisite`). */
-      db.prepare(`UPDATE sites SET last_visit=
+      await db.prepare(`UPDATE sites SET last_visit=
                     (SELECT MAX(visit_date) FROM visits WHERE site_id=? AND origin='manuelle')
                   WHERE id=? AND last_visit=?`).run(site.id, site.id, `${mois}-15`);
     }
-  })();
+  });
 
-  audit(req, "plan", site.id, `Fiche mensuelle mise à jour — ${site.name}`);
+  await audit(req, "plan", site.id, `Fiche mensuelle mise à jour — ${site.name}`);
   /* Une ligne dédiée par saisie à la main, portant le motif en clair : le
      journal doit permettre de relire six mois plus tard pourquoi une visite ne
      vient d'aucun formulaire, sans avoir à rouvrir la fiche. */
   if(visite === "creee" || visite === "corrigee")
-    audit(req, "plan", site.id, `${mois} — visite saisie à la main `
+    await audit(req, "plan", site.id, `${mois} — visite saisie à la main `
       + `${visite === "creee" ? "" : "(motif corrigé) "}: ${libelleMotif(m.manual_reason)}`
       + `${m.manual_note ? ` — ${m.manual_note}` : ""} — ${site.name}`);
   if(visite === "supprimee")
-    audit(req, "plan", site.id, `${mois} — visite saisie à la main retirée — ${site.name}`);
+    await audit(req, "plan", site.id, `${mois} — visite saisie à la main retirée — ${site.name}`);
 
   const message = couvertParOdk
     ? `${mois} — une soumission ODK documente déjà ce mois : le suivi est enregistré, `
@@ -463,7 +462,7 @@ r.put("/:id/months", requireCap("edit"), validate(schemas.siteMonth), (req, res)
 /* Modification groupée : un seul champ, une liste d'identifiants, une transaction. */
 const BULK_FIELDS = new Set(["office_id","activity_tag","poi_subtype","modality","partner_id",
   "urban_area","status","security","responsible","antenne","category_id","site_type"]);
-r.post("/bulk", requireCap("edit"), (req, res) => {
+r.post("/bulk", requireCap("edit"), async (req, res) => {
   const p = z.object({ ids: z.array(z.string().max(64)).min(1).max(5000),
     field: z.string().max(40), value: z.union([z.string().max(200), z.number(), z.null()]) })
     .safeParse(req.body);
@@ -471,7 +470,7 @@ r.post("/bulk", requireCap("edit"), (req, res) => {
   const { ids, field, value } = p.data;
   if(!BULK_FIELDS.has(field))
     return res.status(422).json({ error:`le champ « ${field} » n'est pas modifiable en masse` });
-  const scope = scopeOf(req.user);
+  const scope = await scopeOf(req.user);
   /* Le WHERE ci-dessous limite QUELLES lignes sont touchées (celles du bureau du
      compte), mais pas la VALEUR écrite : sans ce garde, un compte cloisonné
      pourrait réaffecter en masse ses propres sites à un AUTRE bureau — les
@@ -486,8 +485,6 @@ r.post("/bulk", requireCap("edit"), (req, res) => {
      conserverait le même rev, son PUT passerait le contrôle et écraserait en
      silence ce que le bulk vient d'écrire. On incrémente donc rev comme le fait
      PUT /:id et l'import Excel. */
-  const stmt = db.prepare(`UPDATE sites SET ${field}=?, rev=rev+1, updated_at=datetime('now')
-                           WHERE id=? ${scope ? "AND office_id=?" : ""}`);
   let n = 0;
   /* Une valeur que la base refuse — un statut hors ('Active','Inactive'), une clé
      étrangère inconnue — remontait en « erreur interne » 500, c'est-à-dire en panne
@@ -495,7 +492,11 @@ r.post("/bulk", requireCap("edit"), (req, res) => {
      lance une modification sur 500 sites doit lire CE QUI ne passe pas, pas un
      message qui l'envoie ouvrir un ticket. */
   try{
-    tx(() => { for(const id of ids) n += stmt.run(value, id, ...(scope?[scope]:[])).changes; })();
+    await tx(async (db) => {
+      const stmt = db.prepare(`UPDATE sites SET ${field}=?, rev=rev+1, updated_at=now()
+                               WHERE id=? ${scope ? "AND office_id=?" : ""}`);
+      for(const id of ids) n += (await stmt.run(value, id, ...(scope?[scope]:[]))).changes;
+    });
   }catch(e){
     if(/CHECK constraint|FOREIGN KEY|NOT NULL|UNIQUE/.test(e.message))
       return res.status(422).json({ error:
@@ -503,7 +504,7 @@ r.post("/bulk", requireCap("edit"), (req, res) => {
         + `« ${field} » : la base l'a refusée. Aucun site n'a été modifié.` });
     throw e;
   }
-  audit(req, "bulk", null, `Modification groupée de ${n} site(s) — ${field}`);
+  await audit(req, "bulk", null, `Modification groupée de ${n} site(s) — ${field}`);
   res.json({ updated:n });
 });
 export default r;

@@ -5,7 +5,7 @@ fondée sur le risque, suivi de processus, produits, résultats, plan de distrib
 analyse des données ODK Central, cartographie et restitution.
 
 - **Frontend** : React 18 + Vite, sans framework de composants imposé
-- **Backend** : Node 20 + Express + SQLite (WAL), schéma relationnel avec clés étrangères
+- **Backend** : Node 20 + Express + PostgreSQL 16+, schéma relationnel avec clés étrangères
 - **Tests** : 25 tests d'API + 10 tests de bout en bout pilotant l'interface réelle
 - **Démo hors ligne** : `web/demo.html` présente une version statique de l'interface pour les présentations
 
@@ -15,6 +15,9 @@ analyse des données ODK Central, cartographie et restitution.
 
 ### En local, sans conteneur  
 
+Un serveur PostgreSQL 16+ joignable est un préalable — local (`postgresql` installé, ou
+`docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=... postgres:16-alpine`) ou distant.
+
 ```bash
 git clone <votre-dépôt> mems && cd mems
 cp .env.example .env
@@ -22,6 +25,10 @@ cp .env.example .env
 # Générer les deux secrets obligatoires
 echo "JWT_SECRET=$(openssl rand -hex 32)" >> .env
 echo "DATA_KEY=$(openssl rand -hex 32)"  >> .env
+
+# Créer le rôle et la base (une fois), puis renseigner DATABASE_URL dans .env
+createuser mems --pwprompt && createdb mems --owner mems
+echo "DATABASE_URL=postgres://mems:<mot de passe>@127.0.0.1:5432/mems" >> .env
 
 npm run install:all
 npm run seed          # crée le schéma, les données d'exemple et le compte administrateur
@@ -65,9 +72,12 @@ npm run dev:web       # interface — port 5173, à ouvrir depuis l'onglet Ports
 
 ### Avec Docker
 
+`docker-compose.yml` fournit désormais le service `postgres` lui-même — rien à provisionner à part.
+
 ```bash
-cp .env.example .env      # renseignez JWT_SECRET, DATA_KEY et CORS_ORIGINS
+cp .env.example .env      # renseignez JWT_SECRET, DATA_KEY, POSTGRES_PASSWORD et CORS_ORIGINS
 docker compose build
+docker compose up -d postgres                    # attend son état "healthy"
 docker compose run --rm mems node src/seed.js    # affiche le mot de passe initial
 docker compose up -d
 ```
@@ -103,7 +113,7 @@ mems/
 │  ├─ src/
 │  │  ├─ index.js              montage Express, sécurité, service du frontend compilé
 │  │  ├─ config.js             lecture et contrôle des variables d'environnement
-│  │  ├─ db.js                 connexion SQLite, migrations, contrôle d'intégrité
+│  │  ├─ db.js                 pool PostgreSQL, migrations, contrôle de santé
 │  │  ├─ migrate.js / seed.js  scripts d'exploitation
 │  │  ├─ lib/auth.js           bcrypt, JWT, sessions, contrôle des droits
 │  │  ├─ lib/validate.js       schémas Zod de toutes les entrées
@@ -1076,7 +1086,7 @@ Ce qui est en place :
 ### Ce qui reste à votre charge
 
 1. **TLS** — l'application ne chiffre pas le transport. Mettez-la derrière nginx, Caddy ou Traefik.
-2. **Sauvegardes** — voir §8. Une base SQLite non sauvegardée est une base perdue.
+2. **Sauvegardes** — voir §8. Une base non sauvegardée est une base perdue.
 3. **Rotation des secrets** — changer `JWT_SECRET` invalide toutes les sessions, ce qui est
    l'effet recherché en cas de compromission. Changer `DATA_KEY` rend illisibles les jetons
    déjà chiffrés : ressaisissez-les.
@@ -1214,27 +1224,29 @@ désormais, par le seul rôle qui a de bonnes raisons de le faire.
 
 ### Sauvegarde
 
-SQLite en mode WAL ne se sauvegarde pas en copiant le fichier pendant l'écriture.
+Le plus simple est de passer par **Administration → Sauvegarde** : le serveur exécute
+`pg_dump` (format personnalisé) dans une transaction cohérente, le fichier produit est relu
+avec `pg_restore --list` avant d'être conservé, et le tout est téléchargeable. La
+restauration prend d'abord une sauvegarde de filet, s'exécute avec `pg_restore
+--single-transaction` (tout ou rien — un fichier corrompu laisse la base en place) et refuse
+si le jeu de migrations de la sauvegarde ne correspond pas à celui de l'instance courante.
 
-Le plus simple est de passer par **Administration → Sauvegarde** : la copie utilise l'API de
-copie à chaud de SQLite, le fichier produit est vérifié (`integrity_check` et contrôle des
-clés étrangères) et téléchargeable. La restauration prend d'abord une sauvegarde de filet,
-s'exécute dans une transaction, vérifie l'intégrité et les clés étrangères, et n'est validée
-qu'ensuite — un fichier corrompu laisse la base en place.
-
-En ligne de commande :
+En ligne de commande (le client `postgresql-client` doit être installé — il l'est déjà dans
+l'image Docker de MEMS, pour ces mêmes routes) :
 
 ```bash
 # Sauvegarde cohérente, à chaud
-sqlite3 server/data/mems.db ".backup '/sauvegardes/mems-$(date +%F).db'"
+pg_dump -Fc --no-owner --file="/sauvegardes/mems-$(date +%F).dump" "$DATABASE_URL"
 
 # En conteneur
-docker compose exec mems sh -c "sqlite3 /app/server/data/mems.db \
-  \".backup '/app/server/data/backup-\$(date +%F).db'\""
-```
+docker compose exec postgres sh -c \
+  'pg_dump -Fc --no-owner -U mems -d mems --file="/tmp/mems-'"$(date +%F)"'.dump"'
+docker compose cp postgres:/tmp/mems-$(date +%F).dump ./sauvegardes/
 
-Restauration à la main : arrêtez le service, remplacez `mems.db`, supprimez `mems.db-wal` et
-`mems.db-shm`, redémarrez.
+# Restauration
+pg_restore --clean --if-exists --no-owner --single-transaction \
+  --dbname="$DATABASE_URL" /sauvegardes/mems-2026-08-05.dump
+```
 
 ### Exécution de scripts R et SPSS
 
@@ -1249,7 +1261,7 @@ compte est compromis. Elle est en outre réservée au rôle `super`.
 Ce que MEMS garantit :
 
 - l'enfant ne reçoit **aucune** variable d'environnement de l'application — ni `JWT_SECRET`,
-  ni `DATA_KEY`, ni `DB_FILE` ; son environnement est construit à la main (`ANALYSIS_PATH`,
+  ni `DATA_KEY`, ni `DATABASE_URL` ; son environnement est construit à la main (`ANALYSIS_PATH`,
   `ANALYSIS_LANG`, `HOME` sur le répertoire de travail) ;
 - il travaille dans un répertoire neuf, détruit dans tous les cas ;
 - il est tué par son **groupe** de processus au bout d'un délai borné — tuer le seul PID
@@ -1260,8 +1272,9 @@ Ce que MEMS garantit :
 Ce que MEMS **ne** garantit **pas**, et qui décide de l'opportunité d'activer la fonction :
 
 - l'enfant tourne sous **l'utilisateur du processus MEMS**. Il lit donc tout ce que cet
-  utilisateur lit : le fichier `.env`, la base SQLite, les sauvegardes. Purger
-  l'environnement ferme le raccourci le plus court, pas l'accès au disque ;
+  utilisateur lit : le fichier `.env`, les sauvegardes sur le disque local, et — s'il choisit
+  de s'y connecter avec les identifiants qu'il trouverait ailleurs — la base elle-même.
+  Purger l'environnement ferme le raccourci le plus court, pas l'accès au disque ;
 - le **réseau** lui est ouvert ;
 - ni processeur, ni mémoire, ni écritures hors du répertoire de travail ne sont limités —
   Node ne sait pas le faire, cela relève de l'hôte (conteneur dédié, compte sans privilèges,
@@ -1333,9 +1346,12 @@ Autant le dire clairement, cela évite de mauvaises surprises.
 - **La cartographie n'utilise pas de fond de carte.** Projection équirectangulaire corrigée
   de la latitude, tracée à partir de vos seules coordonnées : aucune donnée ne sort, mais
   il n'y a ni relief ni routes.
-- **SQLite convient à un bureau pays**, pas à des centaines d'écritures concurrentes par
-  seconde. Le passage à PostgreSQL ne touche que `server/src/db.js` et les quelques
-  particularités de syntaxe (`datetime('now')`, `PRAGMA`).
+- **PostgreSQL remplace SQLite** depuis la bascule décrite en tête de ce document — l'accès
+  base est désormais asynchrone partout, ce qui ouvre la voie au multi-tenant (Row-Level
+  Security par `tenant_id`), à la réplication et à la haute disponibilité. L'instance reste
+  pour l'instant mono-processus : le verrou d'entretien de `lib/sauvegarde.js` (sauvegarde,
+  VACUUM) est encore en mémoire, pas un verrou consultatif Postgres — à revoir si MEMS tourne
+  un jour derrière plusieurs instances.
 - **Pas de suppression logique.** Une suppression est définitive, tracée dans l'audit mais
   non réversible sans sauvegarde.
 

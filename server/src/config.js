@@ -16,11 +16,26 @@ function requireSecret(name, fallback){
   return fallback || crypto.randomBytes(32).toString("hex");
 }
 
+/* PostgreSQL est le seul moteur supporté. Sans DATABASE_URL en production,
+   on refuse de démarrer plutôt que de deviner une base locale. */
+function requireDatabaseUrl(){
+  const v = process.env.DATABASE_URL;
+  if(v) return v;
+  if(isProd) throw new Error("DATABASE_URL est requis en production.");
+  return "postgres://mems:mems_dev_pw@127.0.0.1:5432/mems_dev";
+}
+
 export const config = {
   isProd,
   port: int(process.env.PORT, 4000),
   host: process.env.HOST || "0.0.0.0",
-  dbFile: process.env.DB_FILE || "./data/mems.db",
+  databaseUrl: requireDatabaseUrl(),
+  dbPoolMax: int(process.env.DB_POOL_MAX, 10),
+  /* Sauvegardes : dumps `pg_dump` (format personnalisé), plus leur manifeste
+     JSON — voir lib/sauvegarde.js. Indépendant de la base elle-même : rien à
+     voir avec un chemin de fichier SQLite. */
+  backupDir: process.env.BACKUP_DIR || "./data/sauvegardes",
+  backupTimeoutMs: int(process.env.BACKUP_TIMEOUT_S, 600) * 1000,
   jwtSecret: requireSecret("JWT_SECRET"),
   /* Clé de chiffrement au repos des jetons de sources externes */
   dataKey: crypto.createHash("sha256").update(requireSecret("DATA_KEY")).digest(),

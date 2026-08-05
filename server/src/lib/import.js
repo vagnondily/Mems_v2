@@ -92,8 +92,8 @@ const caseload = {
     return null;
   },
   /* État courant, indexé par clé, pour calculer le diff. */
-  current: (scope) => {
-    const rows = db.prepare("SELECT * FROM caseload").all();
+  current: async (scope) => {
+    const rows = await db.prepare("SELECT * FROM caseload").all();
     const out = {};
     for(const c of rows){
       if(scope && !scope.has(c.geo_pcode)) continue;
@@ -106,30 +106,30 @@ const caseload = {
      l'utilisateur ne remplit pas ne doivent pas créer de lignes à zéro : elles
      n'ont rien à dire, ce n'est pas la même chose qu'un chiffre nul mesuré. */
   blank: (r) => !r.population && !r.households && !r.targeted && !r.targeted_hh && !r.source,
-  apply: (rows) => {
+  apply: async (rows) => {
     const find = db.prepare(`SELECT id FROM caseload
       WHERE geo_pcode=? AND year=? AND activity_tag=? AND month IS ?`);
     const ins = db.prepare(`INSERT INTO caseload
       (id,geo_pcode,level,year,month,activity_tag,population,households,targeted,targeted_hh,source)
       VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
     const upd = db.prepare(`UPDATE caseload SET population=?, households=?, targeted=?,
-      targeted_hh=?, source=?, rev=rev+1, updated_at=datetime('now') WHERE id=?`);
+      targeted_hh=?, source=?, rev=rev+1, updated_at=now() WHERE id=?`);
     let crees = 0, modifies = 0;
     for(const x of rows){
-      const cur = find.get(x.geo_pcode, x.year, x.activity_tag, x.month);
-      if(cur){ upd.run(x.population, x.households, x.targeted, x.targeted_hh, x.source || null, cur.id); modifies++; }
-      else { ins.run(newId("cl"), x.geo_pcode, x.level || "adm3", x.year, x.month, x.activity_tag,
+      const cur = await find.get(x.geo_pcode, x.year, x.activity_tag, x.month);
+      if(cur){ await upd.run(x.population, x.households, x.targeted, x.targeted_hh, x.source || null, cur.id); modifies++; }
+      else { await ins.run(newId("cl"), x.geo_pcode, x.level || "adm3", x.year, x.month, x.activity_tag,
         x.population, x.households, x.targeted, x.targeted_hh, x.source || null); crees++; }
     }
     return { crees, modifies };
   },
   /* Lignes du modèle : une par unité du périmètre, pour l'année courante. */
-  seed: ({ year, units, tags }) => {
+  seed: async ({ year, units, tags }) => {
     const out = [];
     for(const u of units){
       const l = labelsFor(u.pcode);
       for(const tag of ["", ...tags]){
-        const cur = db.prepare(`SELECT * FROM caseload
+        const cur = await db.prepare(`SELECT * FROM caseload
           WHERE geo_pcode=? AND year=? AND activity_tag=? AND month IS NULL`).get(u.pcode, year, tag);
         out.push({ geo_pcode:u.pcode, adm1:l.adm1, adm2:l.adm2, adm3:l.adm3,
           year, month:"", activity_tag:tag,
@@ -195,8 +195,8 @@ const pdd = {
       return { field:"Distribué", message:`distribué (${r.distributed}) supérieur au reçu (${r.received})` };
     return null;
   },
-  current: (scope) => {
-    const rows = db.prepare("SELECT * FROM pdd WHERE geo_pcode IS NOT NULL").all();
+  current: async (scope) => {
+    const rows = await db.prepare("SELECT * FROM pdd WHERE geo_pcode IS NOT NULL").all();
     const out = {};
     for(const p of rows){
       if(scope && !scope.has(p.geo_pcode)) continue;
@@ -208,7 +208,7 @@ const pdd = {
             "benef_actual","received","distributed","status"],
   blank: (r) => !r.benef_planned && !r.benef_actual && !r.households
              && !r.tonnage && !r.amount && !r.days,
-  apply: (rows, ctx) => {
+  apply: async (rows, ctx) => {
     const find = db.prepare(`SELECT id FROM pdd
       WHERE geo_pcode=? AND year=? AND month=? AND act_type=? AND modality=?`);
     const ins = db.prepare(`INSERT INTO pdd
@@ -218,17 +218,17 @@ const pdd = {
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
     const upd = db.prepare(`UPDATE pdd SET bureau=?, commodity=?, days=?, benef_planned=?,
       households=?, tonnage=?, amount=?, benef_actual=?, received=?, distributed=?, status=?,
-      rev=rev+1, updated_at=datetime('now') WHERE id=?`);
+      rev=rev+1, updated_at=now() WHERE id=?`);
     let crees = 0, modifies = 0;
     for(const x of rows){
-      const cur = find.get(x.geo_pcode, x.year, x.month, x.act_type, x.modality);
+      const cur = await find.get(x.geo_pcode, x.year, x.month, x.act_type, x.modality);
       if(cur){
-        upd.run(x.bureau || null, x.commodity || null, x.days, x.benef_planned, x.households,
+        await upd.run(x.bureau || null, x.commodity || null, x.days, x.benef_planned, x.households,
           x.tonnage, x.amount, x.benef_actual, x.received, x.distributed, x.status, cur.id);
         modifies++;
       } else {
         const l = labelsFor(x.geo_pcode);
-        ins.run(newId("pdd"), x.year, x.month, x.act_type,
+        await ins.run(newId("pdd"), x.year, x.month, x.act_type,
           x.act_type === "GD" ? "URT_GD" : "URT_PREV", ctx.officeId || null,
           x.bureau || "—", x.geo_pcode, l.adm1 || null, l.adm2 || null, l.adm3 || null,
           x.modality, x.commodity || null, x.days, x.benef_planned, x.households,
@@ -238,11 +238,11 @@ const pdd = {
     }
     return { crees, modifies };
   },
-  seed: ({ year, units }) => {
+  seed: async ({ year, units }) => {
     const out = [];
     for(const u of units){
       const l = labelsFor(u.pcode);
-      const rows = db.prepare(`SELECT * FROM pdd WHERE geo_pcode=? AND year=? ORDER BY month`)
+      const rows = await db.prepare(`SELECT * FROM pdd WHERE geo_pcode=? AND year=? ORDER BY month`)
         .all(u.pcode, year);
       if(rows.length){
         for(const p of rows) out.push({ geo_pcode:u.pcode, adm1:l.adm1, adm2:l.adm2, adm3:l.adm3,
@@ -321,11 +321,11 @@ const codes = {
      pour laquelle ce référentiel existe. Sans millésime courant, il n'y a rien
      contre quoi vérifier : ne pas rejeter, sous peine de faire rentrer par la
      fenêtre la dépendance géographique que la portée nationale vient d'ôter. */
-  check: (r) => {
+  check: async (r) => {
     if(!r.geo_pcode) return null;
     const v = currentVersion();
     if(!v) return null;
-    const connu = db.prepare("SELECT 1 FROM geo_unit WHERE version_id=? AND pcode=?")
+    const connu = await db.prepare("SELECT 1 FROM geo_unit WHERE version_id=? AND pcode=?")
       .get(v.id, r.geo_pcode);
     return connu ? null : { field:"P-code",
       message:`« ${r.geo_pcode} » est absent du millésime courant du référentiel géographique — `
@@ -333,9 +333,9 @@ const codes = {
   },
   /* Indexé par la clé métier, tous référentiels confondus : la clé les distingue
      déjà, et deux référentiels ne peuvent pas se marcher dessus. */
-  current: () => {
+  current: async () => {
     const out = {};
-    for(const e of db.prepare("SELECT * FROM code_referentiel").all())
+    for(const e of await db.prepare("SELECT * FROM code_referentiel").all())
       out[`${e.referentiel}|${e.code}`] = e;
     return out;
   },
@@ -343,12 +343,12 @@ const codes = {
   /* Pas de `blank` : une entrée sans libellé reste une entrée. Un code seul, sans
      rien d'autre, est déjà une information — c'est le code que la source emploie,
      et le rapprochement saura peut-être le rattacher par son seul préfixe. */
-  apply: (rows, ctx) => ecrireEntrees(rows, ctx),
+  apply: async (rows, ctx) => ecrireEntrees(rows, ctx),
   /* Les entrées DÉJÀ chargées pour ce référentiel : le modèle sert donc aussi à
      corriger une liste existante. Au tout premier chargement il rend zéro ligne,
      et c'est pour ce cas que `completer` existe — sans lui, aucune ligne collée
      par l'opérateur ne porterait le nom du référentiel. */
-  seed: ({ referentiel }) => db.prepare(
+  seed: async ({ referentiel }) => await db.prepare(
     `SELECT code, referentiel, libelle, geo_pcode, adm1, adm2, adm3, adm4,
             site_code, source, note
      FROM code_referentiel WHERE referentiel=? ORDER BY code`).all(referentiel || ""),
@@ -420,7 +420,7 @@ export async function buildTemplate(kind, ctx){
   head.height = 32; hint.height = 26;
 
   /* Lignes de données, pré-remplies. */
-  const rows = def.seed(ctx);
+  const rows = await def.seed(ctx);
   rows.forEach(r => {
     const row = ws.addRow(def.columns.map(c => r[c.field] ?? ""));
     def.columns.forEach((c, i) => {
@@ -584,7 +584,7 @@ export async function readUpload(kind, buffer){
 }
 
 /* ── Analyse : valider, comparer, sans rien écrire ─────────────────── */
-export function analyse(kind, raw, ctx){
+export async function analyse(kind, raw, ctx){
   const def = KINDS[kind];
   /* Un type national n'a ni p-code obligatoire ni bureau propriétaire : ses deux
      gardes géographiques sont débranchées, et le millésime n'est même pas lu —
@@ -593,9 +593,9 @@ export function analyse(kind, raw, ctx){
   const geo = def.portee === "geo";
   const v = geo ? currentVersion() : null;
   const known = v
-    ? new Set(db.prepare("SELECT pcode FROM geo_unit WHERE version_id=?").all(v.id).map(x=>x.pcode))
+    ? new Set((await db.prepare("SELECT pcode FROM geo_unit WHERE version_id=?").all(v.id)).map(x=>x.pcode))
     : new Set();
-  const courant = def.current(ctx.scope);
+  const courant = await def.current(ctx.scope);
   const enTete = def.columns.find(c => c.key)?.header || "clé";
   /* Une colonne absente du fichier ne peut pas être une modification : la
      comparer reviendrait à lire un silence comme un effacement. */
@@ -647,7 +647,7 @@ export function analyse(kind, raw, ctx){
        créer d'enregistrement à zéro et sans la compter comme un rejet. */
     if(def.blank && def.blank(r) && !courant[k]){ vides++; continue; }
 
-    const pb = def.check(r);
+    const pb = await def.check(r);
     if(pb){ result.push({ line, action:"reject", ...pb, payload:r }); continue; }
 
     const avant = courant[k];
@@ -670,7 +670,7 @@ export function analyse(kind, raw, ctx){
 }
 
 /* ── Enregistrement du lot ─────────────────────────────────────────── */
-export function saveBatch({ kind, user, filename, rows, absentes = [] }){
+export async function saveBatch({ kind, user, filename, rows, absentes = [] }){
   const id = newId("imp");
   const summary = {
     crees:     rows.filter(r => r.action === "create").length,
@@ -682,32 +682,38 @@ export function saveBatch({ kind, user, filename, rows, absentes = [] }){
        lecture du fichier. */
     absentes,
   };
-  tx(() => {
-    db.prepare(`INSERT INTO import_batch (id,kind,user_id,user_label,office_id,filename,summary)
+  await tx(async (db) => {
+    await db.prepare(`INSERT INTO import_batch (id,kind,user_id,user_label,office_id,filename,summary)
                 VALUES (?,?,?,?,?,?,?)`)
       .run(id, kind, user.id, user.first_name, user.office_id || null,
            filename || null, JSON.stringify(summary));
     const ins = db.prepare(`INSERT INTO import_row (batch_id,line,action,field,message,payload,before)
                             VALUES (?,?,?,?,?,?,?)`);
     for(const r of rows)
-      ins.run(id, r.line, r.action, r.field || null, r.message || null,
+      await ins.run(id, r.line, r.action, r.field || null, r.message || null,
         JSON.stringify(r.payload), r.before ? JSON.stringify(r.before) : null);
-  })();
+  });
   return { id, summary };
 }
 
-export function readBatch(id){
-  const b = db.prepare("SELECT * FROM import_batch WHERE id=?").get(id);
+export async function readBatch(id){
+  const b = await db.prepare("SELECT * FROM import_batch WHERE id=?").get(id);
   if(!b) return null;
-  const rows = db.prepare("SELECT * FROM import_row WHERE batch_id=? ORDER BY line").all(id);
+  const rows = await db.prepare("SELECT * FROM import_row WHERE batch_id=? ORDER BY line").all(id);
+  /* TODO-PG: `summary`, `payload` et `before` restent lus ici comme du TEXT JSON
+     (JSON.parse), conformément à la liste des colonnes jsonb communiquée pour ce
+     portage (connector.config, mre_activity.months — import_batch.summary et
+     import_row.payload/before n'y figurent pas). À vérifier contre le schéma
+     Postgres réel : si l'une de ces trois colonnes a été déclarée jsonb, le
+     JSON.parse correspondant doit être retiré (pg la rend déjà en objet/tableau). */
   return { ...b, summary: JSON.parse(b.summary || "{}"),
     rows: rows.map(r => ({ line:r.line, action:r.action, field:r.field, message:r.message,
       payload: JSON.parse(r.payload), before: r.before ? JSON.parse(r.before) : null })) };
 }
 
 /* ── Application ───────────────────────────────────────────────────── */
-export function commitBatch(id, user){
-  const b = readBatch(id);
+export async function commitBatch(id, user){
+  const b = await readBatch(id);
   if(!b) return { error:"lot introuvable", status:404 };
   if(b.status === "committed") return { error:"ce lot a déjà été appliqué", status:409 };
   if(b.status === "cancelled") return { error:"ce lot a été annulé", status:409 };
@@ -717,29 +723,37 @@ export function commitBatch(id, user){
     .map(r => r.payload);
 
   let res = { crees:0, modifies:0 };
-  tx(() => {
-    /* L'identifiant du lot entre dans le contexte : un type qui garde la trace de
-       sa provenance (le référentiel de codes) peut la porter ligne à ligne, et
-       « d'où vient cette entrée » se répond alors sans enquête. */
-    if(aEcrire.length) res = def.apply(aEcrire,
+  await tx(async (db) => {
+    /* TODO-PG: `def.apply` (caseload.apply / pdd.apply ici, ecrireEntrees() de
+       lib/codes.js pour le type « codes ») écrit encore par le `db` importé au
+       niveau du module — c'est-à-dire par le pool, pas par CE client de
+       transaction. Sous better-sqlite3, une connexion physique unique rendait
+       cette écriture atomique avec l'UPDATE/INSERT ci-dessous « gratuitement » ;
+       sous pg, ces lignes ne feraient plus partie du ROLLBACK en cas d'échec
+       plus bas. Le corriger correctement suppose de faire descendre CE `db`
+       transactionnel jusque dans caseload.apply/pdd.apply (ce fichier) et dans
+       ecrireEntrees (lib/codes.js, hors du périmètre de ce passage) — un
+       changement de signature plus large qu'un portage mécanique, donc signalé
+       ici plutôt que deviné. */
+    if(aEcrire.length) res = await def.apply(aEcrire,
       { officeId: user.office_id || b.office_id, batchId: id,
         absentes: b.summary.absentes || [] });
-    db.prepare(`UPDATE import_batch SET status='committed', committed_at=datetime('now') WHERE id=?`)
+    await db.prepare(`UPDATE import_batch SET status='committed', committed_at=now() WHERE id=?`)
       .run(id);
-    db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+    await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
                 VALUES (?,?,?,'plan',?,?,'import',?)`)
       .run(newId("aud"), user.id, user.first_name, b.kind, id,
            `Import ${def.label} : ${res.crees} créé(s), ${res.modifies} modifié(s), `
            + `${b.summary.inchanges} inchangé(s), ${b.summary.rejetes} rejeté(s)`);
-  })();
+  });
   return { ...res, inchanges:b.summary.inchanges, rejetes:b.summary.rejetes };
 }
 
 /* ── Périmètre : les unités que l'utilisateur peut toucher ───────────
    Une seule définition, partagée avec les autres routes (lib/scope.js). */
-export function scopeFor(user){
-  const scope = scopeOf(user);
-  const units = unitsIn(scope, "adm3");
+export async function scopeFor(user){
+  const scope = await scopeOf(user);
+  const units = await unitsIn(scope, "adm3");
   return { units, scope: scope.unbounded ? null : new Set(units.map(u => u.pcode)),
            source: scope.source };
 }

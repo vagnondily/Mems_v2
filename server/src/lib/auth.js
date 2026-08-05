@@ -40,19 +40,19 @@ export function motDePasseProvisoire(){
   return s;
 }
 
-export function issueToken(user, req){
+export async function issueToken(user, req){
   const jti = newId("sess");
   const expSeconds = 8*3600;
   const token = jwt.sign(
     { sub:user.id, role:user.role, office:user.office_id || null },
     config.jwtSecret, { expiresIn: config.tokenTtl, jwtid: jti });
-  db.prepare(`INSERT INTO sessions (id,user_id,expires_at,ip,user_agent)
-              VALUES (?,?,datetime('now', ?),?,?)`)
-    .run(jti, user.id, `+${expSeconds} seconds`,
+  await db.prepare(`INSERT INTO sessions (id,user_id,expires_at,ip,user_agent)
+              VALUES (?,?,?,?,?)`)
+    .run(jti, user.id, new Date(Date.now() + expSeconds*1000),
          (req?.ip || "").slice(0,64), (req?.get?.("user-agent") || "").slice(0,200));
   return { token, jti };
 }
-export function revoke(jti){ db.prepare("UPDATE sessions SET revoked=1 WHERE id=?").run(jti); }
+export async function revoke(jti){ await db.prepare("UPDATE sessions SET revoked=1 WHERE id=?").run(jti); }
 
 /* ═══════════════════════════════════════════════════════════════════════
    Mot de passe provisoire : ce qu'un compte peut faire avant de l'avoir changé.
@@ -82,33 +82,35 @@ const cheminComplet = (req) =>
   `${req.method} ${(req.originalUrl || req.url || "").split("?")[0].replace(/\/+$/, "")}`;
 
 /* Le porteur du jeton doit correspondre à une session vivante et à un compte actif. */
-export function authenticate(req, res, next){
-  const header = req.get("authorization");
-  const bearer = header && header.startsWith("Bearer ") ? header.slice(7) : null;
-  const token = bearer || req.cookies?.[config.cookieName];
-  if(!token) return res.status(401).json({ error:"authentification requise" });
-  let payload;
-  try{ payload = jwt.verify(token, config.jwtSecret); }
-  catch(e){ return res.status(401).json({ error:"jeton invalide ou expiré" }); }
-  const sess = db.prepare(
-    "SELECT * FROM sessions WHERE id=? AND revoked=0 AND expires_at > datetime('now')").get(payload.jti);
-  if(!sess) return res.status(401).json({ error:"session close" });
-  const user = db.prepare("SELECT * FROM users WHERE id=? AND active=1").get(payload.sub);
-  if(!user) return res.status(401).json({ error:"compte inactif" });
-  if(user.must_change_pw && !CHEMINS_SANS_MOT_DE_PASSE_DEFINITIF.has(cheminComplet(req)))
-    return res.status(403).json({ error:
-      "mot de passe provisoire : changez-le avant tout autre accès "
-      + "(POST /api/auth/password), puis reconnectez-vous." });
-  /* Le compte « écran de supervision » ne fonctionne qu'aux heures de bureau :
-     hors plage, la session existe mais l'API se ferme — l'écran cesse d'afficher
-     la donnée réelle. Le serveur tranche (l'horloge d'un écran mural n'est pas
-     fiable), sur l'heure de Madagascar. */
-  if(user.role === "dashboard" && !dansPlageAffichage())
-    return res.status(403).json({ error:
-      "Écran de supervision : accès autorisé de 07h30 à 18h00 (heure de Madagascar).",
-      code:"hors_plage_affichage" });
-  req.user = user; req.jti = payload.jti;
-  return next();
+export async function authenticate(req, res, next){
+  try{
+    const header = req.get("authorization");
+    const bearer = header && header.startsWith("Bearer ") ? header.slice(7) : null;
+    const token = bearer || req.cookies?.[config.cookieName];
+    if(!token) return res.status(401).json({ error:"authentification requise" });
+    let payload;
+    try{ payload = jwt.verify(token, config.jwtSecret); }
+    catch(e){ return res.status(401).json({ error:"jeton invalide ou expiré" }); }
+    const sess = await db.prepare(
+      "SELECT * FROM sessions WHERE id=? AND revoked=0 AND expires_at > now()").get(payload.jti);
+    if(!sess) return res.status(401).json({ error:"session close" });
+    const user = await db.prepare("SELECT * FROM users WHERE id=? AND active=1").get(payload.sub);
+    if(!user) return res.status(401).json({ error:"compte inactif" });
+    if(user.must_change_pw && !CHEMINS_SANS_MOT_DE_PASSE_DEFINITIF.has(cheminComplet(req)))
+      return res.status(403).json({ error:
+        "mot de passe provisoire : changez-le avant tout autre accès "
+        + "(POST /api/auth/password), puis reconnectez-vous." });
+    /* Le compte « écran de supervision » ne fonctionne qu'aux heures de bureau :
+       hors plage, la session existe mais l'API se ferme — l'écran cesse d'afficher
+       la donnée réelle. Le serveur tranche (l'horloge d'un écran mural n'est pas
+       fiable), sur l'heure de Madagascar. */
+    if(user.role === "dashboard" && !dansPlageAffichage())
+      return res.status(403).json({ error:
+        "Écran de supervision : accès autorisé de 07h30 à 18h00 (heure de Madagascar).",
+        code:"hors_plage_affichage" });
+    req.user = user; req.jti = payload.jti;
+    return next();
+  }catch(e){ return next(e); }
 }
 
 /* L'écran de supervision n'est accessible que de 07h30 à 18h00, heure de

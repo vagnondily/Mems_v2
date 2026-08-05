@@ -1,15 +1,13 @@
 import { Router } from "express";
 import fs from "node:fs";
-import path from "node:path";
 import { z } from "zod";
-import { db } from "../db.js";
-import { config } from "../config.js";
+import { db, pool } from "../db.js";
 import { log } from "../lib/logger.js";
 import { validate } from "../lib/validate.js";
 import { newId } from "../lib/crypto.js";
 import { requireSuper } from "../lib/auth.js";
 import { sauvegarder, restaurer, verifier, listerSauvegardes, cheminSauvegarde,
-         dossierSauvegardes, prendreVerrou, rendreVerrou, entretienEnCours }
+         dossierSauvegardes, prendreVerrou, rendreVerrou, entretienEnCours, tailleBase }
   from "../lib/sauvegarde.js";
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -85,7 +83,7 @@ const journalQuery = z.object({
   taille:  z.coerce.number().int().min(1).max(200).default(50),
 }).strict();
 
-r.get("/journal", validate(journalQuery, "query"), (req, res) => {
+r.get("/journal", validate(journalQuery, "query"), async (req, res) => {
   const f = req.query;
   const ou = []; const args = [];
   const ajout = (sql, valeur) => { if(valeur != null && valeur !== ""){ ou.push(sql); args.push(valeur); } };
@@ -102,8 +100,8 @@ r.get("/journal", validate(journalQuery, "query"), (req, res) => {
     ? `%${f.q.replace(/[\\%_]/g, c => "\\" + c)}%` : null);
 
   const where = ou.length ? `WHERE ${ou.join(" AND ")}` : "";
-  const total = db.prepare(`SELECT COUNT(*) c FROM audit ${where}`).get(...args).c;
-  const lignes = db.prepare(
+  const total = (await db.prepare(`SELECT COUNT(*) c FROM audit ${where}`).get(...args)).c;
+  const lignes = await db.prepare(
     `SELECT id, at, user_id, user_label, office, kind, entity, entity_id, action, text
      FROM audit ${where} ORDER BY at DESC, id DESC LIMIT ? OFFSET ?`)
     .all(...args, f.taille, (f.page - 1) * f.taille);
@@ -114,14 +112,14 @@ r.get("/journal", validate(journalQuery, "query"), (req, res) => {
 
 /* Les valeurs réellement présentes, pour que les filtres ci-dessus soient
    proposables plutôt que devinables. */
-r.get("/journal/facettes", (req, res) => {
+r.get("/journal/facettes", async (req, res) => {
   const distinct = (col) => db.prepare(
     `SELECT ${col} v, COUNT(*) n FROM audit WHERE ${col} IS NOT NULL
      GROUP BY ${col} ORDER BY n DESC`).all();
-  const bornes = db.prepare("SELECT MIN(at) premier, MAX(at) dernier FROM audit").get();
+  const bornes = await db.prepare("SELECT MIN(at) premier, MAX(at) dernier FROM audit").get();
   res.json({
-    kinds: distinct("kind"), entities: distinct("entity"), actions: distinct("action"),
-    comptes: db.prepare(
+    kinds: await distinct("kind"), entities: await distinct("entity"), actions: await distinct("action"),
+    comptes: await db.prepare(
       `SELECT a.user_id, a.user_label, COUNT(*) n FROM audit a
        WHERE a.user_id IS NOT NULL GROUP BY a.user_id, a.user_label ORDER BY n DESC LIMIT 100`).all(),
     bornes,
@@ -134,54 +132,48 @@ r.get("/journal/facettes", (req, res) => {
 
 const octetsDe = (chemin) => { try{ return fs.statSync(chemin).size; }catch{ return 0; } };
 
-const tailles = () => {
-  const base = path.resolve(config.dbFile);
-  const principal = octetsDe(base), wal = octetsDe(base + "-wal"), shm = octetsDe(base + "-shm");
-  return { chemin:base, principal, wal, shm, total: principal + wal + shm };
-};
+r.get("/base", async (req, res) => {
+  /* Postgres applique TOUJOURS les clés étrangères — aucune ligne ne peut
+     exister en violation, donc rien à balayer après coup comme le faisait
+     `PRAGMA foreign_key_check`. Ce qui PEUT exister : une contrainte posée
+     `NOT VALID` (ajoutée sans revalider les lignes déjà en place) — c'est le
+     seul état « intègre selon le schéma, pas encore prouvé sur les données »
+     que Postgres autorise, donc le seul qui mérite d'être signalé ici. */
+  const nonValidees = await db.prepare(
+    `SELECT conname, conrelid::regclass::text AS table
+     FROM pg_constraint WHERE NOT convalidated AND connamespace = 'public'::regnamespace`).all();
 
-r.get("/base", (req, res) => {
-  const violations = db.pragma("foreign_key_check");
-  const pragma = (nom) => db.pragma(nom, { simple:true });
-  /* `integrity_check` parcourt la base entière : on le lit UNE fois et on s'en
-     sert deux, plutôt que de payer deux balayages pour la même réponse. */
-  const integrite = pragma("integrity_check");
-  const tables = db.prepare(
-    `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'
-     ORDER BY name`).all()
-    /* On compte des lignes, jamais leur contenu : cette route ne doit rien
-       laisser filtrer de la donnée, et surtout pas des tables qui portent des
-       colonnes chiffrées. */
-    .map(t => ({ nom:t.name, lignes: db.prepare(`SELECT COUNT(*) c FROM "${t.name}"`).get().c }));
+  const tables = await db.prepare(
+    `SELECT relname AS nom, n_live_tup AS lignes
+     FROM pg_stat_user_tables WHERE schemaname='public' ORDER BY relname`).all();
+
+  const { rows:[taille] } = await pool.query(
+    "SELECT pg_database_size(current_database()) AS octets");
+  const { rows:[activite] } = await pool.query(
+    "SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database()");
+  const { rows:[version] } = await pool.query("SHOW server_version");
 
   res.json({
-    fichier: tailles(),
+    base: { octets:Number(taille.octets), connexions:Number(activite.n), version:version.server_version },
     integrite: {
-      integrity_check: integrite,
-      violations_cles_etrangeres: violations.length,
-      detail_violations: violations.slice(0, 50),
-      conforme: integrite === "ok" && violations.length === 0,
+      contraintes_non_validees: nonValidees.length,
+      detail: nonValidees.slice(0, 50),
+      conforme: nonValidees.length === 0,
     },
-    reglages: {
-      journal_mode: pragma("journal_mode"), page_size: pragma("page_size"),
-      page_count: pragma("page_count"), freelist_count: pragma("freelist_count"),
-      auto_vacuum: pragma("auto_vacuum"), foreign_keys: pragma("foreign_keys"),
-      busy_timeout: pragma("busy_timeout"),
-    },
-    /* Les pages libres sont ce qu'un VACUUM récupérerait : c'est le seul
-       chiffre qui permette de décider s'il vaut la peine d'être lancé. */
-    recuperable_par_vacuum: pragma("freelist_count") * pragma("page_size"),
+    /* Comptage approximatif (statistiques d'autovacuum), pas un COUNT(*) par
+       table : cette route sert un diagnostic instantané sur 57 tables, pas un
+       chiffre exact — n_live_tup est rafraîchi à chaque ANALYZE/autovacuum. */
     tables,
-    migrations: db.prepare("SELECT name, applied_at FROM _migrations ORDER BY name").all(),
+    migrations: await db.prepare("SELECT name, applied_at FROM _migrations ORDER BY name").all(),
     entretien_en_cours: entretienEnCours(),
     sauvegardes: listerSauvegardes().length,
   });
 });
 
-/* Les deux opérations d'entretien passent par le même sas : verrou pris,
-   durée mesurée, verrou rendu quoi qu'il arrive. Elles bloquent — c'est leur
+/* Les opérations d'entretien passent par le même sas : verrou pris, durée
+   mesurée, verrou rendu quoi qu'il arrive. Elles bloquent — c'est leur
    nature — donc on refuse plutôt que d'empiler. */
-function sousVerrou(operation, req, res, travail){
+async function sousVerrou(operation, req, res, travail){
   const encours = entretienEnCours();
   if(encours) return res.status(409).json({
     error: `une opération d'entretien est déjà en cours (${encours.operation}, `
@@ -190,31 +182,34 @@ function sousVerrou(operation, req, res, travail){
   prendreVerrou(operation, req.user.email);
   const t0 = Date.now();
   try{
-    const sortie = travail();
+    const sortie = await travail();
     return res.json({ ok:true, operation, ms: Date.now() - t0, ...sortie });
   }finally{ rendreVerrou(); }
 }
 
-r.post("/base/checkpoint", (req, res) => sousVerrou("checkpoint", req, res, () => {
-  const avant = tailles();
-  /* TRUNCATE et pas PASSIVE : le but est de replier le WAL dans la base et de
-     rendre la place, pas seulement d'avancer le curseur. `busy` à 1 signale
-     qu'un lecteur tenait encore le journal — l'appel a fait ce qu'il a pu, et
-     le dire est plus utile que de renvoyer un succès trompeur. */
-  const [resultat] = db.pragma("wal_checkpoint(TRUNCATE)");
-  const apres = tailles();
-  tracer(req, { entity:"base", action:"checkpoint",
-    text:`Point de contrôle WAL — ${avant.wal} → ${apres.wal} octets` });
-  return { resultat, avant, apres, complet: resultat?.busy === 0 };
+r.post("/base/checkpoint", (req, res) => sousVerrou("checkpoint", req, res, async () => {
+  const avant = await tailleBase();
+  /* CHECKPOINT exige normalement un rôle superutilisateur (ou membre de
+     `pg_checkpoint`, PG15+) : sur une instance managée où MEMS tourne avec un
+     rôle applicatif ordinaire, l'appel est refusé — on le dit plutôt que de
+     faire échouer toute la route. */
+  let complet = null;
+  try{ await pool.query("CHECKPOINT"); complet = true; }
+  catch(e){ complet = false; log.warn("CHECKPOINT refusé", { message:e.message }); }
+  const apres = await tailleBase();
+  await tracer(req, { entity:"base", action:"checkpoint",
+    text: complet ? "Point de contrôle exécuté"
+      : "Point de contrôle refusé (rôle sans privilège CHECKPOINT)" });
+  return { avant, apres, complet };
 }));
 
-r.post("/base/vacuum", (req, res) => sousVerrou("vacuum", req, res, () => {
-  const avant = tailles();
-  db.exec("VACUUM");
-  const apres = tailles();
-  tracer(req, { entity:"base", action:"vacuum",
-    text:`VACUUM — ${avant.principal} → ${apres.principal} octets` });
-  return { avant, apres, gain: avant.principal - apres.principal };
+r.post("/base/vacuum", (req, res) => sousVerrou("vacuum", req, res, async () => {
+  const avant = await tailleBase();
+  await pool.query("VACUUM (ANALYZE)");
+  const apres = await tailleBase();
+  await tracer(req, { entity:"base", action:"vacuum",
+    text:`VACUUM — ${avant.octets} → ${apres.octets} octets` });
+  return { avant, apres, gain: avant.octets - apres.octets };
 }));
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -229,11 +224,11 @@ r.post("/sauvegarde", async (req, res, next) => {
   prendreVerrou("sauvegarde", req.user.email);
   try{
     const s = await sauvegarder({ motif:"manuelle" });
-    tracer(req, { entity:"base", entity_id:s.nom, action:"sauvegarde",
+    await tracer(req, { entity:"base", entity_id:s.nom, action:"sauvegarde",
       text:`Sauvegarde ${s.nom} — ${s.octets} octets en ${s.ms} ms, relue et conforme` });
     res.status(201).json({ ok:true, sauvegarde: {
-      nom:s.nom, octets:s.octets, ms:s.ms, pages:s.pages,
-      integrite:s.controle.integrite, tables:s.controle.tables.length,
+      nom:s.nom, octets:s.octets, ms:s.ms,
+      tables:s.controle.tables.length,
       telechargement:`sauvegardes/${s.nom}` } });
   }catch(e){ next(e); }
   finally{ rendreVerrou(); }
@@ -244,36 +239,37 @@ r.get("/sauvegardes", (req, res) =>
 
 /* Télécharger une sauvegarde, c'est sortir la base entière de la machine :
    l'acte le plus lourd de conséquence de toute l'API. Il est tracé comme tel. */
-r.get("/sauvegardes/:nom", (req, res) => {
+r.get("/sauvegardes/:nom", async (req, res) => {
   const chemin = cheminSauvegarde(req.params.nom);
   if(!chemin || !fs.existsSync(chemin))
     return res.status(404).json({ error:"sauvegarde introuvable" });
-  tracer(req, { entity:"base", entity_id:req.params.nom, action:"telechargement",
+  await tracer(req, { entity:"base", entity_id:req.params.nom, action:"telechargement",
     text:`Sauvegarde ${req.params.nom} téléchargée (${octetsDe(chemin)} octets)` });
   log.warn("sauvegarde téléchargée", { fichier:req.params.nom, par:req.user.email });
   res.download(chemin, req.params.nom);
 });
 
-r.delete("/sauvegardes/:nom", (req, res) => {
+r.delete("/sauvegardes/:nom", async (req, res) => {
   const chemin = cheminSauvegarde(req.params.nom);
   if(!chemin || !fs.existsSync(chemin))
     return res.status(404).json({ error:"sauvegarde introuvable" });
   const octets = octetsDe(chemin);
   fs.unlinkSync(chemin);
-  tracer(req, { entity:"base", entity_id:req.params.nom, action:"suppression_sauvegarde",
+  try{ fs.unlinkSync(chemin.replace(/\.dump$/, ".json")); }catch{ /* déjà absent */ }
+  await tracer(req, { entity:"base", entity_id:req.params.nom, action:"suppression_sauvegarde",
     text:`Sauvegarde ${req.params.nom} supprimée (${octets} octets)` });
   res.json({ ok:true, supprime:req.params.nom });
 });
 
 /* Contrôler une sauvegarde sans la restaurer : la seule façon honnête de
    savoir qu'une sauvegarde vaut quelque chose est de l'ouvrir. */
-r.get("/sauvegardes/:nom/controle", (req, res) => {
+r.get("/sauvegardes/:nom/controle", async (req, res) => {
   const chemin = cheminSauvegarde(req.params.nom);
   if(!chemin || !fs.existsSync(chemin))
     return res.status(404).json({ error:"sauvegarde introuvable" });
-  const c = verifier(chemin);
+  const c = await verifier(chemin);
   res.json({ nom:req.params.nom, octets:octetsDe(chemin), controle: {
-    lisible:c.lisible, integrite:c.integrite ?? null, violations:c.violations ?? null,
+    lisible:c.lisible,
     tables:c.tables?.length ?? 0, migrations:c.migrations?.length ?? 0, motif:c.motif } });
 });
 
@@ -305,14 +301,14 @@ r.post("/restauration", validate(restaurationBody), async (req, res, next) => {
     /* Filet obligatoire : on sauvegarde l'état ACTUEL avant de l'écraser.
        Sans cela une restauration du mauvais fichier serait sans retour. */
     const filet = await sauvegarder({ motif:"avant restauration" });
-    const bilan = restaurer({ chemin, nom:req.body.fichier });
+    const bilan = await restaurer({ chemin, nom:req.body.fichier });
 
     /* La table `audit` vient d'être remplacée : la trace ne peut être écrite
        qu'ici, après le COMMIT. Et le compte qui a lancé l'opération n'existe
        peut-être plus dans la base restaurée — la clé étrangère refuserait la
        ligne, donc on retombe sur NULL en gardant le libellé. */
-    const existeEncore = !!db.prepare("SELECT 1 FROM users WHERE id=?").get(moi.id);
-    db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+    const existeEncore = !!(await db.prepare("SELECT 1 FROM users WHERE id=?").get(moi.id));
+    await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
                 VALUES (?,?,?,'securite','base',?,'restauration',?)`)
       .run(newId("aud"), existeEncore ? moi.id : null, moi.email, req.body.fichier,
            `Base restaurée depuis ${req.body.fichier} en ${bilan.ms} ms `
@@ -321,9 +317,9 @@ r.post("/restauration", validate(restaurationBody), async (req, res, next) => {
     /* La table `sessions` a été remplacée elle aussi : la session courante
        n'existe plus si la sauvegarde est antérieure à la connexion. On le dit
        plutôt que de laisser l'appelant se faire éjecter sans comprendre. */
-    const sessionVivante = !!db.prepare(
-      `SELECT 1 FROM sessions WHERE id=? AND revoked=0 AND expires_at > datetime('now')`)
-      .get(jti);
+    const sessionVivante = !!(await db.prepare(
+      `SELECT 1 FROM sessions WHERE id=? AND revoked=0 AND expires_at > now()`)
+      .get(jti));
 
     res.json({ ok:true, restaure:req.body.fichier, ms:bilan.ms, tables:bilan.tables,
       apres: bilan.apres, sauvegarde_prealable: filet.nom,

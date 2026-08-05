@@ -66,19 +66,32 @@ export const listerAlias = (site_id) =>
 
 /* Crée un alias, ou constate qu'il existe déjà. L'idempotence est portée par
    l'index unique (migration 018), pas par un SELECT préalable : deux imports
-   simultanés du même fichier ne peuvent donc pas passer entre les gouttes. */
-export function ajouterAlias({ site_id, code, source = null, note = null }){
+   simultanés du même fichier ne peuvent donc pas passer entre les gouttes.
+
+   La migration 018 pose DEUX index uniques selon que `source` est renseignée
+   ou non — `(site_id, code, source)` d'une part, `(site_id, code) WHERE
+   source IS NULL` d'autre part, parce que Postgres, comme SQLite, ne traite
+   jamais deux NULL comme égaux : le premier n'empêche donc pas deux alias
+   `source IS NULL`. L'arbitre du ON CONFLICT est donc choisi selon le cas.
+
+   `exec` : l'exécuteur à utiliser (le pool par défaut, ou le client d'une
+   transaction en cours — voir poserAliasExclusif et importerCorrespondances
+   ci-dessous, qui doivent écrire sur LA MÊME connexion que le reste de leur
+   transaction pour rester atomiques). */
+export async function ajouterAlias({ site_id, code, source = null, note = null }, exec = db){
   const c = propre(code);
   if(!c) return { cree: false, motif: "code vide" };
   const s = propre(source);
-  const res = db.prepare(`INSERT OR IGNORE INTO site_external_code (id, site_id, code, source, note)
-                          VALUES (?,?,?,?,?)`)
+  const arbitre = s === null ? "(site_id, code) WHERE source IS NULL" : "(site_id, code, source)";
+  const res = await exec.prepare(`INSERT INTO site_external_code (id, site_id, code, source, note)
+                          VALUES (?,?,?,?,?)
+                          ON CONFLICT ${arbitre} DO NOTHING`)
     .run(newId("alias"), site_id, c, s, propre(note));
   return { cree: res.changes === 1 };
 }
 
-export const supprimerAlias = (id) =>
-  db.prepare("DELETE FROM site_external_code WHERE id=?").run(id).changes === 1;
+export const supprimerAlias = async (id) =>
+  (await db.prepare("DELETE FROM site_external_code WHERE id=?").run(id)).changes === 1;
 
 /* Pose un alias en RETIRANT ceux que la même source portait sur le même code
    pour un autre site. C'est le geste du rapprochement, et il n'est pas
@@ -92,31 +105,34 @@ export const supprimerAlias = (id) =>
    dans UNE source, un code désigne UN site. D'une source à l'autre, l'ambiguïté
    reste possible et reste signalée — deux référentiels qui se contredisent sont
    un fait à porter à la connaissance de l'opérateur, pas une erreur d'écriture. */
-export function poserAliasExclusif({ site_id, code, source = null, note = null }){
+export async function poserAliasExclusif({ site_id, code, source = null, note = null }){
   const c = propre(code);
   if(!c) return { cree:false, retires:0, motif:"code vide" };
   const s = propre(source);
   let retires = 0;
-  const res = tx(() => {
-    retires = db.prepare(`DELETE FROM site_external_code
-                          WHERE code=? AND site_id<>? AND source IS ?`).run(c, site_id, s).changes;
-    return ajouterAlias({ site_id, code:c, source:s, note });
-  })();
+  const res = await tx(async (db) => {
+    retires = (await db.prepare(`DELETE FROM site_external_code
+                          WHERE code=? AND site_id<>? AND source IS ?`).run(c, site_id, s)).changes;
+    return ajouterAlias({ site_id, code:c, source:s, note }, db);
+  });
   return { ...res, retires };
 }
 
 /* Aligne le miroir de la fiche sur la valeur de la colonne. Appelée après toute
    écriture qui touche `sites.external_code`, et seulement dans ce cas : un site
    dont on renomme l'antenne n'a aucune raison de voir ses alias remaniés. */
-export function synchroniserCodeParDefaut(site_id, code){
+export async function synchroniserCodeParDefaut(site_id, code){
   const c = propre(code);
-  tx(() => {
-    db.prepare("DELETE FROM site_external_code WHERE site_id=? AND source=?")
+  await tx(async (db) => {
+    await db.prepare("DELETE FROM site_external_code WHERE site_id=? AND source=?")
       .run(site_id, SOURCE_FICHE);
-    if(c) db.prepare(`INSERT OR IGNORE INTO site_external_code (id, site_id, code, source, note)
-                      VALUES (?,?,?,?,?)`)
+    /* `source` vaut toujours SOURCE_FICHE ici (non nulle) : l'arbitre est donc
+       sans ambiguïté l'index unique du triplet (site_id, code, source). */
+    if(c) await db.prepare(`INSERT INTO site_external_code (id, site_id, code, source, note)
+                      VALUES (?,?,?,?,?)
+                      ON CONFLICT (site_id, code, source) DO NOTHING`)
       .run(newId("alias"), site_id, c, SOURCE_FICHE, "code par défaut de la fiche de site");
-  })();
+  });
 }
 
 /* ── Import d'une table de correspondance ─────────────────────────────

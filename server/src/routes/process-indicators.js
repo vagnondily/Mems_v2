@@ -12,11 +12,11 @@ const r = Router();
 
 /* Résumé compact, par activité puis par module. Assez léger pour /state, assez
    riche pour dessiner la structure du suivi de processus sur le tableau de bord. */
-export function resumeProcessus(){
-  const rows = db.prepare(`SELECT activity_tag, activity_label, form_file, form_title,
+export async function resumeProcessus(){
+  const rows = await db.prepare(`SELECT activity_tag, activity_label, form_file, form_title,
       module, COUNT(*) n FROM process_indicator WHERE active=1
       GROUP BY activity_tag, module ORDER BY activity_tag, n DESC`).all();
-  const total = db.prepare("SELECT COUNT(*) c FROM process_indicator WHERE active=1").get().c;
+  const total = (await db.prepare("SELECT COUNT(*) c FROM process_indicator WHERE active=1").get()).c;
   if(!total) return { total:0, activites:[] };
 
   const parAct = new Map();
@@ -35,21 +35,21 @@ export function resumeProcessus(){
 
 /* Liste complète, filtrable par activité ou par formulaire. Plafonnée : le
    référentiel entier tient en mémoire mais n'a pas à voyager d'un coup. */
-r.get("/", (req, res) => {
+r.get("/", async (req, res) => {
   const { activity, form, module, limit } = req.query;
   const conds = ["active=1"]; const params = [];
   if(activity){ conds.push("activity_tag=?"); params.push(String(activity)); }
   if(form){ conds.push("form_file=?"); params.push(String(form)); }
   if(module){ conds.push("module=?"); params.push(String(module)); }
   const lim = Math.min(5000, Math.max(1, Number(limit) || 5000));
-  const rows = db.prepare(`SELECT id, activity_tag, activity_label, form_file, form_title,
+  const rows = await db.prepare(`SELECT id, activity_tag, activity_label, form_file, form_title,
       module, module_code, var_name, var_type, label, choices_json, ord
       FROM process_indicator WHERE ${conds.join(" AND ")}
       ORDER BY activity_tag, form_file, ord LIMIT ?`).all(...params, lim);
   res.json({
-    rows: rows.map(x => ({ ...x, choices: x.choices_json ? JSON.parse(x.choices_json) : null })),
-    total: db.prepare(`SELECT COUNT(*) c FROM process_indicator WHERE ${conds.join(" AND ")}`).get(...params).c,
-    resume: resumeProcessus(),
+    rows: rows.map(x => ({ ...x, choices: x.choices_json ?? null })),
+    total: (await db.prepare(`SELECT COUNT(*) c FROM process_indicator WHERE ${conds.join(" AND ")}`).get(...params)).c,
+    resume: await resumeProcessus(),
   });
 });
 
@@ -57,7 +57,7 @@ r.get("/", (req, res) => {
    référentiel Excel ». Une feuille par activité, plus une feuille de synthèse. */
 r.get("/export", async (req, res, next) => {
   try{
-    const rows = db.prepare(`SELECT activity_tag, activity_label, form_file, form_title,
+    const rows = await db.prepare(`SELECT activity_tag, activity_label, form_file, form_title,
         module, var_name, var_type, label FROM process_indicator WHERE active=1
         ORDER BY activity_tag, form_file, ord`).all();
     const wb = new ExcelJS.Workbook();
@@ -69,7 +69,7 @@ r.get("/export", async (req, res, next) => {
       { header:"Formulaire", key:"form", width:44 },
       { header:"Indicateurs", key:"n", width:12 },
     ];
-    const resume = resumeProcessus();
+    const resume = await resumeProcessus();
     for(const a of resume.activites) synth.addRow({ tag:a.tag, label:a.label, form:a.form, n:a.total });
     synth.getRow(1).font = { bold:true };
 

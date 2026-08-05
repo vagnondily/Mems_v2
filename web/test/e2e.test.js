@@ -12,13 +12,14 @@ import { makeDom } from "./harness.mjs";
    ───────────────────────────────────────────────────────────────────── */
 
 const SERVER = path.resolve("../server");
-const DB = path.join(SERVER, "data", "e2e.db");
+const DATABASE_URL = process.env.E2E_DATABASE_URL
+  || "postgres://mems:mems_dev_pw@127.0.0.1:5432/mems_e2e";
 const PORT = 4187;
 const BASE = `http://127.0.0.1:${PORT}/api`;
 const ADMIN = { email: "e2e@mems.local", password: "MotDePasseE2E2026" };
 
 const env = { ...process.env,
-  NODE_ENV: "test", DB_FILE: DB, PORT: String(PORT),
+  NODE_ENV: "test", DATABASE_URL, PORT: String(PORT),
   JWT_SECRET: "e".repeat(48), DATA_KEY: "d".repeat(48),
   BOOTSTRAP_EMAIL: ADMIN.email, BOOTSTRAP_PASSWORD: ADMIN.password,
   BCRYPT_ROUNDS: "4", FORCE_SEED: "1", LOG_LEVEL: "error",
@@ -74,8 +75,8 @@ const type = async (el, value) => {
 };
 
 before(async () => {
-  for(const f of [DB, DB+"-wal", DB+"-shm"]) if(fs.existsSync(f)) fs.unlinkSync(f);
-  fs.mkdirSync(path.dirname(DB), { recursive:true });
+  execFileSync("psql", [DATABASE_URL, "-v", "ON_ERROR_STOP=1", "-c",
+    "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"], { stdio:"pipe" });
   execFileSync(process.execPath, ["src/seed.js"], { cwd: SERVER, env, stdio:"pipe" });
 
   child = spawn(process.execPath, ["src/index.js"], {
@@ -123,7 +124,6 @@ after(async () => {
       child.kill("SIGTERM");
     });
   }
-  for(const f of [DB, DB+"-wal", DB+"-shm"]) if(fs.existsSync(f)) fs.unlinkSync(f);
   if(fs.existsSync("test/_app.mjs")) fs.unlinkSync("test/_app.mjs");
 });
 

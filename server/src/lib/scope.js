@@ -30,19 +30,19 @@ const BORNÉS = ["viewer", "editor", "validator"];
 /* Un bureau dont le périmètre est le pays entier. Toute valeur inattendue de
    `scope_mode` retombe sur le périmètre déclaré, c'est-à-dire le plus restreint :
    une donnée abîmée ne doit jamais élargir un accès. */
-export function isNational(officeId){
+export async function isNational(officeId){
   if(!officeId) return false;
-  const o = db.prepare("SELECT scope_mode FROM offices WHERE id=?").get(officeId);
+  const o = await db.prepare("SELECT scope_mode FROM offices WHERE id=?").get(officeId);
   return o?.scope_mode === "national";
 }
 
 /* Le bureau auquel un compte est cloisonné, ou null s'il voit tout.
    Les routes qui filtrent par `office_id` — et non par géographie — passent par
    ici, pour que la règle du bureau national vaille aussi pour elles. */
-export function officeBound(user){
+export async function officeBound(user){
   const borné = BORNÉS.includes(user?.role) && user?.office_id;
   if(!borné) return null;
-  return isNational(user.office_id) ? null : user.office_id;
+  return (await isNational(user.office_id)) ? null : user.office_id;
 }
 
 /* Le prestataire auquel un compte appartient, ou null.
@@ -58,9 +58,9 @@ export function tpmBound(user){
 }
 
 /* Les unités attribuées à un bureau, telles qu'on les a déclarées. */
-export function declaredFor(officeId){
+export async function declaredFor(officeId){
   if(!officeId) return [];
-  const v = currentVersion(); if(!v) return [];
+  const v = await currentVersion(); if(!v) return [];
   return db.prepare(`
     SELECT os.geo_pcode, gu.path, gu.name, gu.level
     FROM office_scope os
@@ -72,8 +72,8 @@ export function declaredFor(officeId){
 /* Repli tant qu'aucun périmètre n'est déclaré : on le déduit des données
    existantes, comme avant. Sans ce repli, activer la migration 007 priverait
    d'un coup tous les comptes de terrain de leur accès. */
-function inferred(officeId){
-  const v = currentVersion(); if(!v) return [];
+async function inferred(officeId){
+  const v = await currentVersion(); if(!v) return [];
   return db.prepare(`
     SELECT DISTINCT gu.pcode geo_pcode, gu.path, gu.name, gu.level
     FROM geo_unit gu
@@ -87,14 +87,14 @@ function inferred(officeId){
 
    `paths` est vide et `unbounded` vaut true pour qui n'est pas borné : c'est la
    forme qu'attendent les appelants pour dire « aucun filtre ». */
-export function scopeOf(user){
+export async function scopeOf(user){
   const borné = BORNÉS.includes(user?.role) && user?.office_id;
   if(!borné) return { unbounded:true, paths:[], units:[], source:"aucun" };
-  if(isNational(user.office_id))
+  if(await isNational(user.office_id))
     return { unbounded:true, paths:[], units:[], source:"national" };
 
-  const declared = declaredFor(user.office_id);
-  const units = declared.length ? declared : inferred(user.office_id);
+  const declared = await declaredFor(user.office_id);
+  const units = declared.length ? declared : await inferred(user.office_id);
   return {
     unbounded: false,
     paths: units.map(u => u.path),
@@ -116,9 +116,9 @@ export const covers = (scope, path) =>
 
 /* Les unités STRICTEMENT dans le périmètre, à un niveau donné : pour l'écriture,
    où l'on ne veut pas des ancêtres mais seulement ce qui est réellement couvert. */
-export function unitsIn(scope, level){
-  const v = currentVersion(); if(!v) return [];
-  const all = db.prepare(
+export async function unitsIn(scope, level){
+  const v = await currentVersion(); if(!v) return [];
+  const all = await db.prepare(
     `SELECT pcode, path, name FROM geo_unit WHERE version_id=? AND level=? ORDER BY path`)
     .all(v.id, level);
   if(scope.unbounded) return all;
@@ -137,16 +137,18 @@ export function pathClause(scope, alias = "u"){
 /* Sites et lignes de plan rattachés à des unités hors du périmètre déclaré.
    Ce n'est pas une erreur — les données peuvent précéder la déclaration — mais
    c'est une incohérence à montrer plutôt qu'à taire. */
-export function outsideDeclared(officeId){
-  const declared = declaredFor(officeId);
+export async function outsideDeclared(officeId){
+  const declared = await declaredFor(officeId);
   if(!declared.length) return { sites:0, pdd:0, declared:false };
-  const v = currentVersion();
-  const dedans = new Set(db.prepare(
-    `SELECT pcode, path FROM geo_unit WHERE version_id=?`).all(v.id)
+  const v = await currentVersion();
+  const toutes = await db.prepare(`SELECT pcode, path FROM geo_unit WHERE version_id=?`).all(v.id);
+  const dedans = new Set(toutes
     .filter(u => declared.some(d => u.path === d.path || u.path.startsWith(d.path + "/")))
     .map(u => u.pcode));
-  const compte = (table) => db.prepare(
-    `SELECT geo_pcode FROM ${table} WHERE office_id=? AND geo_pcode IS NOT NULL`)
-    .all(officeId).filter(r => !dedans.has(r.geo_pcode)).length;
-  return { sites: compte("sites"), pdd: compte("pdd"), declared:true };
+  const compte = async (table) => {
+    const rows = await db.prepare(
+      `SELECT geo_pcode FROM ${table} WHERE office_id=? AND geo_pcode IS NOT NULL`).all(officeId);
+    return rows.filter(r => !dedans.has(r.geo_pcode)).length;
+  };
+  return { sites: await compte("sites"), pdd: await compte("pdd"), declared:true };
 }

@@ -16,11 +16,11 @@
 --  et sont désormais dérivées du rattachement à chaque écriture, jamais saisies.
 -- =====================================================================
 
-ALTER TABLE sites ADD COLUMN geo_pcode TEXT;
+ALTER TABLE sites ADD COLUMN geo_pcode text;
 CREATE INDEX idx_sites_geo_pcode ON sites(geo_pcode);
 
 -- Le plan de distribution suit la même logique : region/district/commune y sont
 -- du texte libre, ce qui rend l'agrégation « par commune » dépendante d'une
 -- comparaison de chaînes. Le p-code tranche.
-ALTER TABLE pdd ADD COLUMN geo_pcode TEXT;
+ALTER TABLE pdd ADD COLUMN geo_pcode text;
 CREATE INDEX idx_pdd_geo_pcode ON pdd(geo_pcode);
