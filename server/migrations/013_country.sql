@@ -35,43 +35,43 @@ CREATE TABLE country (
   -- ISO 3166-1 alpha-3 : le code que les référentiels administratifs humanitaires
   -- utilisent déjà (les p-codes officiels commencent par l'alpha-2, mais les jeux
   -- de données COD sont nommés par l'alpha-3).
-  code        TEXT PRIMARY KEY,
-  name        TEXT NOT NULL,
-  currency    TEXT NOT NULL DEFAULT 'USD',
+  code        text PRIMARY KEY,
+  name        text NOT NULL,
+  currency    text NOT NULL DEFAULT 'USD',
 
   -- Les libellés des cinq niveaux, au singulier et au pluriel. En JSON parce que
   -- c'est une liste de paires dont le nombre est fixe et le contenu variable :
   -- cinq colonnes × deux formes auraient fait dix colonnes pour la même chose.
-  levels      TEXT NOT NULL,
+  levels      jsonb NOT NULL,
 
   -- Centre approximatif, pour cadrer la carte avant tout import de contours.
-  lat         REAL,
-  lon         REAL,
+  lat         double precision,
+  lon         double precision,
 
-  active      INTEGER NOT NULL DEFAULT 1,
-  is_current  INTEGER NOT NULL DEFAULT 0,
-  note        TEXT,
-  rev         INTEGER NOT NULL DEFAULT 1,
-  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at  TEXT
+  active      smallint NOT NULL DEFAULT 1,
+  is_current  smallint NOT NULL DEFAULT 0,
+  note        text,
+  rev         integer NOT NULL DEFAULT 1,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz
 );
 
 -- Un seul pays courant. Index partiel, pour la même raison que le millésime
--- courant du référentiel : en SQLite deux zéros ne s'excluent pas, mais deux uns
--- oui dès qu'on restreint l'index à eux.
+-- courant du référentiel : deux zéros ne s'excluent pas, mais deux uns oui dès
+-- qu'on restreint l'index à eux.
 CREATE UNIQUE INDEX idx_country_current ON country(is_current) WHERE is_current = 1;
 
 -- Le millésime du découpage appartient désormais à un pays.
-ALTER TABLE geo_version ADD COLUMN country TEXT REFERENCES country(code);
+ALTER TABLE geo_version ADD COLUMN country text REFERENCES country(code);
 
 -- Madagascar, avec son vocabulaire administratif réel.
 INSERT INTO country (code, name, currency, levels, lat, lon, is_current, note) VALUES (
   'MDG', 'Madagascar', 'MGA',
-  '{"adm0":{"one":"Pays","many":"Pays"},'
+  ('{"adm0":{"one":"Pays","many":"Pays"},'
   || '"adm1":{"one":"Région","many":"Régions"},'
   || '"adm2":{"one":"District","many":"Districts"},'
   || '"adm3":{"one":"Commune","many":"Communes"},'
-  || '"adm4":{"one":"Fokontany","many":"Fokontany"}}',
+  || '"adm4":{"one":"Fokontany","many":"Fokontany"}}')::jsonb,
   -18.9, 47.5, 1,
   '23 régions, 119 districts, environ 1 700 communes et 18 000 fokontany.');
 

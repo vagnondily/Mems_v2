@@ -62,50 +62,50 @@
 -- =====================================================================
 
 CREATE TABLE code_referentiel (
-  id           TEXT PRIMARY KEY,
+  id           text PRIMARY KEY,
   -- Le nom du référentiel : « SMP_2025 », « ZAP_2025 »… C'est lui qui rend la
   -- table générique, et il fait partie de la clé métier.
-  referentiel  TEXT NOT NULL,
+  referentiel  text NOT NULL,
   -- Le code tel que la source l'écrit. Stocké tel quel — ni majuscules forcées,
   -- ni ponctuation retirée — pour la raison écrite en tête de lib/alias.js : le
   -- rapprochement normalise, la base conserve la forme que l'opérateur
   -- reconnaît dans son fichier d'origine.
-  code         TEXT NOT NULL,
-  libelle      TEXT,
+  code         text NOT NULL,
+  libelle      text,
 
   -- La géographie de l'entrée, quand le bureau la connaît. Facultative : le cas
   -- SMP est justement une liste de codes SANS p-code — s'ils en avaient un, la
   -- correspondance se déduirait et cette table n'aurait pas lieu d'être.
-  geo_pcode    TEXT,
-  adm1         TEXT,
-  adm2         TEXT,
-  adm3         TEXT,
-  adm4         TEXT,
+  geo_pcode    text,
+  adm1         text,
+  adm2         text,
+  adm3         text,
+  adm4         text,
 
   -- Désignation humaine explicite : le code MEMS du site auquel cette entrée
   -- correspond. Facultatif, et volontairement distinct de `site_id` : l'un est
   -- ce que l'opérateur a ÉCRIT dans son fichier, l'autre ce que le rapprochement
   -- en a CONCLU. Les confondre rendrait impossible de rejouer un rapprochement
   -- en sachant ce qui venait de l'humain.
-  site_code    TEXT,
-  source       TEXT,
-  note         TEXT,
+  site_code    text,
+  source       text,
+  note         text,
 
   -- ── Trace du rapprochement ─────────────────────────────────────────
-  site_id            TEXT REFERENCES sites(id) ON DELETE SET NULL,
-  rapproche_passe    TEXT,      -- 'designe' ou l'une des passes de lib/rattachement.js
-  rapproche_confiance REAL,
-  rapproche_motif    TEXT,
-  rapproche_at       TEXT,
+  site_id            text REFERENCES sites(id) ON DELETE SET NULL,
+  rapproche_passe    text,      -- 'designe' ou l'une des passes de lib/rattachement.js
+  rapproche_confiance double precision,
+  rapproche_motif    text,
+  rapproche_at       timestamptz,
 
   -- Le lot d'import qui a écrit cette ligne pour la dernière fois : d'où vient
   -- la ligne, qui l'a chargée et quand. SET NULL plutôt que CASCADE — purger
   -- l'historique des lots ne doit pas emporter le référentiel lui-même.
-  import_batch_id TEXT REFERENCES import_batch(id) ON DELETE SET NULL,
+  import_batch_id text REFERENCES import_batch(id) ON DELETE SET NULL,
 
-  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
-  rev          INTEGER NOT NULL DEFAULT 1
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  updated_at   timestamptz NOT NULL DEFAULT now(),
+  rev          integer NOT NULL DEFAULT 1
 );
 
 -- La clé métier. C'est cet index qui porte l'idempotence de l'import : l'upsert

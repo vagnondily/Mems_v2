@@ -31,9 +31,9 @@ const minLevel = val("min", "adm3");
 const minDepth = LEVELS.indexOf(minLevel);
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-migrate(path.join(here, "..", "migrations"));
+await migrate(path.join(here, "..", "migrations"));
 
-const v = currentVersion();
+const v = await currentVersion();
 if(!v){ console.error("Aucun référentiel courant. Chargez-en un avec src/import-geo.js."); process.exit(1); }
 console.log(`Référentiel courant : « ${v.label} » — ${v.units.toLocaleString("fr-FR")} unités\n`);
 
@@ -48,7 +48,7 @@ const TARGETS = [
 
 let grandTotal = 0, grandLinked = 0;
 for(const t of TARGETS){
-  const rows = db.prepare(`SELECT * FROM ${t.table}${relink ? "" : " WHERE geo_pcode IS NULL"}`).all();
+  const rows = await db.prepare(`SELECT * FROM ${t.table}${relink ? "" : " WHERE geo_pcode IS NULL"}`).all();
   if(!rows.length){ console.log(`${t.label} : rien à rattacher.\n`); continue; }
 
   const byDepth = {}; const unresolved = []; const ambiguous = [];
@@ -56,7 +56,11 @@ for(const t of TARGETS){
   for(const r of rows){
     const names = {};
     for(const [lvl, col] of Object.entries(t.cols)) names[lvl] = r[col];
-    const m = resolveUnit(names, v.id);
+    /* TODO-PG: resolveUnit() (lib/geo.js) lit via l'import direct de ../db.js
+       (le pool) — même réserve documentée dans lib/tpm.js:regenerate(). Sans
+       conséquence ici : elle ne fait que LIRE le référentiel géo, déjà
+       committé avant ce script, jamais écrit par lui. */
+    const m = await resolveUnit(names, v.id);
     const depth = m.level ? LEVELS.indexOf(m.level) : -1;
     if(depth >= minDepth){
       plan.push({ id:r.id, pcode:m.pcode });
@@ -81,8 +85,15 @@ for(const t of TARGETS){
   }
 
   if(write && plan.length){
-    const upd = db.prepare(`UPDATE ${t.table} SET geo_pcode=? WHERE id=?`);
-    tx(() => { for(const p of plan) upd.run(p.pcode, p.id); })();
+    /* `upd` est préparée AVEC le `db` de la transaction (paramètre du
+       callback, qui masque l'import de module) : sous pg une transaction vit
+       sur un client dédié (voir src/db.js) — la préparer avec l'import de
+       module l'aurait fait tourner sur une autre connexion du pool, hors de
+       cette transaction, comme pour src/import-sites.js. */
+    await tx(async (db) => {
+      const upd = db.prepare(`UPDATE ${t.table} SET geo_pcode=? WHERE id=?`);
+      for(const p of plan) await upd.run(p.pcode, p.id);
+    });
     console.log(`  ✓ ${plan.length.toLocaleString("fr-FR")} rattachement(s) écrit(s)`);
   }
   grandTotal += rows.length; grandLinked += plan.length;

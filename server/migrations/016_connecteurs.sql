@@ -39,53 +39,53 @@
 -- =====================================================================
 
 CREATE TABLE connector (
-  id          TEXT PRIMARY KEY,
-  name        TEXT NOT NULL,
-  kind        TEXT NOT NULL
+  id          text PRIMARY KEY,
+  name        text NOT NULL,
+  kind        text NOT NULL
       CHECK (kind IN ('odk','kobo','foundry','csv','http')),
-  base_url    TEXT,                             -- adresse du serveur, vérifiée avant tout appel sortant
-  config      TEXT NOT NULL DEFAULT '{}',       -- JSON, jamais de secret : voir le point 1 ci-dessus
-  secret_enc  TEXT,                             -- AES-256-GCM, jamais renvoyé en clair
+  base_url    text,                             -- adresse du serveur, vérifiée avant tout appel sortant
+  config      jsonb NOT NULL DEFAULT '{}'::jsonb,       -- JSON, jamais de secret : voir le point 1 ci-dessus
+  secret_enc  text,                             -- AES-256-GCM, jamais renvoyé en clair
   -- Un connecteur appartient au bureau qui l'a déclaré : c'est ce qui permet de
   -- cloisonner sa lecture comme le reste. ON DELETE SET NULL, et non CASCADE :
   -- supprimer un bureau ne doit pas emporter silencieusement sa configuration
   -- de sources, qui reste utile à l'administration nationale.
-  office_id   TEXT REFERENCES offices(id) ON DELETE SET NULL,
-  active      INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
-  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  office_id   text REFERENCES offices(id) ON DELETE SET NULL,
+  active      smallint NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now(),
   -- Même mécanique de révision que partout ailleurs : le second à enregistrer
   -- est averti au lieu d'écraser en silence le travail du premier.
-  rev         INTEGER NOT NULL DEFAULT 1
+  rev         integer NOT NULL DEFAULT 1
 );
 CREATE INDEX idx_connector_office ON connector(office_id);
 CREATE INDEX idx_connector_kind   ON connector(kind);
 
 CREATE TABLE connector_mapping (
-  id            TEXT PRIMARY KEY,
-  connector_id  TEXT NOT NULL REFERENCES connector(id) ON DELETE CASCADE,
+  id            text PRIMARY KEY,
+  connector_id  text NOT NULL REFERENCES connector(id) ON DELETE CASCADE,
   -- L'entité MEMS visée (site, submission, beneficiaire, reception) et le champ
   -- visé dans cette entité. Les deux valeurs sont contrôlées à l'écriture contre
   -- le registre de lib/champs.js, pour la raison dite plus haut à propos de
   -- `transform` : le registre est la seule source de vérité, le schéma ne la copie pas.
-  entity        TEXT NOT NULL,
-  mems_field    TEXT NOT NULL,
+  entity        text NOT NULL,
+  mems_field    text NOT NULL,
   -- Le nom de la variable dans la source, ou un chemin JSON quand la source rend
   -- des objets imbriqués. Peut rester vide : une correspondance déclarée mais non
   -- encore renseignée est une ligne de travail légitime, pas une erreur.
-  source_path   TEXT,
-  transform     TEXT NOT NULL DEFAULT 'brut',
+  source_path   text,
+  transform     text NOT NULL DEFAULT 'brut',
   -- Obligatoire au sens de CE branchement, ce qui n'est pas la même chose que
   -- l'obligation portée par le registre : un champ facultatif dans MEMS peut être
   -- indispensable à un import donné (le tonnage reçu, pour une source de réceptions).
   -- L'application retient l'union des deux.
-  required      INTEGER NOT NULL DEFAULT 0 CHECK (required IN (0,1)),
+  required      smallint NOT NULL DEFAULT 0 CHECK (required IN (0,1)),
   -- Valeur de repli quand la source ne renseigne rien. Elle passe par la même
   -- transformation que la valeur lue, sans quoi un défaut arriverait sous une autre
   -- forme que les valeurs qu'il remplace.
-  default_value TEXT,
-  note          TEXT,
-  position      INTEGER NOT NULL DEFAULT 0
+  default_value text,
+  note          text,
+  position      integer NOT NULL DEFAULT 0
 );
 -- Un champ MEMS ne peut être alimenté que par une seule variable source pour une
 -- entité donnée : deux correspondances concurrentes sur le même champ ne se

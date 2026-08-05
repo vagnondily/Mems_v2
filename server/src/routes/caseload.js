@@ -14,7 +14,7 @@ const r = Router();
      ciblage      = ciblés / population
      couverture   = bénéficiaires planifiés / ciblés
      réalisation  = bénéficiaires servis / planifiés                            */
-r.get("/", (req, res) => {
+r.get("/", async (req, res) => {
   const q = z.object({
     year:   z.coerce.number().int().min(2000).max(2100).default(new Date().getFullYear()),
     month:  z.coerce.number().int().min(0).max(11).optional(),
@@ -32,11 +32,11 @@ r.get("/", (req, res) => {
   /* Unités du niveau demandé, avec leurs ancêtres. */
   const where = ["u.version_id = ?", "u.level = ?"]; const args = [v.id, level];
   if(parent){
-    const p = db.prepare("SELECT path FROM geo_unit WHERE version_id=? AND pcode=?").get(v.id, parent);
+    const p = await db.prepare("SELECT path FROM geo_unit WHERE version_id=? AND pcode=?").get(v.id, parent);
     if(!p) return res.json({ year, month:month ?? null, level, rows:[], totals:null });
     where.push("(u.path = ? OR u.path LIKE ?)"); args.push(p.path, p.path + "/%");
   }
-  const units = db.prepare(
+  const units = await db.prepare(
     `SELECT u.pcode, u.name, u.path, p1.name p1, p2.name p2, p3.name p3
      FROM geo_unit u
      LEFT JOIN geo_unit p1 ON p1.version_id=u.version_id AND p1.pcode=u.parent_pcode
@@ -44,12 +44,12 @@ r.get("/", (req, res) => {
      LEFT JOIN geo_unit p3 ON p3.version_id=u.version_id AND p3.pcode=p2.parent_pcode
      WHERE ${where.join(" AND ")} ORDER BY u.path LIMIT ?`).all(...args, limit);
 
-  const scope = scopeOf(req.user);
+  const scope = await scopeOf(req.user);
   const kept = units.filter(u => covers(scope, u.path));
   const codes = new Set(kept.map(u => u.pcode));
 
   /* Caseload : la valeur du mois si elle existe, sinon la valeur annuelle. */
-  const cl = db.prepare(
+  const cl = await db.prepare(
     `SELECT * FROM caseload WHERE year=? AND activity_tag=?
        AND (month IS NULL ${month !== undefined ? "OR month=?" : ""})`)
     .all(...(month !== undefined ? [year, tag || "", month] : [year, tag || ""]));
@@ -65,8 +65,8 @@ r.get("/", (req, res) => {
      donc agréger vers le haut. Les unités d'un même niveau ne se recouvrent pas,
      la somme est exacte — mais si le caseload est renseigné à plusieurs niveaux
      sous la même unité, on ne retient que le plus fin, sinon on compterait deux fois. */
-  const allPaths = Object.fromEntries(db.prepare(
-    `SELECT pcode, path, level FROM geo_unit WHERE version_id=?`).all(v.id)
+  const allPaths = Object.fromEntries((await db.prepare(
+    `SELECT pcode, path, level FROM geo_unit WHERE version_id=?`).all(v.id))
     .map(x => [x.pcode, x]));
 
   const agrege = (unit) => {
@@ -87,7 +87,7 @@ r.get("/", (req, res) => {
   const byCode = Object.fromEntries(kept.map(u => [u.pcode, agrege(u)]));
 
   /* Plan de distribution de la période, agrégé par unité. */
-  const pdd = db.prepare(
+  const pdd = await db.prepare(
     `SELECT geo_pcode, SUM(benef_planned) planned, SUM(benef_actual) actual,
             SUM(households) hh, SUM(tonnage) tonnage, SUM(amount) amount, COUNT(*) lines
      FROM pdd WHERE year=? ${month !== undefined ? "AND month=?" : ""}
@@ -95,8 +95,8 @@ r.get("/", (req, res) => {
      GROUP BY geo_pcode`)
     .all(...[year, ...(month !== undefined ? [month] : []), ...(tag ? [tag] : [])]);
   /* Le PDD peut pointer plus fin que le niveau demandé : on remonte par le chemin. */
-  const pddPaths = Object.fromEntries(db.prepare(
-    `SELECT pcode, path FROM geo_unit WHERE version_id=?`).all(v.id).map(x => [x.pcode, x.path]));
+  const pddPaths = Object.fromEntries((await db.prepare(
+    `SELECT pcode, path FROM geo_unit WHERE version_id=?`).all(v.id)).map(x => [x.pcode, x.path]));
   const pddByUnit = {};
   for(const p of pdd){
     const pth = pddPaths[p.geo_pcode]; if(!pth) continue;
@@ -150,9 +150,9 @@ r.get("/", (req, res) => {
 });
 
 /* Activités pour lesquelles un ciblage est renseigné, sur la période. */
-r.get("/tags", (req, res) => {
+r.get("/tags", async (req, res) => {
   const year = parseInt(req.query.year, 10) || new Date().getFullYear();
-  res.json({ rows: db.prepare(
+  res.json({ rows: await db.prepare(
     `SELECT activity_tag tag, COUNT(*) n, SUM(targeted) targeted
      FROM caseload WHERE year=? AND activity_tag<>'' GROUP BY activity_tag ORDER BY activity_tag`)
     .all(year) });
@@ -176,7 +176,7 @@ const rowSchema = z.object({
   note: z.string().max(500).nullish().transform(v => v ?? null),
 });
 
-r.put("/", requireCap("edit"), (req, res) => {
+r.put("/", requireCap("edit"), async (req, res) => {
   const parsed = z.object({ rows: z.array(rowSchema).min(1).max(20000) }).safeParse(req.body);
   if(!parsed.success) return res.status(422).json({ error:"données invalides",
     details: parsed.error.issues.slice(0,10).map(i => ({ champ:i.path.join("."), message:i.message })) });
@@ -186,8 +186,8 @@ r.put("/", requireCap("edit"), (req, res) => {
 
   /* Le chemin de l'unité, pas seulement son existence : il faut pouvoir dire si
      elle tombe dans le périmètre du bureau de l'appelant. */
-  const chemins = Object.fromEntries(db.prepare(
-    "SELECT pcode, path FROM geo_unit WHERE version_id=?").all(v.id).map(x => [x.pcode, x.path]));
+  const chemins = Object.fromEntries((await db.prepare(
+    "SELECT pcode, path FROM geo_unit WHERE version_id=?").all(v.id)).map(x => [x.pcode, x.path]));
 
   /* Le même contrôle de portée que l'import Excel (lib/import.js) : ce flux-ci
      l'avait perdu en route — `scopeOf` était importé mais ne servait qu'en lecture,
@@ -197,7 +197,7 @@ r.put("/", requireCap("edit"), (req, res) => {
      L'appartenance exigée est stricte, à la différence de `covers` qui retient aussi
      les ancêtres : voir une région parce qu'on en couvre un district est légitime,
      écrire la ligne de la région entière ne l'est pas. */
-  const scope = scopeOf(req.user);
+  const scope = await scopeOf(req.user);
   const dansPerimetre = (pcode) => {
     if(scope.unbounded) return true;
     const path = chemins[pcode]; if(!path) return false;
@@ -224,30 +224,30 @@ r.put("/", requireCap("edit"), (req, res) => {
   });
 
   let crees = 0, modifies = 0;
-  const find = db.prepare(`SELECT id FROM caseload
-    WHERE geo_pcode=? AND year=? AND activity_tag=? AND month IS ?`);
-  const ins = db.prepare(`INSERT INTO caseload
-    (id,geo_pcode,level,year,month,activity_tag,population,households,targeted,targeted_hh,source,note)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
-  const upd = db.prepare(`UPDATE caseload SET level=?, population=?, households=?, targeted=?,
-    targeted_hh=?, source=?, note=?, rev=rev+1, updated_at=datetime('now') WHERE id=?`);
 
-  tx(() => {
+  await tx(async (db) => {
+    const find = db.prepare(`SELECT id FROM caseload
+      WHERE geo_pcode=? AND year=? AND activity_tag=? AND month IS ?`);
+    const ins = db.prepare(`INSERT INTO caseload
+      (id,geo_pcode,level,year,month,activity_tag,population,households,targeted,targeted_hh,source,note)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
+    const upd = db.prepare(`UPDATE caseload SET level=?, population=?, households=?, targeted=?,
+      targeted_hh=?, source=?, note=?, rev=rev+1, updated_at=now() WHERE id=?`);
     for(const x of ok){
       const m = x.month ?? null;
-      const cur = find.get(x.geo_pcode, x.year, x.activity_tag, m);
+      const cur = await find.get(x.geo_pcode, x.year, x.activity_tag, m);
       if(cur){
-        upd.run(x.level, x.population, x.households, x.targeted, x.targeted_hh, x.source, x.note, cur.id);
+        await upd.run(x.level, x.population, x.households, x.targeted, x.targeted_hh, x.source, x.note, cur.id);
         modifies++;
       } else {
-        ins.run(newId("cl"), x.geo_pcode, x.level, x.year, m, x.activity_tag,
+        await ins.run(newId("cl"), x.geo_pcode, x.level, x.year, m, x.activity_tag,
           x.population, x.households, x.targeted, x.targeted_hh, x.source, x.note);
         crees++;
       }
     }
-  })();
+  });
 
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
               VALUES (?,?,?,'plan','caseload','sync',?)`)
     .run(newId("aud"), req.user.id, req.user.first_name,
          `Population et ciblage : ${crees} créé(s), ${modifies} modifié(s)${rejets.length?`, ${rejets.length} rejeté(s)`:""}`);

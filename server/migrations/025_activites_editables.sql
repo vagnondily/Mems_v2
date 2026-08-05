@@ -19,4 +19,4 @@
 --  Naît à 1 partout ; le défaut couvre les lignes existantes sans reprise.
 -- =====================================================================
 
-ALTER TABLE activity_categories ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE activity_categories ADD COLUMN rev integer NOT NULL DEFAULT 1;

@@ -65,12 +65,12 @@ const refuserNom = (res, nom) => res.status(422)
 /* ── Les référentiels chargés, avec leurs compteurs ──────────────────
    C'est ce que l'écran lit à l'ouverture : combien de codes, combien rattachés,
    combien restent. Ouvert à tout compte authentifié — voir l'en-tête. */
-r.get("/", (req, res) => {
-  res.json({ rows: listerReferentiels() });
+r.get("/", async (req, res) => {
+  res.json({ rows: await listerReferentiels() });
 });
 
 /* ── Les entrées d'un référentiel, paginées et cherchables ───────────── */
-r.get("/:referentiel", (req, res) => {
+r.get("/:referentiel", async (req, res) => {
   const nom = NOM.safeParse(req.params.referentiel);
   if(!nom.success) return refuserNom(res, nom);
   const q = z.object({
@@ -82,15 +82,15 @@ r.get("/:referentiel", (req, res) => {
   if(!q.success) return res.status(422).json({ error:"paramètres de recherche invalides" });
 
   res.json({ referentiel: nom.data,
-    ...lister({ referentiel: nom.data, q: q.data.q || "", rattache: q.data.rattache || "",
-      limit: q.data.limit, offset: q.data.offset, office_id: officeBound(req.user) }) });
+    ...(await lister({ referentiel: nom.data, q: q.data.q || "", rattache: q.data.rattache || "",
+      limit: q.data.limit, offset: q.data.offset, office_id: await officeBound(req.user) })) });
 });
 
 /* ── L'état du rapprochement, sans rien recalculer ni écrire ─────────── */
-r.get("/:referentiel/etat", (req, res) => {
+r.get("/:referentiel/etat", async (req, res) => {
   const nom = NOM.safeParse(req.params.referentiel);
   if(!nom.success) return refuserNom(res, nom);
-  res.json(etatRapprochement(nom.data, officeBound(req.user)));
+  res.json(await etatRapprochement(nom.data, await officeBound(req.user)));
 });
 
 /* ── Le rapprochement, geste explicite et journalisé ──────────────────
@@ -98,11 +98,11 @@ r.get("/:referentiel/etat", (req, res) => {
    manque, créer les sites manquants, RE-rapprocher ». Rejouable sans risque :
    l'écriture des alias est idempotente, et le second passage est plus fort que le
    premier puisqu'il dispose des alias posés au premier (voir lib/codes.js). */
-r.post("/:referentiel/rapprocher", requireCap("admin"), (req, res) => {
+r.post("/:referentiel/rapprocher", requireCap("admin"), async (req, res) => {
   const nom = NOM.safeParse(req.params.referentiel);
   if(!nom.success) return refuserNom(res, nom);
 
-  const bilan = rapprocher({ referentiel: nom.data, office_id: officeBound(req.user) });
+  const bilan = await rapprocher({ referentiel: nom.data, office_id: await officeBound(req.user) });
   if(!bilan.lues) return res.status(404).json({
     error:`aucune entrée chargée pour le référentiel « ${nom.data} » : importez d'abord le fichier` });
 
@@ -110,7 +110,7 @@ r.post("/:referentiel/rapprocher", requireCap("admin"), (req, res) => {
      « 940 rattachées » laisserait croire six mois plus tard que le rapprochement
      avait réussi — alors que 311 écoles n'avaient pas de site. */
   const sansSuite = bilan.sitesSansEntree.reduce((a, x) => a + x.sites, 0);
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,office,kind,entity,entity_id,action,text)
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,office,kind,entity,entity_id,action,text)
               VALUES (?,?,?,?,'plan','code_referentiel',?,'rapprochement',?)`)
     .run(newId("aud"), req.user.id,
       `${req.user.first_name} ${req.user.last_name || ""}`.trim(), req.user.office_id || "",

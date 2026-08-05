@@ -16,5 +16,5 @@
 --  stocker.
 -- =====================================================================
 
-ALTER TABLE odk_forms ADD COLUMN raw TEXT NOT NULL DEFAULT '[]';
-ALTER TABLE datasets  ADD COLUMN formulas TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE odk_forms ADD COLUMN raw jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE datasets  ADD COLUMN formulas jsonb NOT NULL DEFAULT '[]'::jsonb;

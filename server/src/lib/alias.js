@@ -147,7 +147,7 @@ export async function synchroniserCodeParDefaut(site_id, code){
 
    Idempotent : rejouer le même fichier ne crée rien et le dit
    (`dejaPresents`). L'index unique de la migration 018 en est la garantie. */
-export function importerCorrespondances({ lignes, office_id = null, source = null }){
+export async function importerCorrespondances({ lignes, office_id = null, source = null }){
   const parCodeSite = db.prepare("SELECT id, code, name, office_id FROM sites WHERE code=?");
   const parIdSite   = db.prepare("SELECT id, code, name, office_id FROM sites WHERE id=?");
 
@@ -155,21 +155,22 @@ export function importerCorrespondances({ lignes, office_id = null, source = nul
   const invalides = [];
   const aCreer = [];
 
-  (lignes || []).forEach((l, i) => {
-    const ligne = i + 1;
+  let i = 0;
+  for(const l of (lignes || [])){
+    const ligne = ++i;
     const code = propre(l?.code);
-    if(!code){ invalides.push({ ligne, message: "code externe absent" }); return; }
+    if(!code){ invalides.push({ ligne, message: "code externe absent" }); continue; }
     const siteCode = propre(l?.site_code);
     const siteId = propre(l?.site_id);
     if(!siteCode && !siteId){
       invalides.push({ ligne, code, message: "ni site_code ni site_id" });
-      return;
+      continue;
     }
-    const site = siteId ? parIdSite.get(siteId) : parCodeSite.get(siteCode);
+    const site = siteId ? await parIdSite.get(siteId) : await parCodeSite.get(siteCode);
     if(!site){
       sitesIntrouvables.push({ ligne, code, site_code: siteCode, site_id: siteId,
         message: "aucun site ne porte cet identifiant dans le registre" });
-      return;
+      continue;
     }
     /* Le cloisonnement par bureau s'applique ici comme au rapprochement : un
        bureau ne déclare pas les codes des sites d'un autre. Le motif est
@@ -178,27 +179,27 @@ export function importerCorrespondances({ lignes, office_id = null, source = nul
     if(office_id && site.office_id !== office_id){
       sitesIntrouvables.push({ ligne, code, site_code: site.code, site_id: site.id,
         message: "ce site relève d'un autre bureau" });
-      return;
+      continue;
     }
     aCreer.push({ ligne, site, code,
       source: propre(l?.source) ?? propre(source),
       note: propre(l?.note) });
-  });
+  }
 
   let crees = 0, dejaPresents = 0;
-  tx(() => {
+  await tx(async (db) => {
     for(const x of aCreer){
-      if(ajouterAlias({ site_id: x.site.id, code: x.code, source: x.source, note: x.note }).cree)
+      if((await ajouterAlias({ site_id: x.site.id, code: x.code, source: x.source, note: x.note }, db)).cree)
         crees++;
       else dejaPresents++;
     }
-  })();
+  });
 
   /* ── Les doublons de code, une fois l'import posé ──────────────────
      Signalés en relisant l'index que le résolveur construira lui-même : ce que
      l'import annonce comme ambigu est donc exactement ce que le rattachement
      refusera de trancher, sans qu'une seconde règle ait été écrite ici. */
-  const index = aCreer.length ? construireIndex({ office_id }) : { parCode: new Map(), parId: new Map() };
+  const index = aCreer.length ? await construireIndex({ office_id }) : { parCode: new Map(), parId: new Map() };
   const vus = new Set();
   const codesAmbigus = [];
   for(const x of aCreer){

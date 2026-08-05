@@ -18,10 +18,8 @@
 --  La colonne naît NULL partout : aucun compte existant n'a d'identifiant,
 --  et le courriel reste le moyen de connexion par défaut. L'unicité ne
 --  vaut donc QUE sur les valeurs renseignées — un index unique ordinaire
---  refuserait le deuxième compte sans identifiant (NULL = NULL ici,
---  contrairement à la sémantique SQL habituelle, better-sqlite3 traitant
---  plusieurs NULL comme distincts mais un index unique simple restant
---  fragile au fil des moteurs). L'index PARTIEL `WHERE username IS NOT
+--  refuserait le deuxième compte sans identifiant (deux NULL sont
+--  distincts pour l'unicité). L'index PARTIEL `WHERE username IS NOT
 --  NULL` dit exactement l'intention : deux comptes ne partagent pas un
 --  identifiant, mais autant de comptes qu'on veut peuvent n'en avoir aucun.
 --
@@ -32,6 +30,6 @@
 --  depuis « Mon compte », ou l'administrateur à la création.
 -- =====================================================================
 
-ALTER TABLE users ADD COLUMN username TEXT;
+ALTER TABLE users ADD COLUMN username text;
 
 CREATE UNIQUE INDEX idx_users_username ON users(username) WHERE username IS NOT NULL;

@@ -17,7 +17,7 @@
 --                  other_output   Detailed Output Indicators  (566)
 --                  crosscutting   Annex 4 Crosscutting         (25)
 --
---                Aucune contrainte CHECK ne le borne — c'est du TEXT
+--                Aucune contrainte CHECK ne le borne — c'est du text
 --                depuis l'origine —, donc rien à reconstruire : seules
 --                l'énumération Zod de la route et la liste de l'écran
 --                s'élargissent.
@@ -35,7 +35,7 @@
 --  aurait perdu le premier au premier chargement de la masterlist.
 -- =====================================================================
 
-ALTER TABLE indicators ADD COLUMN category TEXT;
+ALTER TABLE indicators ADD COLUMN category text;
 
 -- Le geste de base de l'écran est « les indicateurs de cette nature, dans
 -- cette catégorie » : il passe par un index plutôt que par un balayage de

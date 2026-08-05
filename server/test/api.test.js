@@ -151,7 +151,7 @@ test("sites : un PUT partiel n'efface pas les champs qu'il n'envoie pas", async 
     .send({ name:"Site partiel renommé" });
   assert.equal(maj.status, 200);
 
-  const apres = db.prepare("SELECT * FROM sites WHERE id=?").get(id);
+  const apres = await db.prepare("SELECT * FROM sites WHERE id=?").get(id);
   assert.equal(apres.name, "Site partiel renommé", "le champ envoyé est bien écrit");
   assert.equal(apres.external_code, "MG23210070009001", "le code externe survit");
   assert.equal(apres.antenne, "Antenne Sud");
@@ -165,7 +165,7 @@ test("sites : un PUT partiel n'efface pas les champs qu'il n'envoie pas", async 
   const vide = await request(app).put(`/api/sites/${id}`).set("Authorization", `Bearer ${adminToken}`)
     .send({ external_code:null });
   assert.equal(vide.status, 200);
-  assert.equal(db.prepare("SELECT external_code FROM sites WHERE id=?").get(id).external_code, null);
+  assert.equal((await db.prepare("SELECT external_code FROM sites WHERE id=?").get(id)).external_code, null);
 
   /* Et le code externe voyage jusqu'au client : sans cela la fiche du registre
      le renverrait vide au prochain enregistrement. */
@@ -182,22 +182,22 @@ test("grille mensuelle : cocher « réalisé » crée la visite manuelle, motiv�
   const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
   const site = st.body.sites.find(s => s.status === "Active");
   const year = st.body.year;
-  const before = db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id).c;
+  const before = (await db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id)).c;
   const r = await request(app).put(`/api/sites/${site.id}/months`)
     .set("Authorization", `Bearer ${adminToken}`)
     .send({ month:11, year, active:true, planned:true, done:true, monitor:"Testeur",
             manual_reason:"formulaire_non_rempli" });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.visite, "creee");
-  const after = db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id).c;
+  const after = (await db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id)).c;
   assert.equal(after, before + 1);
-  const s = db.prepare("SELECT last_visit FROM sites WHERE id=?").get(site.id);
+  const s = await db.prepare("SELECT last_visit FROM sites WHERE id=?").get(site.id);
   assert.ok(s.last_visit.startsWith(`${year}-12`));
 
   /* Ce qui distingue désormais un rattrapage d'une preuve de terrain : l'origine,
      le motif, et qui l'a saisi. Sans les trois, la ligne serait indiscernable
      d'une visite issue d'un formulaire. */
-  const v = db.prepare(`SELECT * FROM visits WHERE site_id=? AND visit_date LIKE ?`)
+  const v = await db.prepare(`SELECT * FROM visits WHERE site_id=? AND visit_date LIKE ?`)
     .get(site.id, `${year}-12%`);
   assert.equal(v.origin, "manuelle");
   assert.equal(v.manual_reason, "formulaire_non_rempli");
@@ -221,7 +221,7 @@ test("modification groupée : seuls les champs autorisés passent", async () => 
 test("modification groupée : un compte cloisonné ne peut pas réaffecter ses sites à un autre bureau", async () => {
   /* Le WHERE de la requête borne QUELLES lignes sont touchées, pas la VALEUR
      écrite : sans garde, un éditeur cloisonné transférerait ses sites en masse. */
-  const deux = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 2").all();
+  const deux = await db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 2").all();
   const [officeA, officeB] = deux;
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"bulk-borne@test.local", password:"BulkBorneMotDePasse1", first_name:"Borné",
@@ -236,8 +236,8 @@ test("modification groupée : un compte cloisonné ne peut pas réaffecter ses s
     .send({ ids:mesSites, field:"office_id", value:officeB.id });
   assert.equal(transfert.status, 403, JSON.stringify(transfert.body));
   /* Les sites n'ont pas bougé. */
-  const apres = db.prepare(`SELECT COUNT(*) c FROM sites WHERE id IN (${mesSites.map(()=>"?").join(",")}) AND office_id=?`)
-    .get(...mesSites, officeA.id).c;
+  const apres = (await db.prepare(`SELECT COUNT(*) c FROM sites WHERE id IN (${mesSites.map(()=>"?").join(",")}) AND office_id=?`)
+    .get(...mesSites, officeA.id)).c;
   assert.equal(apres, mesSites.length, "aucun site n'a été transféré");
 
   /* Un autre champ passe toujours : la borne ne bloque que la réaffectation de bureau. */
@@ -262,13 +262,13 @@ test("modification groupée : rev est incrémenté, sans quoi le verrou du PUT e
     .send({ code:"BULK-REV-1", name:"Site du verrou", activity_tag:"SMP", adm4:"Fkt Verrou" }))
     .body.site;
   assert.ok(site, "le site témoin est créé");
-  const revAvant = db.prepare("SELECT rev FROM sites WHERE id=?").get(site.id).rev;
+  const revAvant = (await db.prepare("SELECT rev FROM sites WHERE id=?").get(site.id)).rev;
 
   const bulk = await request(app).post("/api/sites/bulk").set("Authorization", `Bearer ${adminToken}`)
     .send({ ids:[site.id], field:"status", value:"Inactive" });
   assert.equal(bulk.status, 200, JSON.stringify(bulk.body));
   assert.equal(bulk.body.updated, 1);
-  const revApres = db.prepare("SELECT rev FROM sites WHERE id=?").get(site.id).rev;
+  const revApres = (await db.prepare("SELECT rev FROM sites WHERE id=?").get(site.id)).rev;
   assert.equal(revApres, revAvant + 1, "la modification groupée fait avancer rev");
 
   /* Le PUT qui repart de la version d'AVANT est désormais refusé, au lieu d'écraser. */
@@ -276,9 +276,9 @@ test("modification groupée : rev est incrémenté, sans quoi le verrou du PUT e
     .set("Authorization", `Bearer ${adminToken}`)
     .send({ code:site.code, name:"Écrasé par une saisie périmée", rev:revAvant });
   assert.equal(perime.status, 409, JSON.stringify(perime.body));
-  assert.equal(db.prepare("SELECT name FROM sites WHERE id=?").get(site.id).name, "Site du verrou",
+  assert.equal((await db.prepare("SELECT name FROM sites WHERE id=?").get(site.id)).name, "Site du verrou",
     "la valeur du bulk n'a pas été écrasée");
-  assert.equal(db.prepare("SELECT status FROM sites WHERE id=?").get(site.id).status, "Inactive");
+  assert.equal((await db.prepare("SELECT status FROM sites WHERE id=?").get(site.id)).status, "Inactive");
 
   /* Avec le rev à jour, la même écriture passe : le verrou borne, il n'interdit pas. */
   const ajour = await request(app).put(`/api/sites/${site.id}`)
@@ -293,7 +293,7 @@ test("modification groupée : rev est incrémenté, sans quoi le verrou du PUT e
   assert.equal(refus.status, 422, JSON.stringify(refus.body));
   assert.match(refus.body.error, /Inactif/, "le message nomme la valeur refusée");
   assert.match(refus.body.error, /status/, "et le champ en cause");
-  assert.equal(db.prepare("SELECT status FROM sites WHERE id=?").get(site.id).status, "Inactive",
+  assert.equal((await db.prepare("SELECT status FROM sites WHERE id=?").get(site.id)).status, "Inactive",
     "rien n'a été modifié");
 });
 
@@ -305,7 +305,7 @@ test("collections : la synchronisation crée, met à jour et supprime en une tra
     .set("Authorization", `Bearer ${adminToken}`).send({ rows });
   assert.equal(r.status, 200);
   assert.equal(r.body.created, 1);
-  const total = db.prepare("SELECT COUNT(*) c FROM report_templates").get().c;
+  const total = (await db.prepare("SELECT COUNT(*) c FROM report_templates").get()).c;
   assert.equal(total, rows.length);
 
   /* Les révisions ont changé : un client relit l'état avant d'écrire à nouveau. */
@@ -317,10 +317,10 @@ test("collections : la synchronisation crée, met à jour et supprime en une tra
   const implicite = await request(app).put("/api/collections/reportTemplates")
     .set("Authorization", `Bearer ${adminToken}`).send({ rows: frais.slice(0, 1) });
   assert.equal(implicite.body.removed, 0, "aucune suppression déduite");
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM report_templates").get().c, rows.length);
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM report_templates").get()).c, rows.length);
 
   /* Suppression explicite. */
-  const aSupprimer = db.prepare("SELECT id FROM report_templates").all()
+  const aSupprimer = await db.prepare("SELECT id FROM report_templates").all()
     .map(x => x.id).slice(1);
   const dernier = (await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`))
     .body.reportTemplates;
@@ -362,7 +362,7 @@ test("modèles de rapport : un bloc de calcul porte son identifiant ET sa visual
     .send({ rows:[{ ...t, blocks:[{ b:"calc", id:"", viz:"nombre" }] }] });
   assert.equal(vide.status, 422, JSON.stringify(vide.body));
 
-  db.prepare("DELETE FROM report_templates WHERE name=?").run("Modèle avec calcul");
+  await db.prepare("DELETE FROM report_templates WHERE name=?").run("Modèle avec calcul");
 });
 
 test("collections : une référence inexistante renvoie un conflit, pas une erreur serveur", async () => {
@@ -378,7 +378,7 @@ test("jetons de source externe : chiffrés au repos, jamais renvoyés", async ()
   const w = await request(app).put("/api/collections/odkForms")
     .set("Authorization", `Bearer ${adminToken}`).send({ rows: forms });
   assert.equal(w.status, 200);
-  const stored = db.prepare("SELECT token_enc FROM odk_forms LIMIT 1").get().token_enc;
+  const stored = (await db.prepare("SELECT token_enc FROM odk_forms LIMIT 1").get()).token_enc;
   assert.ok(stored && !stored.includes("jeton-tres-secret"));
   const after = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
   assert.ok(!/jeton-tres-secret/.test(JSON.stringify(after.body)));
@@ -578,7 +578,7 @@ test("droits : un lecteur peut consulter mais ne peut rien écrire", async () =>
 });
 
 test("cloisonnement : un compte rattaché à un bureau ne voit que ses sites", async () => {
-  const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
+  const office = await db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"terrain@test.local", password:"TerrainMotDePasse1", first_name:"Terrain",
             role:"editor", office_id:office.id, tabs:["home"], active:true });
@@ -589,7 +589,7 @@ test("cloisonnement : un compte rattaché à un bureau ne voit que ses sites", a
   assert.ok(st.body.sites.every(s => s.office_id === office.id));
   assert.equal(st.body.users.length, 0, "un éditeur ne reçoit pas la liste des comptes");
 
-  const autre = db.prepare("SELECT id FROM sites WHERE office_id<>? LIMIT 1").get(office.id);
+  const autre = await db.prepare("SELECT id FROM sites WHERE office_id<>? LIMIT 1").get(office.id);
   const r = await request(app).get(`/api/sites/${autre.id}`).set("Authorization", `Bearer ${t}`);
   assert.equal(r.status, 403);
 });
@@ -601,14 +601,14 @@ test("cloisonnement : un compte rattaché à un bureau ne voit que ses sites", a
    qu'il n'avait jamais eu le droit de la voir. La même IDOR que sites/aliases/ciblage
    referment déjà ; elle manquait ici. */
 test("cloisonnement : un validateur ne valide pas la visite d'un autre bureau", async () => {
-  const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
+  const office = await db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"valideur@test.local", password:"ValideurMotDePasse1", first_name:"Valideur",
             role:"validator", office_id:office.id, tabs:["home"], active:true });
   await motDePasseAdopte("valideur@test.local");
   const t = (await login("valideur@test.local", "ValideurMotDePasse1")).body.token;
 
-  const ailleurs = db.prepare(
+  const ailleurs = await db.prepare(
     "SELECT * FROM visits WHERE office_id IS NOT NULL AND office_id<>? LIMIT 1").get(office.id);
   assert.ok(ailleurs, "le jeu d'essai porte une visite d'un autre bureau");
   const avant = ailleurs.status;
@@ -616,18 +616,18 @@ test("cloisonnement : un validateur ne valide pas la visite d'un autre bureau", 
   const usurpe = await request(app).put(`/api/visits/${ailleurs.id}/status`)
     .set("Authorization", `Bearer ${t}`).send({ status:"Validé" });
   assert.equal(usurpe.status, 404, JSON.stringify(usurpe.body));
-  assert.equal(db.prepare("SELECT status FROM visits WHERE id=?").get(ailleurs.id).status, avant,
+  assert.equal((await db.prepare("SELECT status FROM visits WHERE id=?").get(ailleurs.id)).status, avant,
     "la visite de l'autre bureau est intacte");
-  assert.equal(db.prepare("SELECT validated_by FROM visits WHERE id=?").get(ailleurs.id).validated_by,
+  assert.equal((await db.prepare("SELECT validated_by FROM visits WHERE id=?").get(ailleurs.id)).validated_by,
     null, "et personne n'y est inscrit comme validateur");
 
   /* Sur les siennes, rien ne change : le cloisonnement borne, il n'interdit pas. */
-  const sienne = db.prepare("SELECT * FROM visits WHERE office_id=? LIMIT 1").get(office.id);
+  const sienne = await db.prepare("SELECT * FROM visits WHERE office_id=? LIMIT 1").get(office.id);
   assert.ok(sienne, "le bureau porte des visites à lui");
   const ok = await request(app).put(`/api/visits/${sienne.id}/status`)
     .set("Authorization", `Bearer ${t}`).send({ status:"Validé" });
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
-  assert.equal(db.prepare("SELECT status FROM visits WHERE id=?").get(sienne.id).status, "Validé");
+  assert.equal((await db.prepare("SELECT status FROM visits WHERE id=?").get(sienne.id)).status, "Validé");
 });
 
 /* Audit — la frontière super/admin ne vit pas dans CAPS (qui accorde « admin » aux deux)
@@ -637,7 +637,7 @@ test("cloisonnement : un validateur ne valide pas la visite d'un autre bureau", 
    un interpréteur de commandes en trois requêtes. Idem par promotion d'un compte existant :
    le garde d'alors ne regardait que le rôle ACTUEL de la cible, jamais le rôle VOULU. */
 test("escalade : un administrateur ne crée ni ne promeut un super-utilisateur", async () => {
-  const office = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
+  const office = await db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"admin2@test.local", password:"Admin2MotDePasse1", first_name:"Admin2",
             role:"admin", office_id:null, tabs:["home"], active:true });
@@ -649,8 +649,8 @@ test("escalade : un administrateur ne crée ni ne promeut un super-utilisateur",
     .send({ email:"faux-super@test.local", first_name:"Faux", role:"super",
             office_id:null, tabs:["home"], active:true });
   assert.equal(cree.status, 403, JSON.stringify(cree.body));
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM users WHERE email=?")
-    .get("faux-super@test.local").c, 0, "aucun compte super n'est né de la tentative");
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM users WHERE email=?")
+    .get("faux-super@test.local")).c, 0, "aucun compte super n'est né de la tentative");
 
   /* 2. Promotion d'un compte ORDINAIRE en super : refusée elle aussi — c'est le cas que
         le garde d'alors laissait passer, puisque la cible n'était pas encore super. */
@@ -661,20 +661,20 @@ test("escalade : un administrateur ne crée ni ne promeut un super-utilisateur",
   const promu = await request(app).put(`/api/users/${cible.body.user.id}`)
     .set("Authorization", `Bearer ${a}`).send({ role:"super" });
   assert.equal(promu.status, 403, JSON.stringify(promu.body));
-  assert.equal(db.prepare("SELECT role FROM users WHERE id=?").get(cible.body.user.id).role,
+  assert.equal((await db.prepare("SELECT role FROM users WHERE id=?").get(cible.body.user.id)).role,
     "editor", "le compte est resté éditeur");
 
   /* 3. Un super, lui, le fait : la barrière tient sur le rôle de l'appelant, pas sur la route. */
   const parSuper = await request(app).put(`/api/users/${cible.body.user.id}`)
     .set("Authorization", `Bearer ${adminToken}`).send({ role:"super" });
   assert.equal(parSuper.status, 200, JSON.stringify(parSuper.body));
-  assert.equal(db.prepare("SELECT role FROM users WHERE id=?").get(cible.body.user.id).role, "super");
+  assert.equal((await db.prepare("SELECT role FROM users WHERE id=?").get(cible.body.user.id)).role, "super");
 });
 
 /* Le cloisonnement ne valait que pour les sites : visites, distributions, paramètres et
    journal partaient en clair vers tous les bureaux. Ce test verrouille la correction. */
 test("cloisonnement : visites, distributions, paramètres et journal suivent le bureau", async () => {
-  const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
+  const office = await db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
   const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
   const st = await request(app).get("/api/state").set("Authorization", `Bearer ${t}`);
   assert.equal(st.status, 200);
@@ -684,9 +684,9 @@ test("cloisonnement : visites, distributions, paramètres et journal suivent le 
   for(const [table, key, label] of [["visits","visits","visites"],
                                     ["pdd","pdd","distributions"],
                                     ["coverage_params","params","paramètres"]]){
-    const sien = db.prepare(`SELECT COUNT(*) c FROM ${table} WHERE office_id=?`).get(office.id).c;
-    const ailleurs = db.prepare(
-      `SELECT COUNT(*) c FROM ${table} WHERE office_id IS NULL OR office_id<>?`).get(office.id).c;
+    const sien = (await db.prepare(`SELECT COUNT(*) c FROM ${table} WHERE office_id=?`).get(office.id)).c;
+    const ailleurs = (await db.prepare(
+      `SELECT COUNT(*) c FROM ${table} WHERE office_id IS NULL OR office_id<>?`).get(office.id)).c;
     assert.ok(ailleurs > 0, `le jeu d'essai contient des ${label} d'autres bureaux`);
     assert.equal(st.body[key].length, sien,
       `${label} : le bureau reçoit ses ${sien} ligne(s), et rien des ${ailleurs} autres`);
@@ -707,10 +707,10 @@ test("cloisonnement : visites, distributions, paramètres et journal suivent le 
    du bureau A écrivait donc — et surtout supprimait — les lignes du bureau B, que
    `GET /api/state` lui cache pourtant. Ces trois tests verrouillent la correction. */
 test("cloisonnement : un éditeur n'écrit pas dans la collection d'un autre bureau", async () => {
-  const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
+  const office = await db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
   const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
 
-  const autre = db.prepare(
+  const autre = await db.prepare(
     "SELECT * FROM pdd WHERE office_id IS NOT NULL AND office_id<>? LIMIT 1").get(office.id);
   assert.ok(autre, "le jeu d'essai porte une ligne de distribution d'un autre bureau");
 
@@ -718,12 +718,12 @@ test("cloisonnement : un éditeur n'écrit pas dans la collection d'un autre bur
     .send({ rows:[{ id:autre.id, year:autre.year, month:autre.month, actType:autre.act_type,
                     bureau:"Détournée", office_id:office.id, modality:"Food", status:"planned" }] });
   assert.equal(usurpe.status, 403, JSON.stringify(usurpe.body));
-  const apres = db.prepare("SELECT bureau, office_id FROM pdd WHERE id=?").get(autre.id);
+  const apres = await db.prepare("SELECT bureau, office_id FROM pdd WHERE id=?").get(autre.id);
   assert.equal(apres.bureau, autre.bureau, "la ligne de l'autre bureau est intacte");
   assert.equal(apres.office_id, autre.office_id, "elle n'a pas changé de bureau");
 
   /* Sur ses propres lignes, rien ne change : le cloisonnement borne, il n'interdit pas. */
-  const sienne = db.prepare("SELECT * FROM pdd WHERE office_id=? LIMIT 1").get(office.id);
+  const sienne = await db.prepare("SELECT * FROM pdd WHERE office_id=? LIMIT 1").get(office.id);
   assert.ok(sienne, "le bureau porte des lignes à lui");
   const ok = await request(app).put("/api/collections/pdd").set("Authorization", `Bearer ${t}`)
     .send({ rows:[{ id:sienne.id, year:sienne.year, month:sienne.month, actType:sienne.act_type,
@@ -731,20 +731,20 @@ test("cloisonnement : un éditeur n'écrit pas dans la collection d'un autre bur
                     status:sienne.status, note:"modifiée par son bureau" }] });
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   assert.equal(ok.body.updated, 1);
-  assert.equal(db.prepare("SELECT note FROM pdd WHERE id=?").get(sienne.id).note,
+  assert.equal((await db.prepare("SELECT note FROM pdd WHERE id=?").get(sienne.id)).note,
     "modifiée par son bureau");
 });
 
 test("cloisonnement : une création reste dans le bureau de l'appelant", async () => {
-  const office = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
-  const ailleurs = db.prepare("SELECT id FROM offices WHERE id<>? LIMIT 1").get(office.id);
+  const office = await db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
+  const ailleurs = await db.prepare("SELECT id FROM offices WHERE id<>? LIMIT 1").get(office.id);
   const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
   const r = await request(app).put("/api/collections/pdd").set("Authorization", `Bearer ${t}`)
     .send({ rows:[{ year:2026, month:0, actType:"GD", bureau:"Ligne témoin A1",
                     office_id:ailleurs.id, modality:"Food", status:"planned" }] });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.created, 1);
-  assert.equal(db.prepare("SELECT office_id FROM pdd WHERE bureau=?").get("Ligne témoin A1").office_id,
+  assert.equal((await db.prepare("SELECT office_id FROM pdd WHERE bureau=?").get("Ligne témoin A1")).office_id,
     office.id, "le bureau annoncé dans le corps ne fait pas foi");
 });
 
@@ -752,15 +752,15 @@ test("cloisonnement : une création reste dans le bureau de l'appelant", async (
    `deletes` passait avec, alors que la matrice des rôles (lib/auth.js) réserve
    « del » à l'administration. */
 test("droits : supprimer dans une collection exige « del », pas seulement « edit »", async () => {
-  const office = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
+  const office = await db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
   const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
-  const sienne = db.prepare("SELECT id FROM pdd WHERE office_id=? LIMIT 1").get(office.id);
+  const sienne = await db.prepare("SELECT id FROM pdd WHERE office_id=? LIMIT 1").get(office.id);
 
   const refus = await request(app).put("/api/collections/pdd").set("Authorization", `Bearer ${t}`)
     .send({ rows:[], deletes:[sienne.id] });
   assert.equal(refus.status, 403, JSON.stringify(refus.body));
   assert.match(refus.body.error, /del/);
-  assert.ok(db.prepare("SELECT 1 FROM pdd WHERE id=?").get(sienne.id),
+  assert.ok(await db.prepare("SELECT 1 FROM pdd WHERE id=?").get(sienne.id),
     "la ligne n'a pas été supprimée");
 
   /* Un administrateur, lui, en a le droit : le correctif restreint, il ne bloque pas. */
@@ -772,7 +772,7 @@ test("droits : supprimer dans une collection exige « del », pas seulement « e
 });
 
 test("identité : le nom du bureau accompagne le compte, pour l'affichage et le cloisonnement", async () => {
-  const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
+  const office = await db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
   const r = await login("terrain@test.local", "TerrainMotDePasse1");
   assert.equal(r.body.user.office, office.name);
   const me = await request(app).get("/api/auth/me").set("Authorization", `Bearer ${r.body.token}`);
@@ -788,7 +788,7 @@ test("comptes : politique de mot de passe et garde-fous d'administration", async
     .send({ email:"faible@test.local", password:"court", first_name:"Faible", role:"viewer" });
   assert.equal(faible.status, 422);
 
-  const me = db.prepare("SELECT id FROM users WHERE email='admin@test.local'").get();
+  const me = await db.prepare("SELECT id FROM users WHERE email='admin@test.local'").get();
   const auto = await request(app).put(`/api/users/${me.id}`).set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"admin@test.local", first_name:"Administrateur", role:"viewer", tabs:[], active:true });
   assert.equal(auto.status, 409, "un administrateur ne peut pas se retirer ses droits");
@@ -803,7 +803,7 @@ test("comptes : politique de mot de passe et garde-fous d'administration", async
    tout écran qui ne connaît qu'une partie du compte — réactivait donc un compte
    désactivé et le détachait de son prestataire, sans un mot d'erreur. */
 test("comptes : un PUT partiel ne réactive ni ne rétrograde ce qu'il n'envoie pas", async () => {
-  const tpm = db.prepare("SELECT id FROM tpm LIMIT 1").get();
+  const tpm = await db.prepare("SELECT id FROM tpm LIMIT 1").get();
   assert.ok(tpm, "le jeu d'essai porte un prestataire");
 
   const cree = await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
@@ -811,7 +811,7 @@ test("comptes : un PUT partiel ne réactive ni ne rétrograde ce qu'il n'envoie 
             last_name:"Ancien", title:"Agent", role:"editor", tpm_id:tpm.id,
             tabs:["home","suivi"], active:false });
   assert.equal(cree.status, 201, JSON.stringify(cree.body));
-  const avant = db.prepare("SELECT * FROM users WHERE email='partiel@test.local'").get();
+  const avant = await db.prepare("SELECT * FROM users WHERE email='partiel@test.local'").get();
   assert.equal(avant.active, 0, "le compte est bien créé désactivé");
 
   /* Le corps ne porte QUE l'adresse et le prénom. Tout le reste doit survivre. */
@@ -820,7 +820,7 @@ test("comptes : un PUT partiel ne réactive ni ne rétrograde ce qu'il n'envoie 
     .send({ email:"partiel@test.local", first_name:"Partiel corrigé" });
   assert.equal(put.status, 200, JSON.stringify(put.body));
 
-  const apres = db.prepare("SELECT * FROM users WHERE id=?").get(avant.id);
+  const apres = await db.prepare("SELECT * FROM users WHERE id=?").get(avant.id);
   assert.equal(apres.first_name, "Partiel corrigé", "ce qui est envoyé est bien écrit");
   assert.equal(apres.active, 0, "un compte désactivé ne se réactive pas tout seul");
   assert.equal(apres.role, "editor", "le rôle n'est pas rétrogradé en « viewer »");
@@ -832,16 +832,16 @@ test("comptes : un PUT partiel ne réactive ni ne rétrograde ce qu'il n'envoie 
 
   /* Même contrôle sur un compte de bureau, où `office_id` n'est pas nul : un compte
      de prestataire n'en porte jamais, il ne prouverait donc rien à lui seul. */
-  const office = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
+  const office = await db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
   const cree2 = await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"partiel2@test.local", password:"Partiel2MotDePasse1", first_name:"Partiel2",
             role:"validator", office_id:office.id, tabs:["home"], active:false });
   assert.equal(cree2.status, 201, JSON.stringify(cree2.body));
-  const av2 = db.prepare("SELECT * FROM users WHERE email='partiel2@test.local'").get();
+  const av2 = await db.prepare("SELECT * FROM users WHERE email='partiel2@test.local'").get();
   const put2 = await request(app).put(`/api/users/${av2.id}`)
     .set("Authorization", `Bearer ${adminToken}`).send({ first_name:"Partiel2 corrigé" });
   assert.equal(put2.status, 200, JSON.stringify(put2.body));
-  const ap2 = db.prepare("SELECT * FROM users WHERE id=?").get(av2.id);
+  const ap2 = await db.prepare("SELECT * FROM users WHERE id=?").get(av2.id);
   assert.equal(ap2.office_id, office.id, "le bureau n'est pas détaché");
   assert.equal(ap2.role, "validator");
   assert.equal(ap2.active, 0);
@@ -851,7 +851,7 @@ test("comptes : un PUT partiel ne réactive ni ne rétrograde ce qu'il n'envoie 
   const put3 = await request(app).put(`/api/users/${av2.id}`)
     .set("Authorization", `Bearer ${adminToken}`).send({ active:true });
   assert.equal(put3.status, 200, JSON.stringify(put3.body));
-  assert.equal(db.prepare("SELECT active FROM users WHERE id=?").get(av2.id).active, 1);
+  assert.equal((await db.prepare("SELECT active FROM users WHERE id=?").get(av2.id)).active, 1);
 });
 
 /* Chantier A7 — `failed_logins` n'était remis à zéro que par une connexion réussie.
@@ -971,7 +971,7 @@ test("réinitialisation admin : provisoire généré, sessions fermées, changem
   const ouverte = (await login("reset@test.local", "ResetMotDePasse1")).body.token;
   assert.equal((await request(app).get("/api/state").set("Authorization", `Bearer ${ouverte}`)).status, 200);
 
-  const cible = db.prepare("SELECT id FROM users WHERE email='reset@test.local'").get();
+  const cible = await db.prepare("SELECT id FROM users WHERE email='reset@test.local'").get();
   const reset = await request(app).post(`/api/users/${cible.id}/reset-password`)
     .set("Authorization", `Bearer ${adminToken}`);
   assert.equal(reset.status, 200, JSON.stringify(reset.body));
@@ -1056,8 +1056,8 @@ test("couverture : agrégation mensuelle cohérente avec la base", async () => {
   const r = await request(app).get("/api/analytics/coverage").set("Authorization", `Bearer ${t}`);
   assert.equal(r.status, 200);
   const total = r.body.rows.reduce((s, x) => s + x.done, 0);
-  const direct = db.prepare("SELECT COALESCE(SUM(done),0) s FROM site_months WHERE year=?")
-    .get(r.body.year).s;
+  const direct = (await db.prepare("SELECT COALESCE(SUM(done),0) s FROM site_months WHERE year=?")
+    .get(r.body.year)).s;
   assert.equal(total, direct);
 });
 
@@ -1161,7 +1161,7 @@ test("injection SQL : la chaîne est traitée comme une donnée, pas comme du co
     .set("Authorization", `Bearer ${t}`);
   assert.equal(r.status, 200);
   assert.equal(r.body.total, 0);
-  assert.ok(db.prepare("SELECT COUNT(*) c FROM sites").get().c > 100, "la table est intacte");
+  assert.ok((await db.prepare("SELECT COUNT(*) c FROM sites").get()).c > 100, "la table est intacte");
 });
 
 test("charge utile démesurée : rejetée sans faire tomber le serveur", async () => {
@@ -1577,7 +1577,7 @@ test("population et ciblage : une écriture hors périmètre est rejetée ligne 
   assert.equal(r.body.rejets[0].pcode, dehors.pcode);
   assert.match(r.body.rejets[0].message, /hors du périmètre/);
   assert.equal(r.body.crees + r.body.modifies, 1, "la ligne de son propre périmètre passe");
-  assert.ok(!db.prepare("SELECT 1 FROM caseload WHERE geo_pcode=? AND source=?")
+  assert.ok(!await db.prepare("SELECT 1 FROM caseload WHERE geo_pcode=? AND source=?")
     .get(dehors.pcode, "tentative hors périmètre"), "rien n'a été écrit hors périmètre");
 });
 
@@ -1839,7 +1839,7 @@ test("concurrence : enregistrer n'efface plus la ligne ajoutée par un collègue
     .set("Authorization", `Bearer ${t}`)
     .send({ rows: [{ name:"Modèle du bureau B", blocks:["kpi"], intro:"ajouté par B" }] });
   assert.equal(ajoutB.body.created, 1);
-  const apresB = db.prepare("SELECT COUNT(*) c FROM report_templates").get().c;
+  const apresB = (await db.prepare("SELECT COUNT(*) c FROM report_templates").get()).c;
 
   /* A enregistre sa propre modification, à partir de sa vue périmée.
      Avant, la ligne de B disparaissait ici même, sans aucun signal. */
@@ -1848,9 +1848,9 @@ test("concurrence : enregistrer n'efface plus la ligne ajoutée par un collègue
     .set("Authorization", `Bearer ${t}`).send({ rows: modifA });
   assert.equal(ecritureA.status, 200);
   assert.equal(ecritureA.body.removed, 0, "A ne supprime rien : il n'a rien retiré");
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM report_templates").get().c, apresB,
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM report_templates").get()).c, apresB,
     "la ligne du bureau B a survécu à l'enregistrement du bureau A");
-  assert.ok(db.prepare("SELECT 1 FROM report_templates WHERE name=?").get("Modèle du bureau B"),
+  assert.ok(await db.prepare("SELECT 1 FROM report_templates WHERE name=?").get("Modèle du bureau B"),
     "la ligne du bureau B est toujours là, nommément");
 });
 
@@ -1870,7 +1870,7 @@ test("concurrence : modifier la même ligne à deux est refusé, pas écrasé", 
     .set("Authorization", `Bearer ${t}`)
     .send({ rows: [ligne("Intitulé posé par B")] });
   assert.equal(premier.status, 200);
-  assert.equal(db.prepare("SELECT rev FROM indicators WHERE id=?").get(cible.key).rev,
+  assert.equal((await db.prepare("SELECT rev FROM indicators WHERE id=?").get(cible.key)).rev,
     cible.rev + 1, "la révision est incrémentée");
 
   /* A enregistre ensuite, avec la révision qu'il avait lue : refusé. */
@@ -1886,7 +1886,7 @@ test("concurrence : modifier la même ligne à deux est refusé, pas écrasé", 
   assert.equal(second.body.courant[0].name, "Intitulé posé par B");
 
   /* Le travail de B est intact : rien n'a été écrasé. */
-  assert.equal(db.prepare("SELECT name FROM indicators WHERE id=?").get(cible.key).name,
+  assert.equal((await db.prepare("SELECT name FROM indicators WHERE id=?").get(cible.key)).name,
     "Intitulé posé par B");
 
   /* Avec la révision à jour, A peut enregistrer. */
@@ -1894,7 +1894,7 @@ test("concurrence : modifier la même ligne à deux est refusé, pas écrasé", 
     .set("Authorization", `Bearer ${t}`)
     .send({ rows: [{ ...ligne("Intitulé final de A"), rev: cible.rev + 1 }] });
   assert.equal(rejoue.status, 200);
-  assert.equal(db.prepare("SELECT name FROM indicators WHERE id=?").get(cible.key).name,
+  assert.equal((await db.prepare("SELECT name FROM indicators WHERE id=?").get(cible.key)).name,
     "Intitulé final de A");
 });
 
@@ -1916,11 +1916,11 @@ test("indicateurs : les natures CRF et XLSForm font l'aller-retour", async () =>
   assert.equal(ecrit.body.created, 2);
 
   /* Le stockage porte bien les colonnes de la migration. */
-  const proc = db.prepare("SELECT * FROM indicators WHERE code=?").get("OUT-PROC");
+  const proc = await db.prepare("SELECT * FROM indicators WHERE code=?").get("OUT-PROC");
   assert.equal(proc.kind, "xlsform");
   assert.equal(proc.activity, "ACT1");
   assert.equal(proc.level, null, "un XLSForm n'a pas de niveau de cadre logique");
-  const oth = db.prepare("SELECT * FROM indicators WHERE code=?").get("OTH-OUT");
+  const oth = await db.prepare("SELECT * FROM indicators WHERE code=?").get("OTH-OUT");
   assert.equal(oth.kind, "crf");
   assert.equal(oth.level, "other_output");
 
@@ -1975,17 +1975,17 @@ test("planification : un éditeur enregistre MRE et calendrier, hors des réglag
 
   /* La table `outcome_plan` porte les deux mois cochés, et rien de plus pour ce code. */
   const année = new Date().getFullYear();
-  const ind = db.prepare("SELECT id FROM indicators WHERE code=?").get(code);
-  const mois = db.prepare("SELECT month FROM outcome_plan WHERE indicator_id=? AND year=? ORDER BY month")
-    .all(ind.id, année).map(r => r.month);
+  const ind = await db.prepare("SELECT id FROM indicators WHERE code=?").get(code);
+  const mois = (await db.prepare("SELECT month FROM outcome_plan WHERE indicator_id=? AND year=? ORDER BY month")
+    .all(ind.id, année)).map(r => r.month);
   assert.deepEqual(mois, [0,3], "seuls les mois cochés existent dans la table");
   /* Le reflet dans settings est purgé : il n'ombre plus la table. */
-  assert.equal(db.prepare("SELECT 1 FROM settings WHERE key='outcomePlan'").get(), undefined);
+  assert.equal(await db.prepare("SELECT 1 FROM settings WHERE key='outcomePlan'").get(), undefined);
 
   /* Décocher un mois le fait DISPARAÎTRE (remplacement de l'année, pas ajout). */
   await request(app).put("/api/planning-config").set("Authorization", `Bearer ${t}`)
     .send({ outcomePlan:{ [code]: [true,false,false,false,false,false,false,false,false,false,false,false] } });
-  const apres = db.prepare("SELECT month FROM outcome_plan WHERE indicator_id=? AND year=?").all(ind.id, année);
+  const apres = await db.prepare("SELECT month FROM outcome_plan WHERE indicator_id=? AND year=?").all(ind.id, année);
   assert.deepEqual(apres.map(r=>r.month), [0], "le mois décoché a bien disparu");
 
   /* Un lecteur ne planifie pas : la route exige le droit d'édition. */
@@ -2003,13 +2003,13 @@ test("concurrence : un client qui n'envoie pas de révision reste accepté", asy
   /* Compatibilité : la révision est facultative. Sans elle, on retombe sur le
      comportement « dernier écrivain gagne », mais sans suppression implicite. */
   const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
-  const ind = db.prepare("SELECT * FROM indicators LIMIT 1").get();
+  const ind = await db.prepare("SELECT * FROM indicators LIMIT 1").get();
   const r = await request(app).put("/api/collections/indicators")
     .set("Authorization", `Bearer ${t}`)
     .send({ rows: [{ id:ind.id, code:ind.code, name:"Sans révision", unit:ind.unit,
                      target:ind.target, direction:ind.direction }] });
   assert.equal(r.status, 200);
-  assert.equal(db.prepare("SELECT name FROM indicators WHERE id=?").get(ind.id).name, "Sans révision");
+  assert.equal((await db.prepare("SELECT name FROM indicators WHERE id=?").get(ind.id)).name, "Sans révision");
 });
 
 test("concurrence : un site modifié à deux mains est refusé avec sa version courante", async () => {
@@ -2030,7 +2030,7 @@ test("concurrence : un site modifié à deux mains est refusé avec sa version c
   assert.equal(second.status, 409);
   assert.equal(second.body.revCourante, 2);
   assert.equal(second.body.courant.name, "Nommé par B", "la valeur courante accompagne le refus");
-  assert.equal(db.prepare("SELECT name FROM sites WHERE id=?").get(site.id).name, "Nommé par B");
+  assert.equal((await db.prepare("SELECT name FROM sites WHERE id=?").get(site.id)).name, "Nommé par B");
 
   await request(app).delete(`/api/sites/${site.id}`).set("Authorization", `Bearer ${t}`);
 });
@@ -2081,13 +2081,13 @@ test("périmètre : il borne réellement ce qu'un compte de terrain peut lire", 
 test("périmètre : le modifier change immédiatement ce qui est accessible", async () => {
   const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
   await activerMillesimeDuSeed(t);
-  const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
+  const office = await db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
 
   const avant = (await request(app).get("/api/geo/scope").set("Authorization", `Bearer ${t}`))
     .body.rows.find(o => o.office_id === office.id);
 
   /* On réduit le périmètre à une seule commune. */
-  const uneCommune = db.prepare(`SELECT pcode FROM geo_unit
+  const uneCommune = await db.prepare(`SELECT pcode FROM geo_unit
     WHERE version_id=(SELECT id FROM geo_version WHERE is_current=1) AND level='adm3' LIMIT 1`).get();
   const maj = await request(app).put(`/api/geo/scope/${office.id}`)
     .set("Authorization", `Bearer ${t}`).send({ pcodes:[uneCommune.pcode] });
@@ -2112,14 +2112,14 @@ test("périmètre : le modifier change immédiatement ce qui est accessible", as
 test("périmètre : sans déclaration, il reste déduit des données — pas d'accès perdu", async () => {
   const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
   await activerMillesimeDuSeed(t);
-  const office = db.prepare(`SELECT o.id, o.name FROM offices o
+  const office = await db.prepare(`SELECT o.id, o.name FROM offices o
     WHERE o.kind='field' AND EXISTS (SELECT 1 FROM sites WHERE office_id=o.id)
     ORDER BY o.name LIMIT 1`).get();
-  const declare = db.prepare("SELECT geo_pcode FROM office_scope WHERE office_id=?").all(office.id);
+  const declare = await db.prepare("SELECT geo_pcode FROM office_scope WHERE office_id=?").all(office.id);
 
   /* On efface la déclaration : le repli doit prendre le relais, sinon activer la
      migration priverait d'un coup tous les comptes de terrain de leur accès. */
-  db.prepare("DELETE FROM office_scope WHERE office_id=?").run(office.id);
+  await db.prepare("DELETE FROM office_scope WHERE office_id=?").run(office.id);
   const sansDeclaration = (await request(app).get("/api/geo/scope")
     .set("Authorization", `Bearer ${t}`)).body.rows.find(o => o.office_id === office.id);
   assert.equal(sansDeclaration.source, "déduit");
@@ -2127,7 +2127,7 @@ test("périmètre : sans déclaration, il reste déduit des données — pas d'a
 
   /* On rétablit. */
   const ins = db.prepare("INSERT INTO office_scope (office_id,geo_pcode) VALUES (?,?)");
-  for(const d of declare) ins.run(office.id, d.geo_pcode);
+  await Promise.all(declare.map(d => ins.run(office.id, d.geo_pcode)));
   const retabli = (await request(app).get("/api/geo/scope")
     .set("Authorization", `Bearer ${t}`)).body.rows.find(o => o.office_id === office.id);
   assert.equal(retabli.source, "déclaré");
@@ -2136,18 +2136,18 @@ test("périmètre : sans déclaration, il reste déduit des données — pas d'a
 test("périmètre : une unité absente du référentiel est refusée", async () => {
   const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
   await activerMillesimeDuSeed(t);
-  const office = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
+  const office = await db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
   const r = await request(app).put(`/api/geo/scope/${office.id}`)
     .set("Authorization", `Bearer ${t}`).send({ pcodes:["PCODE_QUI_NEXISTE_PAS"] });
   assert.equal(r.status, 422);
   assert.ok(/absentes du référentiel/.test(r.body.error), r.body.error);
   /* Rien n'a été écrit : le périmètre précédent est intact. */
-  assert.ok(db.prepare("SELECT COUNT(*) c FROM office_scope WHERE office_id=?").get(office.id).c > 0);
+  assert.ok((await db.prepare("SELECT COUNT(*) c FROM office_scope WHERE office_id=?").get(office.id)).c > 0);
 });
 
 test("périmètre : sa modification est réservée aux administrateurs et tracée", async () => {
   const te = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
-  const office = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
+  const office = await db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
   const refus = await request(app).put(`/api/geo/scope/${office.id}`)
     .set("Authorization", `Bearer ${te}`).send({ pcodes:[] });
   assert.equal(refus.status, 403);
@@ -2201,7 +2201,7 @@ test("bureaux : création, renommage persistant et refus du doublon", async () =
   assert.equal(maj.body.office.rev, 2, "la révision avance");
 
   /* La preuve que ce n'est plus un no-op : la base porte le nouveau nom. */
-  assert.equal(db.prepare("SELECT name FROM offices WHERE id=?").get(id).name,
+  assert.equal((await db.prepare("SELECT name FROM offices WHERE id=?").get(id)).name,
     "Bureau de terrain de Farafangana Sud");
   /* Et l'état renvoyé au client aussi — c'est de là que vient la liste des bureaux. */
   const st = await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`);
@@ -2209,7 +2209,7 @@ test("bureaux : création, renommage persistant et refus du doublon", async () =
 });
 
 test("bureaux : révision périmée refusée, valeur courante renvoyée", async () => {
-  const o = db.prepare("SELECT * FROM offices WHERE code='FARAFANGANA'").get();
+  const o = await db.prepare("SELECT * FROM offices WHERE code='FARAFANGANA'").get();
   const r = await request(app).put(`/api/offices/${o.id}`).set("Authorization", `Bearer ${adminToken}`)
     .send({ name:o.name, rev:1 });
   assert.equal(r.status, 409);
@@ -2218,7 +2218,7 @@ test("bureaux : révision périmée refusée, valeur courante renvoyée", async 
 });
 
 test("bureaux : un bureau référencé ne peut pas être supprimé, seulement désactivé", async () => {
-  const référencé = db.prepare(
+  const référencé = await db.prepare(
     "SELECT id FROM offices WHERE id IN (SELECT office_id FROM sites) LIMIT 1").get();
   const orphelins = async () => (await db.prepare("SELECT COUNT(*) c FROM sites WHERE office_id IS NULL").get()).c;
   const avant = await orphelins();
@@ -2264,10 +2264,10 @@ test("activités : lecture, création, révision optimiste et refus de suppressi
   const maj = await request(app).put(`/api/activities/${id}`).set("Authorization", `Bearer ${adminToken}`)
     .send({ name:"Renommée", tag:"TST", rev:cree.body.activity.rev });
   assert.equal(maj.status, 200);
-  assert.equal(db.prepare("SELECT name FROM activity_categories WHERE id=?").get(id).name, "Renommée");
+  assert.equal((await db.prepare("SELECT name FROM activity_categories WHERE id=?").get(id)).name, "Renommée");
 
   /* Une activité référencée par un site ne se supprime pas : on la désactive. */
-  const référencée = db.prepare(
+  const référencée = await db.prepare(
     "SELECT id FROM activity_categories WHERE id IN (SELECT category_id FROM sites) LIMIT 1").get();
   if(référencée){
     const orphelins = async () => (await db.prepare("SELECT COUNT(*) c FROM sites WHERE category_id IS NULL").get()).c;
@@ -2296,14 +2296,14 @@ test("activités : lecture, création, révision optimiste et refus de suppressi
 });
 
 test("bureaux : désactiver un bureau portant des comptes actifs est refusé", async () => {
-  const o = db.prepare(
+  const o = await db.prepare(
     "SELECT * FROM offices WHERE id IN (SELECT office_id FROM users WHERE active=1) LIMIT 1").get();
   const r = await request(app).put(`/api/offices/${o.id}`).set("Authorization", `Bearer ${adminToken}`)
     .send({ name:o.name, code:o.code, kind:o.kind, scope_mode:o.scope_mode,
             active:false, rev:o.rev });
   assert.equal(r.status, 409);
   assert.ok(/compte\(s\) actif\(s\)/.test(r.body.error), r.body.error);
-  assert.equal(db.prepare("SELECT active FROM offices WHERE id=?").get(o.id).active, 1);
+  assert.equal((await db.prepare("SELECT active FROM offices WHERE id=?").get(o.id)).active, 1);
 });
 
 test("bureaux : l'écriture est réservée aux administrateurs", async () => {
@@ -2317,7 +2317,7 @@ test("bureaux : l'écriture est réservée aux administrateurs", async () => {
 });
 
 test("bureau pays : un compte de Tana voit tous les sites sans être administrateur", async () => {
-  const hq = db.prepare("SELECT id,name FROM offices WHERE kind='hq'").get();
+  const hq = await db.prepare("SELECT id,name FROM offices WHERE kind='hq'").get();
   await request(app).post("/api/users").set("Authorization", `Bearer ${adminToken}`)
     .send({ email:"tana@test.local", password:"TanaMotDePasse1", first_name:"Tana",
             role:"editor", office_id:hq.id, tabs:["home"], active:true });
@@ -2325,13 +2325,13 @@ test("bureau pays : un compte de Tana voit tous les sites sans être administrat
   const t = (await login("tana@test.local", "TanaMotDePasse1")).body.token;
 
   const st = await request(app).get("/api/state").set("Authorization", `Bearer ${t}`);
-  const total = db.prepare("SELECT COUNT(*) c FROM sites").get().c;
+  const total = (await db.prepare("SELECT COUNT(*) c FROM sites").get()).c;
   assert.equal(st.body.sites.length, total, "tous les sites, pas seulement ceux de Tana");
-  assert.ok(db.prepare("SELECT COUNT(*) c FROM sites WHERE office_id<>?").get(hq.id).c > 0,
+  assert.ok((await db.prepare("SELECT COUNT(*) c FROM sites WHERE office_id<>?").get(hq.id)).c > 0,
     "le jeu d'essai comporte bien des sites d'autres bureaux");
 
   /* Le site d'un autre bureau est lisible, alors qu'il était refusé au compte de terrain. */
-  const autre = db.prepare("SELECT id FROM sites WHERE office_id<>? LIMIT 1").get(hq.id);
+  const autre = await db.prepare("SELECT id FROM sites WHERE office_id<>? LIMIT 1").get(hq.id);
   assert.equal((await request(app).get(`/api/sites/${autre.id}`)
     .set("Authorization", `Bearer ${t}`)).status, 200);
 
@@ -2349,30 +2349,30 @@ test("bureau pays : un compte de Tana voit tous les sites sans être administrat
 });
 
 test("bureau pays : ramené au périmètre déclaré, le même compte est de nouveau cloisonné", async () => {
-  const hq = db.prepare("SELECT * FROM offices WHERE kind='hq'").get();
+  const hq = await db.prepare("SELECT * FROM offices WHERE kind='hq'").get();
   const r = await request(app).put(`/api/offices/${hq.id}`).set("Authorization", `Bearer ${adminToken}`)
     .send({ name:hq.name, code:hq.code, kind:"hq", scope_mode:"geo", active:true, rev:hq.rev });
   assert.equal(r.status, 200);
 
   const t = (await login("tana@test.local", "TanaMotDePasse1")).body.token;
   const st = await request(app).get("/api/state").set("Authorization", `Bearer ${t}`);
-  const siens = db.prepare("SELECT COUNT(*) c FROM sites WHERE office_id=?").get(hq.id).c;
+  const siens = (await db.prepare("SELECT COUNT(*) c FROM sites WHERE office_id=?").get(hq.id)).c;
   assert.equal(st.body.sites.length, siens, "le cloisonnement est revenu");
-  assert.ok(st.body.sites.length < db.prepare("SELECT COUNT(*) c FROM sites").get().c);
+  assert.ok(st.body.sites.length < (await db.prepare("SELECT COUNT(*) c FROM sites").get()).c);
 
   /* Rétabli, pour ne pas laisser la base d'essai dans un état trompeur. */
-  const à_jour = db.prepare("SELECT rev FROM offices WHERE id=?").get(hq.id);
+  const à_jour = await db.prepare("SELECT rev FROM offices WHERE id=?").get(hq.id);
   await request(app).put(`/api/offices/${hq.id}`).set("Authorization", `Bearer ${adminToken}`)
     .send({ name:hq.name, code:hq.code, kind:"hq", scope_mode:"national", active:true, rev:à_jour.rev });
-  assert.equal(db.prepare("SELECT scope_mode FROM offices WHERE id=?").get(hq.id).scope_mode, "national");
+  assert.equal((await db.prepare("SELECT scope_mode FROM offices WHERE id=?").get(hq.id)).scope_mode, "national");
 });
 
 test("bureaux : mode de périmètre inconnu refusé — une valeur libre élargirait un accès", async () => {
-  const o = db.prepare("SELECT * FROM offices WHERE kind='field' LIMIT 1").get();
+  const o = await db.prepare("SELECT * FROM offices WHERE kind='field' LIMIT 1").get();
   const r = await request(app).put(`/api/offices/${o.id}`).set("Authorization", `Bearer ${adminToken}`)
     .send({ name:o.name, scope_mode:"tout", rev:o.rev });
   assert.equal(r.status, 422);
-  assert.equal(db.prepare("SELECT scope_mode FROM offices WHERE id=?").get(o.id).scope_mode, "geo");
+  assert.equal((await db.prepare("SELECT scope_mode FROM offices WHERE id=?").get(o.id)).scope_mode, "geo");
 });
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -2432,17 +2432,17 @@ test("MRE : création d'une activité, puis de son budget ligne par ligne", asyn
 });
 
 test("MRE : le budget remplacé en bloc ne laisse pas d'ancienne ligne derrière lui", async () => {
-  const a = db.prepare("SELECT * FROM mre_activity WHERE ref='MRE-T1'").get();
+  const a = await db.prepare("SELECT * FROM mre_activity WHERE ref='MRE-T1'").get();
   const r = await request(app).put(`/api/mre/${a.id}/costs`).set("Authorization", `Bearer ${adminToken}`)
     .send({ rev:a.rev, lines:[{ category:"autre", label:"Forfait unique", qty:1, unit_cost:900 }] });
   assert.equal(r.status, 200);
   assert.equal(r.body.activity.costs.length, 1);
   assert.equal(r.body.activity.budget, 900);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM mre_cost WHERE activity_id=?").get(a.id).c, 1);
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM mre_cost WHERE activity_id=?").get(a.id)).c, 1);
 });
 
 test("MRE : révision périmée refusée sur l'activité comme sur son budget", async () => {
-  const a = db.prepare("SELECT * FROM mre_activity WHERE ref='MRE-T1'").get();
+  const a = await db.prepare("SELECT * FROM mre_activity WHERE ref='MRE-T1'").get();
   const act = await request(app).put(`/api/mre/${a.id}`).set("Authorization", `Bearer ${adminToken}`)
     .send({ year:a.year, title:a.title, rev:1 });
   assert.equal(act.status, 409);
@@ -2450,7 +2450,7 @@ test("MRE : révision périmée refusée sur l'activité comme sur son budget", 
   const bud = await request(app).put(`/api/mre/${a.id}/costs`).set("Authorization", `Bearer ${adminToken}`)
     .send({ rev:1, lines:[] });
   assert.equal(bud.status, 409);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM mre_cost WHERE activity_id=?").get(a.id).c, 1,
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM mre_cost WHERE activity_id=?").get(a.id)).c, 1,
     "le budget n'a pas été vidé au passage");
 });
 
@@ -2476,7 +2476,7 @@ test("MRE : garde-fous de saisie — référence unique dans l'année, calendrie
 
 test("MRE : un bureau voit son plan et le plan national, mais ne modifie que le sien", async () => {
   const an = new Date().getFullYear();
-  const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
+  const office = await db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
   const t = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
   const r = await request(app).get(`/api/mre?year=${an}`).set("Authorization", `Bearer ${t}`);
   assert.equal(r.status, 200);
@@ -2485,13 +2485,13 @@ test("MRE : un bureau voit son plan et le plan national, mais ne modifie que le 
     "aucune activité d'un autre bureau");
   /* Mais le plan national reste visible : le lui cacher laisserait croire
      qu'aucune évaluation ne porte sur sa zone. */
-  const hqId = db.prepare("SELECT id FROM offices WHERE kind='hq'").get().id;
-  assert.ok(db.prepare("SELECT COUNT(*) c FROM mre_activity WHERE office_id NOT IN (?,?)")
-    .get(office.id, hqId).c >= 0);
+  const hqId = (await db.prepare("SELECT id FROM offices WHERE kind='hq'").get()).id;
+  assert.ok((await db.prepare("SELECT COUNT(*) c FROM mre_activity WHERE office_id NOT IN (?,?)")
+    .get(office.id, hqId)).c >= 0);
   assert.ok(r.body.rows.some(a => a.office_id === office.id), "il voit son propre plan");
 
   /* Une activité d'un autre bureau lui est refusée en écriture. */
-  const ailleurs = db.prepare(
+  const ailleurs = await db.prepare(
     "SELECT id FROM mre_activity WHERE office_id IS NOT NULL AND office_id<>? LIMIT 1").get(office.id);
   const refus = await request(app).put(`/api/mre/${ailleurs.id}`)
     .set("Authorization", `Bearer ${t}`).send({ year:an, title:"Tentative", rev:1 });
@@ -2510,25 +2510,25 @@ test("MRE : un compte de Tana pilote le plan national", async () => {
   const t = (await login("tana@test.local", "TanaMotDePasse1")).body.token;
   const r = await request(app).get(`/api/mre?year=${an}`).set("Authorization", `Bearer ${t}`);
   /* Bureau national : il voit tout le plan, comme il voit tous les sites. */
-  const tout = db.prepare("SELECT COUNT(*) c FROM mre_activity WHERE year=?").get(an).c;
+  const tout = (await db.prepare("SELECT COUNT(*) c FROM mre_activity WHERE year=?").get(an)).c;
   assert.equal(r.body.rows.length, tout);
-  const ailleurs = db.prepare(
+  const ailleurs = await db.prepare(
     "SELECT id FROM mre_activity WHERE year=? AND office_id IS NOT NULL LIMIT 1").get(an);
   const maj = await request(app).put(`/api/mre/${ailleurs.id}`).set("Authorization", `Bearer ${t}`)
     .send({ year:an, title:"Ajusté par le bureau pays",
-            rev: db.prepare("SELECT rev FROM mre_activity WHERE id=?").get(ailleurs.id).rev });
+            rev: (await db.prepare("SELECT rev FROM mre_activity WHERE id=?").get(ailleurs.id)).rev });
   assert.equal(maj.status, 200);
 });
 
 test("MRE : suppression réservée au droit de suppression, lignes de coût emportées", async () => {
-  const a = db.prepare("SELECT * FROM mre_activity WHERE ref='MRE-T1'").get();
+  const a = await db.prepare("SELECT * FROM mre_activity WHERE ref='MRE-T1'").get();
   const te = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
   assert.equal((await request(app).delete(`/api/mre/${a.id}`)
     .set("Authorization", `Bearer ${te}`)).status, 403, "un éditeur ne supprime pas");
 
   const r = await request(app).delete(`/api/mre/${a.id}`).set("Authorization", `Bearer ${adminToken}`);
   assert.equal(r.status, 200);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM mre_cost WHERE activity_id=?").get(a.id).c, 0,
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM mre_cost WHERE activity_id=?").get(a.id)).c, 0,
     "les lignes de coût n'ont pas d'existence propre");
 });
 
@@ -2593,7 +2593,7 @@ test("MRE : une ligne sans mois est répartie sur la durée, pas posée sur janv
 let tpmCtx = {};
 
 test("TPM : prestataire, contrat et barème — le budget dérive de l'affectation", async () => {
-  const office = db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
+  const office = await db.prepare("SELECT id,name FROM offices WHERE kind='field' LIMIT 1").get();
   const t = await request(app).post("/api/tpm").set("Authorization", `Bearer ${adminToken}`)
     .send({ name:"Prestataire d'essai", code:"ESSAI", office_id:office.id, contact:"R. Test" });
   assert.equal(t.status, 201);
@@ -2621,7 +2621,7 @@ test("TPM : prestataire, contrat et barème — le budget dérive de l'affectati
   assert.equal(p.body.plan.budget, 0, "un plan sans affectation n'a pas de budget");
 
   /* Une zone : 2 superviseurs, 2 agents, 3 jours + 1 de déplacement, 1 véhicule, 45 litres. */
-  const pcode = db.prepare("SELECT pcode FROM geo_unit WHERE level='adm3' LIMIT 1").get().pcode;
+  const pcode = (await db.prepare("SELECT pcode FROM geo_unit WHERE level='adm3' LIMIT 1").get()).pcode;
   const z = await request(app).put(`/api/tpm/plans/${tpmCtx.plan}/zones`)
     .set("Authorization", `Bearer ${adminToken}`)
     .send({ zones:[{ geo_pcode:pcode, activity_tag:"URT", team_label:"TEAM1",
@@ -2777,7 +2777,7 @@ test("TPM : un renvoi doit être motivé et rouvre le plan à la modification", 
   const p = await request(app).post("/api/tpm/plans").set("Authorization", `Bearer ${adminToken}`)
     .send({ tpm_id:tpmCtx.tpm, contract_id:tpmCtx.contract, year:2026, month:3 });
   const id = p.body.id;
-  const pcode = db.prepare("SELECT pcode FROM geo_unit WHERE level='adm3' LIMIT 1").get().pcode;
+  const pcode = (await db.prepare("SELECT pcode FROM geo_unit WHERE level='adm3' LIMIT 1").get()).pcode;
   await request(app).put(`/api/tpm/plans/${id}/zones`).set("Authorization", `Bearer ${adminToken}`)
     .send({ zones:[{ geo_pcode:pcode, supervisors:1, agents:1, days:2, vehicles:1, fuel_litres:20 }] });
   await request(app).post(`/api/tpm/plans/${id}/submit`).set("Authorization", `Bearer ${adminToken}`);
@@ -2804,7 +2804,7 @@ test("TPM : un renvoi doit être motivé et rouvre le plan à la modification", 
 
 test("TPM : le plafond contractuel est vérifié à la validation finale", async () => {
   /* Un plan volontairement hors de portée du plafond restant. */
-  const pcode = db.prepare("SELECT pcode FROM geo_unit WHERE level='adm3' LIMIT 1").get().pcode;
+  const pcode = (await db.prepare("SELECT pcode FROM geo_unit WHERE level='adm3' LIMIT 1").get()).pcode;
   const p = await request(app).post("/api/tpm/plans").set("Authorization", `Bearer ${adminToken}`)
     .send({ tpm_id:tpmCtx.tpm, contract_id:tpmCtx.contract, year:2026, month:5 });
   const id = p.body.id;
@@ -2828,7 +2828,7 @@ test("TPM : le plafond contractuel est vérifié à la validation finale", async
   assert.equal(bloc.status, 409);
   assert.ok(/disponibles sur le contrat/.test(bloc.body.error), bloc.body.error);
   assert.ok(bloc.body.requis > 0, "le montant manquant est chiffré");
-  assert.equal(db.prepare("SELECT status FROM tpm_plan WHERE id=?").get(id).status, "valide_bureau",
+  assert.equal((await db.prepare("SELECT status FROM tpm_plan WHERE id=?").get(id)).status, "valide_bureau",
     "le plan n'a pas avancé");
 
   /* Un avenant couvre le manque, et la validation passe. */
@@ -2904,12 +2904,12 @@ test("TPM : un compte de prestataire ne voit que son prestataire et n'administre
   assert.equal(l.status, 200);
   assert.equal(l.body.rows.length, 1, "un seul prestataire visible");
   assert.equal(l.body.rows[0].id, tpmCtx.tpm);
-  assert.ok(db.prepare("SELECT COUNT(*) c FROM tpm").get().c > 1,
+  assert.ok((await db.prepare("SELECT COUNT(*) c FROM tpm").get()).c > 1,
     "la base en contient plusieurs — le test prouve donc quelque chose");
 
   const plans = await request(app).get("/api/tpm/plans").set("Authorization", `Bearer ${tp}`);
   assert.ok(plans.body.rows.every(p => p.tpm_id === tpmCtx.tpm));
-  const ailleurs = db.prepare("SELECT id FROM tpm_plan WHERE tpm_id<>? LIMIT 1").get(tpmCtx.tpm);
+  const ailleurs = await db.prepare("SELECT id FROM tpm_plan WHERE tpm_id<>? LIMIT 1").get(tpmCtx.tpm);
   assert.equal((await request(app).get(`/api/tpm/plans/${ailleurs.id}`)
     .set("Authorization", `Bearer ${tp}`)).status, 403);
 
@@ -2978,13 +2978,13 @@ test("TPM : un plan par prestataire et par mois, et un plan engagé ne se suppri
 });
 
 test("TPM : le plafond ne se modifie pas en place, seulement par avenant", async () => {
-  const avant = db.prepare("SELECT ceiling FROM tpm_contract WHERE id=?").get(tpmCtx.contract).ceiling;
+  const avant = (await db.prepare("SELECT ceiling FROM tpm_contract WHERE id=?").get(tpmCtx.contract)).ceiling;
   const r = await request(app).put(`/api/tpm/contracts/${tpmCtx.contract}`)
     .set("Authorization", `Bearer ${adminToken}`)
     .send({ ref:"CTR-ESSAI-01", ceiling: avant * 10, currency:"MGA", status:"actif" });
   assert.equal(r.status, 200);
   assert.ok(/avenant/.test(r.body.avertissement || ""), r.body.avertissement);
-  assert.equal(db.prepare("SELECT ceiling FROM tpm_contract WHERE id=?").get(tpmCtx.contract).ceiling,
+  assert.equal((await db.prepare("SELECT ceiling FROM tpm_contract WHERE id=?").get(tpmCtx.contract)).ceiling,
     avant, "le plafond initial est intact");
 });
 
@@ -3016,7 +3016,7 @@ const dense = (lon, lat, taille, n) => {
 };
 
 test("contours : rattachement par chemin de noms, pas seulement par p-code", async () => {
-  const u = db.prepare(`SELECT u.pcode, u.name, u.level, p.name parent, g.name grand
+  const u = await db.prepare(`SELECT u.pcode, u.name, u.level, p.name parent, g.name grand
     FROM geo_unit u
     LEFT JOIN geo_unit p ON p.version_id=u.version_id AND p.pcode=u.parent_pcode
     LEFT JOIN geo_unit g ON g.version_id=u.version_id AND g.pcode=p.parent_pcode
@@ -3053,12 +3053,12 @@ test("contours : rattachement par chemin de noms, pas seulement par p-code", asy
 });
 
 test("contours : la simplification allège réellement, et les deux résolutions coexistent", async () => {
-  const u = db.prepare("SELECT u.pcode, u.name, p.name parent FROM geo_unit u LEFT JOIN geo_unit p ON p.pcode=u.parent_pcode AND p.version_id=u.version_id WHERE u.level='adm2' LIMIT 1").get();
+  const u = await db.prepare("SELECT u.pcode, u.name, p.name parent FROM geo_unit u LEFT JOIN geo_unit p ON p.pcode=u.parent_pcode AND p.version_id=u.version_id WHERE u.level='adm2' LIMIT 1").get();
   const r = await request(app).post("/api/geo/geometry").set("Authorization", `Bearer ${adminToken}`)
     .send({ features:[{ names:{ adm1:u.parent, adm2:u.name }, geometry: dense(46, -22, 1, 900) }] });
   assert.equal(r.body.écrites, 1);
 
-  const ligne = db.prepare("SELECT * FROM geo_geom WHERE pcode=?").get(u.pcode);
+  const ligne = await db.prepare("SELECT * FROM geo_geom WHERE pcode=?").get(u.pcode);
   assert.equal(ligne.points, 901, "la pleine résolution est conservée telle quelle");
   assert.ok(ligne.points_simple < ligne.points / 3,
     `la version simplifiée est nettement plus légère (${ligne.points_simple} sur ${ligne.points})`);
@@ -3075,7 +3075,7 @@ test("contours : la simplification allège réellement, et les deux résolutions
 });
 
 test("contours : un fichier qui n'est pas en degrés est refusé avec son motif", async () => {
-  const u = db.prepare("SELECT u.pcode, u.name, p.name parent FROM geo_unit u LEFT JOIN geo_unit p ON p.pcode=u.parent_pcode AND p.version_id=u.version_id WHERE u.level='adm2' LIMIT 1").get();
+  const u = await db.prepare("SELECT u.pcode, u.name, p.name parent FROM geo_unit u LEFT JOIN geo_unit p ON p.pcode=u.parent_pcode AND p.version_id=u.version_id WHERE u.level='adm2' LIMIT 1").get();
   const r = await request(app).post("/api/geo/geometry").set("Authorization", `Bearer ${adminToken}`)
     .send({ features:[{ names:{ adm1:u.parent, adm2:u.name },
       /* Coordonnées en mètres : une projection UTM, pas du WGS 84. */
@@ -3098,19 +3098,19 @@ test("contours : le millésime dit ce qu'il porte, et /state le sait au démarra
 });
 
 test("contours : un contour comble les coordonnées manquantes sans écraser les existantes", async () => {
-  const v = db.prepare("SELECT id FROM geo_version WHERE is_current=1").get();
+  const v = await db.prepare("SELECT id FROM geo_version WHERE is_current=1").get();
   /* Une unité qu'on prive de coordonnées, comme le ferait un découpage sans centroïdes. */
-  const cible = db.prepare(`SELECT u.pcode, u.name, p.name parent FROM geo_unit u
+  const cible = await db.prepare(`SELECT u.pcode, u.name, p.name parent FROM geo_unit u
     LEFT JOIN geo_unit p ON p.pcode=u.parent_pcode AND p.version_id=u.version_id
     WHERE u.level='adm3' AND u.version_id=? LIMIT 1`).get(v.id);
-  db.prepare("UPDATE geo_unit SET lat=NULL, lon=NULL WHERE pcode=? AND version_id=?")
+  await db.prepare("UPDATE geo_unit SET lat=NULL, lon=NULL WHERE pcode=? AND version_id=?")
     .run(cible.pcode, v.id);
 
   /* Une autre, dont on fixe les coordonnées : elles doivent survivre. */
-  const gardee = db.prepare(`SELECT u.pcode, u.name, p.name parent FROM geo_unit u
+  const gardee = await db.prepare(`SELECT u.pcode, u.name, p.name parent FROM geo_unit u
     LEFT JOIN geo_unit p ON p.pcode=u.parent_pcode AND p.version_id=u.version_id
     WHERE u.level='adm3' AND u.version_id=? AND u.pcode<>? LIMIT 1`).get(v.id, cible.pcode);
-  db.prepare("UPDATE geo_unit SET lat=-21.5, lon=46.5 WHERE pcode=? AND version_id=?")
+  await db.prepare("UPDATE geo_unit SET lat=-21.5, lon=46.5 WHERE pcode=? AND version_id=?")
     .run(gardee.pcode, v.id);
 
   await request(app).post("/api/geo/geometry").set("Authorization", `Bearer ${adminToken}`)
@@ -3119,10 +3119,10 @@ test("contours : un contour comble les coordonnées manquantes sans écraser les
       { pcode:gardee.pcode, geometry: carre(48, -15, 0.4) },
     ] });
 
-  const a = db.prepare("SELECT lat, lon FROM geo_unit WHERE pcode=? AND version_id=?").get(cible.pcode, v.id);
+  const a = await db.prepare("SELECT lat, lon FROM geo_unit WHERE pcode=? AND version_id=?").get(cible.pcode, v.id);
   assert.ok(a.lat != null && a.lon != null, "l'unité sans coordonnées en a reçu du contour");
   assert.ok(a.lon > 43 && a.lon < 43.5 && a.lat < -24.5, JSON.stringify(a));
-  const b = db.prepare("SELECT lat, lon FROM geo_unit WHERE pcode=? AND version_id=?").get(gardee.pcode, v.id);
+  const b = await db.prepare("SELECT lat, lon FROM geo_unit WHERE pcode=? AND version_id=?").get(gardee.pcode, v.id);
   assert.equal(b.lat, -21.5, "les coordonnées existantes ne sont pas écrasées");
   assert.equal(b.lon, 46.5);
 });
@@ -3184,13 +3184,13 @@ test("pays : le millésime du découpage sait à quel pays il appartient", async
   const v = await request(app).get("/api/geo/versions").set("Authorization", `Bearer ${adminToken}`);
   assert.ok(v.body.rows.length > 0);
   /* Le jeu d'essai a été semé après la migration : son millésime porte le pays. */
-  const lignes = db.prepare("SELECT country FROM geo_version").all();
+  const lignes = await db.prepare("SELECT country FROM geo_version").all();
   assert.ok(lignes.every(x => x.country === "MDG"),
     "tous les millésimes sont rattachés — la migration rattrape les anciens, writeVersion les nouveaux");
 });
 
 test("pays : la devise d'un contrat vient de la configuration, non du code", async () => {
-  const office = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
+  const office = await db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
   const t = await request(app).post("/api/tpm").set("Authorization", `Bearer ${adminToken}`)
     .send({ name:"Prestataire devise", office_id:office.id });
   /* Aucune devise passée : elle doit venir du pays courant, pas d'un « MGA »
@@ -3198,20 +3198,20 @@ test("pays : la devise d'un contrat vient de la configuration, non du code", asy
   const c = await request(app).post("/api/tpm/contracts").set("Authorization", `Bearer ${adminToken}`)
     .send({ tpm_id:t.body.id, ref:"CTR-DEVISE", ceiling:1_000_000 });
   assert.equal(c.status, 201);
-  assert.equal(db.prepare("SELECT currency FROM tpm_contract WHERE id=?").get(c.body.id).currency,
+  assert.equal((await db.prepare("SELECT currency FROM tpm_contract WHERE id=?").get(c.body.id)).currency,
     "MGA", "la devise locale du pays courant");
 
   /* On change la devise du pays : un contrat créé ensuite la reprend. */
-  const mdg = db.prepare("SELECT * FROM country WHERE code='MDG'").get();
+  const mdg = await db.prepare("SELECT * FROM country WHERE code='MDG'").get();
   await request(app).put("/api/country/MDG").set("Authorization", `Bearer ${adminToken}`)
     .send({ name:mdg.name, currency:"EUR", levels:JSON.parse(mdg.levels),
             lat:mdg.lat, lon:mdg.lon, active:true, rev:mdg.rev });
   const c2 = await request(app).post("/api/tpm/contracts").set("Authorization", `Bearer ${adminToken}`)
     .send({ tpm_id:t.body.id, ref:"CTR-DEVISE-2", ceiling:1_000_000 });
-  assert.equal(db.prepare("SELECT currency FROM tpm_contract WHERE id=?").get(c2.body.id).currency, "EUR");
+  assert.equal((await db.prepare("SELECT currency FROM tpm_contract WHERE id=?").get(c2.body.id)).currency, "EUR");
 
   /* Remis en état : la base d'essai ne doit pas rester en euros. */
-  const maj = db.prepare("SELECT rev FROM country WHERE code='MDG'").get();
+  const maj = await db.prepare("SELECT rev FROM country WHERE code='MDG'").get();
   await request(app).put("/api/country/MDG").set("Authorization", `Bearer ${adminToken}`)
     .send({ name:mdg.name, currency:"MGA", levels:JSON.parse(mdg.levels),
             lat:mdg.lat, lon:mdg.lon, active:true, rev:maj.rev });
@@ -3244,7 +3244,7 @@ test("pays : ajouter un pays exige les cinq niveaux et un code ISO à trois lett
 });
 
 test("pays : chaque pays garde son millésime, et l'absence de découpage est dite", async () => {
-  const avant = db.prepare("SELECT id FROM geo_version WHERE country='MDG' AND is_current=1").get();
+  const avant = await db.prepare("SELECT id FROM geo_version WHERE country='MDG' AND is_current=1").get();
   assert.ok(avant, "Madagascar a un millésime actif avant le changement");
 
   const r = await request(app).put("/api/country/COD/current").set("Authorization", `Bearer ${adminToken}`);
@@ -3261,7 +3261,7 @@ test("pays : chaque pays garde son millésime, et l'absence de découpage est di
      Ma première version le désactivait puis « reprenait le plus récent » au
      retour — ce qui aurait remplacé sans le dire un millésime délibérément
      choisi. */
-  assert.equal(db.prepare("SELECT is_current FROM geo_version WHERE id=?").get(avant.id).is_current, 1,
+  assert.equal((await db.prepare("SELECT is_current FROM geo_version WHERE id=?").get(avant.id)).is_current, 1,
     "le millésime malgache reste celui de Madagascar");
 
   /* Mais il n'est pas servi : le référentiel courant est celui du pays courant,
@@ -3284,7 +3284,7 @@ test("pays : chaque pays garde son millésime, et l'absence de découpage est di
 test("pays : le pays courant ne se supprime ni ne se désactive", async () => {
   const del = await request(app).delete("/api/country/MDG").set("Authorization", `Bearer ${adminToken}`);
   assert.equal(del.status, 409);
-  const mdg = db.prepare("SELECT * FROM country WHERE code='MDG'").get();
+  const mdg = await db.prepare("SELECT * FROM country WHERE code='MDG'").get();
   const off = await request(app).put("/api/country/MDG").set("Authorization", `Bearer ${adminToken}`)
     .send({ name:mdg.name, currency:mdg.currency, levels:JSON.parse(mdg.levels),
             active:false, rev:mdg.rev });
@@ -3380,7 +3380,7 @@ test("connecteurs : création, et le jeton est chiffré au repos sans jamais res
   assert.equal(c.body.connector.hasSecret, true);
   assert.ok(!/jeton-foundry-tres-secret/.test(JSON.stringify(c.body)));
 
-  const stocke = db.prepare("SELECT secret_enc FROM connector WHERE id=?").get(c.body.connector.id);
+  const stocke = await db.prepare("SELECT secret_enc FROM connector WHERE id=?").get(c.body.connector.id);
   assert.ok(stocke.secret_enc && !stocke.secret_enc.includes("jeton-foundry"),
     "le jeton est chiffré en base, comme celui des sources ODK");
 
@@ -3549,8 +3549,8 @@ test("connecteurs : les suggestions proposent avec un score, et n'enregistrent r
 });
 
 test("connecteurs : la liste est cloisonnée par bureau, comme le reste", async () => {
-  const bureau = db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
-  const autre = db.prepare("SELECT id FROM offices WHERE id<>? LIMIT 1").get(bureau.id);
+  const bureau = await db.prepare("SELECT id FROM offices WHERE kind='field' LIMIT 1").get();
+  const autre = await db.prepare("SELECT id FROM offices WHERE id<>? LIMIT 1").get(bureau.id);
 
   const mien = (await creerConnecteur({ name: "Réceptions du bureau", kind: "csv",
     config: {}, office_id: bureau.id })).body.connector;
@@ -3684,8 +3684,8 @@ test("connecteurs : supprimer un connecteur emporte ses correspondances", async 
     .set("Authorization", `Bearer ${adminToken}`);
   assert.equal(del.status, 200);
   assert.equal(del.body.mappingsSupprimees, 2);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM connector_mapping WHERE connector_id=?")
-    .get(c.id).c, 0);
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM connector_mapping WHERE connector_id=?")
+    .get(c.id)).c, 0);
   assert.equal((await request(app).get(`/api/connectors/${c.id}/mappings`)
     .set("Authorization", `Bearer ${adminToken}`)).status, 404);
 });
@@ -3701,7 +3701,7 @@ test("connecteurs MoDa : les 5 sources pré-créées attendent « Token » (API 
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.ok(r.body.connectors.length >= 5, "les cinq activités MoDa sont pré-créées");
 
-  const enBase = db.prepare("SELECT name, auth_schema, config, kind FROM connector WHERE name LIKE 'MoDa — %'").all();
+  const enBase = await db.prepare("SELECT name, auth_schema, config, kind FROM connector WHERE name LIKE 'MoDa — %'").all();
   assert.equal(enBase.length, r.body.connectors.length);
   for(const c of enBase){
     assert.equal(c.auth_schema, "jeton",
@@ -4017,10 +4017,10 @@ test("authentification sortante : une source déclarée AVANT la migration conti
      exactement l'état d'une source existante au moment où la migration 021
      s'applique. Rien n'est ressaisi, et l'en-tête doit être identique à l'octet
      près à ce qu'il était avant le chantier. */
-  db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind)
+  await db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind)
               VALUES ('odkf_heritee','Source héritée','testform','9',?,'process')`)
     .run(chiffrer("jeton-de-test"));
-  const f = db.prepare("SELECT * FROM odk_forms WHERE id='odkf_heritee'").get();
+  const f = await db.prepare("SELECT * FROM odk_forms WHERE id='odkf_heritee'").get();
   assert.equal(f.auth_schema, "porteur", "la migration a posé « porteur » par défaut");
   assert.equal(f.auth_identifiant, null);
 
@@ -4034,7 +4034,7 @@ test("authentification sortante : une source déclarée AVANT la migration conti
   assert.ok(odkMockRequests.slice(avant).length > 0);
   assert.ok(odkMockRequests.slice(avant).every(q => q.auth === "Bearer jeton-de-test"),
     "le jeton collé part tel quel, sous le même mot-clé qu'avant la migration");
-  db.prepare("DELETE FROM odk_forms WHERE id='odkf_heritee'").run();
+  await db.prepare("DELETE FROM odk_forms WHERE id='odkf_heritee'").run();
 
   /* L'autre moitié de la reprise, celle qu'on oublie : un connecteur réseau SANS
      secret n'émettait aucun en-tête et fonctionnait donc sur une source publique.
@@ -4078,13 +4078,13 @@ const sourceSession = async (id, nom, formId, identifiant = AUTH.courriel,
   /* La suppression préalable vaut aussi purge du cache de session : le
      déclencheur de la migration 021 emporte la ligne de `source_session`. Chaque
      test repart donc d'un état net sans avoir à le dire. */
-  db.prepare("DELETE FROM odk_forms WHERE id=?").run(id);
-  db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind,auth_schema,auth_identifiant)
+  await db.prepare("DELETE FROM odk_forms WHERE id=?").run(id);
+  await db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind,auth_schema,auth_identifiant)
               VALUES (?,?,?,'1',?,'process','odk_session',?)`)
     .run(id, nom, formId, chiffrer(motDePasse), identifiant);
   await request(app).put("/api/settings").set("Authorization", `Bearer ${adminToken}`)
     .send({ odkBase: srcUrl });
-  return db.prepare("SELECT * FROM odk_forms WHERE id=?").get(id);
+  return await db.prepare("SELECT * FROM odk_forms WHERE id=?").get(id);
 };
 const tirer = (id) => request(app).post(`/api/odk-forms/${id}/pull`)
   .set("Authorization", `Bearer ${adminToken}`);
@@ -4167,13 +4167,13 @@ test("authentification sortante : un échec d'ouverture se signale, ne se rejoue
     "la cause du premier échec est conservée et rendue, pas remplacée par un message vague");
   assert.equal(compter("/v1/sessions"), tentatives0 + 1,
     "aucune nouvelle tentative tant que le justificatif n'a pas changé");
-  assert.ok(db.prepare(`SELECT echec_motif FROM source_session
-                        WHERE source_kind='odk_forms' AND source_id='odkf_echec'`).get().echec_motif,
+  assert.ok((await db.prepare(`SELECT echec_motif FROM source_session
+                        WHERE source_kind='odk_forms' AND source_id='odkf_echec'`).get()).echec_motif,
     "le motif est consigné en base, donc affichable à l'administrateur");
 
   /* Corriger le mot de passe change l'empreinte du justificatif : le blocage
      tombe sans que personne n'ait eu à vider un cache. */
-  db.prepare("UPDATE odk_forms SET token_enc=? WHERE id='odkf_echec'").run(chiffrer(AUTH.motDePasse));
+  await db.prepare("UPDATE odk_forms SET token_enc=? WHERE id='odkf_echec'").run(chiffrer(AUTH.motDePasse));
   const trois = await tirer("odkf_echec");
   assert.equal(trois.status, 200, JSON.stringify(trois.body));
   assert.equal(compter("/v1/sessions"), tentatives0 + 2,
@@ -4435,7 +4435,7 @@ test("authentification sortante : le jeton dérivé est chiffré au repos et ne 
   srcSessions.refuseToujours = false;
   assert.equal((await tirer("odkf_cache")).status, 200);
 
-  const ligne = db.prepare(`SELECT * FROM source_session
+  const ligne = await db.prepare(`SELECT * FROM source_session
                             WHERE source_kind='odk_forms' AND source_id='odkf_cache'`).get();
   assert.ok(ligne, "la session dérivée est bien mise en cache");
   assert.ok(ligne.jeton_enc && !ligne.jeton_enc.includes(srcSessions.courante),
@@ -4447,10 +4447,10 @@ test("authentification sortante : le jeton dérivé est chiffré au repos et ne 
   /* La session vit à part des tables éditées à la main : la renouveler ne doit
      pas incrémenter `rev` et provoquer un 409 chez l'administrateur qui édite
      tranquillement sa fiche. */
-  const rev0 = db.prepare("SELECT rev FROM odk_forms WHERE id='odkf_cache'").get().rev;
+  const rev0 = (await db.prepare("SELECT rev FROM odk_forms WHERE id='odkf_cache'").get()).rev;
   srcSessions.courante = "perimee-encore";
   assert.equal((await tirer("odkf_cache")).status, 200);
-  const rev1 = db.prepare("SELECT rev FROM odk_forms WHERE id='odkf_cache'").get().rev;
+  const rev1 = (await db.prepare("SELECT rev FROM odk_forms WHERE id='odkf_cache'").get()).rev;
   assert.equal(rev1, rev0 + 1,
     "le tirage incrémente `rev` une fois — le renouvellement de session, lui, ne l'a pas touché");
 
@@ -4465,9 +4465,9 @@ test("authentification sortante : le jeton dérivé est chiffré au repos et ne 
 
   /* Supprimer la source emporte le jeton dérivé qu'elle avait ouvert : un secret,
      même éphémère, ne survit pas à ce qu'il déverrouille. */
-  db.prepare("DELETE FROM odk_forms WHERE id='odkf_cache'").run();
-  assert.equal(db.prepare(`SELECT COUNT(*) c FROM source_session
-                           WHERE source_kind='odk_forms' AND source_id='odkf_cache'`).get().c, 0);
+  await db.prepare("DELETE FROM odk_forms WHERE id='odkf_cache'").run();
+  assert.equal((await db.prepare(`SELECT COUNT(*) c FROM source_session
+                           WHERE source_kind='odk_forms' AND source_id='odkf_cache'`).get()).c, 0);
 });
 
 test("authentification sortante : la pagination ne peut pas faire sortir l'appel de l'hôte vérifié", async () => {
@@ -4589,7 +4589,7 @@ test("justificatif illisible : les deux routes disent la même chose, et disent 
      tirage ODK disait l'inverse de l'épreuve sur la MÊME ligne. */
   const c = (await creerConnecteur({ name: "Secret abîmé", kind: "http", base_url: srcUrl,
     config: { chemin: "/entetes" }, auth_schema: "porteur", secret: AUTH.jetonFixe })).body.connector;
-  db.prepare("UPDATE connector SET secret_enc='enp6enp6enp6enp6enp6enp6enp6enp6enp6' WHERE id=?").run(c.id);
+  await db.prepare("UPDATE connector SET secret_enc='enp6enp6enp6enp6enp6enp6enp6enp6enp6' WHERE id=?").run(c.id);
 
   const test = await request(app).post(`/api/connectors/${c.id}/test`)
     .set("Authorization", `Bearer ${adminToken}`);
@@ -4607,8 +4607,8 @@ test("justificatif illisible : les deux routes disent la même chose, et disent 
 
   /* La même ligne abîmée, côté ODK : le tirage rendait 500 « ressaisissez-le »
      et l'épreuve 422 « renseignez-le » — deux verdicts opposés. */
-  db.prepare("DELETE FROM odk_forms WHERE id='odkf_kaput'").run();
-  db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind,auth_schema)
+  await db.prepare("DELETE FROM odk_forms WHERE id='odkf_kaput'").run();
+  await db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind,auth_schema)
               VALUES ('odkf_kaput','Source abîmée','kaput','1','enp6enp6enp6enp6enp6enp6','process','porteur')`).run();
   await request(app).put("/api/settings").set("Authorization", `Bearer ${adminToken}`)
     .send({ odkBase: srcUrl });
@@ -4630,8 +4630,8 @@ test("identifiant du compte de service : servi à l'administration, pas au premi
   const c = (await creerConnecteur({ name: "Bailleur — Basic", kind: "http", base_url: srcUrl,
     config: { chemin: "/entetes" }, auth_schema: "basique",
     auth_identifiant: "compte.de.service@bailleur.org", secret: "mdp" })).body.connector;
-  db.prepare("DELETE FROM odk_forms WHERE id='odkf_ident'").run();
-  db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind,auth_schema,auth_identifiant)
+  await db.prepare("DELETE FROM odk_forms WHERE id='odkf_ident'").run();
+  await db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind,auth_schema,auth_identifiant)
               VALUES ('odkf_ident','Source nommée','ident','1',?,'process','odk_session','agent.odk@wfp.org')`)
     .run(chiffrer(AUTH.motDePasse));
 
@@ -4725,10 +4725,10 @@ test("connecteur Kobo hérité : il reste modifiable, sans qu'on lui invente un 
      portent le couple projet / formulaire d'ODK, que l'écran leur proposait à
      tort. Exiger `config.uid` de tout enregistrement les rendait immodifiables —
      ni renommables, ni désactivables, ni rattachables à un bureau. */
-  db.prepare(`INSERT INTO connector (id,name,kind,base_url,config,secret_enc,auth_schema)
+  await db.prepare(`INSERT INTO connector (id,name,kind,base_url,config,secret_enc,auth_schema)
               VALUES ('conn_kobo_vieux','Kobo pays','kobo',?,'{"project":"1","formId":"abc"}',?,'jeton')`)
     .run(srcUrl, chiffrer(AUTH.cleKobo));
-  const c = db.prepare("SELECT * FROM connector WHERE id='conn_kobo_vieux'").get();
+  const c = await db.prepare("SELECT * FROM connector WHERE id='conn_kobo_vieux'").get();
 
   const r = await request(app).put("/api/connectors/conn_kobo_vieux")
     .set("Authorization", `Bearer ${adminToken}`)
@@ -4763,8 +4763,8 @@ test("source ODK sans justificatif déclaré : le tirage et l'épreuve disent la
   /* Le schéma « Aucune (source publique) » est proposé par le sélecteur. Le
      tirage refusait pourtant toute source sans `token_enc`, avant même de lire le
      schéma, en réclamant un jeton que ce schéma déclare inutile. */
-  db.prepare("DELETE FROM odk_forms WHERE id='odkf_ouverte'").run();
-  db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,kind,auth_schema)
+  await db.prepare("DELETE FROM odk_forms WHERE id='odkf_ouverte'").run();
+  await db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,kind,auth_schema)
               VALUES ('odkf_ouverte','Source publique','ouverte','1','process','aucun')`).run();
   await request(app).put("/api/settings").set("Authorization", `Bearer ${adminToken}`)
     .send({ odkBase: srcUrl });
@@ -4783,11 +4783,11 @@ test("source ODK sans justificatif déclaré : le tirage et l'épreuve disent la
 test("épreuve ODK : une étape escamotée ne vaut pas une étape réussie", async () => {
   /* `etapes.every(x => x.ok)` sur la seule étape restante rendait « ok », donc un
      bandeau vert, à une source dont le tirage refuse en 422 la seconde d'après. */
-  db.prepare("DELETE FROM odk_forms WHERE id='odkf_sans_projet'").run();
-  db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind,auth_schema,auth_identifiant)
+  await db.prepare("DELETE FROM odk_forms WHERE id='odkf_sans_projet'").run();
+  await db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind,auth_schema,auth_identifiant)
               VALUES ('odkf_sans_projet','Sans projet','sansprojet','','x','process','odk_session',?)`)
     .run(AUTH.courriel);
-  db.prepare("UPDATE odk_forms SET token_enc=? WHERE id='odkf_sans_projet'").run(chiffrer(AUTH.motDePasse));
+  await db.prepare("UPDATE odk_forms SET token_enc=? WHERE id='odkf_sans_projet'").run(chiffrer(AUTH.motDePasse));
   srcSessions.refuseToujours = false; srcSessions.refuseIdentifiants = false;
 
   const r = await request(app).post("/api/odk-forms/odkf_sans_projet/test")
@@ -4891,7 +4891,7 @@ test("session courte : une durée de vie inférieure à la marge n'ouvre pas une
     const emises1 = srcSessions.emises;
     for(let i = 0; i < 4; i++) assert.equal((await tirer("odkf_illisible")).status, 200);
     assert.equal(srcSessions.emises, emises1 + 1, "une échéance illisible n'est pas une échéance passée");
-    const ligne = db.prepare(`SELECT expire_le FROM source_session
+    const ligne = await db.prepare(`SELECT expire_le FROM source_session
                               WHERE source_kind='odk_forms' AND source_id='odkf_illisible'`).get();
     assert.ok(!Number.isNaN(Date.parse(ligne.expire_le)),
       "ce qui est mis en cache est une date, pas la chaîne reçue telle quelle");
@@ -4905,8 +4905,8 @@ test("session : un silence de la source n'efface pas une session valable et ne b
   await sourceSession("odkf_hoquet", "Hoquet", "hoquet");
   srcSessions.refuseToujours = false; srcSessions.refuseIdentifiants = false;
   assert.equal((await tirer("odkf_hoquet")).status, 200);
-  const jetonAvant = db.prepare(`SELECT jeton_enc FROM source_session
-                                 WHERE source_kind='odk_forms' AND source_id='odkf_hoquet'`).get().jeton_enc;
+  const jetonAvant = (await db.prepare(`SELECT jeton_enc FROM source_session
+                                 WHERE source_kind='odk_forms' AND source_id='odkf_hoquet'`).get()).jeton_enc;
 
   /* La source ne répond plus : l'épreuve, qui force l'ouverture, échoue. */
   srcSessions.injoignable = true;
@@ -4916,7 +4916,7 @@ test("session : un silence de la source n'efface pas une session valable et ne b
   assert.equal(t.body.ok, false);
   assert.equal(t.body.etapes[0].cause, "AUTH_SESSION");
 
-  const apres = db.prepare(`SELECT jeton_enc, echec_le FROM source_session
+  const apres = await db.prepare(`SELECT jeton_enc, echec_le FROM source_session
                             WHERE source_kind='odk_forms' AND source_id='odkf_hoquet'`).get();
   assert.equal(apres.jeton_enc, jetonAvant, "la session valable survit à la panne d'un tiers");
   assert.equal(apres.echec_le, null, "et la source n'est pas bloquée pour cinq minutes");
@@ -4979,7 +4979,7 @@ test("source qui n'achève jamais sa réponse : elle ne fige pas MEMS pour toujo
     else process.env.AUTH_SESSION_TIMEOUT_S = ancienDelai;
     for(const r of ouvertes) r.end();
     muet.close();
-    db.prepare("DELETE FROM source_session WHERE source_id='odkf_muette'").run();
+    await db.prepare("DELETE FROM source_session WHERE source_id='odkf_muette'").run();
   }
 });
 
@@ -5026,7 +5026,7 @@ test("soumissions : le référentiel de test est en place (codes ambigus, homony
   siteLotC.homonymeB = await creerSiteLotC({ code:"LOTC-E", name:"EPP Homonyme",
     activity_tag:"SMP", geo_pcode:"MG23299990002" });
 
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM sites WHERE external_code=?").get(CODE_AMBIGU).c, 2,
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM sites WHERE external_code=?").get(CODE_AMBIGU)).c, 2,
     "le code externe n'est délibérément pas unique : l'ambiguïté doit pouvoir entrer en base");
 });
 
@@ -5041,7 +5041,7 @@ test("soumissions : rattachement par nom de site croisé avec l'activité", asyn
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.resolues, 1, JSON.stringify(r.body));
 
-  const s = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-nom-1");
+  const s = await db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-nom-1");
   assert.equal(s.site_id, siteLotC.csb.id);
   assert.equal(s.resolution_passe, "nom_activite");
   assert.match(s.resolution_motif, /croisé avec l'activité/);
@@ -5063,19 +5063,19 @@ test("soumissions : deux candidats égaux valent non résolu, jamais un tirage a
   ]});
   assert.equal(r.status, 200, JSON.stringify(r.body));
 
-  const ambigu = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-ambigu-1");
+  const ambigu = await db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-ambigu-1");
   assert.equal(ambigu.site_id, null, "aucun des deux sites n'est choisi au hasard");
   assert.match(ambigu.resolution_motif, /désigne 2 sites/);
   assert.match(ambigu.resolution_motif, /Androka Betohoke/);
   assert.match(ambigu.resolution_motif, /Betsibarike/);
   assert.equal(ambigu.resolution_confiance, 0);
 
-  const departage = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-ambigu-2");
+  const departage = await db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-ambigu-2");
   assert.equal(departage.site_id, siteLotC.betsibarike.id,
     "le nom départage les deux porteurs du même code — sans jamais sortir de cette paire");
   assert.equal(departage.resolution_passe, "nom_activite");
 
-  const homonyme = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-homonyme");
+  const homonyme = await db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-homonyme");
   assert.equal(homonyme.site_id, null);
   assert.match(homonyme.resolution_motif, /rien ne les départage/);
 });
@@ -5087,7 +5087,7 @@ test("soumissions : rattachement par préfixe p-code, et par code externe exact"
     { instance_id:"lotc-pcode-1", POIName:"MG23210070009001", SvyDate:"2026-05-09" },
   ]});
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  const s = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-pcode-1");
+  const s = await db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-pcode-1");
   assert.equal(s.site_id, siteLotC.csb.id);
   assert.equal(s.resolution_passe, "pcode_adm4");
 
@@ -5098,7 +5098,7 @@ test("soumissions : rattachement par préfixe p-code, et par code externe exact"
   const r2 = await verser({ form_id:"NutritionAIM", enregistrements: [
     { instance_id:"lotc-code-1", DPName:"MG23299990001999", SvyDate:"2026-05-10" }]});
   assert.equal(r2.status, 200, JSON.stringify(r2.body));
-  const s2 = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-code-1");
+  const s2 = await db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-code-1");
   assert.equal(s2.site_id, siteLotC.homonymeA.id);
   assert.equal(s2.resolution_passe, "code_externe");
   assert.equal(s2.resolution_confiance, 1);
@@ -5114,24 +5114,24 @@ test("soumissions : l'ingestion est idempotente par instance_id", async () => {
   assert.equal(un.status, 200, JSON.stringify(un.body));
   assert.equal(un.body.crees, 2);
   assert.equal(un.body.misAJour, 0);
-  const apres1 = db.prepare("SELECT COUNT(*) c FROM submissions").get().c;
+  const apres1 = (await db.prepare("SELECT COUNT(*) c FROM submissions").get()).c;
 
   const deux = await verser(lot);
   assert.equal(deux.status, 200);
   assert.equal(deux.body.crees, 0, "le second versement ne crée rien");
   assert.equal(deux.body.misAJour, 2);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM submissions").get().c, apres1,
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM submissions").get()).c, apres1,
     "deux tirages successifs se recouvrent au lieu de doubler");
 
   /* L'identité de ligne est conservée : sans cela, les visites déjà créées
      depuis une soumission pointeraient dans le vide au tirage suivant. */
-  const ids = db.prepare("SELECT id FROM submissions WHERE instance_id IN ('lotc-idem-1','lotc-idem-2')")
-    .all().map(x => x.id);
+  const ids = (await db.prepare("SELECT id FROM submissions WHERE instance_id IN ('lotc-idem-1','lotc-idem-2')")
+    .all()).map(x => x.id);
   const troisieme = await verser(lot);
   assert.equal(troisieme.status, 200);
   assert.deepEqual(
-    db.prepare("SELECT id FROM submissions WHERE instance_id IN ('lotc-idem-1','lotc-idem-2')")
-      .all().map(x => x.id), ids);
+    (await db.prepare("SELECT id FROM submissions WHERE instance_id IN ('lotc-idem-1','lotc-idem-2')")
+      .all()).map(x => x.id), ids);
 
   /* Une soumission sans identifiant d'instance reçoit une empreinte
      déterministe : le même enregistrement versé deux fois reste une seule ligne,
@@ -5156,8 +5156,8 @@ test("soumissions : la dernière visite vient de svy_date, sans détruire la val
   assert.equal(d.last_visit, "2026-01-15");
   assert.equal(fiche.body.site.last_visit, "2026-01-15");
   /* La plus récente des svy_date rattachées à ce site, tous formulaires confondus. */
-  const attendue = db.prepare("SELECT MAX(svy_date) d FROM submissions WHERE site_id=?")
-    .get(siteLotC.csb.id).d;
+  const attendue = (await db.prepare("SELECT MAX(svy_date) d FROM submissions WHERE site_id=?")
+    .get(siteLotC.csb.id)).d;
   assert.equal(d.last_visit_odk, attendue);
   assert.ok(d.last_visit_odk > d.last_visit);
   assert.equal(d.last_visit_effective, d.last_visit_odk, "l'observée prime sur la convention saisie");
@@ -5199,15 +5199,15 @@ test("soumissions : le geopoint est découpé en latitude, longitude et précisi
       activity_tag:"NTA", HHCoord:"-25.3000 45.5000" },
   ]});
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  const un = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-gps-1");
+  const un = await db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-gps-1");
   assert.equal(un.lat, -25.3142);
   assert.equal(un.lon, 45.4931);
   assert.equal(un.gps_accuracy, 8);
-  const deux = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-gps-2");
+  const deux = await db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-gps-2");
   assert.equal(deux.gps_accuracy, null);
 
   /* Q25 n'est pas tranchée : la position déclarée du site n'est pas touchée. */
-  const site = db.prepare("SELECT lat, lon FROM sites WHERE id=?").get(siteLotC.csb.id);
+  const site = await db.prepare("SELECT lat, lon FROM sites WHERE id=?").get(siteLotC.csb.id);
   assert.equal(site.lat, -25.3100);
   assert.equal(site.lon, 45.4900);
 
@@ -5246,8 +5246,8 @@ test("soumissions : une soumission non résolue le reste, et reste visible", asy
   const rejeu = await request(app).post("/api/submissions/rattacher")
     .set("Authorization", `Bearer ${adminToken}`).send({});
   assert.equal(rejeu.status, 200);
-  assert.equal(db.prepare("SELECT site_id FROM submissions WHERE instance_id=?")
-    .get("lotc-orphelin").site_id, null);
+  assert.equal((await db.prepare("SELECT site_id FROM submissions WHERE instance_id=?")
+    .get("lotc-orphelin")).site_id, null);
 
   /* Elle se résout dès que le référentiel apprend le code — sans re-tirer depuis
      ODK Central, ce qui est le point du stockage de `raw`. */
@@ -5257,8 +5257,8 @@ test("soumissions : une soumission non résolue le reste, et reste visible", asy
     .set("Authorization", `Bearer ${adminToken}`).send({});
   assert.equal(rejeu2.status, 200);
   assert.ok(rejeu2.body.rattachees >= 1, JSON.stringify(rejeu2.body));
-  assert.ok(db.prepare("SELECT site_id FROM submissions WHERE instance_id=?")
-    .get("lotc-orphelin").site_id, "le code enfin connu la rattache");
+  assert.ok((await db.prepare("SELECT site_id FROM submissions WHERE instance_id=?")
+    .get("lotc-orphelin")).site_id, "le code enfin connu la rattache");
 });
 
 test("soumissions : « déjà suivi » marque le mois et crée une visite, sans jamais la doubler", async () => {
@@ -5277,10 +5277,10 @@ test("soumissions : « déjà suivi » marque le mois et crée une visite, sans 
   assert.ok(un.body.marques >= 1);
   assert.ok(un.body.visitesCreees >= 1);
 
-  const mois = db.prepare("SELECT done FROM site_months WHERE site_id=? AND year=2026 AND month=4")
+  const mois = await db.prepare("SELECT done FROM site_months WHERE site_id=? AND year=2026 AND month=4")
     .get(siteLotC.csb.id);
   assert.equal(mois.done, 1);
-  const visites = db.prepare(
+  const visites = await db.prepare(
     "SELECT * FROM visits WHERE site_id=? AND visit_date LIKE '2026-05%'").all(siteLotC.csb.id);
   assert.equal(visites.length, 1);
   assert.ok(visites[0].submission_id, "la visite dit de quelle soumission elle vient");
@@ -5292,9 +5292,9 @@ test("soumissions : « déjà suivi » marque le mois et crée une visite, sans 
   assert.equal(deux.status, 200);
   assert.equal(deux.body.visitesCreees, 0, "relancer ne double pas les visites");
   assert.ok(deux.body.dejaMarques >= 1);
-  assert.equal(db.prepare(
+  assert.equal((await db.prepare(
     "SELECT COUNT(*) c FROM visits WHERE site_id=? AND visit_date LIKE '2026-05%'")
-    .get(siteLotC.csb.id).c, 1);
+    .get(siteLotC.csb.id)).c, 1);
 
   /* La grille mensuelle n'a pas d'autre maille qu'un mois civil : demander une
      fenêtre libre en écriture est refusé, pas approximé. */
@@ -5315,7 +5315,7 @@ test("soumissions : « déjà suivi » marque le mois et crée une visite, sans 
    ═══════════════════════════════════════════════════════════════════════ */
 
 test("grille mensuelle : décocher ne supprime jamais une visite issue d'ODK", async () => {
-  const avant = db.prepare(
+  const avant = await db.prepare(
     "SELECT * FROM visits WHERE site_id=? AND visit_date LIKE '2026-05%'").all(siteLotC.csb.id);
   assert.equal(avant.length, 1);
   assert.ok(avant[0].submission_id, "la fixture porte bien une visite issue d'une soumission");
@@ -5330,7 +5330,7 @@ test("grille mensuelle : décocher ne supprime jamais une visite issue d'ODK", a
   assert.match(r.body.error, /formulaire ODK/);
   assert.match(r.body.error, /rechargez/, "le refus dit quoi faire, pas seulement que c'est refusé");
 
-  const apres = db.prepare(
+  const apres = await db.prepare(
     "SELECT * FROM visits WHERE site_id=? AND visit_date LIKE '2026-05%'").all(siteLotC.csb.id);
   assert.equal(apres.length, 1, "la preuve de terrain survit au décochage");
   assert.equal(apres[0].id, avant[0].id);
@@ -5338,8 +5338,8 @@ test("grille mensuelle : décocher ne supprime jamais une visite issue d'ODK", a
   assert.equal(apres[0].origin, "odk");
   /* Rien n'a été écrit du tout : une grille qui afficherait « pas de visite » en
      face d'une visite réelle serait un second mensonge. */
-  assert.equal(db.prepare("SELECT done FROM site_months WHERE site_id=? AND year=2026 AND month=4")
-    .get(siteLotC.csb.id).done, 1);
+  assert.equal((await db.prepare("SELECT done FROM site_months WHERE site_id=? AND year=2026 AND month=4")
+    .get(siteLotC.csb.id)).done, 1);
 });
 
 test("grille mensuelle : cocher sans motif est refusé, et le refus dit quoi faire", async () => {
@@ -5353,7 +5353,7 @@ test("grille mensuelle : cocher sans motif est refusé, et le refus dit quoi fai
   assert.match(sansMotif.body.error, /formulaire ODK/, "le refus rappelle quelle est la voie normale");
   assert.match(sansMotif.body.error, /choisissez le motif/);
   assert.equal(sansMotif.body.details[0].champ, "manual_reason");
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id).c, 0);
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id)).c, 0);
 
   /* Liste fermée : un motif inventé par le client n'entre pas en base. */
   const horsListe = await envoyer({ manual_reason:"parce_que" });
@@ -5372,7 +5372,7 @@ test("grille mensuelle : cocher sans motif est refusé, et le refus dit quoi fai
   const ok = await envoyer({ manual_reason:"appareil_indisponible", manual_note:"batterie à plat" });
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   assert.equal(ok.body.visite, "creee");
-  const v = db.prepare("SELECT * FROM visits WHERE site_id=?").get(site.id);
+  const v = await db.prepare("SELECT * FROM visits WHERE site_id=?").get(site.id);
   assert.equal(v.origin, "manuelle");
   assert.equal(v.manual_reason, "appareil_indisponible");
   assert.equal(v.manual_note, "batterie à plat");
@@ -5400,9 +5400,9 @@ test("grille mensuelle : cocher sans motif est refusé, et le refus dit quoi fai
   const corrige = await envoyer({ manual_reason:"soumission_perdue" });
   assert.equal(corrige.status, 200);
   assert.equal(corrige.body.visite, "corrigee");
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id).c, 1,
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id)).c, 1,
     "corriger le motif ne crée pas un doublon");
-  assert.equal(db.prepare("SELECT manual_reason FROM visits WHERE id=?").get(v.id).manual_reason,
+  assert.equal((await db.prepare("SELECT manual_reason FROM visits WHERE id=?").get(v.id)).manual_reason,
     "soumission_perdue");
 
   /* Décocher retire bien la saisie à la main : le lot borne la saisie, il ne la
@@ -5412,12 +5412,12 @@ test("grille mensuelle : cocher sans motif est refusé, et le refus dit quoi fai
     .send({ year:2026, month:6, active:true, planned:true, done:false });
   assert.equal(retrait.status, 200);
   assert.equal(retrait.body.visite, "supprimee");
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id).c, 0);
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id)).c, 0);
 });
 
 test("grille mensuelle : un mois déjà couvert par ODK ne se saisit pas deux fois", async () => {
-  const avant = db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=? AND visit_date LIKE '2026-05%'")
-    .get(siteLotC.csb.id).c;
+  const avant = (await db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=? AND visit_date LIKE '2026-05%'")
+    .get(siteLotC.csb.id)).c;
   const r = await request(app).put(`/api/sites/${siteLotC.csb.id}/months`)
     .set("Authorization", `Bearer ${adminToken}`)
     .send({ year:2026, month:4, active:true, planned:true, done:true, monitor:"Testeur" });
@@ -5428,8 +5428,8 @@ test("grille mensuelle : un mois déjà couvert par ODK ne se saisit pas deux fo
   assert.equal(r.body.couvertParOdk, true);
   assert.equal(r.body.visite, "aucune");
   assert.match(r.body.message, /soumission ODK documente déjà ce mois/);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=? AND visit_date LIKE '2026-05%'")
-    .get(siteLotC.csb.id).c, avant, "le mois n'est pas doublé en silence");
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=? AND visit_date LIKE '2026-05%'")
+    .get(siteLotC.csb.id)).c, avant, "le mois n'est pas doublé en silence");
 });
 
 test("grille mensuelle : le remède que le refus prescrit en est un — détacher la soumission retire sa visite", async () => {
@@ -5438,7 +5438,7 @@ test("grille mensuelle : le remède que le refus prescrit en est un — détache
     { instance_id:"lota-detach-1", SvyDate:"2026-09-08",
       site_name:"EPP Détachement", activity_tag:"SMP" }]});
   assert.equal(v.body.resolues, 1, JSON.stringify(v.body));
-  const sub = soumission("lota-detach-1");
+  const sub = await soumission("lota-detach-1");
   assert.equal(sub.site_id, site.id);
 
   const suivi = await request(app).post("/api/submissions/suivi")
@@ -5466,12 +5466,12 @@ test("grille mensuelle : le remède que le refus prescrit en est un — détache
   assert.equal(det.status, 200, JSON.stringify(det.body));
   assert.equal(det.body.visitesRetirees, 1);
   assert.deepEqual(det.body.moisDemarques, [{ site_id:site.id, mois:"2026-09" }]);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id).c, 0);
-  assert.equal(db.prepare("SELECT done FROM site_months WHERE site_id=? AND year=2026 AND month=8")
-    .get(site.id).done, 0, "le mois retombe à « non réalisé » : plus rien ne le documente");
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id)).c, 0);
+  assert.equal((await db.prepare("SELECT done FROM site_months WHERE site_id=? AND year=2026 AND month=8")
+    .get(site.id)).done, 0, "le mois retombe à « non réalisé » : plus rien ne le documente");
   /* La soumission, elle, survit : détacher rend la question au résolveur. */
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM submissions WHERE id=?").get(sub.id).c, 1);
-  assert.ok(db.prepare(`SELECT text FROM audit WHERE entity_id=? AND action='detacher'`).get(sub.id)
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM submissions WHERE id=?").get(sub.id)).c, 1);
+  assert.ok(await db.prepare(`SELECT text FROM audit WHERE entity_id=? AND action='detacher'`).get(sub.id)
     .text.includes("visite(s) issue(s) de cette soumission retirée(s)"),
     "le journal dit que la visite est partie avec le détachement");
 
@@ -5491,22 +5491,22 @@ test("grille mensuelle : re-rattacher une soumission ne laisse pas de visite fan
   await verser({ form_id:"SMP_2025", enregistrements: [
     { instance_id:"lota-fantome-1", SvyDate:"2026-11-12",
       site_name:"EPP Fantôme A", activity_tag:"SMP" }]});
-  const sub = soumission("lota-fantome-1");
+  const sub = await soumission("lota-fantome-1");
   assert.equal(sub.site_id, faux.id);
   await request(app).post("/api/submissions/suivi")
     .set("Authorization", `Bearer ${adminToken}`).send({ year:2026, month:10, site_id:faux.id });
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(faux.id).c, 1);
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(faux.id)).c, 1);
 
   const r = await request(app).post(`/api/submissions/${sub.id}/rattacher-a`)
     .set("Authorization", `Bearer ${adminToken}`).send({ site_id: vrai.id });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.visitesRetirees, 1);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(faux.id).c, 0);
-  assert.equal(db.prepare("SELECT done FROM site_months WHERE site_id=? AND year=2026 AND month=10")
-    .get(faux.id).done, 0);
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(faux.id)).c, 0);
+  assert.equal((await db.prepare("SELECT done FROM site_months WHERE site_id=? AND year=2026 AND month=10")
+    .get(faux.id)).done, 0);
   /* Le bon site ne reçoit pas la visite d'office : marquer le suivi reste un
      geste explicite, et c'est lui qui date la visite sur la période choisie. */
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(vrai.id).c, 0);
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(vrai.id)).c, 0);
   const suivi = await request(app).post("/api/submissions/suivi")
     .set("Authorization", `Bearer ${adminToken}`).send({ year:2026, month:10, site_id:vrai.id });
   assert.equal(suivi.body.visitesCreees, 1);
@@ -5522,7 +5522,7 @@ test("grille mensuelle : une soumission arrivée APRÈS la saisie à la main rel
     .send({ year:2026, month:9, active:true, planned:true, done:true,
             manual_reason:"appareil_indisponible", manual_note:"batterie à plat" });
   assert.equal(saisie.body.visite, "creee");
-  const v0 = db.prepare("SELECT * FROM visits WHERE site_id=?").get(site.id);
+  const v0 = await db.prepare("SELECT * FROM visits WHERE site_id=?").get(site.id);
   assert.equal(v0.origin, "manuelle");
 
   const v = await verser({ form_id:"SMP_2025", enregistrements: [
@@ -5534,10 +5534,10 @@ test("grille mensuelle : une soumission arrivée APRÈS la saisie à la main rel
   assert.equal(suivi.body.visitesCreees, 0, "aucun doublon : le mois n'a qu'une visite");
   assert.equal(suivi.body.visitesPromues, 1);
 
-  const v1 = db.prepare("SELECT * FROM visits WHERE site_id=?").all(site.id);
+  const v1 = await db.prepare("SELECT * FROM visits WHERE site_id=?").all(site.id);
   assert.equal(v1.length, 1);
   assert.equal(v1[0].id, v0.id, "c'est la MÊME ligne : la couverture ne compte pas deux fois");
-  assert.equal(v1[0].submission_id, soumission("lota-ordre-1").id);
+  assert.equal(v1[0].submission_id, (await soumission("lota-ordre-1")).id);
   assert.equal(v1[0].origin, "odk");
   assert.equal(v1[0].visit_date, "2026-10-20", "la date observée remplace la convention du 15");
   assert.equal(v1[0].manual_reason, null, "le motif de rattrapage tombe : le formulaire existe");
@@ -5546,19 +5546,19 @@ test("grille mensuelle : une soumission arrivée APRÈS la saisie à la main rel
     .set("Authorization", `Bearer ${adminToken}`)
     .send({ year:2026, month:9, active:true, planned:true, done:false });
   assert.equal(refus.status, 409, "le mois est désormais documenté, il ne se décoche plus");
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id).c, 1);
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(site.id)).c, 1);
 });
 
 test("grille mensuelle : décocher rend la date de dernière visite à ce qui reste", async () => {
   const site = await creerSiteLotC({ code:"LOTA-DERNIERE", name:"EPP Dernière", activity_tag:"SMP" });
-  assert.equal(db.prepare("SELECT last_visit FROM sites WHERE id=?").get(site.id).last_visit, null);
+  assert.equal((await db.prepare("SELECT last_visit FROM sites WHERE id=?").get(site.id)).last_visit, null);
   const cocher = (month, corps) => request(app).put(`/api/sites/${site.id}/months`)
     .set("Authorization", `Bearer ${adminToken}`)
     .send({ year:2026, month, active:true, planned:true, done:true, ...corps });
 
   await cocher(2, { manual_reason:"soumission_perdue" });
   await cocher(6, { manual_reason:"soumission_perdue" });
-  assert.equal(db.prepare("SELECT last_visit FROM sites WHERE id=?").get(site.id).last_visit,
+  assert.equal((await db.prepare("SELECT last_visit FROM sites WHERE id=?").get(site.id)).last_visit,
     "2026-07-15");
 
   /* Le site annonçait la date d'une visite qui n'existe plus : monthsSince, la
@@ -5567,14 +5567,14 @@ test("grille mensuelle : décocher rend la date de dernière visite à ce qui re
     .set("Authorization", `Bearer ${adminToken}`)
     .send({ year:2026, month:6, active:true, planned:true, done:false });
   assert.equal(retrait.body.visite, "supprimee");
-  assert.equal(db.prepare("SELECT last_visit FROM sites WHERE id=?").get(site.id).last_visit,
+  assert.equal((await db.prepare("SELECT last_visit FROM sites WHERE id=?").get(site.id)).last_visit,
     "2026-03-15", "elle retombe sur la saisie précédente, pas sur le vide");
 
   const dernier = await request(app).put(`/api/sites/${site.id}/months`)
     .set("Authorization", `Bearer ${adminToken}`)
     .send({ year:2026, month:2, active:true, planned:true, done:false });
   assert.equal(dernier.body.visite, "supprimee");
-  assert.equal(db.prepare("SELECT last_visit FROM sites WHERE id=?").get(site.id).last_visit, null);
+  assert.equal((await db.prepare("SELECT last_visit FROM sites WHERE id=?").get(site.id)).last_visit, null);
 });
 
 test("grille mensuelle : corriger un motif ne perd pas la précision écrite, et le journal ne signale que les vraies corrections", async () => {
@@ -5639,7 +5639,7 @@ test("soumissions : un connecteur porteur de correspondances passe par appliquer
     { uuid:"lotc-conn-1", NomDuPoint:"CSB TSIHOMBE", Programme:"nta",
       DateReleve:"14/05/2026", Position:"-25.3150 45.4940 30 12" }]});
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  const s = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-conn-1");
+  const s = await db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("lotc-conn-1");
   assert.equal(s.site_id, siteLotC.csb.id);
   assert.equal(s.svy_date, "2026-05-14", "la date française est normalisée par la transformation déclarée");
   assert.equal(s.gps_accuracy, 12);
@@ -5670,7 +5670,7 @@ test("soumissions : le tirage ODK conserve l'identifiant d'instance, et le cache
 
   /* `__id` était écarté avec le reste des champs système d'OData : sans lui, deux
      tirages du même formulaire créaient des doublons au lieu de se recouvrir. */
-  const cache = JSON.parse(db.prepare("SELECT raw FROM odk_forms WHERE id=?").get(f.id).raw);
+  const cache = JSON.parse((await db.prepare("SELECT raw FROM odk_forms WHERE id=?").get(f.id)).raw);
   assert.ok(cache.every(x => x.instance_id), "chaque soumission du cache porte son identifiant");
 
   const un = await verser({ odk_form_id:f.id });
@@ -5710,8 +5710,8 @@ const listerCodes = (siteId) => request(app).get(`/api/sites/${siteId}/aliases`)
   .set("Authorization", `Bearer ${adminToken}`);
 const importerCodes = (corps) => request(app).post("/api/site-aliases/import")
   .set("Authorization", `Bearer ${adminToken}`).send(corps);
-const soumission = (instance) =>
-  db.prepare("SELECT * FROM submissions WHERE instance_id=?").get(instance);
+const soumission = async (instance) =>
+  await db.prepare("SELECT * FROM submissions WHERE instance_id=?").get(instance);
 
 test("codes externes : un même site porte plusieurs codes selon la source qui le désigne", async () => {
   /* Volontairement sans p-code : c'est le cas SMP, où le code de la source
@@ -5747,7 +5747,7 @@ test("codes externes : un même site porte plusieurs codes selon la source qui l
   const parSmp = await verser({ form_id:"SMP_2025", enregistrements: [
     { instance_id:"lota-smp-1", Adm4Code_SMP:"603140007", SvyDate:"2026-07-02" }]});
   assert.equal(parSmp.status, 200, JSON.stringify(parSmp.body));
-  const s1 = soumission("lota-smp-1");
+  const s1 = await soumission("lota-smp-1");
   assert.equal(s1.site_id, site.id,
     "un code hors référentiel p-code rattache quand même, dès qu'une correspondance le déclare");
   assert.equal(s1.resolution_passe, "code_externe");
@@ -5757,7 +5757,7 @@ test("codes externes : un même site porte plusieurs codes selon la source qui l
   const parDefaut = await verser({ form_id:"GD_PREVMA_v2", enregistrements: [
     { instance_id:"lota-smp-2", DPName:"GDPREV-99001", SvyDate:"2026-07-03" }]});
   assert.equal(parDefaut.status, 200, JSON.stringify(parDefaut.body));
-  const s2 = soumission("lota-smp-2");
+  const s2 = await soumission("lota-smp-2");
   assert.equal(s2.site_id, site.id);
   assert.match(s2.resolution_motif, /fiche du site/,
     "un rattachement par la colonne et un rattachement par alias ne se lisent pas pareil");
@@ -5775,7 +5775,7 @@ test("codes externes : un même site porte plusieurs codes selon la source qui l
   const ancien = await verser({ form_id:"GD_PREVMA_v2", enregistrements: [
     { instance_id:"lota-ancien", DPName:"GDPREV-99001", SvyDate:"2026-07-04" }]});
   assert.equal(ancien.status, 200, JSON.stringify(ancien.body));
-  assert.equal(soumission("lota-ancien").site_id, null,
+  assert.equal((await soumission("lota-ancien")).site_id, null,
     "le code retiré de la fiche ne rattache plus rien");
 
   /* Le miroir ne se supprime pas par la porte des alias : la fiche est le seul
@@ -5821,14 +5821,14 @@ test("codes externes : l'import d'une table de correspondance est idempotent et 
   assert.equal(second.status, 200, JSON.stringify(second.body));
   assert.equal(second.body.crees, 0, "rejouer le même fichier ne crée rien");
   assert.equal(second.body.dejaPresents, 3);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM site_external_code WHERE source='SMP_2025'").get().c,
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM site_external_code WHERE source='SMP_2025'").get()).c,
     4, "trois lignes importées, plus celle du test précédent : aucun doublon");
 
   /* Le rattachement s'en sert immédiatement, sans re-tirer depuis ODK. */
   const r = await verser({ form_id:"SMP_2025", enregistrements: [
     { instance_id:"lota-imp-1", Adm4Code_SMP:"603140022", SvyDate:"2026-07-10" }]});
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  assert.equal(soumission("lota-imp-1").site_id, deux.id);
+  assert.equal((await soumission("lota-imp-1")).site_id, deux.id);
 
   /* Un code déclaré pour deux sites reste ambigu. L'import le dit au lieu de le
      laisser découvrir au premier tirage — et ce qu'il annonce comme ambigu est
@@ -5845,7 +5845,7 @@ test("codes externes : l'import d'une table de correspondance est idempotent et 
   const ambigu = await verser({ form_id:"SMP_2025", enregistrements: [
     { instance_id:"lota-imp-2", Adm4Code_SMP:"603140021", SvyDate:"2026-07-11" }]});
   assert.equal(ambigu.status, 200, JSON.stringify(ambigu.body));
-  const a = soumission("lota-imp-2");
+  const a = await soumission("lota-imp-2");
   assert.equal(a.site_id, null, "deux sites pour un code : aucun n'est choisi au hasard");
   assert.match(a.resolution_motif, /désigne 2 sites/);
 });
@@ -5855,7 +5855,7 @@ test("soumissions : le rattachement manuel est tracé, il apprend, et rien ne l'
   const versement = await verser({ form_id:"SMP_2025", enregistrements: [
     { instance_id:"lota-manuel-1", Adm4Code_SMP:"603140777", SvyDate:"2026-07-20" }]});
   assert.equal(versement.status, 200, JSON.stringify(versement.body));
-  const brute = soumission("lota-manuel-1");
+  const brute = await soumission("lota-manuel-1");
   assert.equal(brute.site_id, null, "le résolveur ne devine pas un code qu'il ne connaît pas");
 
   const fait = await request(app).post(`/api/submissions/${brute.id}/rattacher-a`)
@@ -5864,7 +5864,7 @@ test("soumissions : le rattachement manuel est tracé, il apprend, et rien ne l'
   assert.equal(fait.status, 200, JSON.stringify(fait.body));
   assert.equal(fait.body.alias.cree, true);
 
-  const decidee = db.prepare("SELECT * FROM submissions WHERE id=?").get(brute.id);
+  const decidee = await db.prepare("SELECT * FROM submissions WHERE id=?").get(brute.id);
   assert.equal(decidee.site_id, site.id);
   assert.equal(decidee.resolution_passe, "manuel");
   assert.equal(decidee.resolution_confiance, 1,
@@ -5872,7 +5872,7 @@ test("soumissions : le rattachement manuel est tracé, il apprend, et rien ne l'
   assert.match(decidee.resolution_motif, /à la main par/);
   assert.match(decidee.resolution_motif, /603140777/, "le motif garde le code d'origine");
 
-  const trace = db.prepare(`SELECT * FROM audit WHERE entity='submissions' AND entity_id=?
+  const trace = await db.prepare(`SELECT * FROM audit WHERE entity='submissions' AND entity_id=?
                             AND action='rattacher-manuel'`).get(brute.id);
   assert.ok(trace, "la décision entre au journal : qui, quoi, depuis quel bureau");
   assert.match(trace.text, /EPP Manuelle/);
@@ -5883,7 +5883,7 @@ test("soumissions : le rattachement manuel est tracé, il apprend, et rien ne l'
   const suivante = await verser({ form_id:"SMP_2025", enregistrements: [
     { instance_id:"lota-manuel-2", Adm4Code_SMP:"603140777", SvyDate:"2026-07-21" }]});
   assert.equal(suivante.status, 200, JSON.stringify(suivante.body));
-  const auto = soumission("lota-manuel-2");
+  const auto = await soumission("lota-manuel-2");
   assert.equal(auto.site_id, site.id);
   assert.equal(auto.resolution_passe, "code_externe");
   assert.match(auto.resolution_motif, /SMP_2025/);
@@ -5894,7 +5894,7 @@ test("soumissions : le rattachement manuel est tracé, il apprend, et rien ne l'
     .set("Authorization", `Bearer ${adminToken}`).send({ toutes: true });
   assert.equal(rejeu.status, 200, JSON.stringify(rejeu.body));
   assert.ok(rejeu.body.protegees >= 1, JSON.stringify(rejeu.body));
-  const apresRejeu = db.prepare("SELECT * FROM submissions WHERE id=?").get(brute.id);
+  const apresRejeu = await db.prepare("SELECT * FROM submissions WHERE id=?").get(brute.id);
   assert.equal(apresRejeu.resolution_passe, "manuel");
   assert.equal(apresRejeu.resolution_confiance, 1);
 
@@ -5904,20 +5904,20 @@ test("soumissions : le rattachement manuel est tracé, il apprend, et rien ne l'
     { instance_id:"lota-manuel-1", Adm4Code_SMP:"603140777", SvyDate:"2026-07-20" }]});
   assert.equal(reverse.status, 200, JSON.stringify(reverse.body));
   assert.equal(reverse.body.manuelsPreserves, 1);
-  assert.equal(db.prepare("SELECT resolution_passe FROM submissions WHERE id=?")
-    .get(brute.id).resolution_passe, "manuel");
+  assert.equal((await db.prepare("SELECT resolution_passe FROM submissions WHERE id=?")
+    .get(brute.id)).resolution_passe, "manuel");
 
   /* Le détachement, tout aussi tracé : c'est la porte de sortie sans laquelle
      une erreur de désignation serait définitive. */
   const detache = await request(app).post(`/api/submissions/${brute.id}/detacher`)
     .set("Authorization", `Bearer ${adminToken}`).send({});
   assert.equal(detache.status, 200, JSON.stringify(detache.body));
-  const nue = db.prepare("SELECT * FROM submissions WHERE id=?").get(brute.id);
+  const nue = await db.prepare("SELECT * FROM submissions WHERE id=?").get(brute.id);
   assert.equal(nue.site_id, null);
   assert.equal(nue.resolution_passe, null, "détacher rend la question au résolveur");
   assert.equal(nue.resolution_confiance, 0);
   assert.match(nue.resolution_motif, /détaché à la main par/);
-  assert.ok(db.prepare(`SELECT 1 FROM audit WHERE entity='submissions' AND entity_id=?
+  assert.ok(await db.prepare(`SELECT 1 FROM audit WHERE entity='submissions' AND entity_id=?
                         AND action='detacher'`).get(brute.id), "le détachement est journalisé");
 
   /* Et puisque la question lui est rendue, le rejeu la reprend — l'alias créé
@@ -5925,7 +5925,7 @@ test("soumissions : le rattachement manuel est tracé, il apprend, et rien ne l'
   const rejeu2 = await request(app).post("/api/submissions/rattacher")
     .set("Authorization", `Bearer ${adminToken}`).send({});
   assert.equal(rejeu2.status, 200, JSON.stringify(rejeu2.body));
-  const reprise = db.prepare("SELECT * FROM submissions WHERE id=?").get(brute.id);
+  const reprise = await db.prepare("SELECT * FROM submissions WHERE id=?").get(brute.id);
   assert.equal(reprise.site_id, site.id);
   assert.equal(reprise.resolution_passe, "code_externe");
 
@@ -6004,8 +6004,8 @@ test("référentiel de codes : le modèle se télécharge sans millésime géogr
   /* On retire le millésime courant : sans lui, `scopeFor` rend un périmètre vide
      et le cadre refuse de produire un modèle. C'est LA preuve que la portée
      nationale débranche les deux gardes — et que la portée « geo » les garde. */
-  const courant = db.prepare("SELECT id FROM geo_version WHERE is_current=1").all().map(x => x.id);
-  db.prepare("UPDATE geo_version SET is_current=0").run();
+  const courant = (await db.prepare("SELECT id FROM geo_version WHERE is_current=1").all()).map(x => x.id);
+  await db.prepare("UPDATE geo_version SET is_current=0").run();
   try{
     const geo = await request(app).get("/api/import/caseload/template")
       .set("Authorization", `Bearer ${adminToken}`);
@@ -6028,7 +6028,7 @@ test("référentiel de codes : le modèle se télécharge sans millésime géogr
     assert.equal(kv.referentiel, REF_CODES,
       "le nom du référentiel voyage avec le fichier : c'est de lui que les lignes héritent");
   } finally {
-    for(const id of courant) db.prepare("UPDATE geo_version SET is_current=1 WHERE id=?").run(id);
+    for(const id of courant) await db.prepare("UPDATE geo_version SET is_current=1 WHERE id=?").run(id);
   }
 
   /* Sans nom de référentiel, il n'y a pas de clé métier : le modèle est refusé
@@ -6055,8 +6055,8 @@ test("référentiel de codes : la prévisualisation n'écrit rien, la confirmati
   assert.equal(prev.status, 200, JSON.stringify(prev.body));
   assert.equal(prev.body.resume.crees, 5);
   assert.equal(prev.body.resume.rejetes, 0, JSON.stringify(prev.body.rejets));
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM code_referentiel WHERE referentiel=?")
-    .get(REF_CODES).c, 0, "rien n'est écrit à la prévisualisation");
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM code_referentiel WHERE referentiel=?")
+    .get(REF_CODES)).c, 0, "rien n'est écrit à la prévisualisation");
 
   const ok = await request(app).post(`/api/import/batches/${prev.body.batch}/commit`)
     .set("Authorization", `Bearer ${adminToken}`);
@@ -6138,7 +6138,7 @@ test("référentiel de codes : le rapprochement pose les alias, est idempotent, 
   /* L'alias porte la SOURCE du référentiel : c'est ce qui rend le rattachement
      relisible six mois plus tard, et ce qui distingue un code importé en masse
      du code saisi sur la fiche du site. */
-  const alias = db.prepare("SELECT * FROM site_external_code WHERE source=?").all(REF_CODES);
+  const alias = await db.prepare("SELECT * FROM site_external_code WHERE source=?").all(REF_CODES);
   assert.equal(alias.length, 2);
   assert.deepEqual(alias.map(a => a.code).sort(), ["603140001","MG23288880002"]);
   assert.ok(alias.every(a => /référentiel/.test(a.note || "")), "la note dit d'où vient le code");
@@ -6156,11 +6156,11 @@ test("référentiel de codes : le rapprochement pose les alias, est idempotent, 
   assert.equal((await entree("603140003")).site_id, null, "une piste faible ne rattache rien");
   assert.equal((await entree("603140003")).rapproche_passe, "nom_seul",
     "elle est tout de même enregistrée : c'est ce qui permet de la confirmer à la main");
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM site_external_code WHERE code=?")
-    .get("603140003").c, 0, "aucun alias n'est posé sous le seuil");
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM site_external_code WHERE code=?")
+    .get("603140003")).c, 0, "aucun alias n'est posé sous le seuil");
 
   /* Le journal reprend le bilan ENTIER, échecs compris. */
-  const trace = db.prepare(`SELECT * FROM audit WHERE entity='code_referentiel' AND entity_id=?
+  const trace = await db.prepare(`SELECT * FROM audit WHERE entity='code_referentiel' AND entity_id=?
                             ORDER BY rowid DESC`).get(REF_CODES);
   assert.ok(trace, "le rapprochement entre au journal");
   assert.match(trace.text, /sans site/);
@@ -6174,15 +6174,15 @@ test("référentiel de codes : le rapprochement pose les alias, est idempotent, 
   assert.equal(deux.body.alias, 0, "aucun alias en double");
   assert.equal(deux.body.dejaPresents, 2);
   assert.equal(deux.body.rattachees, 2);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM site_external_code WHERE source=?")
-    .get(REF_CODES).c, 2);
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM site_external_code WHERE source=?")
+    .get(REF_CODES)).c, 2);
 
   /* Et la conséquence de tout le lot : une soumission SMP portant ce code
      entier, qui n'est le p-code de rien, se rattache désormais toute seule. */
   const v = await verser({ form_id:"SMP_2025", enregistrements: [
     { instance_id:"lotb-1", Adm4Code_SMP:"603140001", SvyDate:"2026-08-01" }]});
   assert.equal(v.status, 200, JSON.stringify(v.body));
-  const s = soumission("lotb-1");
+  const s = await soumission("lotb-1");
   assert.equal(s.site_id, siteLotB.designe.id,
     "c'est ce que le lot débloque : SMP devient rattachable");
   assert.match(s.resolution_motif, new RegExp(REF_CODES));
@@ -6211,9 +6211,9 @@ test("référentiel de codes : le bilan NOMME ce qu'il n'a pas su faire, dans le
   assert.ok(Array.isArray(b.sitesSansEntree));
   assert.ok(b.sitesSansEntree.length > 1, "plusieurs activités sont distinguées");
   assert.ok(b.sitesSansEntree.every(x => typeof x.tag === "string" && Number.isInteger(x.sites)));
-  const tousSites = db.prepare("SELECT COUNT(*) c FROM sites").get().c;
-  const couverts = db.prepare(`SELECT COUNT(DISTINCT site_id) c FROM code_referentiel
-                               WHERE referentiel=? AND site_id IS NOT NULL`).get(REF_CODES).c;
+  const tousSites = (await db.prepare("SELECT COUNT(*) c FROM sites").get()).c;
+  const couverts = (await db.prepare(`SELECT COUNT(DISTINCT site_id) c FROM code_referentiel
+                               WHERE referentiel=? AND site_id IS NOT NULL`).get(REF_CODES)).c;
   assert.equal(b.sitesSansEntree.reduce((a, x) => a + x.sites, 0), tousSites - couverts,
     "la ventilation couvre exactement les sites que le référentiel n'atteint pas");
   const smp = b.sitesSansEntree.find(x => x.tag === "SMP");
@@ -6326,7 +6326,7 @@ test("référentiel de codes : corriger une désignation retire l'alias devenu f
   assert.equal(r.body.aliasRetires, 1, "l'alias périmé est retiré, et le bilan le dit");
   assert.equal((await entree("603140001")).site_id, siteLotB.parNom.id);
 
-  const alias = db.prepare("SELECT site_id FROM site_external_code WHERE code=? AND source=?")
+  const alias = await db.prepare("SELECT site_id FROM site_external_code WHERE code=? AND source=?")
     .all("603140001", REF_CODES);
   assert.equal(alias.length, 1, "un code, une source, un site");
   assert.equal(alias[0].site_id, siteLotB.parNom.id);
@@ -6338,7 +6338,7 @@ test("référentiel de codes : corriger une désignation retire l'alias devenu f
   const v = await verser({ form_id:"SMP_2025", enregistrements: [
     { instance_id:"lotb-corrige", Adm4Code_SMP:"603140001", SvyDate:"2026-08-02" }]});
   assert.equal(v.status, 200, JSON.stringify(v.body));
-  assert.equal(soumission("lotb-corrige").site_id, siteLotB.parNom.id);
+  assert.equal((await soumission("lotb-corrige")).site_id, siteLotB.parNom.id);
 });
 
 test("référentiel de codes : une entrée qui PERD son site est comptée et nommée, pas effacée en silence", async () => {
@@ -6360,15 +6360,15 @@ test("référentiel de codes : une entrée qui PERD son site est comptée et nom
   assert.match(r.body.detachement, /ont PERDU le site/);
   assert.equal((await entree("603140001")).site_id, null);
 
-  const trace = db.prepare(`SELECT * FROM audit WHERE entity='code_referentiel' AND entity_id=?
+  const trace = await db.prepare(`SELECT * FROM audit WHERE entity='code_referentiel' AND entity_id=?
                             ORDER BY rowid DESC`).get(REF_CODES);
   assert.match(trace.text, /1 détachée/);
 
   /* L'alias posé au passage précédent, lui, survit : il n'est retiré que par une
      conclusion CONTRAIRE, jamais par une absence de conclusion. C'est ce qui
      permet de réparer le fichier sans avoir tout perdu entre-temps. */
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM site_external_code WHERE code=? AND source=?")
-    .get("603140001", REF_CODES).c, 1);
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM site_external_code WHERE code=? AND source=?")
+    .get("603140001", REF_CODES)).c, 1);
 
   assert.equal((await renommer("LOTB-3")).status, 200);
   const remis = await rapprocherCodes();
@@ -6382,14 +6382,15 @@ test("référentiel de codes : le motif ne nomme pas les sites d'un autre bureau
      partait tel quel — et il NOMME les sites, code MEMS compris : il suffisait de
      lire la colonne « Pourquoi » pour énumérer les sites d'un autre bureau, y
      compris les homonymes du registre national. */
-  const bureaux = db.prepare("SELECT id FROM offices WHERE kind='field' ORDER BY name").all();
-  const mien = db.prepare("SELECT office_id FROM users WHERE email=?").get("terrain@test.local").office_id;
+  const bureaux = await db.prepare("SELECT id FROM offices WHERE kind='field' ORDER BY name").all();
+  const mien = (await db.prepare("SELECT office_id FROM users WHERE email=?").get("terrain@test.local")).office_id;
   const ailleurs = bureaux.find(o => o.id !== mien).id;
   const codes = [siteLotB.designe.id, siteLotB.parPcode.id, siteLotB.parNom.id];
-  const avant = codes.map(id => db.prepare("SELECT office_id FROM sites WHERE id=?").get(id).office_id);
-  const poser = (o) => codes.forEach(id =>
-    db.prepare("UPDATE sites SET office_id=? WHERE id=?").run(o, id));
-  poser(ailleurs);
+  const avant = await Promise.all(codes.map(async id =>
+    (await db.prepare("SELECT office_id FROM sites WHERE id=?").get(id)).office_id));
+  const poser = (o) => Promise.all(codes.map(id =>
+    db.prepare("UPDATE sites SET office_id=? WHERE id=?").run(o, id)));
+  await poser(ailleurs);
   try{
     const te = (await login("terrain@test.local", "TerrainMotDePasse1")).body.token;
     const l = await request(app).get(`/api/code-referentiels/${REF_CODES}?limit=500`)
@@ -6414,8 +6415,8 @@ test("référentiel de codes : le motif ne nomme pas les sites d'un autre bureau
       .set("Authorization", `Bearer ${adminToken}`);
     assert.ok(/EPP Lot B/.test(JSON.stringify(admin.body)));
   } finally {
-    codes.forEach((id, i) =>
-      db.prepare("UPDATE sites SET office_id=? WHERE id=?").run(avant[i], id));
+    await Promise.all(codes.map((id, i) =>
+      db.prepare("UPDATE sites SET office_id=? WHERE id=?").run(avant[i], id)));
   }
 });
 
@@ -6424,8 +6425,8 @@ test("référentiel de codes : les motifs parlent de l'entrée du fichier, jamai
      pour une soumission. Servis tels quels à un opérateur qui vient de charger un
      tableur, ils expliquent sa ligne en parlant d'un objet qu'il n'a jamais
      manipulé. Même règle, même code, un mot près. */
-  const motifs = db.prepare("SELECT code, rapproche_motif FROM code_referentiel WHERE referentiel=?")
-    .all(REF_CODES).filter(x => x.rapproche_motif);
+  const motifs = (await db.prepare("SELECT code, rapproche_motif FROM code_referentiel WHERE referentiel=?")
+    .all(REF_CODES)).filter(x => x.rapproche_motif);
   assert.ok(motifs.length >= 5);
   const fautif = motifs.find(x => /soumission/.test(x.rapproche_motif));
   assert.equal(fautif, undefined, `le motif de ${fautif?.code} parle encore d'une soumission`);
@@ -6542,15 +6543,15 @@ const RSCRIPT = trouverBinaire("Rscript");
 const PSPP = trouverBinaire("pspp");
 
 let nAnalyse = 0;
-const creerJeu = (lignes) => {
+const creerJeu = async (lignes) => {
   const id = `ds_essai_${++nAnalyse}`;
-  db.prepare("INSERT INTO datasets (id,name,raw) VALUES (?,?,?)")
+  await db.prepare("INSERT INTO datasets (id,name,raw) VALUES (?,?,?)")
     .run(id, "Jeu d'essai", JSON.stringify(lignes));
   return id;
 };
-const creerScript = ({ lang="R", code="", jeu=null }={}) => {
+const creerScript = async ({ lang="R", code="", jeu=null }={}) => {
   const id = `sc_essai_${++nAnalyse}`;
-  db.prepare(`INSERT INTO scripts (id,name,language,stage,dataset_id,code,notes)
+  await db.prepare(`INSERT INTO scripts (id,name,language,stage,dataset_id,code,notes)
               VALUES (?,?,?,'analysis',?,?,'')`)
     .run(id, `Analyse d'essai ${nAnalyse}`, lang, jeu, code);
   return id;
@@ -6562,7 +6563,7 @@ async function lancerAnalyse({ code, lang="R", jeu=null, reglages={}, corps={}, 
   const anciens = {};
   for(const [k,v] of Object.entries(reglages)){ anciens[k] = process.env[k]; process.env[k] = v; }
   try{
-    const id = creerScript({ lang, code, jeu });
+    const id = await creerScript({ lang, code, jeu });
     /* Sans jeu de données relié, la route exige des lignes explicites : un
        script d'analyse qui n'analyse rien est une erreur de saisie, pas un cas
        normal. Les essais qui n'ont pas besoin de données envoient donc [] . */
@@ -6587,7 +6588,7 @@ test("scripts d'analyse : sans interpréteur déclaré la fonction est absente, 
   assert.deepEqual(etat.body.moteurs.map(m => m.lang).sort(), ["R","SPSS"]);
   assert.ok(etat.body.moteurs.every(m => !m.disponible && /n'est pas renseignée/.test(m.raison)));
 
-  const id = creerScript({ code:"echo bonjour" });
+  const id = await creerScript({ code:"echo bonjour" });
   const r = await request(app).post(`/api/scripts/${id}/executer`)
     .set("Authorization", `Bearer ${adminToken}`).send({ lignes:[] });
   assert.equal(r.status, 503);
@@ -6718,13 +6719,13 @@ test("scripts d'analyse : une sortie trop longue est coupée et annoncée comme 
   assert.equal(Buffer.byteLength(ex.sortie), 1024, "la sortie est coupée au plafond, pas au-delà");
   assert.equal(Buffer.byteLength(ex.erreur), 1024);
 
-  const trace = db.prepare(`SELECT * FROM audit WHERE entity='scripts' AND action='execute'
+  const trace = await db.prepare(`SELECT * FROM audit WHERE entity='scripts' AND action='execute'
                             ORDER BY at DESC, rowid DESC LIMIT 1`).get();
   assert.match(trace.text, /sortie tronquée/, "le journal dit aussi que la sortie a été coupée");
 });
 
 test("scripts d'analyse : données transmises par CSV local, fichiers produits servis, répertoire effacé, exécution journalisée", async () => {
-  const jeu = creerJeu([
+  const jeu = await creerJeu([
     { site:"A", note:'un guillemet " et, une virgule', n:1 },
     { site:"B", note:"un retour\nligne", n:2 },
   ]);
@@ -6779,11 +6780,11 @@ test("scripts d'analyse : données transmises par CSV local, fichiers produits s
 
   assert.deepEqual(travauxRestants(), [], "le répertoire de travail ne survit pas à l'exécution");
 
-  const trace = db.prepare(`SELECT * FROM audit WHERE entity='scripts' AND action='execute'
+  const trace = await db.prepare(`SELECT * FROM audit WHERE entity='scripts' AND action='execute'
                             AND at >= ? ORDER BY at DESC, rowid DESC LIMIT 1`).get(avant.slice(0,19).replace("T"," "));
   assert.ok(trace, "toute exécution est journalisée");
   assert.equal(trace.kind, "securite");
-  assert.equal(trace.user_id, db.prepare("SELECT id FROM users WHERE email='admin@test.local'").get().id);
+  assert.equal(trace.user_id, (await db.prepare("SELECT id FROM users WHERE email='admin@test.local'").get()).id);
   assert.match(trace.text, /exécuté sur le serveur/);
   assert.match(trace.text, /code de sortie 0/);
   assert.match(trace.text, / s —/, "la durée figure au journal");
@@ -6810,7 +6811,7 @@ test("scripts d'analyse : données transmises par CSV local, fichiers produits s
 });
 
 test("scripts d'analyse : un jeu de données au-delà du plafond est refusé avant tout lancement", async () => {
-  const jeu = creerJeu([{ a:1 },{ a:2 },{ a:3 }]);
+  const jeu = await creerJeu([{ a:1 },{ a:2 },{ a:3 }]);
   const r = await lancerAnalyse({ code:"echo bonjour", jeu, reglages:{
     ANALYSIS_R: FAUX_INTERPRETEUR, ANALYSIS_MAX_ROWS:"2" }});
   assert.equal(r.status, 413);
@@ -6819,7 +6820,7 @@ test("scripts d'analyse : un jeu de données au-delà du plafond est refusé ava
 
 test("scripts d'analyse : exécution réelle d'un script R", { skip: RSCRIPT ? false
   : "Rscript n'est pas installé sur cette machine : la chaîne R n'a pas pu être éprouvée" }, async () => {
-  const jeu = creerJeu([
+  const jeu = await creerJeu([
     { site:"A", n:1 }, { site:"A", n:3 }, { site:"B", n:5 },
   ]);
   const code = [
@@ -6852,7 +6853,7 @@ test("scripts d'analyse : exécution réelle d'un script R", { skip: RSCRIPT ? f
 
 test("scripts d'analyse : exécution réelle d'un script SPSS", { skip: PSPP ? false
   : "pspp n'est pas installé sur cette machine : la chaîne SPSS n'a pas pu être éprouvée" }, async () => {
-  const jeu = creerJeu([{ site:"A", n:1 }, { site:"B", n:3 }, { site:"C", n:5 }]);
+  const jeu = await creerJeu([{ site:"A", n:1 }, { site:"B", n:3 }, { site:"C", n:5 }]);
   const code = [
     "GET DATA /TYPE=TXT /FILE='donnees.csv' /DELIMITERS=\",\" /FIRSTCASE=2",
     "  /VARIABLES=site A8 n F8.0.",
@@ -6908,7 +6909,7 @@ test("instance : un administrateur non super est refusé sur CHACUNE des routes"
   assert.equal(r.status, 201, JSON.stringify(r.body));
   await motDePasseAdopte("admin-instance@test.local");
   const t = (await login("admin-instance@test.local", "AdminInstanceMotDePasse1")).body.token;
-  const lui = db.prepare("SELECT id FROM users WHERE email='admin-instance@test.local'").get().id;
+  const lui = (await db.prepare("SELECT id FROM users WHERE email='admin-instance@test.local'").get()).id;
 
   /* Il est bien administrateur au sens de la matrice : la gestion des comptes,
      des bureaux et des référentiels lui reste ouverte. C'est ce qui donne son
@@ -6968,7 +6969,7 @@ test("sessions : révoquer une session la rend inutilisable au prochain appel", 
   assert.equal((await request(app).get("/api/auth/me")
     .set("Authorization", `Bearer ${t}`)).status, 200, "la session est vivante avant révocation");
 
-  const cible = db.prepare("SELECT id FROM users WHERE email='admin-instance@test.local'").get().id;
+  const cible = (await db.prepare("SELECT id FROM users WHERE email='admin-instance@test.local'").get()).id;
   const vue = await auSuper(request(app).get(`/api/auth/sessions?user_id=${cible}`));
   assert.equal(vue.status, 200);
   assert.equal(vue.body.portee, "autre_compte");
@@ -6987,7 +6988,7 @@ test("sessions : révoquer une session la rend inutilisable au prochain appel", 
   assert.equal((await request(app).get("/api/state")
     .set("Authorization", `Bearer ${t}`)).status, 401);
 
-  const trace = db.prepare(
+  const trace = await db.prepare(
     "SELECT * FROM audit WHERE entity='sessions' AND action='revoke' AND entity_id=?").get(jti);
   assert.ok(trace, "la révocation est journalisée");
   assert.equal(trace.kind, "securite");
@@ -7007,7 +7008,7 @@ test("sessions : révocation en masse, et la protection de sa propre session", a
             last_name:"Super", role:"super", tabs:["home"], active:true });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   await motDePasseAdopte("super2@test.local");
-  const moi = db.prepare("SELECT id FROM users WHERE email='super2@test.local'").get().id;
+  const moi = (await db.prepare("SELECT id FROM users WHERE email='super2@test.local'").get()).id;
 
   const a = (await login("super2@test.local", "SecondSuperMotDePasse1")).body.token;
   const b = (await login("super2@test.local", "SecondSuperMotDePasse1")).body.token;
@@ -7033,7 +7034,7 @@ test("sessions : révocation en masse, et la protection de sa propre session", a
       .set("Authorization", `Bearer ${mort}`)).status, 401);
   assert.equal((await commeA(request(app).get("/api/auth/me"))).status, 200,
     "celle qui a lancé l'opération fonctionne encore");
-  assert.ok(db.prepare(`SELECT 1 FROM audit WHERE entity='sessions' AND action='revoke_all'
+  assert.ok(await db.prepare(`SELECT 1 FROM audit WHERE entity='sessions' AND action='revoke_all'
                         AND entity_id=?`).get(moi), "la révocation en masse est journalisée");
 
   /* ── Et l'inclusion explicite, qui elle coupe bien l'appelant ── */
@@ -7059,24 +7060,24 @@ test("sessions : révocation en masse, et la protection de sa propre session", a
 test("sessions : la purge efface les sessions closes et n'effleure pas les vivantes", async () => {
   const moi = await superId();
   const monJti = jtiDe(adminToken);
-  db.prepare(`INSERT INTO sessions (id,user_id,issued_at,expires_at,revoked)
-              VALUES ('sess_expiree_essai',?,datetime('now','-9 hours'),datetime('now','-1 hour'),0)`).run(moi);
-  db.prepare(`INSERT INTO sessions (id,user_id,issued_at,expires_at,revoked)
-              VALUES ('sess_revoquee_essai',?,datetime('now'),datetime('now','+8 hours'),1)`).run(moi);
+  await db.prepare(`INSERT INTO sessions (id,user_id,issued_at,expires_at,revoked)
+              VALUES ('sess_expiree_essai',?,now() - interval '9 hours',now() - interval '1 hour',0)`).run(moi);
+  await db.prepare(`INSERT INTO sessions (id,user_id,issued_at,expires_at,revoked)
+              VALUES ('sess_revoquee_essai',?,now(),now() + interval '8 hours',1)`).run(moi);
   /* Une session close mais RÉCENTE, pour éprouver la fenêtre de conservation. */
-  db.prepare(`INSERT INTO sessions (id,user_id,issued_at,expires_at,revoked)
-              VALUES ('sess_recente_close',?,datetime('now'),datetime('now','-1 minute'),0)`).run(moi);
+  await db.prepare(`INSERT INTO sessions (id,user_id,issued_at,expires_at,revoked)
+              VALUES ('sess_recente_close',?,now(),now() - interval '1 minute',0)`).run(moi);
 
   /* Avec une fenêtre de trente jours, rien de ce qui a été émis aujourd'hui ne
      part — pas même ce qui est déjà mort. */
   const menagee = await auSuper(request(app).post("/api/auth/sessions/purge?jours=30"));
   assert.equal(menagee.status, 200, JSON.stringify(menagee.body));
   assert.equal(menagee.body.supprimees, 0);
-  assert.ok(db.prepare("SELECT 1 FROM sessions WHERE id='sess_recente_close'").get());
+  assert.ok(await db.prepare("SELECT 1 FROM sessions WHERE id='sess_recente_close'").get());
 
-  const avant = db.prepare("SELECT COUNT(*) c FROM sessions").get().c;
-  const vivantesAvant = db.prepare(
-    "SELECT id FROM sessions WHERE revoked=0 AND expires_at > datetime('now')").all().map(s => s.id);
+  const avant = (await db.prepare("SELECT COUNT(*) c FROM sessions").get()).c;
+  const vivantesAvant = (await db.prepare(
+    "SELECT id FROM sessions WHERE revoked=0 AND expires_at > now()").all()).map(s => s.id);
   assert.ok(vivantesAvant.includes(monJti), "la session du super est bien vivante avant la purge");
 
   const purge = await auSuper(request(app).post("/api/auth/sessions/purge"));
@@ -7085,18 +7086,18 @@ test("sessions : la purge efface les sessions closes et n'effleure pas les vivan
   assert.ok(purge.body.supprimees >= 3);
 
   for(const morte of ["sess_expiree_essai", "sess_revoquee_essai", "sess_recente_close"])
-    assert.equal(db.prepare("SELECT 1 FROM sessions WHERE id=?").get(morte), undefined,
+    assert.equal(await db.prepare("SELECT 1 FROM sessions WHERE id=?").get(morte), undefined,
       `${morte} devait être purgée`);
 
   /* LE point du test : aucune session vivante n'a disparu, et celle qui a
      lancé la purge marche toujours. */
-  const vivantesApres = db.prepare(
-    "SELECT id FROM sessions WHERE revoked=0 AND expires_at > datetime('now')").all().map(s => s.id);
+  const vivantesApres = (await db.prepare(
+    "SELECT id FROM sessions WHERE revoked=0 AND expires_at > now()").all()).map(s => s.id);
   assert.deepEqual(vivantesApres.sort(), vivantesAvant.sort());
   assert.equal(purge.body.restantes, vivantesAvant.length);
   assert.equal((await auSuper(request(app).get("/api/auth/me"))).status, 200);
 
-  assert.ok(db.prepare(`SELECT 1 FROM audit WHERE entity='sessions' AND action='purge'`).get(),
+  assert.ok(await db.prepare(`SELECT 1 FROM audit WHERE entity='sessions' AND action='purge'`).get(),
     "la purge est journalisée");
 });
 
@@ -7184,7 +7185,7 @@ test("santé de la base : état complet, entretien mesuré, et pas deux à la fo
   assert.equal(b.body.reglages.journal_mode, "wal");
   assert.ok(b.body.tables.length >= 45);
   assert.equal(b.body.tables.find(t => t.nom === "users").lignes,
-               db.prepare("SELECT COUNT(*) c FROM users").get().c);
+               (await db.prepare("SELECT COUNT(*) c FROM users").get()).c);
   assert.ok(b.body.migrations.length >= 18);
   assert.ok(b.body.migrations.every(m => m.name.endsWith(".sql") && m.applied_at));
   assert.equal(b.body.entretien_en_cours, null);
@@ -7209,7 +7210,7 @@ test("santé de la base : état complet, entretien mesuré, et pas deux à la fo
                b.body.tables.find(t => t.nom === "users").lignes);
 
   for(const action of ["checkpoint", "vacuum"])
-    assert.ok(db.prepare("SELECT 1 FROM audit WHERE entity='base' AND action=?").get(action),
+    assert.ok(await db.prepare("SELECT 1 FROM audit WHERE entity='base' AND action=?").get(action),
       `${action} est journalisé`);
 
   /* ── Deux entretiens en parallèle : refusés ──
@@ -7258,14 +7259,14 @@ test("sauvegarde : fichier SQLite valide, relisible, téléchargeable et tracé"
     assert.equal(copie.pragma("foreign_key_check").length, 0);
     for(const t of ["users", "sites", "sessions", "_migrations"])
       assert.equal(copie.prepare(`SELECT COUNT(*) c FROM "${t}"`).get().c,
-                   db.prepare(`SELECT COUNT(*) c FROM "${t}"`).get().c,
+                   (await db.prepare(`SELECT COUNT(*) c FROM "${t}"`).get()).c,
                    `la table ${t} doit être copiée intégralement`);
     /* `audit` est comparée à part : la trace de la sauvegarde elle-même est
        écrite APRÈS la copie, la base vivante a donc une ligne d'avance. C'est
        le comportement voulu — une sauvegarde ne peut pas contenir le récit de
        sa propre création. */
     const dansCopie = copie.prepare("SELECT COUNT(*) c FROM audit").get().c;
-    const vivante = db.prepare("SELECT COUNT(*) c FROM audit").get().c;
+    const vivante = (await db.prepare("SELECT COUNT(*) c FROM audit").get()).c;
     assert.ok(dansCopie > 0 && dansCopie === vivante - 1,
       `journal copié : ${dansCopie} lignes contre ${vivante} en base`);
     assert.ok(copie.prepare("SELECT 1 FROM sites LIMIT 1").get(), "la sauvegarde n'est pas vide");
@@ -7293,12 +7294,12 @@ test("sauvegarde : fichier SQLite valide, relisible, téléchargeable et tracé"
     assert.equal(relu.pragma("integrity_check", { simple:true }), "ok",
       "le fichier tel qu'il sort par HTTP est une base SQLite valide");
     assert.equal(relu.prepare("SELECT COUNT(*) c FROM users").get().c,
-                 db.prepare("SELECT COUNT(*) c FROM users").get().c);
+                 (await db.prepare("SELECT COUNT(*) c FROM users").get()).c);
   }finally{ relu.close(); fs.unlinkSync(recu); }
 
-  assert.ok(db.prepare(`SELECT 1 FROM audit WHERE entity='base' AND action='sauvegarde'
+  assert.ok(await db.prepare(`SELECT 1 FROM audit WHERE entity='base' AND action='sauvegarde'
                         AND entity_id=?`).get(s.nom), "la création est journalisée");
-  assert.ok(db.prepare(`SELECT 1 FROM audit WHERE entity='base' AND action='telechargement'
+  assert.ok(await db.prepare(`SELECT 1 FROM audit WHERE entity='base' AND action='telechargement'
                         AND entity_id=?`).get(s.nom), "le téléchargement est journalisé");
 
   /* Un nom venu du client ne construit jamais un chemin : ni remontée, ni
@@ -7315,7 +7316,7 @@ test("sauvegarde : fichier SQLite valide, relisible, téléchargeable et tracé"
   assert.equal(sup.status, 200);
   assert.ok(!fs.existsSync(path.join(dossierSauvegardes(), jetable)));
   assert.equal((await auSuper(request(app).delete(`${ADMIN}/sauvegardes/${jetable}`))).status, 404);
-  assert.ok(db.prepare(`SELECT 1 FROM audit WHERE action='suppression_sauvegarde'
+  assert.ok(await db.prepare(`SELECT 1 FROM audit WHERE action='suppression_sauvegarde'
                         AND entity_id=?`).get(jetable));
 });
 
@@ -7324,11 +7325,11 @@ test("administration : aucune route ne laisse sortir un secret", async () => {
      pas due à l'absence de donnée. */
   const EN_CLAIR = "JETON-ODK-SECRET-A-NE-JAMAIS-SORTIR";
   const chiffre = encrypt(EN_CLAIR);
-  db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind)
+  await db.prepare(`INSERT INTO odk_forms (id,name,form_id,project,token_enc,kind)
               VALUES ('odkf_secret','Formulaire témoin','F_TEMOIN','P1',?,'process')`).run(chiffre);
-  const empreinte = db.prepare("SELECT pw_hash FROM users WHERE email='admin@test.local'").get().pw_hash;
+  const empreinte = (await db.prepare("SELECT pw_hash FROM users WHERE email='admin@test.local'").get()).pw_hash;
   assert.ok(empreinte?.startsWith("$2"), "le témoin est bien une empreinte bcrypt");
-  assert.equal(db.prepare("SELECT token_enc FROM odk_forms WHERE id='odkf_secret'").get().token_enc,
+  assert.equal((await db.prepare("SELECT token_enc FROM odk_forms WHERE id='odkf_secret'").get()).token_enc,
                chiffre, "le témoin chiffré est bien en base");
 
   const s = (await auSuper(request(app).post(`${ADMIN}/sauvegarde`))).body.sauvegarde;
@@ -7393,7 +7394,7 @@ test("administration : aucune route ne laisse sortir un secret", async () => {
     assert.ok(!octets.includes(Buffer.from(cle)),
       "les clés vivent dans l'environnement, jamais dans la base");
 
-  db.prepare("DELETE FROM odk_forms WHERE id='odkf_secret'").run();
+  await db.prepare("DELETE FROM odk_forms WHERE id='odkf_secret'").run();
 });
 
 /* Ce test doit rester le DERNIER du fichier : il ramène la base à l'état
@@ -7409,7 +7410,7 @@ test("restauration : confirmation exigée, filet automatique, et retour exact", 
     .send({ code:"TEMOIN-RESTAURATION", name:"Site témoin de restauration", status:"Active" });
   assert.equal(cree.status, 201, JSON.stringify(cree.body));
   const temoin = cree.body.site.id;
-  assert.ok(db.prepare("SELECT 1 FROM sites WHERE id=?").get(temoin));
+  assert.ok(await db.prepare("SELECT 1 FROM sites WHERE id=?").get(temoin));
 
   /* ── Ce qui est refusé ── */
   const sansMot = await auSuper(request(app).post(`${ADMIN}/restauration`))
@@ -7422,7 +7423,7 @@ test("restauration : confirmation exigée, filet automatique, et retour exact", 
     .send({ fichier:"inexistante.db", confirmation:"RESTAURER" })).status, 404);
   assert.equal((await auSuper(request(app).post(`${ADMIN}/restauration`))
     .send({ fichier:"../test.db", confirmation:"RESTAURER" })).status, 404);
-  assert.ok(db.prepare("SELECT 1 FROM sites WHERE id=?").get(temoin),
+  assert.ok(await db.prepare("SELECT 1 FROM sites WHERE id=?").get(temoin),
     "aucun refus n'a touché à la base");
 
   /* Un fichier qui n'est pas une base : refusé à la relecture, pas à mi-course. */
@@ -7444,7 +7445,7 @@ test("restauration : confirmation exigée, filet automatique, et retour exact", 
     .send({ fichier:"autre-niveau.db", confirmation:"RESTAURER" });
   assert.equal(divergente.status, 422);
   assert.match(divergente.body.error, /migration/);
-  assert.ok(db.prepare("SELECT 1 FROM sites WHERE id=?").get(temoin),
+  assert.ok(await db.prepare("SELECT 1 FROM sites WHERE id=?").get(temoin),
     "un refus de schéma ne laisse aucune trace sur la base");
 
   /* ── La restauration elle-même ── */
@@ -7473,13 +7474,13 @@ test("restauration : confirmation exigée, filet automatique, et retour exact", 
     avant + 1, "exactement une sauvegarde de plus : le filet");
 
   /* La preuve que le contenu a bien été remplacé. */
-  assert.equal(db.prepare("SELECT 1 FROM sites WHERE id=?").get(temoin), undefined,
+  assert.equal(await db.prepare("SELECT 1 FROM sites WHERE id=?").get(temoin), undefined,
     "le site créé après la sauvegarde a disparu avec la restauration");
   assert.equal((await auSuper(request(app).get(`/api/sites/${temoin}`))).status, 404);
 
   /* La trace est écrite APRÈS le remplacement — écrite avant, elle aurait été
      effacée par la restauration, la table `audit` étant elle aussi remplacée. */
-  const trace = db.prepare(
+  const trace = await db.prepare(
     "SELECT * FROM audit WHERE entity='base' AND action='restauration'").get();
   assert.ok(trace, "la restauration est journalisée et la trace survit à la restauration");
   assert.equal(trace.kind, "securite");
@@ -7623,7 +7624,7 @@ const commitShp = (token, { shp, dbf, mapping, label } = {}) => {
 
 test("shapefile : l'aperçu lit le type, apparie .shp/.dbf par ordre, et ne rien écrit", async () => {
   const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
-  const avant = db.prepare("SELECT COUNT(*) c FROM geo_version").get().c;
+  const avant = (await db.prepare("SELECT COUNT(*) c FROM geo_version").get()).c;
 
   const r = await apercuShp(t);
   assert.equal(r.status, 200, JSON.stringify(r.body));
@@ -7646,7 +7647,7 @@ test("shapefile : l'aperçu lit le type, apparie .shp/.dbf par ordre, et ne rien
   assert.equal(r.body.arbre.total, 5);
   assert.equal(r.body.echantillon.length, 3);
 
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM geo_version").get().c, avant,
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM geo_version").get()).c, avant,
     "l'aperçu n'a créé aucun millésime");
 });
 
@@ -7684,7 +7685,7 @@ test("shapefile : la correspondance des colonnes est un vrai levier", async () =
 test("shapefile : l'aperçu chiffre les sites qui deviendront orphelins", async () => {
   const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
   /* Un site rattaché à un p-code que le nouveau découpage ne portera pas. */
-  db.prepare("UPDATE sites SET geo_pcode=? WHERE id=(SELECT id FROM sites LIMIT 1)")
+  await db.prepare("UPDATE sites SET geo_pcode=? WHERE id=(SELECT id FROM sites LIMIT 1)")
     .run("XORPHELINTEST");
 
   const r = await apercuShp(t);
@@ -7722,14 +7723,14 @@ test("shapefile : le commit crée un millésime courant avec ses contours, et li
 
 test("shapefile : le commit relève les sites devenus orphelins", async () => {
   const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
-  db.prepare("UPDATE sites SET geo_pcode=? WHERE id=(SELECT id FROM sites LIMIT 1)")
+  await db.prepare("UPDATE sites SET geo_pcode=? WHERE id=(SELECT id FROM sites LIMIT 1)")
     .run("XENCOREORPHELIN");
   const r = await commitShp(t);
   assert.equal(r.status, 200);
   assert.ok(r.body.orphelins.orphelins >= 1);
   assert.ok(/orphelin/.test(r.body.message));
   /* Le journal garde trace de l'import et du coût, rattachée à CE millésime. */
-  const trace = db.prepare(
+  const trace = await db.prepare(
     "SELECT text FROM audit WHERE entity='geo_version' AND action='import' AND entity_id=?")
     .get(r.body.versionId);
   assert.ok(trace && /orphelin/.test(trace.text), trace?.text);
@@ -7782,7 +7783,7 @@ const apercuShpSeul = (token, shp) =>
 
 test("shapefile : sans .dbf, l'aperçu propose des identités « Polygone N » et ne rien écrit", async () => {
   const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
-  const avant = db.prepare("SELECT COUNT(*) c FROM geo_version").get().c;
+  const avant = (await db.prepare("SELECT COUNT(*) c FROM geo_version").get()).c;
 
   const r = await apercuShpSeul(t);
   assert.equal(r.status, 200, JSON.stringify(r.body));
@@ -7795,7 +7796,7 @@ test("shapefile : sans .dbf, l'aperçu propose des identités « Polygone N » e
   assert.equal(r.body.arbre.total, 3);
   assert.ok(r.body.echantillon.some(u => /Polygone 1/.test(u.name)), JSON.stringify(r.body.echantillon));
 
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM geo_version").get().c, avant,
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM geo_version").get()).c, avant,
     "l'aperçu n'a créé aucun millésime");
 });
 
@@ -7835,19 +7836,19 @@ test("shapefile : le millésime est rattaché au pays passé, et la bascule ne t
   await request(app).post("/api/country").set("Authorization", `Bearer ${t}`)
     .send({ code:"ETH", name:"Éthiopie", currency:"ETB", levels:niv });
 
-  const mdgAvant = db.prepare("SELECT id FROM geo_version WHERE country='MDG' AND is_current=1").get();
+  const mdgAvant = await db.prepare("SELECT id FROM geo_version WHERE country='MDG' AND is_current=1").get();
 
   const r = await request(app).post("/api/geo/shapefile/commit").set("Authorization", `Bearer ${t}`)
     .attach("fichier", shpMdg(), "d.shp").attach("fichier", dbfMdg(), "d.dbf")
     .field("country", "eth").field("label", "Découpage ETH");
   assert.equal(r.status, 200, JSON.stringify(r.body));
 
-  const row = db.prepare("SELECT country, is_current FROM geo_version WHERE id=?").get(r.body.versionId);
+  const row = await db.prepare("SELECT country, is_current FROM geo_version WHERE id=?").get(r.body.versionId);
   assert.equal(row.country, "ETH", "le millésime est rattaché au pays passé (code normalisé)");
   assert.equal(row.is_current, 1, "et courant DANS son pays");
 
   /* Le millésime malgache n'est pas touché : la bascule est cloisonnée par pays. */
-  assert.equal(db.prepare("SELECT is_current FROM geo_version WHERE id=?").get(mdgAvant.id).is_current, 1,
+  assert.equal((await db.prepare("SELECT is_current FROM geo_version WHERE id=?").get(mdgAvant.id)).is_current, 1,
     "le millésime courant de Madagascar reste courant");
   /* Et l'application, dont le pays courant reste Madagascar, sert toujours SON
      découpage, pas celui d'Éthiopie qu'on vient d'importer. */
@@ -8012,7 +8013,7 @@ test("listes typées : une liste générique se lit, se crée, se modifie et se 
   const del = await request(app).delete(`/api/listes/denrees/${item.id}`)
     .set("Authorization", `Bearer ${adminToken}`);
   assert.equal(del.status, 200);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM list_item WHERE id=?").get(item.id).c, 0);
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM list_item WHERE id=?").get(item.id)).c, 0);
 });
 
 test("listes typées : un champ propre est contrôlé contre la liste qu'il désigne", async () => {
@@ -8051,12 +8052,12 @@ test("listes typées : l'usage se compte sur les vraies tables filles, et retien
   assert.ok(utilisee, "au moins une activité du semis est référencée");
   assert.ok(utilisee.usage.some(u => u.table === "sites"), JSON.stringify(utilisee.usage));
 
-  const avant = db.prepare("SELECT COUNT(*) c FROM sites WHERE category_id IS NULL").get().c;
+  const avant = (await db.prepare("SELECT COUNT(*) c FROM sites WHERE category_id IS NULL").get()).c;
   const refus = await request(app).delete(`/api/listes/activites/${utilisee.id}`)
     .set("Authorization", `Bearer ${adminToken}`);
   assert.equal(refus.status, 409);
   assert.ok(refus.body.usage.length, "le refus énumère ce qui retient l'item");
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM sites WHERE category_id IS NULL").get().c, avant,
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM sites WHERE category_id IS NULL").get()).c, avant,
     "aucun site n'a été détaché par la tentative");
 
   /* La désactivation, elle, passe — c'est l'issue que le refus propose. */
@@ -8175,16 +8176,16 @@ test("listes typées : le plan de distribution accepte une modalité hors des tr
   /* La migration 026 lève l'énumération de `pdd.modality` : la liste des
      modalités se paramètre, donc le schéma ne peut plus la figer. Les
      fichiers réels du bureau portent déjà une modalité hybride. */
-  const ligne = db.prepare("SELECT * FROM pdd LIMIT 1").get();
+  const ligne = await db.prepare("SELECT * FROM pdd LIMIT 1").get();
   assert.ok(ligne, "le semis a rempli le plan de distribution");
-  db.prepare("UPDATE pdd SET modality='Mix' WHERE id=?").run(ligne.id);
-  assert.equal(db.prepare("SELECT modality FROM pdd WHERE id=?").get(ligne.id).modality, "Mix");
-  db.prepare("UPDATE pdd SET modality=? WHERE id=?").run(ligne.modality, ligne.id);
+  await db.prepare("UPDATE pdd SET modality='Mix' WHERE id=?").run(ligne.id);
+  assert.equal((await db.prepare("SELECT modality FROM pdd WHERE id=?").get(ligne.id)).modality, "Mix");
+  await db.prepare("UPDATE pdd SET modality=? WHERE id=?").run(ligne.modality, ligne.id);
   /* Et la reconstruction de la table n'a rien perdu : la contrainte de statut
      et les index sont toujours là. */
-  assert.throws(() => db.prepare("UPDATE pdd SET status='n''importe quoi' WHERE id=?").run(ligne.id));
-  const idx = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='pdd'")
-    .all().map(x => x.name);
+  await assert.rejects(db.prepare("UPDATE pdd SET status='n''importe quoi' WHERE id=?").run(ligne.id));
+  const idx = (await db.prepare("SELECT indexname FROM pg_indexes WHERE tablename='pdd'")
+    .all()).map(x => x.indexname);
   for(const n of ["idx_pdd_period","idx_pdd_bureau","idx_pdd_geo_pcode"])
     assert.ok(idx.includes(n), `l'index ${n} a été recréé (${idx.join(", ")})`);
 });
@@ -8206,7 +8207,7 @@ test("intégrité : le code d'identification est préservé par la mise à jour"
   assert.equal(refus.status, 409, JSON.stringify(refus.body));
   assert.ok(/clé de jointure/.test(refus.body.error), refus.body.error);
   assert.ok(/renommer-code/.test(refus.body.voie), "la réponse nomme la voie sûre");
-  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(riz.id).code, "Riz",
+  assert.equal((await db.prepare("SELECT code FROM list_item WHERE id=?").get(riz.id)).code, "Riz",
     "rien n'a été écrit");
 
   /* Le reste de l'item, lui, se met à jour sans réserve. */
@@ -8224,18 +8225,18 @@ test("intégrité : le tag d'une activité ne se renomme pas depuis l'écran des
   /* Dix colonnes portent ce tag en texte, sans clé étrangère pour les
      retenir : le réécrire ici laissait des lignes désigner un code disparu,
      silencieusement. */
-  const act = db.prepare(
+  const act = await db.prepare(
     "SELECT * FROM activity_categories WHERE tag IN (SELECT activity_tag FROM sites) LIMIT 1").get();
   assert.ok(act, "une activité du semis est portée par des sites");
-  const avant = db.prepare("SELECT COUNT(*) c FROM sites WHERE activity_tag=?").get(act.tag).c;
+  const avant = (await db.prepare("SELECT COUNT(*) c FROM sites WHERE activity_tag=?").get(act.tag)).c;
 
   const refus = await request(app).put(`/api/activities/${act.id}`)
     .set("Authorization", `Bearer ${adminToken}`)
     .send({ name:act.name, tag:act.tag + "X", rev:act.rev });
   assert.equal(refus.status, 409, JSON.stringify(refus.body));
   assert.ok(/clé de jointure/.test(refus.body.error), refus.body.error);
-  assert.equal(db.prepare("SELECT tag FROM activity_categories WHERE id=?").get(act.id).tag, act.tag);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM sites WHERE activity_tag=?").get(act.tag).c, avant,
+  assert.equal((await db.prepare("SELECT tag FROM activity_categories WHERE id=?").get(act.id)).tag, act.tag);
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM sites WHERE activity_tag=?").get(act.tag)).c, avant,
     "aucun site n'a perdu son tag");
 
   /* Le nom, le domaine et le statut se modifient normalement. */
@@ -8256,7 +8257,7 @@ test("intégrité : le refus de suppression d'une activité compte les douze col
     .send({ name:"Activité orpheline d'essai", tag:"ORPH" });
   assert.equal(cree.status, 201);
   const id = cree.body.activity.id;
-  db.prepare(`INSERT INTO outputs (id,activity_tag,year,month,planned,actual)
+  await db.prepare(`INSERT INTO outputs (id,activity_tag,year,month,planned,actual)
               VALUES ('out_orph','ORPH',2026,0,10,0)`).run();
 
   const apres = await request(app).get("/api/activities").set("Authorization", `Bearer ${adminToken}`);
@@ -8270,7 +8271,7 @@ test("intégrité : le refus de suppression d'une activité compte les douze col
   assert.equal(refus.status, 409, JSON.stringify(refus.body));
   assert.equal(refus.body.usageTotal, 1);
 
-  db.prepare("DELETE FROM outputs WHERE id='out_orph'").run();
+  await db.prepare("DELETE FROM outputs WHERE id='out_orph'").run();
   assert.equal((await request(app).delete(`/api/activities/${id}`)
     .set("Authorization", `Bearer ${adminToken}`)).status, 200);
 });
@@ -8339,7 +8340,7 @@ test("renommage : un administrateur ne renomme pas un code, seul le super le peu
   const refus = await request(app).post(`/api/listes/denrees/${it.id}/renommer-code`)
     .set("Authorization", `Bearer ${t}`).send({ nouveau:"Sorgho blanc" });
   assert.equal(refus.status, 403, JSON.stringify(refus.body));
-  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, "Sorgho");
+  assert.equal((await db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id)).code, "Sorgho");
 });
 
 test("renommage : la cascade réécrit la table maîtresse ET toutes ses filles, en une transaction", async () => {
@@ -8347,12 +8348,12 @@ test("renommage : la cascade réécrit la table maîtresse ET toutes ses filles,
     .set("Authorization", `Bearer ${superToken}`)).body.items.find(x => x.code === "Sorgho");
 
   /* On accroche des lignes filles réelles au code, dans le plan de distribution. */
-  const cibles = db.prepare("SELECT id FROM pdd LIMIT 3").all().map(x => x.id);
+  const cibles = (await db.prepare("SELECT id FROM pdd LIMIT 3").all()).map(x => x.id);
   assert.ok(cibles.length >= 1, "le semis a rempli le plan de distribution");
-  for(const id of cibles) db.prepare("UPDATE pdd SET commodity='Sorgho' WHERE id=?").run(id);
+  for(const id of cibles) await db.prepare("UPDATE pdd SET commodity='Sorgho' WHERE id=?").run(id);
   /* Le semis en pose déjà : ce qui compte est le total réel, pas les trois
      lignes que ce test vient d'accrocher. */
-  const attendues = db.prepare("SELECT COUNT(*) c FROM pdd WHERE commodity='Sorgho'").get().c;
+  const attendues = (await db.prepare("SELECT COUNT(*) c FROM pdd WHERE commodity='Sorgho'").get()).c;
   assert.ok(attendues >= cibles.length);
 
   const r = await renommer("denrees", it.id, "Sorgho blanc", "renommer", superToken);
@@ -8363,17 +8364,17 @@ test("renommage : la cascade réécrit la table maîtresse ET toutes ses filles,
   /* Le contrôle d'après-coup : plus rien ne porte l'ancien code. */
   assert.equal(r.body.reliquat, 0, "aucune ligne ne désigne encore l'ancien code");
 
-  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, "Sorgho blanc",
+  assert.equal((await db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id)).code, "Sorgho blanc",
     "l'item a changé de code — il n'a pas été supprimé puis recréé");
-  assert.equal(it.id, db.prepare("SELECT id FROM list_item WHERE code='Sorgho blanc' AND type='denree'")
-    .get().id, "c'est le MÊME item, avec le même identifiant");
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM pdd WHERE commodity='Sorgho'").get().c, 0);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM pdd WHERE commodity='Sorgho blanc'").get().c,
+  assert.equal(it.id, (await db.prepare("SELECT id FROM list_item WHERE code='Sorgho blanc' AND type='denree'")
+    .get()).id, "c'est le MÊME item, avec le même identifiant");
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM pdd WHERE commodity='Sorgho'").get()).c, 0);
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM pdd WHERE commodity='Sorgho blanc'").get()).c,
     attendues);
 });
 
 test("renommage : un tag d'activité entraîne les dix colonnes qui le portent", async () => {
-  const act = db.prepare(
+  const act = await db.prepare(
     "SELECT * FROM activity_categories WHERE tag IN (SELECT activity_tag FROM sites) LIMIT 1").get();
   const compter = async (t, c, v) => (await db.prepare(`SELECT COUNT(*) c FROM ${t} WHERE ${c}=?`).get(v)).c;
   const avant = {
@@ -8415,19 +8416,19 @@ test("renommage : viser un code déjà pris est une FUSION, qui ne se devine pas
   assert.ok(/FUSION/.test(refus.body.error), refus.body.error);
   assert.equal(refus.body.plan.mode, "fusionner");
   assert.equal(refus.body.plan.cible.code, "Huile");
-  assert.ok(db.prepare("SELECT 1 FROM list_item WHERE id=?").get(source.id), "rien n'a été écrit");
+  assert.ok(await db.prepare("SELECT 1 FROM list_item WHERE id=?").get(source.id), "rien n'a été écrit");
 
   /* Confirmée, la fusion reporte les lignes et fait disparaître l'item source. */
-  const ligne = db.prepare("SELECT id FROM pdd LIMIT 1").get();
-  db.prepare("UPDATE pdd SET commodity='Dattes' WHERE id=?").run(ligne.id);
+  const ligne = await db.prepare("SELECT id FROM pdd LIMIT 1").get();
+  await db.prepare("UPDATE pdd SET commodity='Dattes' WHERE id=?").run(ligne.id);
   const ok = await renommer("denrees", source.id, "Huile", "fusionner", superToken);
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   assert.equal(ok.body.mode, "fusionner");
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM list_item WHERE id=?").get(source.id).c, 0,
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM list_item WHERE id=?").get(source.id)).c, 0,
     "l'item d'origine a disparu");
-  assert.equal(db.prepare("SELECT commodity FROM pdd WHERE id=?").get(ligne.id).commodity, "Huile",
+  assert.equal((await db.prepare("SELECT commodity FROM pdd WHERE id=?").get(ligne.id)).commodity, "Huile",
     "sa ligne fille a été reportée sur la cible");
-  assert.ok(db.prepare("SELECT 1 FROM list_item WHERE id=?").get(cible.id), "la cible est intacte");
+  assert.ok(await db.prepare("SELECT 1 FROM list_item WHERE id=?").get(cible.id), "la cible est intacte");
 });
 
 test("renommage : un code identique, vide ou trop long est refusé sans rien écrire", async () => {
@@ -8441,7 +8442,7 @@ test("renommage : un code identique, vide ou trop long est refusé sans rien éc
       assert.equal(r.status, statut, JSON.stringify(r.body));
     }
   }
-  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, it.code);
+  assert.equal((await db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id)).code, it.code);
 });
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -8453,9 +8454,9 @@ test("renommage : un code identique, vide ou trop long est refusé sans rien éc
 test("mappage : le plan chiffre l'impact table par table sans rien écrire", async () => {
   const it = (await request(app).get("/api/listes/modalites")
     .set("Authorization", `Bearer ${superToken}`)).body.items.find(x => x.code === "Voucher");
-  const lignes = db.prepare("SELECT id FROM pdd LIMIT 2").all().map(x => x.id);
-  for(const id of lignes) db.prepare("UPDATE pdd SET modality='Voucher' WHERE id=?").run(id);
-  const attendu = db.prepare("SELECT COUNT(*) c FROM pdd WHERE modality='Voucher'").get().c;
+  const lignes = (await db.prepare("SELECT id FROM pdd LIMIT 2").all()).map(x => x.id);
+  for(const id of lignes) await db.prepare("UPDATE pdd SET modality='Voucher' WHERE id=?").run(id);
+  const attendu = (await db.prepare("SELECT COUNT(*) c FROM pdd WHERE modality='Voucher'").get()).c;
 
   const r = await request(app).post(`/api/listes/modalites/${it.id}/renommer-code/plan`)
     .set("Authorization", `Bearer ${superToken}`).send({ nouveau:"Coupon" });
@@ -8472,8 +8473,8 @@ test("mappage : le plan chiffre l'impact table par table sans rien écrire", asy
   assert.ok(plan.jeton && plan.jeton.length >= 16, "le plan porte son empreinte");
 
   /* Le mappage n'écrit RIEN : c'est toute sa raison d'être. */
-  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, "Voucher");
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM pdd WHERE modality='Voucher'").get().c, attendu);
+  assert.equal((await db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id)).code, "Voucher");
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM pdd WHERE modality='Voucher'").get()).c, attendu);
 });
 
 test("validation : sans jeton, l'écriture est refusée et le plan est rendu", async () => {
@@ -8484,7 +8485,7 @@ test("validation : sans jeton, l'écriture est refusée et le plan est rendu", a
   assert.equal(r.status, 409, JSON.stringify(r.body));
   assert.ok(/mappage|correspondance/.test(r.body.error), r.body.error);
   assert.ok(r.body.plan.jeton, "le refus rend le plan, pour que l'écran le montre");
-  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, "Voucher");
+  assert.equal((await db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id)).code, "Voucher");
 });
 
 test("validation : un plan périmé est refusé — on ne valide que ce qu'on a vu", async () => {
@@ -8496,8 +8497,8 @@ test("validation : un plan périmé est refusé — on ne valide que ce qu'on a 
   const impactVu = p1.body.plan.total;
 
   /* La base bouge entre l'affichage et le clic : une ligne de plus porte le code. */
-  const autre = db.prepare("SELECT id FROM pdd WHERE modality<>'Voucher' LIMIT 1").get();
-  db.prepare("UPDATE pdd SET modality='Voucher' WHERE id=?").run(autre.id);
+  const autre = await db.prepare("SELECT id FROM pdd WHERE modality<>'Voucher' LIMIT 1").get();
+  await db.prepare("UPDATE pdd SET modality='Voucher' WHERE id=?").run(autre.id);
 
   const refus = await request(app).post(`/api/listes/modalites/${it.id}/renommer-code`)
     .set("Authorization", `Bearer ${superToken}`)
@@ -8505,7 +8506,7 @@ test("validation : un plan périmé est refusé — on ne valide que ce qu'on a 
   assert.equal(refus.status, 409, JSON.stringify(refus.body));
   assert.ok(/a changé depuis/.test(refus.body.error), refus.body.error);
   assert.ok(refus.body.plan.total > impactVu, "le plan à jour compte la ligne apparue");
-  assert.equal(db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id).code, "Voucher",
+  assert.equal((await db.prepare("SELECT code FROM list_item WHERE id=?").get(it.id)).code, "Voucher",
     "rien n'a été écrit");
 
   /* Revalidé sur le plan À JOUR, le renommage passe. */
@@ -8515,7 +8516,7 @@ test("validation : un plan périmé est refusé — on ne valide que ce qu'on a 
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   assert.equal(ok.body.total, refus.body.plan.total);
   assert.equal(ok.body.reliquat, 0);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM pdd WHERE modality='Voucher'").get().c, 0);
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM pdd WHERE modality='Voucher'").get()).c, 0);
 });
 
 test("mappage : le plan d'une fusion annonce la disparition de l'item d'origine", async () => {
@@ -8530,7 +8531,7 @@ test("mappage : le plan d'une fusion annonce la disparition de l'item d'origine"
     JSON.stringify(r.body.plan.avertissements));
   assert.ok(r.body.plan.cible.code === "Distribution monitoring");
   /* Toujours rien d'écrit. */
-  assert.ok(db.prepare("SELECT 1 FROM list_item WHERE id=?").get(source.id));
+  assert.ok(await db.prepare("SELECT 1 FROM list_item WHERE id=?").get(source.id));
 });
 
 test("mappage : le plan est réservé au super, comme l'écriture qu'il prépare", async () => {
@@ -8729,11 +8730,11 @@ test("contours par niveau : un dépôt adm1 s'ajoute aux communes sans reconstru
   const commit = await commitShp(t, { label:"Millésime pour contours par niveau" });
   assert.equal(commit.status, 200, JSON.stringify(commit.body));
   vContours = commit.body.versionId;
-  const v = db.prepare("SELECT * FROM geo_version WHERE id=?").get(vContours);
-  const versionsAvant = db.prepare("SELECT COUNT(*) c FROM geo_version").get().c;
-  const unitesAvant = db.prepare("SELECT COUNT(*) c FROM geo_unit WHERE version_id=?").get(v.id).c;
-  const adm3Avant = db.prepare(
-    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm3'").get(v.id).c;
+  const v = await db.prepare("SELECT * FROM geo_version WHERE id=?").get(vContours);
+  const versionsAvant = (await db.prepare("SELECT COUNT(*) c FROM geo_version").get()).c;
+  const unitesAvant = (await db.prepare("SELECT COUNT(*) c FROM geo_unit WHERE version_id=?").get(v.id)).c;
+  const adm3Avant = (await db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm3'").get(v.id)).c;
   assert.ok(adm3Avant > 0, "le commit a posé les contours des communes");
 
   /* Un fichier de RÉGION : une seule colonne de niveau, donc une seule unité
@@ -8746,14 +8747,14 @@ test("contours par niveau : un dépôt adm1 s'ajoute aux communes sans reconstru
   assert.ok(r.body.écrites > 0, JSON.stringify(r.body));
 
   /* Aucun millésime créé, aucune unité touchée : c'est la différence avec le commit. */
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM geo_version").get().c, versionsAvant);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM geo_unit WHERE version_id=?").get(v.id).c,
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM geo_version").get()).c, versionsAvant);
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM geo_unit WHERE version_id=?").get(v.id)).c,
     unitesAvant);
   /* Et les communes sont TOUJOURS là : déposer les régions ne les a pas effacées. */
-  assert.equal(db.prepare(
-    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm3'").get(v.id).c, adm3Avant);
-  assert.equal(db.prepare(
-    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm1'").get(v.id).c, 1);
+  assert.equal((await db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm3'").get(v.id)).c, adm3Avant);
+  assert.equal((await db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm1'").get(v.id)).c, 1);
 
   /* Le bilan par niveau vient du serveur, et il porte les deux mailles. */
   const niveaux = Object.fromEntries(r.body.parNiveau.map(x => [x.level, x.units]));
@@ -8772,9 +8773,9 @@ test("contours par niveau : un dépôt adm1 s'ajoute aux communes sans reconstru
 
 test("contours par niveau : un fichier déposé au mauvais niveau est rejeté, pas écrit", async () => {
   const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
-  const v = db.prepare("SELECT * FROM geo_version WHERE id=?").get(vContours);
-  const adm1Avant = db.prepare(
-    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm1'").get(v.id).c;
+  const v = await db.prepare("SELECT * FROM geo_version WHERE id=?").get(vContours);
+  const adm1Avant = (await db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm1'").get(v.id)).c;
 
   /* Le fichier des COMMUNES annoncé comme régions : chaque polygone se résout
      à une commune, aucun n'est du niveau annoncé. */
@@ -8783,8 +8784,8 @@ test("contours par niveau : un fichier déposé au mauvais niveau est rejeté, p
   assert.equal(r.body.écrites, 0, "rien n'est écrit sous une étiquette fausse");
   assert.equal(r.body.rejetes, 3);
   assert.ok(/niveau adm3/.test(r.body.rejets[0].message), r.body.rejets[0].message);
-  assert.equal(db.prepare(
-    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm1'").get(v.id).c, adm1Avant,
+  assert.equal((await db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm1'").get(v.id)).c, adm1Avant,
     "le niveau visé n'a pas bougé (dépôt sans remplacement)");
 });
 
@@ -8800,9 +8801,9 @@ test("contours par niveau : le .dbf est exigé, et un millésime doit exister", 
 
 test("contours par niveau : le retrait ne vise qu'une maille, et recompte le millésime", async () => {
   const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
-  const v = db.prepare("SELECT * FROM geo_version WHERE id=?").get(vContours);
-  const adm3 = db.prepare(
-    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm3'").get(v.id).c;
+  const v = await db.prepare("SELECT * FROM geo_version WHERE id=?").get(vContours);
+  const adm3 = (await db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm3'").get(v.id)).c;
 
   const r = await request(app).delete("/api/geo/geometry?level=adm1")
     .set("Authorization", `Bearer ${t}`);
@@ -8811,14 +8812,14 @@ test("contours par niveau : le retrait ne vise qu'une maille, et recompte le mil
   assert.equal(r.body.supprimes, 1);
   assert.equal(r.body.reste, adm3, "les communes sont intactes");
   /* Le compteur du millésime est RECOMPTÉ, pas remis à zéro. */
-  assert.equal(db.prepare("SELECT geom_units FROM geo_version WHERE id=?").get(v.id).geom_units,
+  assert.equal((await db.prepare("SELECT geom_units FROM geo_version WHERE id=?").get(v.id)).geom_units,
     adm3);
 
   /* Sans niveau, tout part — et le millésime redevient sans contours. */
   const tout = await request(app).delete("/api/geo/geometry").set("Authorization", `Bearer ${t}`);
   assert.equal(tout.body.supprimes, adm3);
   assert.equal(tout.body.reste, 0);
-  assert.equal(db.prepare("SELECT geom_units FROM geo_version WHERE id=?").get(v.id).geom_units, 0);
+  assert.equal((await db.prepare("SELECT geom_units FROM geo_version WHERE id=?").get(v.id)).geom_units, 0);
 });
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -8905,7 +8906,7 @@ test("dérivation : les districts et la région naissent des communes du millés
 
   /* Le cadre d'un parent dérivé est exactement celui de ses enfants réunis :
      c'est ce qui dit que rien n'a été perdu ni ajouté. */
-  const cadre = db.prepare(`SELECT p.min_lon pl, p.min_lat pb, p.max_lon pr, p.max_lat pt,
+  const cadre = await db.prepare(`SELECT p.min_lon pl, p.min_lat pb, p.max_lon pr, p.max_lat pt,
       MIN(c.min_lon) cl, MIN(c.min_lat) cb, MAX(c.max_lon) cr, MAX(c.max_lat) ct
     FROM geo_geom p
     JOIN geo_unit u  ON u.pcode=p.pcode AND u.version_id=p.version_id
@@ -8982,8 +8983,8 @@ test("contours : redéposer un niveau fin dérive AUTOMATIQUEMENT les niveaux au
 
   /* Les contours dérivés portent bien la marque « dérivé de … » : c'est elle
      qui autorisera un futur rafraîchissement automatique sans écraser un import. */
-  const src = db.prepare(
-    "SELECT source FROM geo_geom WHERE version_id=? AND level='adm2' LIMIT 1").get(vid).source;
+  const src = (await db.prepare(
+    "SELECT source FROM geo_geom WHERE version_id=? AND level='adm2' LIMIT 1").get(vid)).source;
   assert.ok(/^dérivé/.test(src), src);
 });
 
@@ -9000,21 +9001,21 @@ test("contours : la dérivation auto n'écrase PAS un niveau supérieur importé
     LIGNES_MDG.map(l => ({ ADM1_PCODE:l.ADM1_PCODE, ADM1_EN:l.ADM1_EN })));
   const imp = await deposerContours(t, "adm1", { dbf:dbfRegion });
   assert.equal(imp.status, 200, JSON.stringify(imp.body));
-  const srcAvant = db.prepare(
-    "SELECT source FROM geo_geom WHERE version_id=? AND level='adm1' LIMIT 1").get(vid).source;
+  const srcAvant = (await db.prepare(
+    "SELECT source FROM geo_geom WHERE version_id=? AND level='adm1' LIMIT 1").get(vid)).source;
   assert.ok(!/^dérivé/.test(srcAvant), `la région importée n'est pas marquée dérivée : ${srcAvant}`);
 
   /* On redépose les communes : adm2 (vide) doit se dériver, adm1 (officiel) NON. */
   const r = await deposerContours(t, "adm3", { remplacer:true });
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  const srcApres = db.prepare(
-    "SELECT source FROM geo_geom WHERE version_id=? AND level='adm1' LIMIT 1").get(vid).source;
+  const srcApres = (await db.prepare(
+    "SELECT source FROM geo_geom WHERE version_id=? AND level='adm1' LIMIT 1").get(vid)).source;
   assert.equal(srcApres, srcAvant, "la région officielle est intacte");
   assert.ok((r.body.derivation?.etapes || []).some(e => e.niveau === "adm1" && e.saute),
     JSON.stringify(r.body.derivation));
   /* Le district, lui, était vide : il se dérive. */
-  assert.equal(db.prepare(
-    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm2'").get(vid).c, 1);
+  assert.equal((await db.prepare(
+    "SELECT COUNT(*) c FROM geo_geom WHERE version_id=? AND level='adm2'").get(vid)).c, 1);
 });
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -9025,14 +9026,14 @@ test("contours : la dérivation auto n'écrase PAS un niveau supérieur importé
    peut dire laquelle des deux elles désignent (migration 028).
    ═══════════════════════════════════════════════════════════════════════ */
 test("activité : le tag est unique, et le doublon est refusé en nommant l'activité en place", async () => {
-  const existante = db.prepare("SELECT * FROM activity_categories LIMIT 1").get();
+  const existante = await db.prepare("SELECT * FROM activity_categories LIMIT 1").get();
   const r = await request(app).post("/api/activities").set("Authorization", `Bearer ${adminToken}`)
     .send({ name:"Une autre activité qui vole un tag", tag: existante.tag.toLowerCase() });
   assert.equal(r.status, 409, JSON.stringify(r.body));
   assert.ok(new RegExp(existante.name.slice(0, 12)).test(r.body.error), r.body.error);
   assert.ok(/clé de jointure/.test(r.body.error), r.body.error);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM activity_categories WHERE tag=? COLLATE NOCASE")
-    .get(existante.tag).c, 1);
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM activity_categories WHERE UPPER(tag)=UPPER(?)")
+    .get(existante.tag)).c, 1);
 });
 
 test("activité : un tag espacé est normalisé, pas dédoublé", async () => {
@@ -9049,9 +9050,9 @@ test("activité : un tag espacé est normalisé, pas dédoublé", async () => {
 
   /* Et la base elle-même refuse, index unique à l'appui : la garde de la
      route n'est pas la seule défense. */
-  assert.throws(() => db.prepare(
+  await assert.rejects(db.prepare(
     "INSERT INTO activity_categories (id,name,tag) VALUES ('act_dbl','Doublon direct','tst_esp')").run(),
-    /UNIQUE/);
+    /unique/i);
   await request(app).delete(`/api/activities/${a.body.activity.id}`)
     .set("Authorization", `Bearer ${adminToken}`);
 });

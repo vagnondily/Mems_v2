@@ -15,14 +15,28 @@
 --
 --  ── Reprise best-effort, puis purge du reflet ────────────────────────
 --  Le reflet est un objet JSON { CODE_INDICATEUR: [12 booléens] }. On le
---  déplie avec json_each (imbriqué : les codes, puis les douze mois), on
---  mappe chaque code sur l'`indicator_id` réel, et on insère une ligne
---  « planifié » pour chaque mois COCHÉ. L'année n'était pas portée par le
---  reflet (il était implicitement « l'année courante ») : on prend donc
---  l'année du déploiement, ce que fait aussi le serveur (getFullYear).
+--  déplie (les codes, puis les douze mois), on mappe chaque code sur
+--  l'`indicator_id` réel, et on insère une ligne « planifié » pour chaque
+--  mois COCHÉ. L'année n'était pas portée par le reflet (il était
+--  implicitement « l'année courante ») : on prend donc l'année du
+--  déploiement, ce que fait aussi le serveur (getFullYear).
 --
---  INSERT OR IGNORE : la clé primaire (indicator_id, year, month) rend la
---  reprise idempotente si la table portait déjà la ligne. Un code inconnu
+--  `settings.value` reste du texte brut (voir 001_init.sql) : toutes les
+--  clés du dictionnaire ne sont pas du JSON, donc la validité est
+--  vérifiée explicitement (`value IS JSON`, l'équivalent PostgreSQL 16 de
+--  `json_valid`) et le cast en jsonb n'a lieu que sur la ligne déjà
+--  filtrée par clé ET par validité — dans une sous-requête à part, pour ne
+--  jamais tenter de parser en JSON une autre ligne de `settings` qui n'en
+--  serait pas.
+--
+--  `json_each` imbriqué (les codes, puis les mois de chaque code) devient
+--  deux LATERAL : `jsonb_each` sur l'objet, puis
+--  `jsonb_array_elements ... WITH ORDINALITY` sur le tableau de douze
+--  booléens — l'ordinalité (1-based) moins un restitue l'index de mois
+--  0-11 que rendait `json_each` sur un tableau SQLite.
+--
+--  ON CONFLICT DO NOTHING : la clé primaire (indicator_id, year, month) rend
+--  la reprise idempotente si la table portait déjà la ligne. Un code inconnu
 --  (indicateur supprimé depuis) est ignoré par la jointure, sans erreur.
 --
 --  Sur une base neuve, ou sans ce reflet, la requête ne fait rien : il n'y
@@ -30,18 +44,21 @@
 --  le reflet pour qu'il n'ombre plus jamais la table.
 -- =====================================================================
 
-INSERT OR IGNORE INTO outcome_plan (indicator_id, year, month, planned)
+INSERT INTO outcome_plan (indicator_id, year, month, planned)
 SELECT ind.id,
-       CAST(strftime('%Y','now') AS INTEGER),
-       mois.key,
+       EXTRACT(YEAR FROM now())::integer,
+       (mois.ord - 1)::integer,
        1
-FROM settings s
-JOIN json_each(s.value)      AS codes
-JOIN json_each(codes.value)  AS mois
+FROM (
+  SELECT value::jsonb AS value
+  FROM settings
+  WHERE key = 'outcomePlan' AND value IS JSON
+) s
+JOIN LATERAL jsonb_each(s.value) AS codes(key, value) ON true
+JOIN LATERAL jsonb_array_elements(codes.value) WITH ORDINALITY AS mois(elem, ord) ON true
 JOIN indicators ind ON ind.code = codes.key
-WHERE s.key = 'outcomePlan'
-  AND json_valid(s.value)
-  AND mois.type = 'true'
-  AND mois.key BETWEEN 0 AND 11;
+WHERE mois.elem = 'true'::jsonb
+  AND (mois.ord - 1) BETWEEN 0 AND 11
+ON CONFLICT (indicator_id, year, month) DO NOTHING;
 
 DELETE FROM settings WHERE key = 'outcomePlan';

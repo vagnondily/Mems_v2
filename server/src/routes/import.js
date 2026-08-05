@@ -67,16 +67,16 @@ r.get("/:kind/template", async (req, res, next) => {
   const referentiel = q.data.referentiel;
 
   const officeLabel = req.user.office_id
-    ? db.prepare("SELECT name FROM offices WHERE id=?").get(req.user.office_id)?.name
+    ? (await db.prepare("SELECT name FROM offices WHERE id=?").get(req.user.office_id))?.name
     : "tous les bureaux";
 
   let ctx;
   if(geo){
-    const { units } = scopeFor(req.user);
+    const { units } = await scopeFor(req.user);
     if(!units.length) return res.status(409).json({
       error:"aucune unité dans votre périmètre : rattachez d'abord vos sites au référentiel" });
-    const tags = db.prepare(
-      "SELECT DISTINCT tag FROM activity_categories WHERE tag<>'' ORDER BY tag").all().map(x=>x.tag);
+    const tags = (await db.prepare(
+      "SELECT DISTINCT tag FROM activity_categories WHERE tag<>'' ORDER BY tag").all()).map(x=>x.tag);
     ctx = { year, units, tags, versionId:v.id, officeLabel, officeId:req.user.office_id };
   } else {
     if(!referentiel) return res.status(422).json({
@@ -137,10 +137,10 @@ r.post("/:kind", (req, res, next) => {
          installation sans millésime il rendrait un périmètre VIDE pour un compte
          borné, et ce Set vide rejetterait toutes les lignes si jamais la garde de
          portée venait à manquer ailleurs. */
-      const { scope } = geo ? scopeFor(req.user) : { scope:null };
-      const { rows:analysees, vides } = analyse(req.params.kind, rows,
+      const { scope } = geo ? await scopeFor(req.user) : { scope:null };
+      const { rows:analysees, vides } = await analyse(req.params.kind, rows,
         { scope, referentiel: meta.referentiel || null, absentes });
-      const { id, summary } = saveBatch({ kind:req.params.kind, user:req.user,
+      const { id, summary } = await saveBatch({ kind:req.params.kind, user:req.user,
         filename:req.file.originalname, rows:analysees, absentes });
 
       /* On renvoie un aperçu borné : le lot entier est relisible par son identifiant. */
@@ -186,8 +186,8 @@ r.post("/:kind", (req, res, next) => {
 });
 
 /* ── Relire un lot ─────────────────────────────────────────────────── */
-r.get("/batches/:id", (req, res) => {
-  const b = readBatch(req.params.id);
+r.get("/batches/:id", async (req, res) => {
+  const b = await readBatch(req.params.id);
   if(!b) return res.status(404).json({ error:"lot introuvable" });
   /* Un lot n'est visible que par son auteur, ou par un administrateur. */
   if(b.user_id !== req.user.id && !can(req.user, "admin"))
@@ -195,17 +195,23 @@ r.get("/batches/:id", (req, res) => {
   res.json({ ...b, rows: b.rows.slice(0, 500), tronque: b.rows.length > 500 });
 });
 
-r.get("/batches", (req, res) => {
+r.get("/batches", async (req, res) => {
   const mine = can(req.user, "admin") ? "" : "WHERE user_id=?";
-  const rows = db.prepare(`SELECT id,kind,user_label,filename,created_at,status,committed_at,summary
+  const rows = await db.prepare(`SELECT id,kind,user_label,filename,created_at,status,committed_at,summary
     FROM import_batch ${mine} ORDER BY created_at DESC LIMIT 40`)
     .all(...(mine ? [req.user.id] : []));
+  /* TODO-PG: `summary` reste lu ici comme du TEXT JSON (JSON.parse), conformément
+     à la liste des colonnes jsonb communiquée pour ce portage (connector.config,
+     mre_activity.months — import_batch.summary n'y figure pas). À vérifier contre
+     le schéma Postgres réel : si cette colonne a été déclarée jsonb, le
+     JSON.parse doit être retiré (pg la rend déjà en objet). Voir la même remarque
+     sur lib/import.js:readBatch, qui lit la même colonne. */
   res.json({ rows: rows.map(b => ({ ...b, summary: JSON.parse(b.summary || "{}") })) });
 });
 
 /* ── ③ La confirmation : une transaction ───────────────────────────── */
-r.post("/batches/:id/commit", (req, res, next) => {
-  const b = readBatch(req.params.id);
+r.post("/batches/:id/commit", async (req, res, next) => {
+  const b = await readBatch(req.params.id);
   if(!b) return res.status(404).json({ error:"lot introuvable" });
   if(b.user_id !== req.user.id && !can(req.user, "admin"))
     return res.status(403).json({ error:"ce lot appartient à un autre utilisateur" });
@@ -224,31 +230,31 @@ r.post("/batches/:id/commit", (req, res, next) => {
     ? `${b.kind}:global`
     : `${b.kind}:${req.user.office_id || "global"}`;
   try{
-    db.prepare("INSERT INTO import_lock (scope,batch_id) VALUES (?,?)").run(scope, b.id);
+    await db.prepare("INSERT INTO import_lock (scope,batch_id) VALUES (?,?)").run(scope, b.id);
   }catch(e){
-    const held = db.prepare("SELECT * FROM import_lock WHERE scope=?").get(scope);
+    const held = await db.prepare("SELECT * FROM import_lock WHERE scope=?").get(scope);
     /* Un verrou de plus de cinq minutes est un reste d'incident : on le reprend. */
     if(held && (Date.now() - new Date(held.taken_at + "Z").getTime()) > 5*60_000)
-      db.prepare("UPDATE import_lock SET batch_id=?, taken_at=datetime('now') WHERE scope=?")
+      await db.prepare("UPDATE import_lock SET batch_id=?, taken_at=now() WHERE scope=?")
         .run(b.id, scope);
     else return res.status(409).json({
       error:"un autre import du même type est en cours pour votre périmètre ; réessayez dans un instant" });
   }
   try{
-    const out = commitBatch(req.params.id, req.user);
+    const out = await commitBatch(req.params.id, req.user);
     if(out.error) return res.status(out.status || 409).json({ error:out.error });
     res.json(out);
   }catch(e){ next(e); }
-  finally{ db.prepare("DELETE FROM import_lock WHERE scope=?").run(scope); }
+  finally{ await db.prepare("DELETE FROM import_lock WHERE scope=?").run(scope); }
 });
 
-r.post("/batches/:id/cancel", (req, res) => {
-  const b = readBatch(req.params.id);
+r.post("/batches/:id/cancel", async (req, res) => {
+  const b = await readBatch(req.params.id);
   if(!b) return res.status(404).json({ error:"lot introuvable" });
   if(b.user_id !== req.user.id && !can(req.user, "admin"))
     return res.status(403).json({ error:"ce lot appartient à un autre utilisateur" });
   if(b.status === "committed") return res.status(409).json({ error:"ce lot a déjà été appliqué" });
-  db.prepare("UPDATE import_batch SET status='cancelled' WHERE id=?").run(b.id);
+  await db.prepare("UPDATE import_batch SET status='cancelled' WHERE id=?").run(b.id);
   res.json({ ok:true });
 });
 

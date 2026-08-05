@@ -40,28 +40,31 @@ const shape = (c) => ({
   note:c.note || "", rev:c.rev,
 });
 
-export function currentCountry(){
-  const c = db.prepare("SELECT * FROM country WHERE is_current=1").get();
+export async function currentCountry(){
+  const c = await db.prepare("SELECT * FROM country WHERE is_current=1").get();
   return c ? shape(c) : REPLI;
 }
 
-export function allCountries(){
-  return db.prepare("SELECT * FROM country ORDER BY name").all().map(c => ({
-    ...shape(c),
+export async function allCountries(){
+  const rows = await db.prepare("SELECT * FROM country ORDER BY name").all();
+  const out = [];
+  for(const c of rows){
     /* Combien de millésimes de découpage ce pays porte : c'est ce qui rend un
        pays exploitable ou non. */
-    versions: db.prepare("SELECT COUNT(*) n FROM geo_version WHERE country=?").get(c.code).n,
-  }));
+    const versions = (await db.prepare("SELECT COUNT(*) n FROM geo_version WHERE country=?").get(c.code)).n;
+    out.push({ ...shape(c), versions });
+  }
+  return out;
 }
 
 /* Le libellé d'un niveau, au singulier ou au pluriel. La seule porte d'entrée. */
-export function levelLabel(level, plural = false){
-  const l = currentCountry().levels[level];
+export async function levelLabel(level, plural = false){
+  const l = (await currentCountry()).levels[level];
   return l ? (plural ? l.many : l.one) : level;
 }
 
 /* La devise par défaut d'un montant local — contrat de prestataire, barème.
    Le plan MRE reste en dollars : il n'est pas local, il est corporate. */
-export const localCurrency = () => currentCountry().currency || "USD";
+export const localCurrency = async () => (await currentCountry()).currency || "USD";
 
 export { parseLevels, shape as shapeCountry };

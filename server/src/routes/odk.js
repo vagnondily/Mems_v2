@@ -10,8 +10,8 @@ import { porteurAuth, sonder, indicesSecret, SCHEMAS_AUTH, CHEMIN_SESSION_ODK_DE
 const r = Router();
 const J = (v, d) => { try{ return JSON.parse(v); }catch(e){ return d; } };
 
-const reglage = (cle, defaut) =>
-  J(db.prepare("SELECT value FROM settings WHERE key=?").get(cle)?.value, defaut) || defaut;
+const reglage = async (cle, defaut) =>
+  J((await db.prepare("SELECT value FROM settings WHERE key=?").get(cle))?.value, defaut) || defaut;
 
 /* Le porteur d'authentification d'une source ODK, construit à un seul endroit
    pour que le tirage et l'épreuve de connexion ne puissent pas diverger.
@@ -21,7 +21,7 @@ const reglage = (cle, defaut) =>
    « session ODK ». C'est la même colonne, chiffrée de la même façon (AES-256-GCM,
    lib/crypto.js) — ce qui change est ce que MEMS en fait, et c'est le schéma
    déclaré sur la source qui le dit, plus le code. */
-function porteurDeSource(f, odkBase){
+async function porteurDeSource(f, odkBase){
   return porteurAuth({
     nature: "odk_forms", id: f.id,
     schema: f.auth_schema || "porteur",
@@ -33,7 +33,7 @@ function porteurDeSource(f, odkBase){
        d'envoyer ressaisir un secret qui est déjà là. */
     secretPresent: !!f.token_enc,
     baseUrl: odkBase,
-    cheminSession: reglage("odkCheminSession", CHEMIN_SESSION_ODK_DEFAUT),
+    cheminSession: await reglage("odkCheminSession", CHEMIN_SESSION_ODK_DEFAUT),
     verifierBase: verifierBaseOdk,
     codeErreur: "ODK_AUTH",
     quoi: `la source « ${f.name} »`,
@@ -44,15 +44,15 @@ function porteurDeSource(f, odkBase){
    réglage, donc de l'extérieur : elle est vérifiée avant tout appel sortant par
    `verifierBaseOdk` (lib/odkClient.js), qui impose https, refuse les adresses
    privées et honore la liste blanche ODK_ALLOWED_HOSTS. */
-function adresseOdk(res){
-  const odkBase = reglage("odkBase", "");
+async function adresseOdk(res){
+  const odkBase = await reglage("odkBase", "");
   if(!odkBase){ res.status(422).json({ error:
     "adresse du serveur ODK Central absente (Paramètres → ODK Central → Serveur)" }); return null; }
   return odkBase;
 }
 
-function charger(req, res){
-  const f = db.prepare("SELECT * FROM odk_forms WHERE id=?").get(req.params.id);
+async function charger(req, res){
+  const f = await db.prepare("SELECT * FROM odk_forms WHERE id=?").get(req.params.id);
   if(!f){ res.status(404).json({ error: "source ODK introuvable" }); return null; }
   return f;
 }
@@ -85,7 +85,7 @@ function repondreEchec(res, next, e, f){
    Serveur) n'est ni conservé ni employé par le serveur — `PUT /settings`
    (routes/collections.js) le rejette au lieu de l'écrire. */
 r.post("/odk-forms/:id/pull", requireCap("admin"), async (req, res, next) => {
-  const f = charger(req, res); if(!f) return;
+  const f = await charger(req, res); if(!f) return;
   /* Ce qu'exige une source, c'est SON schéma qui le dit — et lui seul. Le refus
      posé ici exigeait un justificatif durable de toutes les sources, en affirmant
      que « tous les schémas » en réclament un : c'est faux du schéma « Aucune
@@ -96,22 +96,22 @@ r.post("/odk-forms/:id/pull", requireCap("admin"), async (req, res, next) => {
   if(!f.project) return res.status(422).json({ error:
     "identifiant de projet ODK Central absent pour cette source (Paramètres → ODK Central)" });
 
-  const odkBase = adresseOdk(res); if(!odkBase) return;
+  const odkBase = await adresseOdk(res); if(!odkBase) return;
 
   let porteur;
-  try{ porteur = porteurDeSource(f, odkBase); }
+  try{ porteur = await porteurDeSource(f, odkBase); }
   catch(e){ return res.status(422).json({ error: e.message, cause: e.causeAuth || null }); }
 
   try{
     const { rows, pages, truncated } = await pullSubmissions({
       baseUrl: odkBase, project: f.project, formId: f.form_id, porteur });
 
-    tx(() => {
-      db.prepare("UPDATE odk_forms SET raw=?, records=?, last_pull=datetime('now'), rev=rev+1 WHERE id=?")
+    await tx(async (db) => {
+      await db.prepare("UPDATE odk_forms SET raw=?, records=?, last_pull=now(), rev=rev+1 WHERE id=?")
         .run(JSON.stringify(rows), rows.length, f.id);
-    })();
+    });
 
-    db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+    await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
                 VALUES (?,?,?,'odk','odk_forms',?,'pull',?)`)
       .run(newId("aud"), req.user.id, req.user.first_name, f.id,
         `Tirage ODK Central — ${f.name} : ${rows.length} soumission(s)${truncated ? " (plafond atteint)" : ""}`);
@@ -137,8 +137,8 @@ r.post("/odk-forms/:id/pull", requireCap("admin"), async (req, res, next) => {
    bureau ; à défaut de pouvoir cloisonner, on ne descend pas sous la capacité qui
    sert déjà à en faire quelque chose. */
 const PLAFOND_LIGNES = 5000;
-r.get("/odk-forms/:id/rows", requireCap("edit"), (req, res) => {
-  const f = charger(req, res); if(!f) return;
+r.get("/odk-forms/:id/rows", requireCap("edit"), async (req, res) => {
+  const f = await charger(req, res); if(!f) return;
   const limite = Math.min(PLAFOND_LIGNES, Math.max(1, parseInt(req.query.limit, 10) || 1000));
   const depuis = Math.max(0, parseInt(req.query.offset, 10) || 0);
   const toutes = J(f.raw, []);
@@ -165,8 +165,8 @@ r.get("/odk-forms/:id/rows", requireCap("edit"), (req, res) => {
    ni ses derniers caractères. Réservée à l'administration comme le tirage, et
    pour la même raison : elle déchiffre un secret et sort sur le réseau. */
 r.post("/odk-forms/:id/test", requireCap("admin"), async (req, res, next) => {
-  const f = charger(req, res); if(!f) return;
-  const odkBase = adresseOdk(res); if(!odkBase) return;
+  const f = await charger(req, res); if(!f) return;
+  const odkBase = await adresseOdk(res); if(!odkBase) return;
 
   /* La forme d'une étape que le réseau n'a pas produite : elle porte les mêmes
      clés que celles de `sonder`, sinon l'écran afficherait des blancs là où il
@@ -179,13 +179,13 @@ r.post("/odk-forms/:id/test", requireCap("admin"), async (req, res, next) => {
     cause, message, indices: indicesSecret("", !!f.token_enc), session: null });
 
   let porteur;
-  try{ porteur = porteurDeSource(f, odkBase); }
+  try{ porteur = await porteurDeSource(f, odkBase); }
   catch(e){
     return res.json({ ok:false, source:{ id:f.id, name:f.name },
       etapes: [etapeSansAppel("justificatif", e.causeAuth || "AUTH_ABSENT", e.message)] });
   }
 
-  const cheminEpreuve = reglage("odkCheminEpreuve", CHEMIN_EPREUVE_ODK_DEFAUT);
+  const cheminEpreuve = await reglage("odkCheminEpreuve", CHEMIN_EPREUVE_ODK_DEFAUT);
   const etapes = [];
   try{
     etapes.push(await sonder({ porteur, etape: "justificatif", chemin: cheminEpreuve,
@@ -218,7 +218,7 @@ r.post("/odk-forms/:id/test", requireCap("admin"), async (req, res, next) => {
   }catch(e){ return next(e); }
 
   const ok = etapes.every(x => x.ok);
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'odk','odk_forms',?,'test',?)`)
     .run(newId("aud"), req.user.id, req.user.first_name, f.id,
       `Épreuve de connexion ODK Central — ${f.name} : ${ok ? "réussie" : "échouée"}`

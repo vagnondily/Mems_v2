@@ -36,10 +36,10 @@ import { parCle, ligne, ligneParCode, forme } from "./listes.js";
 /* Le plan : ce que l'opération FERA, chiffré ligne à ligne, avant toute
    écriture. Il est rendu à l'écran de correspondance (point 4) et sert de
    base au jeton de validation. */
-export function planRenommage(cle, id, nouveauBrut){
+export async function planRenommage(cle, id, nouveauBrut){
   const def = parCle(cle);
   if(!def) return { erreur:"type de liste inconnu", statut:404 };
-  const item = ligne(def, id);
+  const item = await ligne(def, id);
   if(!item) return { erreur:"item introuvable", statut:404 };
 
   const ancien = item[def.cols.code] || "";
@@ -51,7 +51,7 @@ export function planRenommage(cle, id, nouveauBrut){
   /* Le code existe-t-il déjà dans CETTE liste ? Alors ce n'est pas un
      renommage, c'est une fusion — et elle ne se devine pas : l'écran doit
      la nommer, et l'utilisateur la valider en connaissance de cause. */
-  const collision = ligneParCode(def, nouveau);
+  const collision = await ligneParCode(def, nouveau);
   const fusion = !!collision && collision.id !== item.id;
 
   /* Ce qui sera réécrit. Un renommage touche les colonnes qui portent le
@@ -60,15 +60,15 @@ export function planRenommage(cle, id, nouveauBrut){
   const lignesTouchees = [];
   for(const l of def.liens || []){
     if(l.par === "code"){
-      const c = db.prepare(`SELECT COUNT(*) c FROM ${l.table} WHERE ${l.colonne}=?`).get(ancien).c;
+      const c = (await db.prepare(`SELECT COUNT(*) c FROM ${l.table} WHERE ${l.colonne}=?`).get(ancien)).c;
       if(c) lignesTouchees.push({ ...detailLien(l), lignes:c, de:ancien, vers:nouveau });
     } else if(fusion && l.par === "id"){
-      const c = db.prepare(`SELECT COUNT(*) c FROM ${l.table} WHERE ${l.colonne}=?`).get(item.id).c;
+      const c = (await db.prepare(`SELECT COUNT(*) c FROM ${l.table} WHERE ${l.colonne}=?`).get(item.id)).c;
       if(c) lignesTouchees.push({ ...detailLien(l), lignes:c, de:item.id, vers:collision.id });
     } else if(fusion && l.par === "nom"){
       const de = item[def.cols.label], vers = collision[def.cols.label];
       if(de && de !== vers){
-        const c = db.prepare(`SELECT COUNT(*) c FROM ${l.table} WHERE ${l.colonne}=?`).get(de).c;
+        const c = (await db.prepare(`SELECT COUNT(*) c FROM ${l.table} WHERE ${l.colonne}=?`).get(de)).c;
         if(c) lignesTouchees.push({ ...detailLien(l), lignes:c, de, vers });
       }
     }
@@ -83,7 +83,7 @@ export function planRenommage(cle, id, nouveauBrut){
 
   const plan = {
     cle: def.cle, listeLabel: def.label,
-    item: forme(def, item),
+    item: await forme(def, item),
     mode: fusion ? "fusionner" : "renommer",
     ancien, nouveau,
     cible: fusion ? { id:collision.id, code:collision[def.cols.code],
@@ -127,15 +127,15 @@ export function jetonDe(plan){
 /* L'application. Une transaction : la table maîtresse et toutes ses filles,
    ou rien. La route recalcule le plan juste avant d'appeler cette fonction,
    pour vérifier qu'il n'a pas bougé entre l'affichage et la validation. */
-export function appliquerRenommage(cle, id, nouveau){
+export async function appliquerRenommage(cle, id, nouveau){
   const def = parCle(cle);
-  const item = ligne(def, id);
+  const item = await ligne(def, id);
   const ancien = item[def.cols.code];
-  const cible = ligneParCode(def, nouveau);
+  const cible = await ligneParCode(def, nouveau);
   const fusion = !!cible && cible.id !== item.id;
 
   const ecrites = [];
-  tx(() => {
+  await tx(async (db) => {
     for(const l of def.liens || []){
       let stmt = null, args = null;
       if(l.par === "code"){
@@ -152,7 +152,7 @@ export function appliquerRenommage(cle, id, nouveau){
         }
       }
       if(!stmt) continue;
-      const n = stmt.run(...args).changes;
+      const n = (await stmt.run(...args)).changes;
       if(n) ecrites.push({ ...detailLien(l), lignes:n });
     }
 
@@ -160,22 +160,25 @@ export function appliquerRenommage(cle, id, nouveau){
       /* L'item d'origine n'a plus rien qui le désigne — la boucle vient de
          tout reporter. Le supprimer maintenant est sûr, et c'est le sens
          même de la fusion : deux codes n'en font plus qu'un. */
-      db.prepare(`DELETE FROM ${def.table} WHERE id=?`).run(item.id);
+      await db.prepare(`DELETE FROM ${def.table} WHERE id=?`).run(item.id);
     } else {
-      db.prepare(`UPDATE ${def.table} SET ${def.cols.code}=?, ${def.cols.rev}=${def.cols.rev}+1
+      await db.prepare(`UPDATE ${def.table} SET ${def.cols.code}=?, ${def.cols.rev}=${def.cols.rev}+1
                   WHERE id=?`).run(nouveau, item.id);
     }
-  })();
+  });
 
-  const restant = fusion ? ligne(def, cible.id) : ligne(def, item.id);
+  const restant = fusion ? await ligne(def, cible.id) : await ligne(def, item.id);
+  let reliquat = 0;
+  for(const l of (def.liens || []).filter(l => l.par === "code"))
+    reliquat += (await db.prepare(`SELECT COUNT(*) c FROM ${l.table} WHERE ${l.colonne}=?`).get(ancien)).c;
+
   return {
     mode: fusion ? "fusionner" : "renommer", ancien, nouveau,
     tables: ecrites, total: ecrites.reduce((a, x) => a + x.lignes, 0),
-    item: restant ? forme(def, restant) : null,
+    item: restant ? await forme(def, restant) : null,
     /* Contrôle d'après-coup, rendu au client : plus aucune ligne ne doit
        porter l'ancien code. C'est la vérification que l'appelant ne peut pas
        faire lui-même, et la seule preuve que la cascade a été complète. */
-    reliquat: (def.liens || []).filter(l => l.par === "code").reduce((a, l) =>
-      a + db.prepare(`SELECT COUNT(*) c FROM ${l.table} WHERE ${l.colonne}=?`).get(ancien).c, 0),
+    reliquat,
   };
 }

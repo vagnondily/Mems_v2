@@ -47,7 +47,7 @@ import { extraireIndicateursProcessus } from "./lib/process-xlsform.js";
    ═══════════════════════════════════════════════════════════════════════ */
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-migrate(path.join(here, "..", "migrations"));
+await migrate(path.join(here, "..", "migrations"));
 
 const args = process.argv.slice(2);
 const optionValeur = (nom, defaut) => {
@@ -166,21 +166,27 @@ const domaineDe = (titre) =>
    domaines (chantier S8-1), sinon les activités chargées désigneraient un
    code absent de son propre référentiel — exactement l'orphelin que les
    quatre lots précédents empêchent. Le semis les crée s'ils manquent. */
-function assurerDomaines(codes){
-  const ins = db.prepare(`INSERT INTO list_item (id,type,code,label,sort_order,note)
+/* `exec` (le client de transaction quand elle est appelée depuis l'intérieur
+   d'une transaction, sinon l'import de module par défaut) : sous better-sqlite3
+   une connexion unique rendait ceci sans objet, mais sous pg une transaction vit
+   sur un client dédié (voir src/db.js) — appeler cette fonction avec l'import de
+   module depuis l'intérieur du `tx()` de semerActivites ferait tourner ces
+   requêtes sur une autre connexion du pool, hors de cette transaction. */
+async function assurerDomaines(codes, exec = db){
+  const ins = exec.prepare(`INSERT INTO list_item (id,type,code,label,sort_order,note)
                           VALUES (?,'domaine',?,?,?,?)`);
-  let n = 0, ordre = db.prepare(
-    "SELECT COALESCE(MAX(sort_order),0) m FROM list_item WHERE type='domaine'").get().m;
+  let n = 0, ordre = (await exec.prepare(
+    "SELECT COALESCE(MAX(sort_order),0) m FROM list_item WHERE type='domaine'").get()).m;
   for(const code of codes){
     if(!code) continue;
-    if(db.prepare("SELECT 1 FROM list_item WHERE type='domaine' AND code=?").get(code)) continue;
-    ins.run(newId("li"), code, code, ++ordre, "Créé par le semis des données réelles (Annex 5).");
+    if(await exec.prepare("SELECT 1 FROM list_item WHERE type='domaine' AND code=?").get(code)) continue;
+    await ins.run(newId("li"), code, code, ++ordre, "Créé par le semis des données réelles (Annex 5).");
     n++;
   }
   return n;
 }
 
-function semerActivites(wb){
+async function semerActivites(wb){
   const lignes = lireOnglet(wb, "Annex 5 Activity tags", 2,
     { nom:3, code:4, categorie:1, extra:5 });
   if(!lignes.length) return { lues:0, crees:0, majs:0 };
@@ -190,14 +196,14 @@ function semerActivites(wb){
      se fait donc par tag. Le nom, lui, reste unique en base — s'il est déjà
      pris par une AUTRE activité, on le désambiguïse par le tag plutôt que
      de perdre la ligne : les 58 tags du classeur doivent tous exister. */
-  const parTag = new Map(db.prepare("SELECT * FROM activity_categories").all()
+  const parTag = new Map((await db.prepare("SELECT * FROM activity_categories").all())
     .map(a => [a.tag.toUpperCase(), a]));
-  const nomPris = new Map(db.prepare("SELECT * FROM activity_categories").all()
+  const nomPris = new Map((await db.prepare("SELECT * FROM activity_categories").all())
     .map(a => [a.name.toLowerCase(), a]));
   let crees = 0, majs = 0, domaines = 0, renommes = 0;
 
-  tx(() => {
-    domaines = assurerDomaines([...new Set(lignes.map(l => domaineDe(l.categorie)))]);
+  await tx(async (db) => {
+    domaines = await assurerDomaines([...new Set(lignes.map(l => domaineDe(l.categorie)))], db);
     for(const l of lignes){
       /* Le classeur porte quelques acronymes espacés (« FBA _CCS ») : c'est
          une coquille de saisie, pas un code différent. */
@@ -211,7 +217,7 @@ function semerActivites(wb){
         const autre = nomPris.get(l.libelle.toLowerCase());
         const nom = (autre && autre.id !== existant.id) ? `${l.libelle} (${tag})` : l.libelle;
         if(nom !== l.libelle) renommes++;
-        db.prepare(`UPDATE activity_categories SET name=?, program_area=?, rev=rev+1 WHERE id=?`)
+        await db.prepare(`UPDATE activity_categories SET name=?, program_area=?, rev=rev+1 WHERE id=?`)
           .run(nom, domaine || existant.program_area || null, existant.id);
         nomPris.set(nom.toLowerCase(), existant);
         majs++;
@@ -220,14 +226,14 @@ function semerActivites(wb){
         const pris = nomPris.get(l.libelle.toLowerCase());
         const nom = pris ? `${l.libelle} (${tag})` : l.libelle;
         if(pris) renommes++;
-        db.prepare(`INSERT INTO activity_categories (id,name,tag,program_area,active)
+        await db.prepare(`INSERT INTO activity_categories (id,name,tag,program_area,active)
                     VALUES (?,?,?,?,1)`).run(id, nom, tag, domaine);
         parTag.set(tag, { id, tag, name:nom });
         nomPris.set(nom.toLowerCase(), { id, tag, name:nom });
         crees++;
       }
     }
-  })();
+  });
   return { lues:lignes.length, crees, majs, domaines, renommes };
 }
 
@@ -301,18 +307,18 @@ function ciblesDe(l){
    proposé : on le charge, en le marquant. */
 const estActif = (s) => !/deac|inactiv/i.test(s || "");
 
-function semerIndicateurs(wb){
+async function semerIndicateurs(wb){
   const bilan = { lues:0, crees:0, majs:0, parNiveau:{}, avecTags:0 };
-  const existants = new Map(db.prepare("SELECT * FROM indicators").all().map(i => [i.code, i]));
+  const existants = new Map((await db.prepare("SELECT * FROM indicators").all()).map(i => [i.code, i]));
   /* Les tags réels, pour ne rattacher qu'à ce qui existe (Annex 5 déjà chargée). */
-  const tagsConnus = new Set(db.prepare("SELECT tag FROM activity_categories").all().map(x => normTag(x.tag)));
+  const tagsConnus = new Set((await db.prepare("SELECT tag FROM activity_categories").all()).map(x => normTag(x.tag)));
   /* Un même code ne s'écrit qu'une fois par passage : l'onglet SDG répète le
      code d'un indicateur sur chacun de ses « related indicators », et deux
      onglets peuvent se croiser. Premier vu, premier gardé — sans quoi le second
      INSERT viole l'unicité de `code`. */
   const vus = new Set();
 
-  tx(() => {
+  await tx(async (db) => {
     for(const onglet of ONGLETS_INDICATEURS){
       const lignes = lireOnglet(wb, onglet.nom, onglet.premiere, onglet.cols);
       bilan.parNiveau[onglet.level] = lignes.length;
@@ -344,7 +350,7 @@ function semerIndicateurs(wb){
              — la cible, le sens, la méthode, le panier d'analyse du bureau —
              est laissé tel quel. Un chargement de référentiel ne défait pas
              une saisie. */
-          db.prepare(`UPDATE indicators SET name=?, kind='crf', level=?, category=?,
+          await db.prepare(`UPDATE indicators SET name=?, kind='crf', level=?, category=?,
                       activity_tags=?, targets=?, status=?, applicability=?, reporting_req=?,
                       output_type=?, unit_interp=?, flexibility=?, follow_value=?, intermediate=?,
                       method=COALESCE(NULLIF(method,''),?), rev=rev+1 WHERE id=?`)
@@ -354,7 +360,7 @@ function semerIndicateurs(wb){
                  actif ? null : "Retiré du cadre de résultats", ex.id);
           bilan.majs++;
         } else {
-          db.prepare(`INSERT INTO indicators (id,code,name,basket,unit,target,direction,
+          await db.prepare(`INSERT INTO indicators (id,code,name,basket,unit,target,direction,
                       method,frequency,kind,level,category,activity_tags,targets,
                       status,applicability,reporting_req,output_type,unit_interp,flexibility,
                       follow_value,intermediate)
@@ -368,7 +374,7 @@ function semerIndicateurs(wb){
         }
       }
     }
-  })();
+  });
   return bilan;
 }
 
@@ -378,10 +384,10 @@ function semerIndicateurs(wb){
    STREAMÉES par lots depuis le .shp. Le fichier pèse 23 Mo et porte 1 701
    polygones ; les tenir tous en mémoire d'un coup ferait enfler le
    processus sans aucun gain. */
-function semerDecoupage(){
+async function semerDecoupage(){
   if(!existe(SHP)) return { saute:"aucun shapefile dans le dossier docs" };
   const label = "Madagascar — communes (PAM 2025)";
-  const dejaLa = db.prepare("SELECT id FROM geo_version WHERE label=?").get(label);
+  const dejaLa = await db.prepare("SELECT id FROM geo_version WHERE label=?").get(label);
   if(dejaLa && !FORCE_GEO)
     return { saute:`« ${label} » est déjà chargé (--force-geo pour en créer un nouveau millésime)` };
 
@@ -393,30 +399,52 @@ function semerDecoupage(){
 
   let versionId, ecrites = 0, rejetes = 0;
   const LOT = 500;
-  tx(() => {
-    versionId = writeVersion({ label, source:SHP, units, userId:null, makeCurrent:true });
-    let lot = [], premier = true;
-    const vider = () => {
-      if(!lot.length) return;
-      const b = writeGeometries({ versionId, features:lot, reset:premier, source:SHP });
-      premier = false; ecrites += b.écrites; rejetes += b.rejetes || 0;
-      lot = [];
-    };
-    parcourirGeometriesShp(shp, (i, g) => {
-      if(!g) return;
-      const at = attributsContour(table.lignes[i]);
-      if(!at) return;
-      lot.push({ ...at, geometry:g });
-      if(lot.length >= LOT) vider();
+  /* TODO-PG: writeVersion()/writeGeometries() (lib/geo.js, lib/geom.js) ouvrent
+     chacune LEUR PROPRE transaction interne (via le même `tx()` que ce fichier) plutôt
+     que d'accepter un client à utiliser — sous better-sqlite3 (connexion
+     unique) cela ne changeait rien à l'atomicité globale ; sous pg, un batch de
+     géométries commit dès la fin de son propre appel, indépendamment des
+     autres. Réserve déjà documentée dans lib/tpm.js:regenerate() pour le même
+     motif ; signalée ici plutôt que devinée, corriger proprement suppose de
+     faire accepter un exécuteur `db` optionnel à ces fonctions, hors périmètre
+     des 6 fichiers de cette conversion.
+
+     `parcourirGeometriesShp` (lib/shapefile.js, hors périmètre) reste
+     SYNCHRONE : son callback ne peut donc pas `await writeGeometries(...)`
+     directement. Pour garder le flux par lots de LOT features (l'intérêt
+     documenté ci-dessous — ne jamais tenir les 1 701 polygones en mémoire),
+     chaque lot est enchaîné sur une CHAÎNE DE PROMESSES séquentielle plutôt que
+     lancé en parallèle : les lots s'écrivent donc toujours dans l'ordre, un
+     seul à la fois, et une erreur sur l'un interrompt bien la chaîne — la
+     boucle synchrone continue de découper le fichier pendant que le lot
+     précédent s'écrit, mais jamais deux lots ne s'écrivent en même temps. */
+  let file = Promise.resolve();
+  let lot = [], premier = true;
+  const vider = () => {
+    if(!lot.length) return;
+    const features = lot; lot = [];
+    const estPremier = premier; premier = false;
+    file = file.then(async () => {
+      const b = await writeGeometries({ versionId, features, reset:estPremier, source:SHP });
+      ecrites += b.écrites; rejetes += b.rejetes || 0;
     });
-    vider();
-  })();
+  };
+  versionId = await writeVersion({ label, source:SHP, units, userId:null, makeCurrent:true });
+  parcourirGeometriesShp(shp, (i, g) => {
+    if(!g) return;
+    const at = attributsContour(table.lignes[i]);
+    if(!at) return;
+    lot.push({ ...at, geometry:g });
+    if(lot.length >= LOT) vider();
+  });
+  vider();
+  await file;
   /* Le fichier ne porte QUE les communes, mais sa table attributaire porte
      l'arbre entier : districts, régions et pays sont les mêmes polygones
      réunis par parent. On les dérive donc dans la foulée, sans quoi la carte
      n'aurait qu'un seul niveau de breakdown alors que la donnée en permet
      quatre. */
-  const derive = deriverNiveaux({ versionId });
+  const derive = await deriverNiveaux({ versionId });
 
   return { versionId, unites:units.length, counts, contours:ecrites, rejetes,
            collisions:collisions.length,
@@ -456,9 +484,11 @@ async function semerIndicateursProcessus(){
   const fichiers = fichiersProcessus();
   if(!fichiers.length) return { fichiers:0, indicateurs:0, formulaires:[] };
 
-  /* Lecture (asynchrone) d'abord, écriture (transaction synchrone) ensuite :
-     ExcelJS lit en promesse, better-sqlite3 écrit en synchrone — on ne peut pas
-     imbriquer l'un dans l'autre. */
+  /* Lecture (asynchrone) d'abord, écriture (transaction) ensuite : ExcelJS lit
+     en promesse — inchangé, l'écriture est maintenant elle aussi asynchrone
+     (voir tx() plus bas), donc les deux pourraient en principe s'imbriquer,
+     mais la lecture complète de tous les fichiers avant d'ouvrir la
+     transaction d'écriture reste le comportement d'origine, préservé tel quel. */
   const paquets = [];
   for(const nom of fichiers){
     try{
@@ -470,25 +500,29 @@ async function semerIndicateursProcessus(){
     }catch(e){ log.warn("XLSForm de processus illisible", { fichier:nom, raison:e.message }); }
   }
 
-  const ins = db.prepare(`INSERT INTO process_indicator
-      (id, activity_tag, activity_label, form_file, form_title, module, module_code,
-       var_name, var_type, label, choices_json, ord, active, rev)
-      VALUES (@id,@tag,@lab,@file,@title,@module,@mcode,@name,@type,@label,@choices,@ord,1,1)`);
-  const purge = db.prepare("DELETE FROM process_indicator WHERE form_file=?");
-
   let total = 0; const formulaires = [];
-  const ecrire = db.transaction(() => {
+  /* `db.transaction(fn)` (better-sqlite3) n'existe plus : `tx(fn)` (src/db.js)
+     est son remplacement direct, déjà importé en tête de fichier.
+     `ins` utilisait des paramètres NOMMÉS (@col), propres à better-sqlite3 ;
+     convertis en positionnels, dans l'ordre exact des colonnes déclarées
+     (active,rev restent des littéraux 1,1, non paramétrés). */
+  await tx(async (db) => {
+    const ins = db.prepare(`INSERT INTO process_indicator
+        (id, activity_tag, activity_label, form_file, form_title, module, module_code,
+         var_name, var_type, label, choices_json, ord, active, rev)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,1)`);
+    const purge = db.prepare("DELETE FROM process_indicator WHERE form_file=?");
     for(const p of paquets){
-      purge.run(p.nom);
+      await purge.run(p.nom);
       /* Un même `name` peut réapparaître (questions rejouées dans des répétitions) :
          le référentiel garde la PREMIÈRE occurrence — une variable, une ligne. */
       const vus = new Set(); let ecrits = 0;
       for(const r of p.rows){
         if(vus.has(r.name)) continue; vus.add(r.name);
-        ins.run({ id:newId("pi"), tag:p.cls.tag, lab:p.cls.label, file:p.nom,
-          title:p.formTitle || "", module:r.module || "", mcode:r.moduleCode || "",
-          name:r.name, type:r.type || "", label:r.label || "",
-          choices:r.choices ? JSON.stringify(r.choices) : null, ord:r.ord });
+        await ins.run(newId("pi"), p.cls.tag, p.cls.label, p.nom,
+          p.formTitle || "", r.module || "", r.moduleCode || "",
+          r.name, r.type || "", r.label || "",
+          r.choices ? JSON.stringify(r.choices) : null, r.ord);
         ecrits++;
       }
       total += ecrits;
@@ -497,7 +531,6 @@ async function semerIndicateursProcessus(){
         indicateurs:ecrits, modules });
     }
   });
-  ecrire();
   log.info("indicateurs de suivi de processus chargés",
     { fichiers:fichiers.length, indicateurs:total });
   return { fichiers:fichiers.length, indicateurs:total, formulaires };
@@ -514,8 +547,8 @@ export async function semerReel({ sansGeo, forceGeo, quoi = "tout" } = {}){
     if(existe(CLASSEUR)){
       const wb = new ExcelJS.Workbook();
       await wb.xlsx.readFile(fichier(CLASSEUR));
-      bilan.activites = semerActivites(wb);
-      bilan.indicateurs = semerIndicateurs(wb);
+      bilan.activites = await semerActivites(wb);
+      bilan.indicateurs = await semerIndicateurs(wb);
       log.info("activités chargées", bilan.activites);
       log.info("indicateurs chargés", { ...bilan.indicateurs.parNiveau,
         crees:bilan.indicateurs.crees, majs:bilan.indicateurs.majs });
@@ -538,7 +571,7 @@ export async function semerReel({ sansGeo, forceGeo, quoi = "tout" } = {}){
   if(veut("decoupage")){
     if(SANS_GEO){ log.info("découpage administratif ignoré (--sans-geo)"); }
     else {
-      bilan.geo = semerDecoupage();
+      bilan.geo = await semerDecoupage();
       if(bilan.geo.saute) log.warn("découpage non chargé", { raison:bilan.geo.saute });
       else if(bilan.geo.erreur) log.error("découpage refusé", { raison:bilan.geo.erreur });
       else {
@@ -550,16 +583,16 @@ export async function semerReel({ sansGeo, forceGeo, quoi = "tout" } = {}){
     }
   }
 
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
               VALUES (?,NULL,'semis données réelles','plan','referentiels','import',?)`)
     .run(newId("aud"),
       `Données réelles chargées depuis docs/ — ${bilan.activites?.lues || 0} activité(s), `
       + `${bilan.indicateurs?.lues || 0} indicateur(s)`
       + (bilan.geo?.unites ? `, ${bilan.geo.unites} unité(s) géographiques` : ""));
 
-  const compte = (t) => db.prepare(`SELECT COUNT(*) c FROM ${t}`).get().c;
-  bilan.totaux = { activites: compte("activity_categories"), indicateurs: compte("indicators"),
-                   unitesGeo: compte("geo_unit"), contours: compte("geo_geom") };
+  const compte = async (t) => (await db.prepare(`SELECT COUNT(*) c FROM ${t}`).get()).c;
+  bilan.totaux = { activites: await compte("activity_categories"), indicateurs: await compte("indicators"),
+                   unitesGeo: await compte("geo_unit"), contours: await compte("geo_geom") };
   log.info("semis des données réelles terminé", bilan.totaux);
   return bilan;
 }

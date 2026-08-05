@@ -49,35 +49,38 @@
 --  fichiers réels du bureau portent déjà une modalité « hybride » que
 --  cette énumération rejette (constat consigné au chantier T). La liste
 --  des modalités devient donc la table ci-dessous, et le contrôle se fait
---  là où il se corrige. SQLite ne sait pas retirer un CHECK par ALTER :
---  la table est reconstruite à l'identique, colonne pour colonne, index
---  pour index — c'est la seule différence.
+--  là où il se corrige. La table est reconstruite à l'identique, colonne
+--  pour colonne, index pour index — c'est la seule différence — plutôt que
+--  de faire reposer la levée du CHECK sur la devinette d'un nom de
+--  contrainte généré automatiquement par PostgreSQL.
 -- =====================================================================
 
 -- ── La table des listes sans table propre ────────────────────────────
 CREATE TABLE list_item (
-  id         TEXT PRIMARY KEY,
+  id         text PRIMARY KEY,
   -- Le type de liste : 'denree', 'modalite', 'type_partenariat'… Il est
   -- déclaré dans le registre (lib/listes.js), pas contraint ici : ajouter
   -- un type ne doit pas demander une migration.
-  type       TEXT NOT NULL,
+  type       text NOT NULL,
   -- Le code d'identification. C'est la clé de jointure : les tables
   -- filles le portent, et il est préservé par les mises à jour ordinaires.
-  code       TEXT NOT NULL,
-  label      TEXT NOT NULL,
-  note       TEXT,
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  active     INTEGER NOT NULL DEFAULT 1,
+  code       text NOT NULL,
+  label      text NOT NULL,
+  note       text,
+  sort_order integer NOT NULL DEFAULT 0,
+  active     smallint NOT NULL DEFAULT 1,
   -- Verrouillage optimiste, comme les bureaux et les activités : deux
   -- administrateurs sur la même ligne ne s'écrasent pas en silence.
-  rev        INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT
+  rev        integer NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz
 );
 -- Un code par type, un libellé par type. Insensible à la casse pour le
 -- libellé : « Riz » et « riz » sont la même denrée pour qui la saisit.
+-- COLLATE NOCASE n'existe pas en PostgreSQL : l'insensibilité à la casse
+-- est portée par un index fonctionnel sur lower(label).
 CREATE UNIQUE INDEX idx_list_item_code  ON list_item(type, code);
-CREATE UNIQUE INDEX idx_list_item_label ON list_item(type, label COLLATE NOCASE);
+CREATE UNIQUE INDEX idx_list_item_label ON list_item(type, lower(label));
 CREATE INDEX        idx_list_item_type  ON list_item(type, sort_order, label);
 
 -- ── La VALIDATION d'une liste ────────────────────────────────────────
@@ -88,12 +91,12 @@ CREATE INDEX        idx_list_item_type  ON list_item(type, sort_order, label);
 -- sur un item du type efface la validation : une liste modifiée après sa
 -- relecture n'est plus une liste relue.
 CREATE TABLE list_validation (
-  type        TEXT PRIMARY KEY,
-  validated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  validated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
-  user_label  TEXT,
-  items       INTEGER NOT NULL DEFAULT 0,
-  note        TEXT
+  type        text PRIMARY KEY,
+  validated_at timestamptz NOT NULL DEFAULT now(),
+  validated_by text REFERENCES users(id) ON DELETE SET NULL,
+  user_label  text,
+  items       integer NOT NULL DEFAULT 0,
+  note        text
 );
 
 -- ── Les partenaires deviennent une liste comme les autres ────────────
@@ -101,20 +104,20 @@ CREATE TABLE list_validation (
 -- donc aucune clé de jointure stable, et aucune révision, donc aucun
 -- verrou optimiste. Les deux manquaient pour que la liste se paramètre
 -- comme les autres.
-ALTER TABLE partners ADD COLUMN code             TEXT;
-ALTER TABLE partners ADD COLUMN partnership_type TEXT;   -- code d'un list_item 'type_partenariat'
-ALTER TABLE partners ADD COLUMN note             TEXT;
-ALTER TABLE partners ADD COLUMN rev              INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE partners ADD COLUMN updated_at       TEXT;
+ALTER TABLE partners ADD COLUMN code             text;
+ALTER TABLE partners ADD COLUMN partnership_type text;   -- code d'un list_item 'type_partenariat'
+ALTER TABLE partners ADD COLUMN note             text;
+ALTER TABLE partners ADD COLUMN rev              integer NOT NULL DEFAULT 1;
+ALTER TABLE partners ADD COLUMN updated_at       timestamptz;
 -- Index PARTIEL : les partenaires déjà semés n'ont pas de code, et deux
--- NULL ne se heurtent pas en SQLite — mais l'index partiel dit la règle
--- pour de bon, plutôt que de compter sur ce comportement.
+-- NULL ne se heurtent pas pour l'unicité — mais l'index partiel dit la
+-- règle pour de bon, plutôt que de compter sur ce comportement.
 CREATE UNIQUE INDEX idx_partners_code ON partners(code) WHERE code IS NOT NULL;
 
 -- ── Les sous-types de point d'intérêt aussi ──────────────────────────
-ALTER TABLE poi_subtypes ADD COLUMN active     INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE poi_subtypes ADD COLUMN rev        INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE poi_subtypes ADD COLUMN updated_at TEXT;
+ALTER TABLE poi_subtypes ADD COLUMN active     smallint NOT NULL DEFAULT 1;
+ALTER TABLE poi_subtypes ADD COLUMN rev        integer NOT NULL DEFAULT 1;
+ALTER TABLE poi_subtypes ADD COLUMN updated_at timestamptz;
 
 -- ── Le plan de distribution, sans l'énumération de modalité ──────────
 -- Reconstruction à l'identique : mêmes colonnes, mêmes types, mêmes
@@ -122,34 +125,34 @@ ALTER TABLE poi_subtypes ADD COLUMN updated_at TEXT;
 -- des modalités. Aucune table ne référence `pdd` : le renommage ne casse
 -- aucune clé étrangère.
 CREATE TABLE pdd_nouveau (
-  id             TEXT PRIMARY KEY,
-  year           INTEGER NOT NULL,
-  month          INTEGER NOT NULL CHECK (month BETWEEN 0 AND 11),
-  wbs            TEXT,
-  act_type       TEXT NOT NULL,
-  activity_tag   TEXT,
-  act_main       TEXT,
-  office_id      TEXT REFERENCES offices(id) ON DELETE SET NULL,
-  bureau         TEXT NOT NULL,
-  region         TEXT, district TEXT, commune TEXT,
-  partner_id     TEXT REFERENCES partners(id) ON DELETE SET NULL,
+  id             text PRIMARY KEY,
+  year           integer NOT NULL,
+  month          integer NOT NULL CHECK (month BETWEEN 0 AND 11),
+  wbs            text,
+  act_type       text NOT NULL,
+  activity_tag   text,
+  act_main       text,
+  office_id      text REFERENCES offices(id) ON DELETE SET NULL,
+  bureau         text NOT NULL,
+  region         text, district text, commune text,
+  partner_id     text REFERENCES partners(id) ON DELETE SET NULL,
   -- Plus de CHECK : la liste des modalités se paramètre (list_item).
-  modality       TEXT NOT NULL DEFAULT 'Food',
-  commodity      TEXT,
-  days           INTEGER NOT NULL DEFAULT 0 CHECK (days >= 0),
-  benef_planned  INTEGER NOT NULL DEFAULT 0 CHECK (benef_planned >= 0),
-  households     INTEGER NOT NULL DEFAULT 0 CHECK (households >= 0),
-  tonnage        REAL    NOT NULL DEFAULT 0 CHECK (tonnage >= 0),
-  amount         REAL    NOT NULL DEFAULT 0 CHECK (amount  >= 0),
-  benef_actual   INTEGER NOT NULL DEFAULT 0 CHECK (benef_actual >= 0),
-  received       REAL    NOT NULL DEFAULT 0 CHECK (received    >= 0),
-  distributed    REAL    NOT NULL DEFAULT 0 CHECK (distributed >= 0),
-  status         TEXT NOT NULL DEFAULT 'planned'
+  modality       text NOT NULL DEFAULT 'Food',
+  commodity      text,
+  days           integer NOT NULL DEFAULT 0 CHECK (days >= 0),
+  benef_planned  integer NOT NULL DEFAULT 0 CHECK (benef_planned >= 0),
+  households     integer NOT NULL DEFAULT 0 CHECK (households >= 0),
+  tonnage        double precision NOT NULL DEFAULT 0 CHECK (tonnage >= 0),
+  amount         double precision NOT NULL DEFAULT 0 CHECK (amount  >= 0),
+  benef_actual   integer NOT NULL DEFAULT 0 CHECK (benef_actual >= 0),
+  received       double precision NOT NULL DEFAULT 0 CHECK (received    >= 0),
+  distributed    double precision NOT NULL DEFAULT 0 CHECK (distributed >= 0),
+  status         text NOT NULL DEFAULT 'planned'
       CHECK (status IN ('planned','ongoing','done','cancelled')),
-  note           TEXT,
-  updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
-  geo_pcode      TEXT,
-  rev            INTEGER NOT NULL DEFAULT 1
+  note           text,
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  geo_pcode      text,
+  rev            integer NOT NULL DEFAULT 1
 );
 INSERT INTO pdd_nouveau (id,year,month,wbs,act_type,activity_tag,act_main,office_id,bureau,
   region,district,commune,partner_id,modality,commodity,days,benef_planned,households,

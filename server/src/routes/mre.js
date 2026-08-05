@@ -90,7 +90,7 @@ const costSchema = z.object({
   note:      S(300),
 });
 
-const audit = (req, action, id, text) =>
+const audit = async (req, action, id, text) =>
   db.prepare(`INSERT INTO audit (id,user_id,user_label,office,kind,entity,entity_id,action,text)
               VALUES (?,?,?,?,'plan','mre_activity',?,?,?)`)
     .run(newId("aud"), req.user.id, req.user.first_name || req.user.email,
@@ -99,11 +99,11 @@ const audit = (req, action, id, text) =>
 /* Libellé lisible d'une portée géographique, pour un lot de p-codes.
    En un seul passage : une activité par ligne × un aller-retour chacune ferait
    autant de requêtes que d'activités pour afficher une colonne. */
-function porteeLabels(pcodes){
+async function porteeLabels(pcodes){
   const uniques = [...new Set(pcodes.filter(Boolean))];
   if(!uniques.length) return {};
   const v = currentVersion(); if(!v) return {};
-  const rows = db.prepare(
+  const rows = await db.prepare(
     `SELECT u.pcode, u.name, u.level, p.name parent
      FROM geo_unit u LEFT JOIN geo_unit p ON p.version_id=u.version_id AND p.pcode=u.parent_pcode
      WHERE u.version_id=? AND u.pcode IN (${uniques.map(()=>"?").join(",")})`).all(v.id, ...uniques);
@@ -112,9 +112,9 @@ function porteeLabels(pcodes){
 
 /* Le budget d'une activité : ses lignes, leur total, la dépense constatée.
    Une seule définition, utilisée par la liste comme par la fiche. */
-function costsOf(ids){
+async function costsOf(ids){
   if(!ids.length) return {};
-  const lignes = db.prepare(
+  const lignes = await db.prepare(
     `SELECT * FROM mre_cost WHERE activity_id IN (${ids.map(()=>"?").join(",")})
      ORDER BY category, label`).all(...ids);
   const out = {};
@@ -140,9 +140,13 @@ function normaliserMois(b){
   return { mois, start: mois.length ? mois[0] : null, end: mois.length ? mois[mois.length - 1] : null,
     json: mois.length ? JSON.stringify(mois) : null };
 }
-const moisDeLigne = (a) => { try{ const m = a.months ? JSON.parse(a.months) : null;
-    if(Array.isArray(m) && m.length) return m; }catch(e){}
-  return a.start_month != null ? range(a.start_month, a.end_month ?? a.start_month) : []; };
+/* `mre_activity.months` est une colonne jsonb : pg la rend déjà comme un
+   tableau JS, plus besoin de JSON.parse (contrairement à SQLite où c'était du
+   TEXT). */
+const moisDeLigne = (a) => {
+  if(Array.isArray(a.months) && a.months.length) return a.months;
+  return a.start_month != null ? range(a.start_month, a.end_month ?? a.start_month) : [];
+};
 
 const shape = (a, cost, labels) => {
   const c = cost || { lines:[], budget:0, spent:0, engaged:0 };
@@ -165,8 +169,8 @@ const shape = (a, cost, labels) => {
 
 /* Lecture. Un bureau voit son plan et le plan national ; personne n'écrit chez
    le voisin. Le filtre est en SQL, pas en mémoire : le plan grossit chaque année. */
-function visibles(req, extra = {}){
-  const bound = officeBound(req.user);
+async function visibles(req, extra = {}){
+  const bound = await officeBound(req.user);
   const where = ["a.year = ?"]; const args = [extra.year];
   if(bound){ where.push("(a.office_id = ? OR a.office_id IS NULL)"); args.push(bound); }
   else if(extra.office_id){ where.push("a.office_id = ?"); args.push(extra.office_id); }
@@ -181,7 +185,7 @@ function visibles(req, extra = {}){
      ORDER BY a.start_month IS NULL, a.start_month, a.ref, a.title`).all(...args);
 }
 
-r.get("/", (req, res) => {
+r.get("/", async (req, res) => {
   const q = z.object({
     year:      z.coerce.number().int().min(2000).max(2100).default(new Date().getFullYear()),
     kind:      z.enum(Object.keys(KINDS)).optional(),
@@ -190,9 +194,9 @@ r.get("/", (req, res) => {
   }).safeParse(req.query);
   if(!q.success) return res.status(422).json({ error:"filtres invalides" });
 
-  const acts = visibles(req, q.data);
-  const cost = costsOf(acts.map(a => a.id));
-  const labels = porteeLabels(acts.map(a => a.geo_pcode));
+  const acts = await visibles(req, q.data);
+  const cost = await costsOf(acts.map(a => a.id));
+  const labels = await porteeLabels(acts.map(a => a.geo_pcode));
   const rows = acts.map(a => shape(a, cost[a.id], labels));
 
   /* Agrégations. Elles vivent ici parce qu'elles doivent être les mêmes pour
@@ -280,33 +284,33 @@ r.get("/", (req, res) => {
   });
 });
 
-r.post("/", requireCap("edit"), (req, res) => {
+r.post("/", requireCap("edit"), async (req, res) => {
   const p = activitySchema.safeParse(req.body);
   if(!p.success) return res.status(422).json({ error:"activité invalide",
     details: p.error.issues.slice(0,10).map(i => ({ champ:i.path.join("."), message:i.message })) });
   const b = p.data;
-  const bound = officeBound(req.user);
+  const bound = await officeBound(req.user);
   /* Un compte cloisonné ne crée que pour son bureau, quoi que dise le corps. */
   if(bound) b.office_id = bound;
-  if(b.ref && db.prepare("SELECT 1 FROM mre_activity WHERE year=? AND ref=?").get(b.year, b.ref))
+  if(b.ref && await db.prepare("SELECT 1 FROM mre_activity WHERE year=? AND ref=?").get(b.year, b.ref))
     return res.status(409).json({ error:`la référence ${b.ref} existe déjà pour ${b.year}` });
   if(b.start_month != null && b.end_month != null && b.end_month < b.start_month)
     return res.status(422).json({ error:"le mois de fin précède le mois de début" });
 
   const id = newId("mre");
   const nm = normaliserMois(b);
-  db.prepare(`INSERT INTO mre_activity (id,year,ref,title,kind,purpose,method,office_id,activity_tag,
+  await db.prepare(`INSERT INTO mre_activity (id,year,ref,title,kind,purpose,method,office_id,activity_tag,
     indicator_id,geo_pcode,responsible,start_month,end_month,months,sample,status,funding,currency,note,created_by)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(id, b.year, b.ref, b.title, b.kind, b.purpose, b.method, b.office_id, b.activity_tag,
          b.indicator_id, b.geo_pcode, b.responsible, nm.start, nm.end, nm.json, b.sample,
          b.status, b.funding, b.currency, b.note, req.user.id);
-  audit(req, "create", id, `Plan MRE ${b.year} — activité créée : ${b.title}`);
-  res.status(201).json({ activity: one(req, id) });
+  await audit(req, "create", id, `Plan MRE ${b.year} — activité créée : ${b.title}`);
+  res.status(201).json({ activity: await one(req, id) });
 });
 
-r.put("/:id", requireCap("edit"), (req, res) => {
-  const cur = mine(req, req.params.id);
+r.put("/:id", requireCap("edit"), async (req, res) => {
+  const cur = await mine(req, req.params.id);
   if(cur.error) return res.status(cur.status).json({ error:cur.error });
   const p = activitySchema.safeParse(req.body);
   if(!p.success) return res.status(422).json({ error:"activité invalide",
@@ -314,33 +318,33 @@ r.put("/:id", requireCap("edit"), (req, res) => {
   const b = p.data;
   if(b.rev && b.rev !== cur.row.rev)
     return res.status(409).json({ error:"cette activité a été modifiée entre-temps",
-      courant: one(req, cur.row.id) });
-  if(officeBound(req.user)) b.office_id = cur.row.office_id;
-  if(b.ref && db.prepare("SELECT 1 FROM mre_activity WHERE year=? AND ref=? AND id<>?")
+      courant: await one(req, cur.row.id) });
+  if(await officeBound(req.user)) b.office_id = cur.row.office_id;
+  if(b.ref && await db.prepare("SELECT 1 FROM mre_activity WHERE year=? AND ref=? AND id<>?")
       .get(b.year, b.ref, cur.row.id))
     return res.status(409).json({ error:`la référence ${b.ref} existe déjà pour ${b.year}` });
   if(b.start_month != null && b.end_month != null && b.end_month < b.start_month)
     return res.status(422).json({ error:"le mois de fin précède le mois de début" });
 
   const nm = normaliserMois(b);
-  db.prepare(`UPDATE mre_activity SET year=?, ref=?, title=?, kind=?, purpose=?, method=?,
+  await db.prepare(`UPDATE mre_activity SET year=?, ref=?, title=?, kind=?, purpose=?, method=?,
     office_id=?, activity_tag=?, indicator_id=?, geo_pcode=?, responsible=?, start_month=?,
     end_month=?, months=?, sample=?, status=?, funding=?, currency=?, note=?, rev=rev+1,
-    updated_at=datetime('now') WHERE id=?`)
+    updated_at=now() WHERE id=?`)
     .run(b.year, b.ref, b.title, b.kind, b.purpose, b.method, b.office_id, b.activity_tag,
          b.indicator_id, b.geo_pcode, b.responsible, nm.start, nm.end, nm.json, b.sample,
          b.status, b.funding, b.currency, b.note, cur.row.id);
-  audit(req, "update", cur.row.id, `Plan MRE ${b.year} — ${b.title}` +
+  await audit(req, "update", cur.row.id, `Plan MRE ${b.year} — ${b.title}` +
     (b.status !== cur.row.status ? ` (statut : ${b.status})` : ""));
-  res.json({ activity: one(req, cur.row.id) });
+  res.json({ activity: await one(req, cur.row.id) });
 });
 
 /* Les lignes de coût d'UNE activité, remplacées en bloc.
    Le remplacement global est légitime ici — contrairement aux collections, où il
    effaçait le travail du voisin : l'unité d'édition est l'activité, l'utilisateur
    a ses lignes sous les yeux, et la révision de l'activité garde la porte. */
-r.put("/:id/costs", requireCap("edit"), (req, res) => {
-  const cur = mine(req, req.params.id);
+r.put("/:id/costs", requireCap("edit"), async (req, res) => {
+  const cur = await mine(req, req.params.id);
   if(cur.error) return res.status(cur.status).json({ error:cur.error });
   const p = z.object({ rev: z.coerce.number().int().min(1).optional(),
                        lines: z.array(costSchema).max(200) }).safeParse(req.body);
@@ -348,51 +352,51 @@ r.put("/:id/costs", requireCap("edit"), (req, res) => {
     details: p.error.issues.slice(0,10).map(i => ({ champ:i.path.join("."), message:i.message })) });
   if(p.data.rev && p.data.rev !== cur.row.rev)
     return res.status(409).json({ error:"le budget de cette activité a été modifié entre-temps",
-      courant: one(req, cur.row.id) });
+      courant: await one(req, cur.row.id) });
 
-  const ins = db.prepare(`INSERT INTO mre_cost
-    (id,activity_id,category,label,unit,qty,unit_cost,spent,month,note) VALUES (?,?,?,?,?,?,?,?,?,?)`);
-  tx(() => {
-    db.prepare("DELETE FROM mre_cost WHERE activity_id=?").run(cur.row.id);
+  await tx(async (db) => {
+    const ins = db.prepare(`INSERT INTO mre_cost
+      (id,activity_id,category,label,unit,qty,unit_cost,spent,month,note) VALUES (?,?,?,?,?,?,?,?,?,?)`);
+    await db.prepare("DELETE FROM mre_cost WHERE activity_id=?").run(cur.row.id);
     for(const l of p.data.lines)
-      ins.run(newId("mrc"), cur.row.id, l.category, l.label, l.unit, l.qty, l.unit_cost,
+      await ins.run(newId("mrc"), cur.row.id, l.category, l.label, l.unit, l.qty, l.unit_cost,
               l.spent, l.month, l.note);
-    db.prepare("UPDATE mre_activity SET rev=rev+1, updated_at=datetime('now') WHERE id=?")
+    await db.prepare("UPDATE mre_activity SET rev=rev+1, updated_at=now() WHERE id=?")
       .run(cur.row.id);
-  })();
+  });
 
-  const a = one(req, cur.row.id);
-  audit(req, "update", cur.row.id,
+  const a = await one(req, cur.row.id);
+  await audit(req, "update", cur.row.id,
     `Budget MRE — ${cur.row.title} : ${p.data.lines.length} ligne(s), ${a.budget} ${a.currency}`);
   res.json({ activity:a });
 });
 
-r.delete("/:id", requireCap("del"), (req, res) => {
-  const cur = mine(req, req.params.id);
+r.delete("/:id", requireCap("del"), async (req, res) => {
+  const cur = await mine(req, req.params.id);
   if(cur.error) return res.status(cur.status).json({ error:cur.error });
   /* Les lignes de coût partent en cascade : elles n'ont pas d'existence propre. */
-  db.prepare("DELETE FROM mre_activity WHERE id=?").run(cur.row.id);
-  audit(req, "delete", cur.row.id, `Plan MRE — activité supprimée : ${cur.row.title}`);
+  await db.prepare("DELETE FROM mre_activity WHERE id=?").run(cur.row.id);
+  await audit(req, "delete", cur.row.id, `Plan MRE — activité supprimée : ${cur.row.title}`);
   res.json({ ok:true });
 });
 
 /* Une activité, telle que la voit l'appelant. */
-function one(req, id){
-  const a = db.prepare(
+async function one(req, id){
+  const a = await db.prepare(
     `SELECT a.*, o.name office_name, i.code indicator_code FROM mre_activity a
      LEFT JOIN offices o ON o.id=a.office_id LEFT JOIN indicators i ON i.id=a.indicator_id
      WHERE a.id=?`).get(id);
   if(!a) return null;
-  return shape(a, costsOf([id])[id], porteeLabels([a.geo_pcode]));
+  return shape(a, (await costsOf([id]))[id], await porteeLabels([a.geo_pcode]));
 }
 
 /* L'activité existe-t-elle, et relève-t-elle de l'appelant ?
    Un compte cloisonné lit le plan national mais ne le modifie pas : les deux
    sont vrais en même temps, d'où la distinction 404 / 403. */
-function mine(req, id){
-  const row = db.prepare("SELECT * FROM mre_activity WHERE id=?").get(id);
+async function mine(req, id){
+  const row = await db.prepare("SELECT * FROM mre_activity WHERE id=?").get(id);
   if(!row) return { error:"activité introuvable", status:404 };
-  const bound = officeBound(req.user);
+  const bound = await officeBound(req.user);
   if(bound && row.office_id !== bound)
     return { error: row.office_id
       ? "cette activité relève d'un autre bureau"

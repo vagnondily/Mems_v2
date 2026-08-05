@@ -20,17 +20,22 @@
 --
 --  `users.tabs` stocke des identifiants d'onglets : il faut les reporter, sinon
 --  les comptes qui avaient un choix explicite se retrouveraient sans navigation.
+--  (`users.tabs` est jsonb depuis le portage PostgreSQL : jsonb_array_elements_text
+--  et jsonb_agg remplacent ici json_each/json_group_array.)
 -- =====================================================================
 
 -- Quiconque avait accès à l'un des deux anciens onglets reçoit les deux nouveaux :
 -- leur contenu s'est réparti entre eux, restreindre serait retirer un accès.
 UPDATE users
 SET tabs = (
-  SELECT json_group_array(t.value) FROM (
-    SELECT j.value AS value FROM json_each(users.tabs) j
+  SELECT jsonb_agg(t.value) FROM (
+    SELECT j.value AS value FROM jsonb_array_elements_text(users.tabs) AS j(value)
     WHERE j.value NOT IN ('planning','actual')
     UNION SELECT 'suivi'
     UNION SELECT 'programme'
   ) t
 )
-WHERE EXISTS (SELECT 1 FROM json_each(users.tabs) k WHERE k.value IN ('planning','actual'));
+WHERE EXISTS (
+  SELECT 1 FROM jsonb_array_elements_text(users.tabs) AS k(value)
+  WHERE k.value IN ('planning','actual')
+);

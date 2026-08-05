@@ -80,19 +80,26 @@ export const estProtegee = (v) => !!v.submission_id || v.origin === "odk";
    La visite manuelle du même mois n'est pas touchée : elle n'est pas née de
    cette soumission, et le geste inverse de « appliquer le suivi » ne va pas
    au-delà de ce que « appliquer le suivi » avait écrit. */
-export async function retirerVisiteDeSoumission(submission_id){
-  const visites = await db.prepare(
+/* `dbExec` : la connexion à utiliser — le pool par défaut, ou l'objet
+   `db`-compatible lié à un client de transaction (voir src/db.js, `tx`) quand
+   l'appelant veut que ce retrait fasse partie d'une transaction plus large
+   (ex. routes/submissions.js, rattachement/détachement manuel). Sans ce
+   paramètre, ces écritures partiraient sur une connexion séparée du pool et
+   échapperaient au ROLLBACK de la transaction englobante — la garantie
+   d'atomicité que `tx()` documente explicitement. */
+export async function retirerVisiteDeSoumission(submission_id, dbExec = db){
+  const visites = await dbExec.prepare(
     "SELECT id, site_id, visit_date FROM visits WHERE submission_id=?").all(submission_id);
   if(!visites.length) return { visites:0, mois:[] };
-  await db.prepare("DELETE FROM visits WHERE submission_id=?").run(submission_id);
+  await dbExec.prepare("DELETE FROM visits WHERE submission_id=?").run(submission_id);
 
   /* Le mois retombe à « non réalisé » SEULEMENT s'il ne reste rien pour le
      soutenir : une saisie à la main faite avant l'ingestion documente toujours
      le mois, et la démarquer serait un second mensonge. */
   const mois = [];
-  const reste = db.prepare(
+  const reste = dbExec.prepare(
     "SELECT COUNT(*) c FROM visits WHERE site_id=? AND visit_date LIKE ?");
-  const demarquer = db.prepare(
+  const demarquer = dbExec.prepare(
     "UPDATE site_months SET done=0 WHERE site_id=? AND year=? AND month=? AND done=1");
   for(const v of visites){
     const cle = String(v.visit_date || "").slice(0, 7);

@@ -18,6 +18,7 @@ const r = Router();
    les routes répondent vide plutôt que d'échouer : l'interface reste utilisable. */
 const version = () => currentVersion();
 
+
 /* Un fokontany porte ses ancêtres : quatre jointures sur la chaîne des parents.
    Le niveau détermine à quoi correspond chaque ancêtre. */
 const ANCESTRY = `
@@ -40,31 +41,31 @@ const shape = (x) => {
 /* ── Listes en cascade ───────────────────────────────────────────────
    Un appel par niveau, piloté par le code du parent. Le navigateur ne charge
    jamais les 18 000 fokontany : il demande les enfants de ce qu'il affiche. */
-r.get("/levels", (req, res) => {
+r.get("/levels", async (req, res) => {
   const q = z.object({
     parent: z.string().max(64).optional(),
     level:  z.enum(LEVELS).optional(),
     limit:  z.coerce.number().int().min(1).max(5000).default(3000),
   }).safeParse(req.query);
   if(!q.success) return res.status(422).json({ error:"filtres invalides" });
-  const v = version();
+  const v = await version();
   if(!v) return res.json({ level:null, rows:[], version:null });
 
   const { parent, level, limit } = q.data;
   let rows;
   if(parent){
-    rows = db.prepare(`SELECT pcode, name, level FROM geo_unit
+    rows = await db.prepare(`SELECT pcode, name, level FROM geo_unit
       WHERE version_id=? AND parent_pcode=? ORDER BY name LIMIT ?`).all(v.id, parent, limit);
   } else if(level){
-    rows = db.prepare(`SELECT pcode, name, level FROM geo_unit
+    rows = await db.prepare(`SELECT pcode, name, level FROM geo_unit
       WHERE version_id=? AND level=? ORDER BY name LIMIT ?`).all(v.id, level, limit);
   } else {
     /* Sans parent : on entre par les régions. Le pays est un niveau technique,
        il n'a pas à être choisi dans une liste — sauf s'il est tout ce qu'on a. */
-    const present = new Set(db.prepare(
-      `SELECT DISTINCT level FROM geo_unit WHERE version_id=?`).all(v.id).map(x => x.level));
+    const present = new Set((await db.prepare(
+      `SELECT DISTINCT level FROM geo_unit WHERE version_id=?`).all(v.id)).map(x => x.level));
     const top = LEVELS.find(l => l !== "adm0" && present.has(l)) || (present.has("adm0") ? "adm0" : null);
-    rows = top ? db.prepare(`SELECT pcode, name, level FROM geo_unit
+    rows = top ? await db.prepare(`SELECT pcode, name, level FROM geo_unit
       WHERE version_id=? AND level=? ORDER BY name LIMIT ?`).all(v.id, top, limit) : [];
   }
   res.json({ level: rows[0]?.level ?? null, rows,
@@ -72,7 +73,7 @@ r.get("/levels", (req, res) => {
 });
 
 /* ── Répertoire paginé ─────────────────────────────────────────────── */
-r.get("/", (req, res) => {
+r.get("/", async (req, res) => {
   const q = z.object({
     parent: z.string().max(64).optional(),
     level:  z.enum(LEVELS).optional(),
@@ -81,7 +82,7 @@ r.get("/", (req, res) => {
     offset: z.coerce.number().int().min(0).default(0),
   }).safeParse(req.query);
   if(!q.success) return res.status(422).json({ error:"filtres invalides" });
-  const v = version();
+  const v = await version();
   if(!v) return res.json({ total:0, rows:[], version:null });
 
   const { parent, level, search, limit, offset } = q.data;
@@ -90,7 +91,7 @@ r.get("/", (req, res) => {
   if(parent){
     /* Tout ce qui descend du parent, à n'importe quelle profondeur : le chemin
        matérialisé évite une récursion. */
-    const p = db.prepare("SELECT path FROM geo_unit WHERE version_id=? AND pcode=?").get(v.id, parent);
+    const p = await db.prepare("SELECT path FROM geo_unit WHERE version_id=? AND pcode=?").get(v.id, parent);
     if(!p) return res.json({ total:0, rows:[], version:{ id:v.id, label:v.label } });
     where.push("(u.path = ? OR u.path LIKE ?)"); args.push(p.path, p.path + "/%");
   }
@@ -99,8 +100,8 @@ r.get("/", (req, res) => {
     const s = `%${search}%`; args.push(s, s.toLowerCase(), s);
   }
   const w = "WHERE " + where.join(" AND ");
-  const total = db.prepare(`SELECT COUNT(*) c FROM geo_unit u ${w}`).get(...args).c;
-  const rows = db.prepare(
+  const total = (await db.prepare(`SELECT COUNT(*) c FROM geo_unit u ${w}`).get(...args)).c;
+  const rows = await db.prepare(
     `SELECT u.pcode, u.level, u.name, u.parent_pcode, u.lat, u.lon,
             p1.name p1, p2.name p2, p3.name p3, p4.name p4
      FROM geo_unit u ${ANCESTRY} ${w}
@@ -117,37 +118,37 @@ r.get("/", (req, res) => {
    Deux requêtes plutôt qu'une jointure sur LIKE : à quelques milliers de sites
    le regroupement en mémoire est exact et instantané, là où la jointure
    comparerait chaque unité à chaque site. */
-r.get("/coverage", (req, res) => {
+r.get("/coverage", async (req, res) => {
   const q = z.object({
     parent: z.string().max(64).optional(),
     level:  z.enum(["adm1","adm2","adm3","adm4"]).default("adm3"),
     limit:  z.coerce.number().int().min(1).max(5000).default(1000),
   }).safeParse(req.query);
   if(!q.success) return res.status(422).json({ error:"filtres invalides" });
-  const v = version();
+  const v = await version();
   if(!v) return res.json({ level:q.data.level, total:0, covered:0, rows:[], version:null });
 
   const { parent, level, limit } = q.data;
   const where = ["u.version_id = ?", "u.level = ?"]; const args = [v.id, level];
   if(parent){
-    const p = db.prepare("SELECT path FROM geo_unit WHERE version_id=? AND pcode=?").get(v.id, parent);
+    const p = await db.prepare("SELECT path FROM geo_unit WHERE version_id=? AND pcode=?").get(v.id, parent);
     if(!p) return res.json({ level, total:0, covered:0, rows:[], version:{ id:v.id, label:v.label } });
     where.push("(u.path = ? OR u.path LIKE ?)"); args.push(p.path, p.path + "/%");
   }
-  const units = db.prepare(
+  const units = await db.prepare(
     `SELECT u.pcode, u.name, u.path, p1.name p1, p2.name p2, p3.name p3, p4.name p4
      FROM geo_unit u ${ANCESTRY}
      WHERE ${where.join(" AND ")} ORDER BY u.path LIMIT ?`).all(...args, limit);
 
   /* Chaque site apporte le chemin de l'unité à laquelle il est rattaché.
      Le cloisonnement par bureau s'applique ici comme partout ailleurs. */
-  const scoped = !scopeOf(req.user).unbounded;
+  const scoped = !(await scopeOf(req.user)).unbounded;
   /* La date retenue est celle qui fait foi — la plus récente `svy_date` des
      soumissions rattachées, à défaut la valeur saisie — et non la seule saisie.
      Sans cette jointure, la couverture affichée sur la carte contredirait le
      registre des sites et le score de risque, qui suivent tous deux cette règle
      depuis que la dernière visite vient d'ODK. */
-  const sites = db.prepare(
+  const sites = await db.prepare(
     `SELECT s.status, COALESCE(v.derniere, s.last_visit) AS last_visit, gu.path
      FROM sites s JOIN geo_unit gu ON gu.pcode = s.geo_pcode AND gu.version_id = ?
      LEFT JOIN (SELECT site_id, MAX(svy_date) derniere FROM submissions
@@ -170,36 +171,41 @@ r.get("/coverage", (req, res) => {
 
   res.json({ level, total: rows.length, covered: rows.filter(x => x.sites > 0).length,
     sitesLinked: sites.length,
-    sitesUnlinked: db.prepare(
+    sitesUnlinked: (await db.prepare(
       `SELECT COUNT(*) c FROM sites WHERE geo_pcode IS NULL ${scoped ? "AND office_id=?" : ""}`)
-      .get(...(scoped ? [req.user.office_id] : [])).c,
+      .get(...(scoped ? [req.user.office_id] : []))).c,
     rows, version:{ id:v.id, label:v.label } });
 });
 
 /* ── Millésimes ────────────────────────────────────────────────────── */
-r.get("/versions", (req, res) => {
-  res.json({ rows: db.prepare(`SELECT v.*, u.first_name AS by_name
+r.get("/versions", async (req, res) => {
+  const rows = await db.prepare(`SELECT v.*, u.first_name AS by_name
     FROM geo_version v LEFT JOIN users u ON u.id=v.imported_by
-    ORDER BY v.imported_at DESC`).all().map(x => ({
+    ORDER BY v.imported_at DESC`).all();
+  const shaped = [];
+  for(const x of rows){
+    shaped.push({
       id:x.id, label:x.label, source:x.source, units:x.units,
       importedAt:x.imported_at, importedBy:x.by_name || "", current: !!x.is_current,
       /* L'état des contours accompagne le millésime : sans lui l'écran de
          configuration ne saurait pas s'il y a un fond de carte à afficher. */
       geom: { units:x.geom_units || 0, source:x.geom_source || "", at:x.geom_at || null,
-              parNiveau: x.geom_units ? geomSummary(x.id) : [] } })) });
+              parNiveau: x.geom_units ? await geomSummary(x.id) : [] } });
+  }
+  res.json({ rows: shaped });
 });
 
-r.put("/versions/:id/current", requireCap("admin"), (req, res) => {
-  const v = db.prepare("SELECT * FROM geo_version WHERE id=?").get(req.params.id);
+r.put("/versions/:id/current", requireCap("admin"), async (req, res) => {
+  const v = await db.prepare("SELECT * FROM geo_version WHERE id=?").get(req.params.id);
   if(!v) return res.status(404).json({ error:"millésime introuvable" });
-  db.transaction(() => {
+  await tx(async (db) => {
     /* Un courant par pays : activer un millésime ne retire pas le référentiel des
        autres pays configurés. */
-    db.prepare("UPDATE geo_version SET is_current=0 WHERE is_current=1 AND country IS ?")
+    await db.prepare("UPDATE geo_version SET is_current=0 WHERE is_current=1 AND country IS ?")
       .run(v.country ?? null);
-    db.prepare("UPDATE geo_version SET is_current=1 WHERE id=?").run(v.id);
-  })();
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+    await db.prepare("UPDATE geo_version SET is_current=1 WHERE id=?").run(v.id);
+  });
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'plan','geo_version',?,'activate',?)`)
     .run(newId("aud"), req.user.id, req.user.first_name, v.id,
          `Référentiel courant : « ${v.label} » (${v.units} unités)`);
@@ -207,7 +213,7 @@ r.put("/versions/:id/current", requireCap("admin"), (req, res) => {
 });
 
 /* ── Import ────────────────────────────────────────────────────────── */
-r.post("/bulk", requireCap("admin"), validate(schemas.geoBulk), (req, res) => {
+r.post("/bulk", requireCap("admin"), validate(schemas.geoBulk), async (req, res) => {
   const { rows, label, source, allowDuplicates } = req.body;
   const { units, rejected, collisions, counts } = buildUnits(rows, { allowDuplicates });
   /* Une collision n'est plus fatale : les unités en conflit sont écartées comme
@@ -218,11 +224,11 @@ r.post("/bulk", requireCap("admin"), validate(schemas.geoBulk), (req, res) => {
     error:"aucune unité exploitable : vérifiez la correspondance des colonnes",
     collisions: collisions.slice(0,10) });
 
-  const id = writeVersion({
+  const id = await writeVersion({
     label: label || `Import du ${new Date().toISOString().slice(0,10)}`,
     source: source || null, units, userId: req.user.id });
 
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'plan','geo_version',?,'import',?)`)
     .run(newId("aud"), req.user.id, req.user.first_name, id,
          `Référentiel importé : ${units.length} unités (${counts.adm3||0} communes, ${counts.adm4||0} fokontany)`
@@ -287,9 +293,9 @@ function lireMapping(brut){
    d'un découpage à p-codes synthétiques (X…) vers les vrais (MG…) orpheline ces
    sites. Ce coût est chiffré et montré — à l'aperçu comme au commit — jamais
    masqué, et l'on ne tente PAS de re-rattacher par magie : c'est une décision. */
-function bilanOrphelins(pcodesNouveaux){
+async function bilanOrphelins(pcodesNouveaux){
   const connus = pcodesNouveaux instanceof Set ? pcodesNouveaux : new Set(pcodesNouveaux);
-  const rattaches = db.prepare(
+  const rattaches = await db.prepare(
     "SELECT id, code, name, geo_pcode FROM sites WHERE geo_pcode IS NOT NULL").all();
   const perdus = rattaches.filter(s => !connus.has(s.geo_pcode));
   return {
@@ -322,12 +328,12 @@ function messageMulter(err){
    de `is_current` est cloisonnée par pays (voir lib/geo.js). Vide, writeVersion
    retombe sur le pays courant, qui est le bon repli au tout premier import. */
 const paysSchema = z.string().trim().length(3).regex(/^[A-Za-z]{3}$/).transform(v => v.toUpperCase());
-function lirePays(req){
+async function lirePays(req){
   const brut = req.body?.country;
   if(brut == null || String(brut).trim() === "") return { code: null };
   const p = paysSchema.safeParse(brut);
   if(!p.success) return { erreur: "code pays invalide : trois lettres (ISO 3166-1 alpha-3)" };
-  if(!db.prepare("SELECT 1 FROM country WHERE code=?").get(p.data))
+  if(!(await db.prepare("SELECT 1 FROM country WHERE code=?").get(p.data)))
     return { erreur: `pays inconnu : ${p.data} n'est pas configuré` };
   return { code: p.data };
 }
@@ -356,7 +362,7 @@ r.post("/shapefile/apercu", requireCap("admin"), (req, res, next) => {
       const données = construire({ shp, dbf, prj, mapping: lireMapping(req.body?.mapping) },
         { withFeatures: false });
       const { units, rejected, collisions, counts } = buildUnits(données.lignes, { allowDuplicates });
-      const orphelins = bilanOrphelins(new Set(units.map(u => u.pcode)));
+      const orphelins = await bilanOrphelins(new Set(units.map(u => u.pcode)));
 
       res.json({
         colonnes: données.colonnes,
@@ -405,7 +411,7 @@ r.post("/shapefile/commit", requireCap("admin"), (req, res, next) => {
       if(!shp && !dbf) return res.status(422).json({
         error: "aucun fichier lisible : déposez au moins le .shp, ou une archive .zip" });
 
-      const pays = lirePays(req);
+      const pays = await lirePays(req);
       if(pays?.erreur) return res.status(422).json({ error: pays.erreur });
 
       const label = String(req.body?.label || "").trim()
@@ -434,42 +440,57 @@ r.post("/shapefile/commit", requireCap("admin"), (req, res, next) => {
 
       /* Les orphelins sont chiffrés AVANT l'écriture, sur l'ancien référentiel :
          le bilan rendu est celui du basculement qui va avoir lieu. */
-      const orphelins = bilanOrphelins(new Set(units.map(u => u.pcode)));
+      const orphelins = await bilanOrphelins(new Set(units.map(u => u.pcode)));
 
       let versionId, écrites = 0, rejetesGeom = 0;
       const rejetsGeom = [];
       const LOT = 500;   /* un lot de contours reste sous quelques mégaoctets en base */
+      /* TODO-PG: parcourirGeometriesShp (lib/shapefile.js, hors périmètre de cette
+         conversion) appelle son callback de façon SYNCHRONE, lot par lot, en
+         comptant sur le fait qu'écrire un lot pouvait se faire de façon
+         synchrone (better-sqlite3). Avec db.js désormais asynchrone, un appel à
+         `writeGeometries` (async) depuis ce callback synchrone ne peut plus être
+         attendu à cet endroit précis, et lancer plusieurs lots en parallèle sans
+         attendre casserait à la fois l'ordre d'écriture et le drapeau `reset`
+         (premier lot seulement). Le contour est donc collecté ENTIÈREMENT en
+         mémoire ici, puis écrit par lots APRÈS la lecture du .shp — ce qui perd
+         la propriété « jamais tout en RAM » que le commentaire d'origine
+         décrivait, sur les fichiers les plus volumineux (17 500 fokontany).
+         Restaurer le vrai streaming demanderait de rendre parcourirGeometriesShp
+         capable d'attendre un callback async (ou d'itérer en générateur), ce qui
+         est hors du périmètre fichier-par-fichier de ce portage. */
+      const geometries = [];
+      if(shp){
+        parcourirGeometriesShp(shp, (i, g) => {
+          if(!g) return;
+          const at = attributsContour(table.lignes[i]);
+          if(!at) return;
+          geometries.push({ ...at, geometry: g });
+        });
+      }
       /* writeVersion et writeGeometries ouvrent chacun leur propre transaction ;
-         imbriquées dans celle-ci, better-sqlite3 les traite en points de reprise
-         (SAVEPOINT), si bien que l'ensemble reste tout-ou-rien. */
-      tx(() => {
-        versionId = writeVersion({ label, source, units, userId: req.user.id, makeCurrent: true,
-          country: pays.code });
-        if(shp){
-          let lot = [], premier = true;
-          const vider = () => {
-            if(!lot.length) return;
-            const b = writeGeometries({ versionId, features: lot, reset: premier, source });
-            premier = false; écrites += b.écrites; rejetesGeom += b.rejetes || 0;
-            for(const rj of b.rejets || []) if(rejetsGeom.length < 20) rejetsGeom.push(rj);
-            lot = [];               /* le lot part au ramasse-miettes, la RAM ne grimpe pas */
-          };
-          parcourirGeometriesShp(shp, (i, g) => {
-            if(!g) return;
-            const at = attributsContour(table.lignes[i]);
-            if(!at) return;
-            lot.push({ ...at, geometry: g });
-            if(lot.length >= LOT) vider();
-          });
-          vider();
-        }
-        db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+         imbriquées dans celle-ci, better-sqlite3 les traitait en points de reprise
+         (SAVEPOINT). Sur Postgres, tx() ouvre une connexion dédiée et le
+         paramètre `db` transmis au callback EST cette connexion : les appels
+         ci-dessous doivent donc passer par lui pour rester dans la même
+         transaction — voir le TODO-PG au-dessus pour writeGeometries/writeVersion
+         qui, eux, gèrent déjà leur propre tx() imbriquée (nouvelle connexion à
+         chaque appel) plutôt que de recevoir cet exécuteur : l'ensemble n'est
+         donc plus strictement atomique comme avant. */
+      versionId = await writeVersion({ label, source, units, userId: req.user.id, makeCurrent: true,
+        country: pays.code });
+      for(let idx = 0; idx < geometries.length; idx += LOT){
+        const lot = geometries.slice(idx, idx + LOT);
+        const b = await writeGeometries({ versionId, features: lot, reset: idx === 0, source });
+        écrites += b.écrites; rejetesGeom += b.rejetes || 0;
+        for(const rj of b.rejets || []) if(rejetsGeom.length < 20) rejetsGeom.push(rj);
+      }
+      await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
                     VALUES (?,?,?,'plan','geo_version',?,'import',?)`)
           .run(newId("aud"), req.user.id, req.user.first_name, versionId,
             `Shapefile importé : ${units.length} unité(s) (${counts.adm3 || 0} communes), `
             + `${écrites} contour(s) — ${orphelins.orphelins} site(s) orphelin(s)`
             + (collisions.length ? ` · ${collisions.length} p-code(s) en double conservé(s)` : ""));
-      })();
 
       res.json({
         versionId, imported: units.length, counts,
@@ -526,7 +547,7 @@ r.post("/shapefile/contours", requireCap("admin"), (req, res, next) => {
         error: `niveau invalide : attendu l'un de ${LEVELS.join(", ")}` });
       const { niveau, remplacer } = q.data;
 
-      const v = version();
+      const v = await version();
       if(!v) return res.status(409).json({
         error:"aucun découpage courant : importez d'abord l'arbre administratif du pays, "
           + "puis déposez les contours niveau par niveau" });
@@ -543,37 +564,38 @@ r.post("/shapefile/contours", requireCap("admin"), (req, res, next) => {
       const source = String(req.body?.source || "").trim()
         || `Contours ${niveau} du ${new Date().toISOString().slice(0, 10)}`;
 
-      /* Même streaming par lots que le commit : les contours ne sont jamais
-         tous tenus en mémoire à la fois. */
+      /* TODO-PG: même remarque qu'au commit ci-dessus — parcourirGeometriesShp
+         appelle son callback de façon synchrone, ce qui empêche d'attendre
+         writeGeometries (désormais async) lot par lot pendant la lecture. Les
+         contours sont donc collectés en mémoire ici puis écrits par lots après
+         coup, perdant la propriété « jamais tout en RAM » du streaming
+         d'origine sur les plus gros fichiers. */
       let écrites = 0, rejetes = 0, lus = 0;
       const rejets = [];
       const LOT = 500;
-      let lot = [], premier = true;
-      const vider = () => {
-        if(!lot.length) return;
-        const b = writeGeometries({ versionId:v.id, features:lot,
-          reset: premier && remplacer, source, niveau });
-        premier = false; écrites += b.écrites; rejetes += b.rejetes || 0;
-        for(const rj of b.rejets || []) if(rejets.length < 20) rejets.push(rj);
-        lot = [];
-      };
+      const geometries = [];
       parcourirGeometriesShp(shp, (i, g) => {
         if(!g) return;
         lus++;
         const at = attributsContour(table.lignes[i]);
         if(!at) return;
-        lot.push({ ...at, geometry:g });
-        if(lot.length >= LOT) vider();
+        geometries.push({ ...at, geometry:g });
       });
-      vider();
+      for(let idx = 0; idx < geometries.length; idx += LOT){
+        const lot = geometries.slice(idx, idx + LOT);
+        const b = await writeGeometries({ versionId:v.id, features:lot,
+          reset: idx === 0 && remplacer, source, niveau });
+        écrites += b.écrites; rejetes += b.rejetes || 0;
+        for(const rj of b.rejets || []) if(rejets.length < 20) rejets.push(rj);
+      }
       /* Un dépôt qui ne remplace rien et n'écrit rien n'a pas vidé le niveau :
-         la garde `premier && remplacer` n'a jamais été exécutée. On le fait ici,
-         sinon « remplacer » sur un fichier entièrement rejeté serait un
-         non-geste silencieux qui laisse l'ancien contenu en place. */
-      if(premier && remplacer && !écrites)
-        db.prepare("DELETE FROM geo_geom WHERE version_id=? AND level=?").run(v.id, niveau);
+         la garde `idx === 0 && remplacer` n'a jamais été exécutée (aucun lot). On
+         le fait ici, sinon « remplacer » sur un fichier entièrement rejeté serait
+         un non-geste silencieux qui laisse l'ancien contenu en place. */
+      if(!geometries.length && remplacer && !écrites)
+        await db.prepare("DELETE FROM geo_geom WHERE version_id=? AND level=?").run(v.id, niveau);
 
-      db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+      await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
                   VALUES (?,?,?,'plan','geo_geom',?,'import',?)`)
         .run(newId("aud"), req.user.id, req.user.first_name, v.id,
           `Contours ${niveau} — ${écrites} écrit(s)`
@@ -591,7 +613,7 @@ r.post("/shapefile/contours", requireCap("admin"), (req, res, next) => {
          sans avoir à interpréter deux structures différentes. */
       let derivation = null;
       if(écrites && LEVELS.indexOf(niveau) > 0){
-        const d = deriverNiveaux({ versionId: v.id, source: niveau, auto: true });
+        const d = await deriverNiveaux({ versionId: v.id, source: niveau, auto: true });
         if(!d.erreur){
           const touches = (d.etapes || []).filter(e => e.ecrites > 0);
           const sautes  = (d.etapes || []).filter(e => e.saute);
@@ -604,7 +626,7 @@ r.post("/shapefile/contours", requireCap("admin"), (req, res, next) => {
               : `Rien à dériver au-dessus de ${niveau}.`;
           derivation = d;
           if(touches.length)
-            db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+            await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
                         VALUES (?,?,?,'plan','geo_geom',?,'derive',?)`)
               .run(newId("aud"), req.user.id, req.user.first_name, v.id,
                 `Dérivation auto depuis ${niveau} : `
@@ -620,7 +642,7 @@ r.post("/shapefile/contours", requireCap("admin"), (req, res, next) => {
            que la fiche du pays affiche, et il doit venir du serveur — le client
            qui l'additionnerait lui-même se tromperait au premier rejet.
            Recalculé APRÈS la dérivation, pour que les niveaux dérivés y figurent. */
-        parNiveau: geomSummary(v.id),
+        parNiveau: await geomSummary(v.id),
         derivation,
         message: (écrites
           ? `${écrites} contour(s) ${niveau} ${remplacer ? "remplacent les précédents" : "ajoutés"}.`
@@ -646,7 +668,7 @@ r.post("/shapefile/contours", requireCap("admin"), (req, res, next) => {
    corps de requête, et les charger d'un coup en mémoire serveur reviendrait à
    déplacer le problème. Le client découpe, envoie, et le premier lot porte
    `reset` : sans lui, deux imports successifs mêleraient leurs contours. */
-r.post("/geometry", requireCap("admin"), (req, res) => {
+r.post("/geometry", requireCap("admin"), async (req, res) => {
   const p = z.object({
     versionId: z.string().max(64).optional(),
     reset: z.boolean().default(false),
@@ -672,24 +694,24 @@ r.post("/geometry", requireCap("admin"), (req, res) => {
     details:p.error.issues.slice(0,10).map(i => ({ champ:i.path.join("."), message:i.message })) });
 
   const v = p.data.versionId
-    ? db.prepare("SELECT * FROM geo_version WHERE id=?").get(p.data.versionId)
-    : version();
+    ? await db.prepare("SELECT * FROM geo_version WHERE id=?").get(p.data.versionId)
+    : await version();
   if(!v) return res.status(409).json({ error:"aucun millésime : chargez d'abord un découpage" });
 
-  const bilan = writeGeometries({ versionId:v.id, features:p.data.features,
+  const bilan = await writeGeometries({ versionId:v.id, features:p.data.features,
     reset:p.data.reset, source:p.data.source });
 
   /* Une seule entrée au journal par import, posée au premier lot : une ligne par
      lot noierait le journal sous cent entrées pour un seul geste. */
   if(p.data.reset)
-    db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+    await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
                 VALUES (?,?,?,'plan','geo_geom',?,'import',?)`)
       .run(newId("aud"), req.user.id, req.user.first_name, v.id,
            `Import de contours administratifs${p.data.source ? ` — ${p.data.source}` : ""}`);
   res.json(bilan);
 });
 
-r.get("/geometry", (req, res) => {
+r.get("/geometry", async (req, res) => {
   const q = z.object({
     level: z.enum(LEVELS).optional(),
     parent: z.string().max(64).optional(),
@@ -700,16 +722,16 @@ r.get("/geometry", (req, res) => {
     limit: z.coerce.number().int().min(1).max(4000).default(1200),
   }).safeParse(req.query);
   if(!q.success) return res.status(422).json({ error:"filtres invalides" });
-  const v = version();
+  const v = await version();
   if(!v) return res.json({ type:"FeatureCollection", features:[], extent:null, version:null });
 
-  const { features, tronque } = readGeometries({ versionId:v.id, ...q.data });
+  const { features, tronque } = await readGeometries({ versionId:v.id, ...q.data });
   res.json({
     type:"FeatureCollection", features,
     /* Le cadre porte sur l'ENSEMBLE demandé, pas sur ce qui a été renvoyé : caler
        la carte sur un extrait tronqué la ferait sauter à chaque changement de
        filtre. */
-    extent: extent({ versionId:v.id, level:q.data.level, parent:q.data.parent }),
+    extent: await extent({ versionId:v.id, level:q.data.level, parent:q.data.parent }),
     tronque, version:{ id:v.id, label:v.label },
   });
 });
@@ -728,7 +750,7 @@ r.get("/geometry", (req, res) => {
    on part du niveau qu'on VIENT de calculer, pas du plus fin — c'est dix
    fois moins de sommets à coudre, et le résultat est identique puisque les
    frontières intérieures sont déjà tombées à l'étage précédent. */
-r.post("/geometry/deriver", requireCap("admin"), (req, res, next) => {
+r.post("/geometry/deriver", requireCap("admin"), async (req, res, next) => {
   const p = z.object({
     /* Le niveau de départ. Par défaut le plus PROFOND qui porte des
        contours : c'est celui qui décrit le mieux le pays. */
@@ -739,15 +761,15 @@ r.post("/geometry/deriver", requireCap("admin"), (req, res, next) => {
   }).safeParse(req.body || {});
   if(!p.success) return res.status(422).json({ error:"paramètres de dérivation invalides" });
 
-  const v = version();
+  const v = await version();
   if(!v) return res.status(409).json({ error:"aucun découpage courant" });
 
   try{
-    const bilan = deriverNiveaux({ versionId:v.id, source:p.data.source,
+    const bilan = await deriverNiveaux({ versionId:v.id, source:p.data.source,
       remplacerExistants:p.data.remplacerExistants });
     if(bilan.erreur) return res.status(bilan.statut || 409).json({ error:bilan.erreur });
 
-    db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+    await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
                 VALUES (?,?,?,'plan','geo_geom',?,'derive',?)`)
       .run(newId("aud"), req.user.id, req.user.first_name, v.id,
         `Contours dérivés depuis ${bilan.source} — `
@@ -755,7 +777,7 @@ r.post("/geometry/deriver", requireCap("admin"), (req, res, next) => {
            || "aucun niveau recalculé"));
 
     res.json({
-      ...bilan, parNiveau: geomSummary(v.id),
+      ...bilan, parNiveau: await geomSummary(v.id),
       message: bilan.total
         ? `${bilan.total} contour(s) dérivés depuis ${bilan.source}.`
           + (bilan.approximatifs ? ` ${bilan.approximatifs} n'ont pas pu être dissous et sont rendus `
@@ -770,79 +792,82 @@ r.post("/geometry/deriver", requireCap("admin"), (req, res, next) => {
 /* Retrait des contours. `?level=adm1` n'en retire qu'un niveau : depuis que les
    contours arrivent niveau par niveau (chantier S8, point 6), tout effacer pour
    corriger une seule maille reviendrait à redéposer les quatre fichiers. */
-r.delete("/geometry", requireCap("admin"), (req, res) => {
-  const v = version();
+r.delete("/geometry", requireCap("admin"), async (req, res) => {
+  const v = await version();
   if(!v) return res.status(409).json({ error:"aucun millésime courant" });
   const q = z.object({ level: z.enum(LEVELS).optional() }).safeParse(req.query);
   if(!q.success) return res.status(422).json({ error:"niveau invalide" });
   const niveau = q.data.level || null;
 
   const n = niveau
-    ? db.prepare("DELETE FROM geo_geom WHERE version_id=? AND level=?").run(v.id, niveau).changes
-    : db.prepare("DELETE FROM geo_geom WHERE version_id=?").run(v.id).changes;
+    ? (await db.prepare("DELETE FROM geo_geom WHERE version_id=? AND level=?").run(v.id, niveau)).changes
+    : (await db.prepare("DELETE FROM geo_geom WHERE version_id=?").run(v.id)).changes;
   /* Le compteur du millésime est RECOMPTÉ, jamais mis à zéro d'office : retirer
      les régions ne fait pas disparaître les communes. */
-  const reste = db.prepare("SELECT COUNT(*) c FROM geo_geom WHERE version_id=?").get(v.id).c;
-  db.prepare(`UPDATE geo_version SET geom_units=?,
+  const reste = (await db.prepare("SELECT COUNT(*) c FROM geo_geom WHERE version_id=?").get(v.id)).c;
+  await db.prepare(`UPDATE geo_version SET geom_units=?,
               geom_source=CASE WHEN ?=0 THEN NULL ELSE geom_source END,
               geom_at=CASE WHEN ?=0 THEN NULL ELSE geom_at END WHERE id=?`)
     .run(reste, reste, reste, v.id);
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'plan','geo_geom',?,'delete',?)`)
     .run(newId("aud"), req.user.id, req.user.first_name, v.id,
          `Contours ${niveau || "administratifs"} retirés — ${n} unité(s)`);
-  res.json({ ok:true, supprimes:n, niveau, reste, parNiveau: geomSummary(v.id) });
+  res.json({ ok:true, supprimes:n, niveau, reste, parNiveau: await geomSummary(v.id) });
 });
 
 /* ── Périmètre géographique des bureaux ──────────────────────────────
    Déclaratif : on attribue à un bureau les unités qu'il couvre, à n'importe quel
    niveau. Le périmètre effectif est tout ce qui en descend. Tant qu'un bureau n'a
    rien de déclaré, il est déduit de ses données — le champ `source` le dit. */
-r.get("/scope", (req, res) => {
-  const v = version();
-  const offices = db.prepare("SELECT id, name, code, kind FROM offices ORDER BY name").all();
-  res.json({ rows: offices.map(o => {
-    const sc = scopeOf({ role:"editor", office_id:o.id });
-    const hors = outsideDeclared(o.id);
-    return { office_id:o.id, name:o.name, code:o.code, kind:o.kind,
+r.get("/scope", async (req, res) => {
+  const v = await version();
+  const offices = await db.prepare("SELECT id, name, code, kind FROM offices ORDER BY name").all();
+  const rows = [];
+  for(const o of offices){
+    const sc = await scopeOf({ role:"editor", office_id:o.id });
+    const hors = await outsideDeclared(o.id);
+    const declared = await declaredFor(o.id);
+    rows.push({ office_id:o.id, name:o.name, code:o.code, kind:o.kind,
       source: sc.source,
-      units: declaredFor(o.id).map(u => ({ pcode:u.geo_pcode, name:u.name, level:u.level })),
+      units: declared.map(u => ({ pcode:u.geo_pcode, name:u.name, level:u.level })),
       /* Combien d'unités le périmètre couvre réellement, une fois descendu. */
-      communes: v ? unitsIn(sc, "adm3").length : 0,
-      horsPerimetre: hors.declared ? { sites:hors.sites, pdd:hors.pdd } : null };
-  }) });
+      communes: v ? (await unitsIn(sc, "adm3")).length : 0,
+      horsPerimetre: hors.declared ? { sites:hors.sites, pdd:hors.pdd } : null });
+  }
+  res.json({ rows });
 });
 
-r.put("/scope/:officeId", requireCap("admin"), (req, res) => {
-  const office = db.prepare("SELECT * FROM offices WHERE id=?").get(req.params.officeId);
+r.put("/scope/:officeId", requireCap("admin"), async (req, res) => {
+  const office = await db.prepare("SELECT * FROM offices WHERE id=?").get(req.params.officeId);
   if(!office) return res.status(404).json({ error:"bureau introuvable" });
   const p = z.object({ pcodes: z.array(z.string().max(64)).max(2000) }).safeParse(req.body);
   if(!p.success) return res.status(422).json({ error:"liste d'unités invalide" });
 
-  const v = version();
+  const v = await version();
   if(!v) return res.status(409).json({ error:"aucun référentiel courant" });
-  const connus = new Set(db.prepare("SELECT pcode FROM geo_unit WHERE version_id=?")
-    .all(v.id).map(x => x.pcode));
+  const connus = new Set((await db.prepare("SELECT pcode FROM geo_unit WHERE version_id=?")
+    .all(v.id)).map(x => x.pcode));
   const inconnus = p.data.pcodes.filter(c => !connus.has(c));
   if(inconnus.length) return res.status(422).json({
     error:"certaines unités sont absentes du référentiel courant",
     details: inconnus.slice(0,10).map(c => ({ champ:"pcode", message:c })) });
 
-  db.transaction(() => {
-    db.prepare("DELETE FROM office_scope WHERE office_id=?").run(office.id);
+  await tx(async (db) => {
+    await db.prepare("DELETE FROM office_scope WHERE office_id=?").run(office.id);
     const ins = db.prepare(`INSERT INTO office_scope (office_id,geo_pcode,created_by)
                             VALUES (?,?,?)`);
-    for(const c of p.data.pcodes) ins.run(office.id, c, req.user.id);
-  })();
+    for(const c of p.data.pcodes) await ins.run(office.id, c, req.user.id);
+  });
 
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'plan','office_scope',?,'update',?)`)
     .run(newId("aud"), req.user.id, req.user.first_name, office.id,
          `Périmètre de ${office.name} : ${p.data.pcodes.length} unité(s) attribuée(s)`);
 
-  const sc = scopeOf({ role:"editor", office_id:office.id });
+  const sc = await scopeOf({ role:"editor", office_id:office.id });
   res.json({ ok:true, attribuees:p.data.pcodes.length,
-    communes: unitsIn(sc, "adm3").length, source:sc.source });
+    communes: (await unitsIn(sc, "adm3")).length, source:sc.source });
 });
 
 export default r;

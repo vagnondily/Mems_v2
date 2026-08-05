@@ -50,47 +50,47 @@
 -- =====================================================================
 
 CREATE TABLE submissions (
-  id            TEXT PRIMARY KEY,
+  id            text PRIMARY KEY,
   -- Identifiant du formulaire d'origine, tel que la source le nomme.
-  form_id       TEXT NOT NULL,
+  form_id       text NOT NULL,
   -- ON DELETE SET NULL et non CASCADE : retirer une source de son écran de
   -- configuration ne doit pas effacer les soumissions déjà versées, qui portent
   -- des visites et des dates de dernier suivi.
-  odk_form_id   TEXT REFERENCES odk_forms(id) ON DELETE SET NULL,
-  connector_id  TEXT REFERENCES connector(id) ON DELETE SET NULL,
+  odk_form_id   text REFERENCES odk_forms(id) ON DELETE SET NULL,
+  connector_id  text REFERENCES connector(id) ON DELETE SET NULL,
   -- La clé d'idempotence : deux tirages successifs se recouvrent au lieu de
   -- créer des doublons. C'est `__id` dans l'API OData d'ODK Central.
-  instance_id   TEXT NOT NULL,
-  submitted_at  TEXT,                 -- horodatage du dépôt sur le serveur
-  svy_date      TEXT,                 -- SvyDate : la date DÉCLARÉE de collecte
+  instance_id   text NOT NULL,
+  submitted_at  timestamptz,                 -- horodatage du dépôt sur le serveur
+  svy_date      timestamptz,                 -- SvyDate : la date DÉCLARÉE de collecte
   -- Ce que le formulaire portait, avant tout rattachement. Conservé brut : un
   -- code corrigé par le rattachement ferait perdre la trace de ce qui a été saisi.
-  site_code_raw TEXT,
-  site_name_raw TEXT,
-  activity_tag  TEXT,
-  site_id       TEXT REFERENCES sites(id) ON DELETE SET NULL,
-  geo_pcode     TEXT,
-  lat           REAL,
-  lon           REAL,
-  gps_accuracy  REAL,                 -- en mètres, 4e composante du geopoint
+  site_code_raw text,
+  site_name_raw text,
+  activity_tag  text,
+  site_id       text REFERENCES sites(id) ON DELETE SET NULL,
+  geo_pcode     text,
+  lat           double precision,
+  lon           double precision,
+  gps_accuracy  double precision,                 -- en mètres, 4e composante du geopoint
   -- Quelle passe a conclu ('code_externe', 'pcode_adm4', 'nom_activite',
   -- 'nom_seul'), ou NULL quand aucune n'a conclu. Pas de contrainte CHECK : la
   -- liste des passes vit dans lib/rattachement.js, où elle est écrite, testée et
   -- documentée. La recopier ici en ferait une seconde source de vérité.
-  resolution_passe     TEXT,
-  resolution_motif     TEXT NOT NULL DEFAULT '',
+  resolution_passe     text,
+  resolution_motif     text NOT NULL DEFAULT '',
   -- Indice de confiance de 0 à 1. Il ne sert pas à trier automatiquement : il
   -- sert à ce qu'un humain sache lesquels relire en premier.
-  resolution_confiance REAL NOT NULL DEFAULT 0,
-  resolution_at        TEXT,
-  raw           TEXT NOT NULL DEFAULT '{}',
-  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  resolution_confiance double precision NOT NULL DEFAULT 0,
+  resolution_at        timestamptz,
+  raw           jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now()
 );
 
 -- L'unicité est portée par un index NOMMÉ plutôt que par un UNIQUE en ligne :
--- l'index implicite d'une contrainte s'appelle `sqlite_autoindex_…` et n'est ni
--- lisible dans un plan de requête, ni supprimable si la règle changeait.
+-- l'index implicite d'une contrainte inline est moins lisible dans un plan de
+-- requête, et un index nommé se supprime si la règle changeait.
 CREATE UNIQUE INDEX idx_submissions_instance ON submissions(instance_id);
 
 -- « Dernière date de suivi disponible dans odk selon svydate » se lit par un
@@ -112,7 +112,7 @@ CREATE INDEX idx_submissions_orphelines ON submissions(created_at) WHERE site_id
 -- d'unicité obligerait à en fausser un pour pouvoir enregistrer l'autre ; sans
 -- elle, l'ambiguïté entre dans la base telle qu'elle est, et le résolveur la
 -- traite pour ce qu'elle est : deux candidats égaux, donc aucun.
-ALTER TABLE sites ADD COLUMN external_code TEXT;
+ALTER TABLE sites ADD COLUMN external_code text;
 CREATE INDEX idx_sites_external_code ON sites(external_code);
 
 -- ── Une visite peut venir d'une soumission ───────────────────────────
@@ -121,5 +121,5 @@ CREATE INDEX idx_sites_external_code ON sites(external_code);
 -- pas en créer une seconde. L'index partiel unique fait porter cette garantie
 -- par la base plutôt que par le code appelant : une idempotence qui ne tient
 -- qu'à un `SELECT` préalable se perd à la première exécution concurrente.
-ALTER TABLE visits ADD COLUMN submission_id TEXT REFERENCES submissions(id) ON DELETE SET NULL;
+ALTER TABLE visits ADD COLUMN submission_id text REFERENCES submissions(id) ON DELETE SET NULL;
 CREATE UNIQUE INDEX idx_visits_submission ON visits(submission_id) WHERE submission_id IS NOT NULL;

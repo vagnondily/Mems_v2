@@ -56,27 +56,27 @@
 --  Le triplet (site_id, code, source) est unique : c'est ce qui rend l'import
 --  d'une table de correspondance idempotent sans qu'aucun code applicatif n'ait
 --  à le garantir. Il est doublé d'un index partiel sur (site_id, code) quand la
---  source est absente, parce que SQLite considère deux NULL comme distincts :
+--  source est absente, parce que deux NULL sont distincts pour l'unicité :
 --  sans lui, la même paire sans source pourrait entrer autant de fois qu'on la
 --  soumettrait, et l'idempotence promise serait fausse précisément dans le cas
 --  le plus dépouillé.
 -- =====================================================================
 
 CREATE TABLE site_external_code (
-  id         TEXT PRIMARY KEY,
+  id         text PRIMARY KEY,
   -- CASCADE, contrairement à `submissions.site_id` : un alias n'a aucune
   -- existence propre. Il ne porte ni observation, ni date, ni décision — il ne
   -- dit que « telle source appelle ce site comme ceci ». Le site supprimé, il ne
   -- désigne plus rien et le conserver ne ferait que polluer l'index des codes.
-  site_id    TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
-  code       TEXT NOT NULL,
+  site_id    text NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  code       text NOT NULL,
   -- Le form_id, ou le nom de la source, qui emploie ce code. Nullable : le
   -- bureau possède des tables de correspondance dont on ne sait plus de quel
   -- formulaire elles viennent, et refuser de les charger pour cette seule raison
   -- reviendrait à préférer aucune donnée à une donnée incomplète.
-  source     TEXT,
-  note       TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  source     text,
+  note       text,
+  created_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_site_alias_code ON site_external_code(code);
@@ -92,8 +92,13 @@ CREATE INDEX idx_site_alias_site ON site_external_code(site_id);
 -- réservée « fiche du site ». Sans cette reprise, un site configuré avant cette
 -- migration apparaîtrait sans aucun code dans l'écran qui les liste, alors qu'il
 -- en porte un — et l'opérateur le ressaisirait, créant un doublon.
+--
+-- `hex(randomblob(10))` n'a pas d'équivalent direct : `gen_random_uuid()` est
+-- une fonction native de PostgreSQL (aucune extension requise depuis la
+-- version 13) qui rend le même service — un identifiant aléatoire unique par
+-- ligne — sous une forme différente mais tout aussi opaque.
 INSERT INTO site_external_code (id, site_id, code, source, note)
-SELECT 'alias_' || upper(hex(randomblob(10))), id, trim(external_code), 'fiche du site',
+SELECT 'alias_' || upper(replace(gen_random_uuid()::text, '-', '')), id, trim(external_code), 'fiche du site',
        'repris de sites.external_code lors de la migration 018'
 FROM sites
 WHERE external_code IS NOT NULL AND trim(external_code) <> '';

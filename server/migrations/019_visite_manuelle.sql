@@ -36,14 +36,16 @@
 --  préalable se perd à la première exécution concurrente.
 --
 --  ── L'ordre des instructions est imposé, et vérifié à l'exécution ────
---  SQLite REVALIDE les lignes existantes lors d'un ADD COLUMN porteur d'un
---  CHECK : ajouter `manual_note` avant l'UPDATE de reprise échoue avec
---  « CHECK constraint failed », et le migrateur (db.js) enveloppant chaque
---  fichier dans une transaction, l'échec bloquerait le démarrage du serveur.
+--  SQLite REVALIDAIT les lignes existantes lors d'un ADD COLUMN porteur d'un
+--  CHECK ; PostgreSQL fait de même (le CHECK est vérifié pour toutes les lignes
+--  existantes au moment de l'ALTER TABLE), donc l'ordre reste imposé : ajouter
+--  `manual_note` avant l'UPDATE de reprise échouerait avec une violation de
+--  contrainte, et le migrateur (db.js) enveloppant chaque fichier dans une
+--  transaction, l'échec bloquerait le démarrage du serveur.
 --  D'où : origin (son défaut satisfait son propre CHECK) → manual_reason →
 --  created_by → reprise → et EN DERNIER manual_note, porteuse de la règle de
---  paire. Cette règle ne peut se poser qu'ainsi : SQLite n'accepte pas de CHECK
---  de table sans reconstruire la table entière.
+--  paire. Cette règle ne peut se poser qu'ainsi : ni SQLite ni PostgreSQL
+--  n'acceptent de CHECK de table posé après coup sans revalider l'existant.
 --
 --  ── Ce que ce schéma ne contraint délibérément pas ───────────────────
 --  1. Aucun CHECK sur la VALEUR du motif. La liste vit dans lib/visites.js, où
@@ -67,17 +69,18 @@
 -- (1) Le défaut satisfait le CHECK, donc la revalidation des lignes existantes
 -- passe. 'manuelle' plutôt que 'odk' : c'est la valeur la plus prudente, elle
 -- n'affirme aucune provenance qu'une soumission ne soutienne.
-ALTER TABLE visits ADD COLUMN origin TEXT NOT NULL DEFAULT 'manuelle'
+ALTER TABLE visits ADD COLUMN origin text NOT NULL DEFAULT 'manuelle'
   CHECK (origin IN ('odk','manuelle'));
 
 -- (2) Le motif, pris dans la liste fermée de lib/visites.js.
-ALTER TABLE visits ADD COLUMN manual_reason TEXT;
+ALTER TABLE visits ADD COLUMN manual_reason text;
 
--- (3) Qui a saisi. Sans DEFAUT : SQLite n'accepte une clause REFERENCES en ADD
--- COLUMN que si le défaut est NULL. ON DELETE SET NULL parce qu'un compte
--- désactivé puis supprimé ne doit pas emporter la visite qu'il a enregistrée —
--- le journal d'audit, lui, garde le libellé lisible de son auteur.
-ALTER TABLE visits ADD COLUMN created_by TEXT REFERENCES users(id) ON DELETE SET NULL;
+-- (3) Qui a saisi. Sans DEFAUT, comme dans l'original SQLite (qui l'imposait ;
+-- PostgreSQL ne l'impose pas mais la colonne reste sans défaut par fidélité de
+-- portage). ON DELETE SET NULL parce qu'un compte désactivé puis supprimé ne
+-- doit pas emporter la visite qu'il a enregistrée — le journal d'audit, lui,
+-- garde le libellé lisible de son auteur.
+ALTER TABLE visits ADD COLUMN created_by text REFERENCES users(id) ON DELETE SET NULL;
 
 -- (4) Reprise de l'existant, avant que le CHECK de paire ne se pose.
 UPDATE visits SET
@@ -88,7 +91,7 @@ UPDATE visits SET
 -- manuelle porte toujours un motif ». Obligatoire pour le motif « autre », mais
 -- cela se juge sur la liste applicative, donc dans zod (lib/validate.js) — le
 -- schéma ne connaît pas les valeurs des motifs, seulement leur présence.
-ALTER TABLE visits ADD COLUMN manual_note TEXT
+ALTER TABLE visits ADD COLUMN manual_note text
   CHECK (origin <> 'manuelle' OR manual_reason IS NOT NULL);
 
 -- Distinguer les visites manuelles des visites issues d'ODK est le geste de

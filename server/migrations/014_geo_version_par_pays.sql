@@ -22,7 +22,7 @@ DROP INDEX IF EXISTS idx_geo_version_current;
 
 -- Un courant par pays. Les millésimes sans pays — une base antérieure à la
 -- migration 013 dont le rattrapage n'aurait pas eu lieu — partagent le groupe
--- NULL, où deux NULL sont distincts en SQLite : l'unicité ne s'y applique pas,
+-- NULL, où deux NULL sont distincts pour l'unicité : elle ne s'y applique pas,
 -- ce qui est le comportement le moins destructeur pour une base ancienne.
 CREATE UNIQUE INDEX idx_geo_version_current
   ON geo_version(country) WHERE is_current = 1;

@@ -37,9 +37,9 @@
 --  ne pas bloquer la masterlist existante.
 -- =====================================================================
 
-ALTER TABLE indicators ADD COLUMN kind     TEXT NOT NULL DEFAULT 'crf';
-ALTER TABLE indicators ADD COLUMN level    TEXT;
-ALTER TABLE indicators ADD COLUMN activity TEXT;
+ALTER TABLE indicators ADD COLUMN kind     text NOT NULL DEFAULT 'crf';
+ALTER TABLE indicators ADD COLUMN level    text;
+ALTER TABLE indicators ADD COLUMN activity text;
 
 -- L'écran ouvre l'une ou l'autre nature : filtrer par `kind` est le geste
 -- de base, il passe par un index plutôt que par un balayage de la table.

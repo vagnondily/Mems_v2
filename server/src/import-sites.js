@@ -91,10 +91,10 @@ const nombre = (v) => { const n = parseFloat(String(txt(v)).replace(",", ".")); 
    (ou `{ erreur }`) plutôt que d'appeler process.exit — un import lancé par le
    serveur ne doit pas tuer le serveur. */
 export async function importerSites(){
-  migrate(path.join(here, "..", "migrations"));
+  await migrate(path.join(here, "..", "migrations"));
   if(!fs.existsSync(fichier)) return { erreur:`Fichier introuvable : ${fichier}` };
 
-  const version = currentVersion();
+  const version = await currentVersion();
   if(!version) return { erreur:"Aucun découpage administratif courant : chargez d'abord le shapefile du pays." };
 
   const wb = new ExcelJS.Workbook();
@@ -122,7 +122,7 @@ export async function importerSites(){
 
   /* Le référentiel d'activités, pour rapprocher le libellé long du fichier d'un
      tag réel. On indexe par nom normalisé. */
-  const activites = db.prepare("SELECT id, name, tag FROM activity_categories").all();
+  const activites = await db.prepare("SELECT id, name, tag FROM activity_categories").all();
   const actParNom = new Map(activites.map(a => [normalizeName(a.name), a]));
   const rapprocherActivite = (libelle) => {
     const norm = normalizeName(libelle);
@@ -141,7 +141,7 @@ export async function importerSites(){
      est mis à jour, pas réinséré. `codesVus` ne dédoublonne QUE ce passage-ci —
      préchargé depuis la base, il empêcherait de RÉUTILISER un code existant et
      ferait tout réinsérer à chaque relance. */
-  const existants = new Map(db.prepare("SELECT id, code FROM sites").all().map(r => [r.code, r.id]));
+  const existants = new Map((await db.prepare("SELECT id, code FROM sites").all()).map(r => [r.code, r.id]));
   const codesVus = new Set();
 
   /* L'identité : POI_code s'il est présent, non nul et unique ; sinon dérivée du
@@ -153,17 +153,24 @@ export async function importerSites(){
                   activiteMatch:0, ignores:0 };
   let indexAuto = 0;
 
-  const ins = db.prepare(`INSERT INTO sites
-    (id,code,name,status,activity_tag,category_id,program_area,site_type,
-     adm1,adm2,adm3,adm4,geo_pcode,urban_area,lat,lon,external_code,antenne)
-    VALUES (@id,@code,@name,'Active',@activity_tag,@category_id,@program_area,@site_type,
-     @adm1,@adm2,@adm3,@adm4,@geo_pcode,@urban_area,@lat,@lon,@external_code,@antenne)`);
-  const upd = db.prepare(`UPDATE sites SET name=@name, activity_tag=@activity_tag,
-     category_id=COALESCE(@category_id, category_id),
-     adm1=@adm1, adm2=@adm2, adm3=@adm3, adm4=@adm4, geo_pcode=@geo_pcode,
-     lat=COALESCE(@lat,lat), lon=COALESCE(@lon,lon),
-     external_code=COALESCE(@external_code, external_code), antenne=@antenne,
-     rev=rev+1, updated_at=datetime('now') WHERE id=@id`);
+  /* Les deux requêtes ci-dessous (préparées plus bas, DANS la transaction)
+     utilisaient des paramètres NOMMÉS (@col), propres à better-sqlite3 : db.js
+     ne traduit que des `?` positionnels (voir l'en-tête de src/db.js).
+     Converties en positionnels ; pour `ins`, l'ordre des propriétés de `rec`
+     (plus bas) est construit dans le MÊME ORDRE que la liste de colonnes, donc
+     `Object.values(rec)` s'y accorde sans qu'on réordonne rien. Pour `upd`,
+     l'ordre des `?` suit l'ordre d'apparition dans le texte SQL, listé
+     explicitement à l'appel.
+
+     Elles sont préparées à l'intérieur de `tx(async (db) => …)`, avec le `db`
+     de la transaction, et non plus avec l'import de module comme avant cette
+     conversion : sous better-sqlite3 une seule connexion physique existe, donc
+     peu importait par quel `db` une requête était préparée — tout passait par
+     elle. Sous pg, une transaction vit sur un client DÉDIÉ (voir src/db.js) ;
+     les préparer avec l'import de module les ferait exécuter sur une autre
+     connexion du pool, hors de cette transaction, et un rollback ne les
+     annulerait plus. Les garder sur le client de la transaction est ce qui
+     préserve exactement le comportement atomique d'origine. */
 
   const lignes = [];
   for(let r = ligneEntete + 1; r <= ws.rowCount && lignes.length < limite; r++){
@@ -180,12 +187,28 @@ export async function importerSites(){
   }
   bilan.lus = lignes.length;
 
-  const ecrire = () => tx(() => {
+  const ecrire = () => tx(async (db) => {
+    const ins = db.prepare(`INSERT INTO sites
+      (id,code,name,status,activity_tag,category_id,program_area,site_type,
+       adm1,adm2,adm3,adm4,geo_pcode,urban_area,lat,lon,external_code,antenne)
+      VALUES (?,?,?,'Active',?,?,?,?,
+       ?,?,?,?,?,?,?,?,?,?)`);
+    const upd = db.prepare(`UPDATE sites SET name=?, activity_tag=?,
+       category_id=COALESCE(?, category_id),
+       adm1=?, adm2=?, adm3=?, adm4=?, geo_pcode=?,
+       lat=COALESCE(?,lat), lon=COALESCE(?,lon),
+       external_code=COALESCE(?, external_code), antenne=?,
+       rev=rev+1, updated_at=now() WHERE id=?`);
     for(const l of lignes){
-      /* Rattachement par chemin de noms → p-code du millésime courant. */
-      const res = resolveUnit({ adm1:l.adm1, adm2:l.adm2, adm3:l.adm3, adm4:l.adm4 }, version.id);
+      /* Rattachement par chemin de noms → p-code du millésime courant.
+         TODO-PG: resolveUnit()/labelsFor() (lib/geo.js) parlent à la base via
+         l'import direct de ../db.js (le pool), pas via le client de cette
+         transaction — même réserve documentée dans lib/tpm.js:regenerate().
+         Sans conséquence ici (elles ne font que LIRE le référentiel géo, déjà
+         committé avant cet import), mais signalé plutôt que deviné. */
+      const res = await resolveUnit({ adm1:l.adm1, adm2:l.adm2, adm3:l.adm3, adm4:l.adm4 }, version.id);
       const geoPcode = res.pcode || null;
-      const lab = geoPcode ? labelsFor(geoPcode, version.id) : null;
+      const lab = geoPcode ? await labelsFor(geoPcode, version.id) : null;
       if(geoPcode) bilan.rattaches++; else bilan.sansGeo++;
 
       /* Identité : POI_code valide et unique, sinon GPS, sinon index. */
@@ -219,21 +242,25 @@ export async function importerSites(){
         antenne: l.office || null,
       };
       if(dry) continue;
-      if(existants.has(code)){ upd.run(rec); bilan.majs++; }
-      else { ins.run(rec); existants.set(code, rec.id); bilan.crees++; }
+      if(existants.has(code)){
+        await upd.run(rec.name, rec.activity_tag, rec.category_id, rec.adm1, rec.adm2, rec.adm3, rec.adm4,
+          rec.geo_pcode, rec.lat, rec.lon, rec.external_code, rec.antenne, rec.id);
+        bilan.majs++;
+      }
+      else { await ins.run(...Object.values(rec)); existants.set(code, rec.id); bilan.crees++; }
       bilan.ecrits++;
     }
-  })();   /* `tx` rend la transaction ; il faut l'exécuter — le `()` manquant écrivait zéro. */
+  });   /* `tx` exécute la transaction directement (elle est maintenant `async`, pas une usine à fonction) : il faut l'attendre — voir l'appel plus bas. */
 
   if(dry){
     /* En simulation on parcourt quand même pour compter le rattachement. */
     for(const l of lignes){
-      const res = resolveUnit({ adm1:l.adm1, adm2:l.adm2, adm3:l.adm3, adm4:l.adm4 }, version.id);
+      const res = await resolveUnit({ adm1:l.adm1, adm2:l.adm2, adm3:l.adm3, adm4:l.adm4 }, version.id);
       if(res.pcode) bilan.rattaches++; else bilan.sansGeo++;
       if(rapprocherActivite(l.tag)) bilan.activiteMatch++;
     }
   } else {
-    ecrire();
+    await ecrire();
   }
 
   log.info(dry ? "import des sites (simulation)" : "import des sites terminé", {

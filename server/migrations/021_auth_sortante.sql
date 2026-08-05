@@ -62,11 +62,11 @@
 --  clé par DATA_KEY, il ne dit rien de plus que `secret_enc` à côté de lui.
 -- =====================================================================
 
-ALTER TABLE odk_forms ADD COLUMN auth_schema      TEXT NOT NULL DEFAULT 'porteur';
-ALTER TABLE odk_forms ADD COLUMN auth_identifiant TEXT;
+ALTER TABLE odk_forms ADD COLUMN auth_schema      text NOT NULL DEFAULT 'porteur';
+ALTER TABLE odk_forms ADD COLUMN auth_identifiant text;
 
-ALTER TABLE connector ADD COLUMN auth_schema      TEXT NOT NULL DEFAULT 'porteur';
-ALTER TABLE connector ADD COLUMN auth_identifiant TEXT;
+ALTER TABLE connector ADD COLUMN auth_schema      text NOT NULL DEFAULT 'porteur';
+ALTER TABLE connector ADD COLUMN auth_identifiant text;
 
 -- Un connecteur réseau SANS secret n'émettait aucun en-tête : lib/foundry.js
 -- écrivait `...(token ? { Authorization: ... } : {})`. Le laisser à 'porteur' le
@@ -85,31 +85,46 @@ UPDATE connector SET auth_schema = 'aucun'
 CREATE TABLE source_session (
   -- Deux familles de sources, deux tables d'origine : la clé est composite plutôt
   -- que deux tables de cache jumelles qu'il faudrait corriger deux fois.
-  source_kind TEXT NOT NULL CHECK (source_kind IN ('odk_forms','connector')),
-  source_id   TEXT NOT NULL,
+  source_kind text NOT NULL CHECK (source_kind IN ('odk_forms','connector')),
+  source_id   text NOT NULL,
   -- Le jeton court dérivé. Chiffré comme tout secret au repos, bien qu'il soit
   -- éphémère : « éphémère » n'est pas « sans valeur », il ouvre la source.
-  jeton_enc   TEXT,
+  jeton_enc   text,
   -- Ce que la SOURCE a annoncé, pas ce que MEMS a calculé. Nul quand le second
   -- secret n'expire pas (un jeton d'API Kobo n'a pas de date de péremption).
-  expire_le   TEXT,
-  obtenu_le   TEXT,
+  expire_le   timestamptz,
+  obtenu_le   timestamptz,
   -- Un échec de renouvellement se SIGNALE et ne se rejoue pas en boucle : tant que
   -- ces deux colonnes sont fraîches, MEMS refuse de retenter et rend le motif.
-  echec_le    TEXT,
-  echec_motif TEXT,
-  empreinte   TEXT NOT NULL,
+  echec_le    timestamptz,
+  echec_motif text,
+  empreinte   text NOT NULL,
   PRIMARY KEY (source_kind, source_id)
 );
 
 -- Une clé étrangère ne peut pas viser deux tables. Les deux déclencheurs font le
 -- même travail : la disparition d'une source emporte le jeton dérivé qu'elle avait
 -- ouvert. Sans eux, un secret — même éphémère — survivrait à ce qu'il déverrouille.
-CREATE TRIGGER trg_session_purge_odk AFTER DELETE ON odk_forms
+-- PostgreSQL exige une fonction PL/pgSQL séparée pour porter le corps du
+-- déclencheur (contrairement à SQLite, où le corps s'écrit en ligne dans le
+-- CREATE TRIGGER) : c'est la seule différence de forme, le comportement est
+-- identique.
+CREATE FUNCTION trg_source_session_purge_odk() RETURNS trigger AS $$
 BEGIN
   DELETE FROM source_session WHERE source_kind='odk_forms' AND source_id=OLD.id;
+  RETURN OLD;
 END;
-CREATE TRIGGER trg_session_purge_connector AFTER DELETE ON connector
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_session_purge_odk AFTER DELETE ON odk_forms
+FOR EACH ROW EXECUTE FUNCTION trg_source_session_purge_odk();
+
+CREATE FUNCTION trg_source_session_purge_connector() RETURNS trigger AS $$
 BEGIN
   DELETE FROM source_session WHERE source_kind='connector' AND source_id=OLD.id;
+  RETURN OLD;
 END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_session_purge_connector AFTER DELETE ON connector
+FOR EACH ROW EXECUTE FUNCTION trg_source_session_purge_connector();

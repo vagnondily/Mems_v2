@@ -30,21 +30,21 @@
 
 -- ── Le prestataire ──────────────────────────────────────────────────
 CREATE TABLE tpm (
-  id         TEXT PRIMARY KEY,
-  name       TEXT NOT NULL UNIQUE,
-  code       TEXT,
+  id         text PRIMARY KEY,
+  name       text NOT NULL UNIQUE,
+  code       text,
   -- Bureau de rattachement principal : c'est lui qui valide au deuxième niveau.
   -- Facultatif, car un TPM peut opérer sur plusieurs bureaux ; dans ce cas la
   -- validation de niveau bureau revient au bureau de la zone affectée.
-  office_id  TEXT REFERENCES offices(id) ON DELETE SET NULL,
-  contact    TEXT,
-  email      TEXT,
-  phone      TEXT,
-  note       TEXT,
-  active     INTEGER NOT NULL DEFAULT 1,
-  rev        INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT
+  office_id  text REFERENCES offices(id) ON DELETE SET NULL,
+  contact    text,
+  email      text,
+  phone      text,
+  note       text,
+  active     smallint NOT NULL DEFAULT 1,
+  rev        integer NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz
 );
 
 -- Un compte peut appartenir à un TPM. C'est la troisième forme de cloisonnement,
@@ -52,43 +52,43 @@ CREATE TABLE tpm (
 -- que soit son rôle. Sur la colonne du compte plutôt que dans un rôle dédié —
 -- créer un sixième rôle aurait dupliqué la matrice des droits pour une seule
 -- différence, qui n'est pas une différence de droits mais de périmètre.
-ALTER TABLE users ADD COLUMN tpm_id TEXT REFERENCES tpm(id) ON DELETE SET NULL;
+ALTER TABLE users ADD COLUMN tpm_id text REFERENCES tpm(id) ON DELETE SET NULL;
 CREATE INDEX idx_users_tpm ON users(tpm_id);
 
 -- ── Le contrat et ses avenants ──────────────────────────────────────
 CREATE TABLE tpm_contract (
-  id         TEXT PRIMARY KEY,
-  tpm_id     TEXT NOT NULL REFERENCES tpm(id) ON DELETE CASCADE,
-  ref        TEXT NOT NULL,
+  id         text PRIMARY KEY,
+  tpm_id     text NOT NULL REFERENCES tpm(id) ON DELETE CASCADE,
+  ref        text NOT NULL,
   -- Le plafond initial. Il ne bouge JAMAIS : les évolutions passent par des
   -- avenants, sinon on perd l'historique de ce qui a été engagé et pourquoi.
-  ceiling    REAL NOT NULL DEFAULT 0 CHECK (ceiling >= 0),
+  ceiling    double precision NOT NULL DEFAULT 0 CHECK (ceiling >= 0),
   -- Le TPM facture en monnaie locale (70 000 MGA l'indemnité de superviseur),
   -- le plan MRE se tient en dollars. On ne convertit pas d'office : la devise est
   -- portée par le contrat et affichée telle quelle.
-  currency   TEXT NOT NULL DEFAULT 'MGA',
-  start_date TEXT,
-  end_date   TEXT,
-  status     TEXT NOT NULL DEFAULT 'actif'
+  currency   text NOT NULL DEFAULT 'MGA',
+  start_date timestamptz,
+  end_date   timestamptz,
+  status     text NOT NULL DEFAULT 'actif'
       CHECK (status IN ('projet','actif','suspendu','clos')),
-  note       TEXT,
-  rev        INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT
+  note       text,
+  rev        integer NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz
 );
 CREATE UNIQUE INDEX idx_tpm_contract_ref ON tpm_contract(tpm_id, ref);
 CREATE INDEX idx_tpm_contract_tpm ON tpm_contract(tpm_id);
 
 CREATE TABLE tpm_amendment (
-  id          TEXT PRIMARY KEY,
-  contract_id TEXT NOT NULL REFERENCES tpm_contract(id) ON DELETE CASCADE,
-  ref         TEXT,
+  id          text PRIMARY KEY,
+  contract_id text NOT NULL REFERENCES tpm_contract(id) ON DELETE CASCADE,
+  ref         text,
   -- Signé : un avenant peut réduire le plafond, pas seulement l'augmenter.
-  delta       REAL NOT NULL,
-  reason      TEXT NOT NULL,
-  signed_at   TEXT,
-  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  created_by  TEXT REFERENCES users(id) ON DELETE SET NULL
+  delta       double precision NOT NULL,
+  reason      text NOT NULL,
+  signed_at   timestamptz,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  created_by  text REFERENCES users(id) ON DELETE SET NULL
 );
 CREATE INDEX idx_tpm_amendment_c ON tpm_amendment(contract_id);
 
@@ -97,17 +97,17 @@ CREATE INDEX idx_tpm_amendment_c ON tpm_amendment(contract_id);
 -- c'est le contrat qui fixe les prix ; deux TPM n'ont pas le même barème, et le
 -- barème d'un contrat clos doit rester lisible pour relire ses plans.
 CREATE TABLE tpm_rate (
-  id          TEXT PRIMARY KEY,
-  contract_id TEXT NOT NULL REFERENCES tpm_contract(id) ON DELETE CASCADE,
+  id          text PRIMARY KEY,
+  contract_id text NOT NULL REFERENCES tpm_contract(id) ON DELETE CASCADE,
   -- Le rôle de la ligne dans le calcul, d'où la valeur dérive automatiquement.
   -- 'forfait' ne dérive de rien : sa quantité est saisie.
-  driver      TEXT NOT NULL DEFAULT 'forfait'
+  driver      text NOT NULL DEFAULT 'forfait'
       CHECK (driver IN ('superviseur','agent','vehicule','carburant','forfait')),
-  label       TEXT NOT NULL,
-  unit        TEXT,
-  unit_cost   REAL NOT NULL DEFAULT 0 CHECK (unit_cost >= 0),
-  active      INTEGER NOT NULL DEFAULT 1,
-  sort        INTEGER NOT NULL DEFAULT 0
+  label       text NOT NULL,
+  unit        text,
+  unit_cost   double precision NOT NULL DEFAULT 0 CHECK (unit_cost >= 0),
+  active      smallint NOT NULL DEFAULT 1,
+  sort        integer NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_tpm_rate_c ON tpm_rate(contract_id);
 
@@ -115,22 +115,22 @@ CREATE INDEX idx_tpm_rate_c ON tpm_rate(contract_id);
 -- L'unité de travail et de validation : ce qu'un TPM couvre dans un mois, et ce
 -- que cela coûte. Un plan par TPM et par mois — c'est la maille du circuit réel.
 CREATE TABLE tpm_plan (
-  id          TEXT PRIMARY KEY,
-  tpm_id      TEXT NOT NULL REFERENCES tpm(id) ON DELETE CASCADE,
-  contract_id TEXT NOT NULL REFERENCES tpm_contract(id) ON DELETE CASCADE,
-  year        INTEGER NOT NULL,
-  month       INTEGER NOT NULL CHECK (month BETWEEN 0 AND 11),
-  ref         TEXT,
+  id          text PRIMARY KEY,
+  tpm_id      text NOT NULL REFERENCES tpm(id) ON DELETE CASCADE,
+  contract_id text NOT NULL REFERENCES tpm_contract(id) ON DELETE CASCADE,
+  year        integer NOT NULL,
+  month       integer NOT NULL CHECK (month BETWEEN 0 AND 11),
+  ref         text,
   -- Le circuit. 'renvoye' n'est pas un rejet définitif : c'est un retour au TPM
   -- avec un motif, et le motif est dans tpm_review.
-  status      TEXT NOT NULL DEFAULT 'brouillon'
+  status      text NOT NULL DEFAULT 'brouillon'
       CHECK (status IN ('brouillon','soumis','valide_tpm','valide_bureau',
                         'valide_pays','renvoye','cloture')),
-  note        TEXT,
-  rev         INTEGER NOT NULL DEFAULT 1,
-  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  created_by  TEXT REFERENCES users(id) ON DELETE SET NULL,
-  updated_at  TEXT
+  note        text,
+  rev         integer NOT NULL DEFAULT 1,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  created_by  text REFERENCES users(id) ON DELETE SET NULL,
+  updated_at  timestamptz
 );
 -- Un seul plan par TPM et par mois : deux plans concurrents pour le même mois
 -- rendraient le plafond incalculable.
@@ -140,23 +140,23 @@ CREATE INDEX idx_tpm_plan_statut ON tpm_plan(status, year, month);
 -- L'affectation : une zone à couvrir, avec l'équipe et les jours qu'elle demande.
 -- C'est de ces quantités que le budget découle.
 CREATE TABLE tpm_zone (
-  id           TEXT PRIMARY KEY,
-  plan_id      TEXT NOT NULL REFERENCES tpm_plan(id) ON DELETE CASCADE,
+  id           text PRIMARY KEY,
+  plan_id      text NOT NULL REFERENCES tpm_plan(id) ON DELETE CASCADE,
   -- La zone est une unité administrative du référentiel courant, en général une
   -- commune : c'est la maille à laquelle le classeur raisonne (« TEAM1: AMBANISARIKA »).
-  geo_pcode    TEXT NOT NULL,
-  activity_tag TEXT,
-  team_label   TEXT,
+  geo_pcode    text NOT NULL,
+  activity_tag text,
+  team_label   text,
   -- Composition et durée. Le classeur porte exactement ces colonnes :
   -- Superviseur, Agent, Jour de travail, Déplacement, Moyen de déplacement.
-  supervisors  INTEGER NOT NULL DEFAULT 1 CHECK (supervisors >= 0),
-  agents       INTEGER NOT NULL DEFAULT 1 CHECK (agents >= 0),
-  days         INTEGER NOT NULL DEFAULT 1 CHECK (days >= 0),
-  travel_days  INTEGER NOT NULL DEFAULT 0 CHECK (travel_days >= 0),
-  vehicles     INTEGER NOT NULL DEFAULT 0 CHECK (vehicles >= 0),
-  fuel_litres  REAL    NOT NULL DEFAULT 0 CHECK (fuel_litres >= 0),
-  sites        INTEGER NOT NULL DEFAULT 0 CHECK (sites >= 0),
-  note         TEXT
+  supervisors  integer NOT NULL DEFAULT 1 CHECK (supervisors >= 0),
+  agents       integer NOT NULL DEFAULT 1 CHECK (agents >= 0),
+  days         integer NOT NULL DEFAULT 1 CHECK (days >= 0),
+  travel_days  integer NOT NULL DEFAULT 0 CHECK (travel_days >= 0),
+  vehicles     integer NOT NULL DEFAULT 0 CHECK (vehicles >= 0),
+  fuel_litres  double precision NOT NULL DEFAULT 0 CHECK (fuel_litres >= 0),
+  sites        integer NOT NULL DEFAULT 0 CHECK (sites >= 0),
+  note         text
 );
 CREATE INDEX idx_tpm_zone_plan ON tpm_zone(plan_id);
 CREATE INDEX idx_tpm_zone_geo  ON tpm_zone(geo_pcode);
@@ -168,19 +168,19 @@ CREATE INDEX idx_tpm_zone_geo  ON tpm_zone(geo_pcode);
 --
 -- total = qty1 × qty2 × unit_cost, comme la colonne F du classeur.
 CREATE TABLE tpm_line (
-  id         TEXT PRIMARY KEY,
-  plan_id    TEXT NOT NULL REFERENCES tpm_plan(id) ON DELETE CASCADE,
-  zone_id    TEXT REFERENCES tpm_zone(id) ON DELETE CASCADE,
-  driver     TEXT NOT NULL DEFAULT 'forfait',
-  label      TEXT NOT NULL,
-  unit       TEXT,
-  qty1       REAL NOT NULL DEFAULT 1 CHECK (qty1 >= 0),
-  qty2       REAL NOT NULL DEFAULT 1 CHECK (qty2 >= 0),
-  unit_cost  REAL NOT NULL DEFAULT 0 CHECK (unit_cost >= 0),
+  id         text PRIMARY KEY,
+  plan_id    text NOT NULL REFERENCES tpm_plan(id) ON DELETE CASCADE,
+  zone_id    text REFERENCES tpm_zone(id) ON DELETE CASCADE,
+  driver     text NOT NULL DEFAULT 'forfait',
+  label      text NOT NULL,
+  unit       text,
+  qty1       double precision NOT NULL DEFAULT 1 CHECK (qty1 >= 0),
+  qty2       double precision NOT NULL DEFAULT 1 CHECK (qty2 >= 0),
+  unit_cost  double precision NOT NULL DEFAULT 0 CHECK (unit_cost >= 0),
   -- Vrai tant que la ligne suit le barème et les quantités de la zone. Passe à
   -- faux dès qu'on la modifie à la main, pour que la régénération ne l'écrase pas.
-  derived    INTEGER NOT NULL DEFAULT 1,
-  sort       INTEGER NOT NULL DEFAULT 0
+  derived    smallint NOT NULL DEFAULT 1,
+  sort       integer NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_tpm_line_plan ON tpm_line(plan_id);
 CREATE INDEX idx_tpm_line_zone ON tpm_line(zone_id);
@@ -189,17 +189,17 @@ CREATE INDEX idx_tpm_line_zone ON tpm_line(zone_id);
 -- Chaque passage laisse une trace. C'est la table qu'on relira dans six mois
 -- quand quelqu'un demandera qui a laissé passer une ligne.
 CREATE TABLE tpm_review (
-  id        TEXT PRIMARY KEY,
-  plan_id   TEXT NOT NULL REFERENCES tpm_plan(id) ON DELETE CASCADE,
-  level     TEXT NOT NULL CHECK (level IN ('tpm','bureau','pays')),
-  decision  TEXT NOT NULL CHECK (decision IN ('valide','renvoye')),
-  comment   TEXT,
+  id        text PRIMARY KEY,
+  plan_id   text NOT NULL REFERENCES tpm_plan(id) ON DELETE CASCADE,
+  level     text NOT NULL CHECK (level IN ('tpm','bureau','pays')),
+  decision  text NOT NULL CHECK (decision IN ('valide','renvoye')),
+  comment   text,
   -- Montant du plan au moment de la décision : un plan modifié après validation
   -- ne doit pas laisser croire que ce montant-là avait été approuvé.
-  amount    REAL,
-  at        TEXT NOT NULL DEFAULT (datetime('now')),
-  user_id   TEXT REFERENCES users(id) ON DELETE SET NULL,
-  user_label TEXT
+  amount    double precision,
+  at        timestamptz NOT NULL DEFAULT now(),
+  user_id   text REFERENCES users(id) ON DELETE SET NULL,
+  user_label text
 );
 CREATE INDEX idx_tpm_review_plan ON tpm_review(plan_id, at);
 
@@ -208,14 +208,14 @@ CREATE INDEX idx_tpm_review_plan ON tpm_review(plan_id, at);
 -- rattachement on saurait combien a été dépensé, pas sur quoi — donc rien
 -- d'actionnable.
 CREATE TABLE tpm_expense (
-  id         TEXT PRIMARY KEY,
-  plan_id    TEXT NOT NULL REFERENCES tpm_plan(id) ON DELETE CASCADE,
-  line_id    TEXT REFERENCES tpm_line(id) ON DELETE SET NULL,
-  spent_on   TEXT,
-  amount     REAL NOT NULL CHECK (amount >= 0),
-  ref        TEXT,
-  note       TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  created_by TEXT REFERENCES users(id) ON DELETE SET NULL
+  id         text PRIMARY KEY,
+  plan_id    text NOT NULL REFERENCES tpm_plan(id) ON DELETE CASCADE,
+  line_id    text REFERENCES tpm_line(id) ON DELETE SET NULL,
+  spent_on   timestamptz,
+  amount     double precision NOT NULL CHECK (amount >= 0),
+  ref        text,
+  note       text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by text REFERENCES users(id) ON DELETE SET NULL
 );
 CREATE INDEX idx_tpm_expense_plan ON tpm_expense(plan_id);

@@ -33,14 +33,14 @@ const audit = (req, action, id, texte) =>
   db.prepare(`INSERT INTO audit (id,user_id,user_label,office,kind,entity,entity_id,action,text)
               VALUES (?,?,?,?,'odk','submissions',?,?,?)`)
     .run(newId("aud"), req.user.id, req.user.email || req.user.first_name,
-         req.user.office_id || "", id, action, texte);
+         req.user.office_id || "", id, action, texte);   /* async — appelé avec `await` */
 
 /* ── Liste ────────────────────────────────────────────────────────────
    `resolution=non_resolues` est la file de travail : ce que l'ingestion n'a pas
    su rattacher, avec le motif exact. C'est la raison d'être de la colonne
    `resolution_motif` — une soumission orpheline sans explication n'apprend rien
    à celui qui doit la corriger. */
-r.get("/submissions", (req, res) => {
+r.get("/submissions", async (req, res) => {
   const q = z.object({
     site_id: z.string().max(64).optional(),
     form_id: z.string().max(200).optional(),
@@ -70,16 +70,16 @@ r.get("/submissions", (req, res) => {
      potentiellement des réponses de ménage : il est conservé pour rejouer le
      rattachement, pas pour être listé à l'écran. Le sortir d'une route de liste
      le ferait voyager par milliers de lignes sans que personne l'ait demandé. */
-  const rows = db.prepare(`
+  const rows = await db.prepare(`
     SELECT s.id, s.form_id, s.instance_id, s.submitted_at, s.svy_date, s.site_code_raw,
            s.site_name_raw, s.activity_tag, s.site_id, s.geo_pcode, s.lat, s.lon, s.gps_accuracy,
            s.resolution_passe, s.resolution_motif, s.resolution_confiance, s.created_at,
            si.code AS site_code, si.name AS site_name
     FROM submissions s LEFT JOIN sites si ON si.id = s.site_id
     ${clause} ORDER BY s.svy_date DESC, s.id LIMIT ? OFFSET ?`).all(...args, f.limit, f.offset);
-  const total = db.prepare(`SELECT COUNT(*) c FROM submissions s
-    LEFT JOIN sites si ON si.id = s.site_id ${clause}`).get(...args).c;
-  const nonResolues = db.prepare(`SELECT COUNT(*) c FROM submissions WHERE site_id IS NULL`).get().c;
+  const total = (await db.prepare(`SELECT COUNT(*) c FROM submissions s
+    LEFT JOIN sites si ON si.id = s.site_id ${clause}`).get(...args)).c;
+  const nonResolues = (await db.prepare(`SELECT COUNT(*) c FROM submissions WHERE site_id IS NULL`).get()).c;
   res.json({ total, nonResolues, rows });
 });
 
@@ -92,7 +92,7 @@ r.get("/submissions", (req, res) => {
 
    Réservée à l'administration : elle écrit dans le référentiel opérationnel et
    déclenche un rattachement en masse. */
-r.post("/submissions/ingest", requireCap("admin"), (req, res, next) => {
+r.post("/submissions/ingest", requireCap("admin"), async (req, res, next) => {
   const p = z.object({
     odk_form_id: z.string().max(64).optional(),
     connector_id: z.string().max(64).optional(),
@@ -104,19 +104,19 @@ r.post("/submissions/ingest", requireCap("admin"), (req, res, next) => {
 
   let source = null, formId = p.data.form_id || null;
   if(odk_form_id){
-    source = db.prepare("SELECT * FROM odk_forms WHERE id=?").get(odk_form_id);
+    source = await db.prepare("SELECT * FROM odk_forms WHERE id=?").get(odk_form_id);
     if(!source) return res.status(404).json({ error: "source ODK introuvable" });
     formId = formId || source.form_id;
   }
 
   let mappings = null;
   if(connector_id){
-    const c = db.prepare("SELECT * FROM connector WHERE id=?").get(connector_id);
+    const c = await db.prepare("SELECT * FROM connector WHERE id=?").get(connector_id);
     if(!c) return res.status(404).json({ error: "connecteur introuvable" });
-    const bureau = officeBound(req.user);
+    const bureau = await officeBound(req.user);
     if(bureau && c.office_id !== bureau)
       return res.status(404).json({ error: "connecteur introuvable" });
-    mappings = db.prepare(`SELECT * FROM connector_mapping
+    mappings = await db.prepare(`SELECT * FROM connector_mapping
                            WHERE connector_id=? AND entity='submission'
                            ORDER BY position, mems_field`).all(c.id);
     if(!mappings.length) return res.status(422).json({ error:
@@ -140,10 +140,10 @@ r.post("/submissions/ingest", requireCap("admin"), (req, res, next) => {
     "identifiant de formulaire absent : précisez form_id, ou versez depuis une source ODK." });
 
   try{
-    const bilan = ingerer({ enregistrements: lignes, form_id: formId,
+    const bilan = await ingerer({ enregistrements: lignes, form_id: formId,
       odk_form_id: source?.id || null, connector_id: connector_id || null,
-      mappings, office_id: officeBound(req.user) });
-    audit(req, "ingest", source?.id || connector_id || null,
+      mappings, office_id: await officeBound(req.user) });
+    await audit(req, "ingest", source?.id || connector_id || null,
       `Soumissions versées — ${formId} : ${bilan.lues} lue(s), ${bilan.crees} créée(s), `
       + `${bilan.misAJour} mise(s) à jour, ${bilan.nonResolues} non rattachée(s)`);
     res.json({ ...bilan,
@@ -160,15 +160,15 @@ r.post("/submissions/ingest", requireCap("admin"), (req, res, next) => {
 
 /* Rejoue le rattachement sans re-tirer : c'est ce qu'on fait après avoir
    renseigné un code externe sur un site, ou créé le site qui manquait. */
-r.post("/submissions/rattacher", requireCap("admin"), (req, res) => {
+r.post("/submissions/rattacher", requireCap("admin"), async (req, res) => {
   const p = z.object({
     ids: z.array(z.string().max(64)).max(20000).optional(),
     toutes: z.boolean().default(false),
   }).safeParse(req.body || {});
   if(!p.success) return res.status(422).json({ error: "demande de rattachement invalide" });
   const bilan = rejouerRattachement({ ids: p.data.ids || null,
-    seulementNonResolues: !p.data.toutes, office_id: officeBound(req.user) });
-  audit(req, "rattacher", null,
+    seulementNonResolues: !p.data.toutes, office_id: await officeBound(req.user) });
+  await audit(req, "rattacher", null,
     `Rattachement rejoué — ${bilan.examinees} examinée(s), ${bilan.rattachees} rattachée(s), `
     + `${bilan.detachees} détachée(s), ${bilan.protegees} décision(s) manuelle(s) préservée(s)`);
   res.json(bilan);
@@ -200,7 +200,7 @@ const auteur = (u) => `${u.first_name || ""} ${u.last_name || ""}`.trim() || u.e
    un motif automatique se lisent dans la même colonne, ils doivent se lire pareil. */
 const nommerSite = (s) => `« ${s.name} » (${s.code})`;
 
-r.post("/submissions/:id/rattacher-a", requireCap("edit"), (req, res) => {
+r.post("/submissions/:id/rattacher-a", requireCap("edit"), async (req, res) => {
   const p = z.object({
     site_id: z.string().min(1).max(64),
     /* `z.boolean()` et non `z.coerce.boolean()` : la coercition de zod rend
@@ -211,17 +211,17 @@ r.post("/submissions/:id/rattacher-a", requireCap("edit"), (req, res) => {
   if(!p.success) return res.status(422).json({ error:
     "demande de rattachement manuel invalide : indiquez le site (site_id)." });
 
-  const s = db.prepare("SELECT * FROM submissions WHERE id=?").get(req.params.id);
+  const s = await db.prepare("SELECT * FROM submissions WHERE id=?").get(req.params.id);
   if(!s) return res.status(404).json({ error: "soumission introuvable" });
-  const bureau = officeBound(req.user);
+  const bureau = await officeBound(req.user);
   /* Une soumission déjà rattachée au site d'un autre bureau ne se réattribue pas
      depuis ce bureau-ci : ce serait lui prendre son observation. */
   if(bureau && s.site_id){
-    const actuel = db.prepare("SELECT office_id FROM sites WHERE id=?").get(s.site_id);
+    const actuel = await db.prepare("SELECT office_id FROM sites WHERE id=?").get(s.site_id);
     if(actuel && actuel.office_id !== bureau)
       return res.status(404).json({ error: "soumission introuvable" });
   }
-  const site = db.prepare("SELECT id, code, name, office_id FROM sites WHERE id=?").get(p.data.site_id);
+  const site = await db.prepare("SELECT id, code, name, office_id FROM sites WHERE id=?").get(p.data.site_id);
   if(!site || (bureau && site.office_id !== bureau))
     return res.status(404).json({ error: "site introuvable" });
 
@@ -236,17 +236,17 @@ r.post("/submissions/:id/rattacher-a", requireCap("edit"), (req, res) => {
 
   let alias = { cree: false, motif: "non demandé" };
   let retrait = { visites: 0, mois: [] };
-  tx(() => {
-    db.prepare(`UPDATE submissions
+  await tx(async (db) => {
+    await db.prepare(`UPDATE submissions
                 SET site_id=?, resolution_passe=?, resolution_motif=?, resolution_confiance=1,
-                    resolution_at=datetime('now'), updated_at=datetime('now')
+                    resolution_at=now(), updated_at=now()
                 WHERE id=?`).run(site.id, PASSE_MANUELLE, motif, s.id);
     /* La soumission change de site : la visite qu'elle avait fait naître sur
        l'ANCIEN n'a plus de fondement. La laisser en place y maintiendrait une
        visite fantôme et un mois « réalisé » indélébiles, qui gonfleraient sa
        couverture pour toujours. Le nouveau site, lui, n'en reçoit pas d'office :
        marquer le suivi reste un geste explicite (POST /submissions/suivi). */
-    if(s.site_id && s.site_id !== site.id) retrait = retirerVisiteDeSoumission(s.id);
+    if(s.site_id && s.site_id !== site.id) retrait = await retirerVisiteDeSoumission(s.id, db);
     if(p.data.creer_alias){
       alias = brut
         ? { ...ajouterAlias({ site_id: site.id, code: brut, source: s.form_id,
@@ -254,16 +254,16 @@ r.post("/submissions/:id/rattacher-a", requireCap("edit"), (req, res) => {
             code: brut, source: s.form_id }
         : { cree: false, motif: "la soumission ne porte aucun code brut à mémoriser" };
     }
-  })();
+  });
 
-  audit(req, "rattacher-manuel", s.id,
+  await audit(req, "rattacher-manuel", s.id,
     `Rattachement manuel — soumission ${s.instance_id} (${s.form_id}) rattachée au site `
     + `${site.name} (${site.code}) par ${qui}`
     + (alias.cree ? ` ; code externe « ${brut} » mémorisé pour la source ${s.form_id}` : "")
     + (retrait.visites ? ` ; ${retrait.visites} visite(s) retirée(s) du site précédent` : ""));
 
   res.json({ ok: true, alias, visitesRetirees: retrait.visites, moisDemarques: retrait.mois,
-    submission: db.prepare(`SELECT s.*, si.code AS site_code, si.name AS site_name
+    submission: await db.prepare(`SELECT s.*, si.code AS site_code, si.name AS site_name
                             FROM submissions s LEFT JOIN sites si ON si.id = s.site_id
                             WHERE s.id=?`).get(s.id) });
 });
@@ -271,12 +271,12 @@ r.post("/submissions/:id/rattacher-a", requireCap("edit"), (req, res) => {
 /* Le geste inverse, tout aussi tracé. Il existe parce que la protection du
    rattachement manuel est absolue : sans porte de sortie explicite, une erreur
    de désignation serait définitive. */
-r.post("/submissions/:id/detacher", requireCap("edit"), (req, res) => {
-  const s = db.prepare("SELECT * FROM submissions WHERE id=?").get(req.params.id);
+r.post("/submissions/:id/detacher", requireCap("edit"), async (req, res) => {
+  const s = await db.prepare("SELECT * FROM submissions WHERE id=?").get(req.params.id);
   if(!s) return res.status(404).json({ error: "soumission introuvable" });
   if(!s.site_id) return res.status(409).json({ error: "cette soumission n'est rattachée à aucun site" });
-  const bureau = officeBound(req.user);
-  const site = db.prepare("SELECT id, code, name, office_id FROM sites WHERE id=?").get(s.site_id);
+  const bureau = await officeBound(req.user);
+  const site = await db.prepare("SELECT id, code, name, office_id FROM sites WHERE id=?").get(s.site_id);
   if(bureau && site && site.office_id !== bureau)
     return res.status(404).json({ error: "soumission introuvable" });
 
@@ -291,39 +291,39 @@ r.post("/submissions/:id/detacher", requireCap("edit"), (req, res) => {
      Tant que ce geste laissait la visite en place, il ne tenait pas cette
      promesse — le refus se répétait mot pour mot, `site_months.done` restait à 1,
      et un suivi appliqué au mauvais site gonflait ses indicateurs pour toujours. */
-  const retrait = tx(() => {
-    db.prepare(`UPDATE submissions
+  const retrait = await tx(async (db) => {
+    await db.prepare(`UPDATE submissions
                 SET site_id=NULL, resolution_passe=NULL, resolution_motif=?, resolution_confiance=0,
-                    resolution_at=datetime('now'), updated_at=datetime('now')
+                    resolution_at=now(), updated_at=now()
                 WHERE id=?`).run(motif, s.id);
-    return retirerVisiteDeSoumission(s.id);
-  })();
-  audit(req, "detacher", s.id,
+    return retirerVisiteDeSoumission(s.id, db);
+  });
+  await audit(req, "detacher", s.id,
     `Détachement manuel — soumission ${s.instance_id} (${s.form_id}) détachée du site `
     + `${site ? `${site.name} (${site.code})` : "supprimé"} par ${qui}`
     + (retrait.visites ? ` ; ${retrait.visites} visite(s) issue(s) de cette soumission retirée(s)`
       + `${retrait.mois.length ? `, ${retrait.mois.length} mois rendu(s) à « non réalisé »` : ""}`
       : ""));
   res.json({ ok: true, visitesRetirees: retrait.visites, moisDemarques: retrait.mois,
-    submission: db.prepare("SELECT * FROM submissions WHERE id=?").get(s.id) });
+    submission: await db.prepare("SELECT * FROM submissions WHERE id=?").get(s.id) });
 });
 
 /* ── Dernière visite ──────────────────────────────────────────────────
    Les deux valeurs côte à côte, et laquelle prime. Voir la note de
    lib/soumissions.js : la date ODK est observée, la date saisie est une
    convention de planification posée au 15 du mois. */
-r.get("/submissions/derniere-visite", (req, res) => {
+r.get("/submissions/derniere-visite", async (req, res) => {
   const q = z.object({ site_id: z.string().max(64).optional(),
     limit: z.coerce.number().int().min(1).max(6000).default(2000) }).safeParse(req.query);
   if(!q.success) return res.status(422).json({ error: "filtres invalides" });
-  const bureau = officeBound(req.user);
+  const bureau = await officeBound(req.user);
   const where = []; const args = [];
   if(bureau){ where.push("office_id = ?"); args.push(bureau); }
   if(q.data.site_id){ where.push("id = ?"); args.push(q.data.site_id); }
-  const sites = db.prepare(`SELECT id, code, name, last_visit FROM sites
+  const sites = await db.prepare(`SELECT id, code, name, last_visit FROM sites
     ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY code LIMIT ?`)
     .all(...args, q.data.limit);
-  const odk = dernieresVisitesOdk({ office_id: bureau });
+  const odk = await dernieresVisitesOdk({ office_id: bureau });
   res.json({ rows: sites.map(s => ({ id: s.id, code: s.code, name: s.name,
     soumissions: odk.get(s.id)?.soumissions || 0,
     ...combinerDerniereVisite(s.last_visit, odk.get(s.id)?.derniere) })) });
@@ -332,7 +332,7 @@ r.get("/submissions/derniere-visite", (req, res) => {
 /* ── « Déjà suivi » ───────────────────────────────────────────────────
    En lecture : quels sites ont été suivis sur la fenêtre, d'après les
    soumissions. La fenêtre est un paramètre — voir `fenetre()` et Q15c. */
-r.get("/submissions/suivi", (req, res) => {
+r.get("/submissions/suivi", async (req, res) => {
   const q = z.object({
     year: z.coerce.number().int().min(2000).max(2100).optional(),
     month: z.coerce.number().int().min(0).max(11).optional(),
@@ -340,12 +340,12 @@ r.get("/submissions/suivi", (req, res) => {
     site_id: z.string().max(64).optional(), activity_tag: z.string().max(20).optional(),
   }).safeParse(req.query);
   if(!q.success) return res.status(422).json({ error: "filtres invalides" });
-  res.json(suiviParPeriode({ ...q.data, office_id: officeBound(req.user) }));
+  res.json(await suiviParPeriode({ ...q.data, office_id: await officeBound(req.user) }));
 });
 
 /* En écriture : marque `site_months.done` et crée les visites manquantes.
    Relancer ne double rien — voir les trois garde-fous de `appliquerSuivi`. */
-r.post("/submissions/suivi", requireCap("edit"), (req, res, next) => {
+r.post("/submissions/suivi", requireCap("edit"), async (req, res, next) => {
   const p = z.object({
     year: z.coerce.number().int().min(2000).max(2100).optional(),
     month: z.coerce.number().int().min(0).max(11).optional(),
@@ -353,8 +353,8 @@ r.post("/submissions/suivi", requireCap("edit"), (req, res, next) => {
   }).safeParse(req.body || {});
   if(!p.success) return res.status(422).json({ error: "demande de marquage invalide" });
   try{
-    const bilan = appliquerSuivi({ ...p.data, office_id: officeBound(req.user) });
-    audit(req, "suivi", null,
+    const bilan = await appliquerSuivi({ ...p.data, office_id: await officeBound(req.user) });
+    await audit(req, "suivi", null,
       `Suivi marqué depuis les soumissions — ${bilan.periode.debut} à ${bilan.periode.fin} : `
       + `${bilan.sites} site(s), ${bilan.marques} nouvellement marqué(s), `
       + `${bilan.visitesCreees} visite(s) créée(s), `
@@ -371,15 +371,15 @@ r.post("/submissions/suivi", requireCap("edit"), (req, res, next) => {
    sets »). Elle est SÉPARÉE de la position déclarée du site, qu'elle ne modifie
    jamais : `ecart_m` donne la distance entre les deux quand les deux existent,
    ce qui rend Q25 décidable sur des mesures. */
-r.get("/submissions/positions", (req, res) => {
+r.get("/submissions/positions", async (req, res) => {
   const q = z.object({
     site_id: z.string().max(64).optional(), form_id: z.string().max(200).optional(),
     debut: z.string().max(10).optional(), fin: z.string().max(10).optional(),
     limit: z.coerce.number().int().min(1).max(20000).default(5000),
   }).safeParse(req.query);
   if(!q.success) return res.status(422).json({ error: "filtres invalides" });
-  const points = positionsObservees({ ...q.data, limite: q.data.limit,
-    office_id: officeBound(req.user) });
+  const points = await positionsObservees({ ...q.data, limite: q.data.limit,
+    office_id: await officeBound(req.user) });
   const bornes = points.reduce((b, p) => ({
     minLat: Math.min(b.minLat, p.lat), maxLat: Math.max(b.maxLat, p.lat),
     minLon: Math.min(b.minLon, p.lon), maxLon: Math.max(b.maxLon, p.lon) }),
