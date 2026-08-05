@@ -16,22 +16,24 @@ const loginLimiter = rateLimit({ windowMs: 15*60_000, limit: config.rateLoginMax
 
 /* Le nom du bureau accompagne le compte : l'interface cloisonne et affiche par nom,
    pas par identifiant, et n'a aucun autre moyen de le résoudre avant /state. */
-const officeName = (id) => id
-  ? (db.prepare("SELECT name FROM offices WHERE id=?").get(id)?.name || "")
+const officeName = async (id) => id
+  ? ((await db.prepare("SELECT name FROM offices WHERE id=?").get(id))?.name || "")
   : "";
 
-const tpmName = (id) => id
-  ? (db.prepare("SELECT name FROM tpm WHERE id=?").get(id)?.name || "")
+const tpmName = async (id) => id
+  ? ((await db.prepare("SELECT name FROM tpm WHERE id=?").get(id))?.name || "")
   : "";
 
-const publicUser = (u) => ({
+const publicUser = async (u) => ({
   id:u.id, email:u.email, username:u.username || "",
   first_name:u.first_name, last_name:u.last_name, title:u.title,
-  office_id:u.office_id, office: officeName(u.office_id),
+  office_id:u.office_id, office: await officeName(u.office_id),
   /* Un compte de prestataire doit se savoir tel : l'interface lui masque les
      destinations internes, et le serveur le borne de son côté. */
-  tpm_id:u.tpm_id || null, tpm: tpmName(u.tpm_id),
-  role:u.role, tabs: JSON.parse(u.tabs || "[]"),
+  tpm_id:u.tpm_id || null, tpm: await tpmName(u.tpm_id),
+  /* `tabs` est une colonne jsonb : pg la rend déjà désérialisée (tableau ou
+     null), il n'y a plus de JSON.parse à faire. */
+  role:u.role, tabs: u.tabs || [],
   active: !!u.active, must_change_pw: !!u.must_change_pw, last_login:u.last_login,
 });
 
@@ -40,19 +42,19 @@ r.post("/login", loginLimiter, validate(schemas.login), async (req, res) => {
   /* `email` porte un courriel OU un identifiant (migration 023) : on cherche l'un
      ou l'autre. Un même compte ne peut pas être visé par les deux à la fois — le
      courriel a la forme d'un courriel, l'identifiant ne l'a pas. */
-  const u = db.prepare("SELECT * FROM users WHERE email = ? OR username = ?").get(email, email);
+  const u = await db.prepare("SELECT * FROM users WHERE email = ? OR username = ?").get(email, email);
   /* Même message et même coût quel que soit l'échec : on ne révèle pas l'existence d'un compte. */
   const generic = { error:"identifiants incorrects" };
   if(!u){ await hashPassword(password); return res.status(401).json(generic); }
   if(u.locked_until){
-    if(u.locked_until > new Date().toISOString())
+    if(new Date(u.locked_until) > new Date())
       return res.status(423).json({ error:"compte temporairement verrouillé" });
     /* Le verrou a expiré, mais le compteur restait au seuil : la tentative
        suivante — même unique, même du titulaire légitime qui vient de patienter
        ses quinze minutes — reverrouillait aussitôt pour quinze de plus. Le verrou
        « temporaire » était en fait définitif sans intervention d'un administrateur.
        Sa levée doit donc rendre au compte le compteur qu'il avait avant. */
-    db.prepare("UPDATE users SET failed_logins=0, locked_until=NULL WHERE id=?").run(u.id);
+    await db.prepare("UPDATE users SET failed_logins=0, locked_until=NULL WHERE id=?").run(u.id);
     u.failed_logins = 0; u.locked_until = null;
   }
   if(!u.active) return res.status(401).json(generic);
@@ -62,8 +64,8 @@ r.post("/login", loginLimiter, validate(schemas.login), async (req, res) => {
     const fails = u.failed_logins + 1;
     const lock = fails >= config.lockAfter
       ? new Date(Date.now() + config.lockMinutes*60_000).toISOString() : null;
-    db.prepare("UPDATE users SET failed_logins=?, locked_until=? WHERE id=?").run(fails, lock, u.id);
-    db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
+    await db.prepare("UPDATE users SET failed_logins=?, locked_until=? WHERE id=?").run(fails, lock, u.id);
+    await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
                 VALUES (?,?,?,'securite','users','login_failed',?)`)
       .run(newId("aud"), u.id, u.email, `Échec de connexion (${fails})`);
     log.warn("échec de connexion", { email: email.replace(/(.).*(@.*)/, "$1***$2"), tentatives: fails });
@@ -73,24 +75,24 @@ r.post("/login", loginLimiter, validate(schemas.login), async (req, res) => {
   if(u.role === "dashboard" && !dansPlageAffichage())
     return res.status(403).json({ code:"hors_plage_affichage",
       error:"Écran de supervision : accès autorisé de 07h30 à 18h00 (heure de Madagascar)." });
-  db.prepare("UPDATE users SET failed_logins=0, locked_until=NULL, last_login=datetime('now') WHERE id=?").run(u.id);
-  const { token } = issueToken(u, req);
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
+  await db.prepare("UPDATE users SET failed_logins=0, locked_until=NULL, last_login=now() WHERE id=?").run(u.id);
+  const { token } = await issueToken(u, req);
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
               VALUES (?,?,?,'securite','users','login',?)`)
     .run(newId("aud"), u.id, u.email, "Connexion réussie");
   res.cookie(config.cookieName, token, {
     httpOnly:true, sameSite:"lax", secure:config.isProd, maxAge:8*3600*1000, path:"/",
   });
-  res.json({ token, user: publicUser(db.prepare("SELECT * FROM users WHERE id=?").get(u.id)) });
+  res.json({ token, user: await publicUser(await db.prepare("SELECT * FROM users WHERE id=?").get(u.id)) });
 });
 
-r.post("/logout", authenticate, (req, res) => {
-  revoke(req.jti);
+r.post("/logout", authenticate, async (req, res) => {
+  await revoke(req.jti);
   res.clearCookie(config.cookieName, { path:"/" });
   res.json({ ok:true });
 });
 
-r.get("/me", authenticate, (req, res) => res.json({ user: publicUser(req.user) }));
+r.get("/me", authenticate, async (req, res) => res.json({ user: await publicUser(req.user) }));
 
 r.post("/password", authenticate, validate(schemas.changePassword), async (req, res) => {
   const ok = await verifyPassword(req.body.current, req.user.pw_hash);
@@ -98,11 +100,11 @@ r.post("/password", authenticate, validate(schemas.changePassword), async (req, 
   const problems = passwordProblems(req.body.next);
   if(problems.length) return res.status(422).json({
     error:"le nouveau mot de passe doit contenir " + problems.join(", ") });
-  db.prepare("UPDATE users SET pw_hash=?, must_change_pw=0, updated_at=datetime('now') WHERE id=?")
+  await db.prepare("UPDATE users SET pw_hash=?, must_change_pw=0, updated_at=now() WHERE id=?")
     .run(await hashPassword(req.body.next), req.user.id);
   /* Toutes les autres sessions du compte tombent. */
-  db.prepare("UPDATE sessions SET revoked=1 WHERE user_id=? AND id<>?").run(req.user.id, req.jti);
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
+  await db.prepare("UPDATE sessions SET revoked=1 WHERE user_id=? AND id<>?").run(req.user.id, req.jti);
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
               VALUES (?,?,?,'securite','users','password_change',?)`)
     .run(newId("aud"), req.user.id, req.user.email, "Mot de passe modifié");
   res.json({ ok:true });
@@ -112,11 +114,11 @@ r.post("/password", authenticate, validate(schemas.changePassword), async (req, 
    de CONNEXION : il peut ensuite servir à se connecter à la place du courriel.
    Vide, on retire l'identifiant ; sinon on impose un alphabet sûr et l'unicité. */
 const IDENTIFIANT = /^[a-z0-9._-]{3,40}$/;
-r.put("/username", authenticate, validate(schemas.changeUsername), (req, res) => {
+r.put("/username", authenticate, validate(schemas.changeUsername), async (req, res) => {
   const brut = String(req.body.username || "").trim().toLowerCase();
   if(brut === ""){
-    db.prepare("UPDATE users SET username=NULL, updated_at=datetime('now') WHERE id=?").run(req.user.id);
-    return res.json({ user: publicUser(db.prepare("SELECT * FROM users WHERE id=?").get(req.user.id)) });
+    await db.prepare("UPDATE users SET username=NULL, updated_at=now() WHERE id=?").run(req.user.id);
+    return res.json({ user: await publicUser(await db.prepare("SELECT * FROM users WHERE id=?").get(req.user.id)) });
   }
   if(!IDENTIFIANT.test(brut)) return res.status(422).json({
     error:"identifiant : 3 à 40 caractères, lettres minuscules, chiffres, point, tiret ou tiret bas" });
@@ -124,14 +126,14 @@ r.put("/username", authenticate, validate(schemas.changeUsername), (req, res) =>
   if(brut.includes("@")) return res.status(422).json({ error:"l'identifiant ne peut pas contenir « @ »" });
   /* L'unicité couvre aussi les COURRIELS : sans quoi un identifiant pourrait
      usurper l'adresse d'un autre compte et détourner sa connexion. */
-  const pris = db.prepare("SELECT 1 FROM users WHERE (username=? OR email=?) AND id<>?")
+  const pris = await db.prepare("SELECT 1 FROM users WHERE (username=? OR email=?) AND id<>?")
     .get(brut, brut, req.user.id);
   if(pris) return res.status(409).json({ error:"cet identifiant est déjà utilisé" });
-  db.prepare("UPDATE users SET username=?, updated_at=datetime('now') WHERE id=?").run(brut, req.user.id);
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
+  await db.prepare("UPDATE users SET username=?, updated_at=now() WHERE id=?").run(brut, req.user.id);
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
               VALUES (?,?,?,'securite','users','username_set',?)`)
     .run(newId("aud"), req.user.id, req.user.email, `Identifiant défini — ${brut}`);
-  res.json({ user: publicUser(db.prepare("SELECT * FROM users WHERE id=?").get(req.user.id)) });
+  res.json({ user: await publicUser(await db.prepare("SELECT * FROM users WHERE id=?").get(req.user.id)) });
 });
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -184,27 +186,27 @@ const vueSession = (s, jti) => ({
 });
 
 /* « Vivante » se calcule en SQL et pas en JavaScript : c'est l'horloge de
-   SQLite qui a émis `expires_at`, c'est elle qui doit dire s'il est passé.
+   PostgreSQL qui a émis `expires_at`, c'est elle qui doit dire s'il est passé.
    Comparer à une date construite côté Node, c'est parier sur un format et
    sur un fuseau. */
-const COLONNES = `s.*, (s.revoked=0 AND s.expires_at > datetime('now')) AS active`;
+const COLONNES = `s.*, (s.revoked=0 AND s.expires_at > now()) AS active`;
 
-r.get("/sessions", authenticate, validate(sessionsQuery, "query"), (req, res) => {
+r.get("/sessions", authenticate, validate(sessionsQuery, "query"), async (req, res) => {
   const { user_id, tous, limite } = req.query;
   const elargi = tous === "1" || (user_id && user_id !== req.user.id);
   if(elargi && req.user.role !== "super") return res.status(403).json({
     error:"seul un super-utilisateur consulte les sessions d'un autre compte" });
 
   if(tous === "1"){
-    const lignes = db.prepare(
+    const lignes = await db.prepare(
       `SELECT ${COLONNES}, u.email FROM sessions s LEFT JOIN users u ON u.id = s.user_id
        ORDER BY s.issued_at DESC LIMIT ?`).all(limite);
-    return res.json({ portee:"toutes", total: db.prepare("SELECT COUNT(*) c FROM sessions").get().c,
+    return res.json({ portee:"toutes", total: (await db.prepare("SELECT COUNT(*) c FROM sessions").get()).c,
       sessions: lignes.map(s => ({ ...vueSession(s, req.jti),
         user_id:s.user_id, email:s.email, user_agent:s.user_agent })) });
   }
   const cible = user_id || req.user.id;
-  const lignes = db.prepare(
+  const lignes = await db.prepare(
     `SELECT ${COLONNES} FROM sessions s WHERE s.user_id=?
      ORDER BY s.issued_at DESC LIMIT ?`).all(cible, limite);
   res.json({ portee: cible === req.user.id ? "compte" : "autre_compte", user_id:cible,
@@ -222,19 +224,19 @@ const purgeQuery = z.object({
 }).strict();
 
 r.post("/sessions/purge", authenticate, requireSuper, validate(purgeQuery, "query"),
-  (req, res) => {
+  async (req, res) => {
     const { jours } = req.query;
     /* Une session VIVANTE a `revoked=0` ET `expires_at` dans le futur : la
        condition ci-dessous l'exclut par construction, pas par précaution.
        Aucun paramètre ne peut l'y ramener — `jours` ne fait que restreindre
        davantage. */
-    const conditions = "revoked=1 OR expires_at <= datetime('now')";
-    const fenetre = jours > 0 ? " AND issued_at <= datetime('now', ?)" : "";
-    const args = jours > 0 ? [`-${jours} days`] : [];
-    const avant = db.prepare("SELECT COUNT(*) c FROM sessions").get().c;
-    const info = db.prepare(`DELETE FROM sessions WHERE (${conditions})${fenetre}`).run(...args);
-    const restantes = db.prepare("SELECT COUNT(*) c FROM sessions").get().c;
-    db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
+    const conditions = "revoked=1 OR expires_at <= now()";
+    const fenetre = jours > 0 ? " AND issued_at <= now() - ?::interval" : "";
+    const args = jours > 0 ? [`${jours} days`] : [];
+    const avant = (await db.prepare("SELECT COUNT(*) c FROM sessions").get()).c;
+    const info = await db.prepare(`DELETE FROM sessions WHERE (${conditions})${fenetre}`).run(...args);
+    const restantes = (await db.prepare("SELECT COUNT(*) c FROM sessions").get()).c;
+    await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,action,text)
                 VALUES (?,?,?,'securite','sessions','purge',?)`)
       .run(newId("aud"), req.user.id, req.user.email,
            `Purge des sessions closes — ${info.changes} supprimée(s), ${restantes} conservée(s)`);
@@ -242,8 +244,8 @@ r.post("/sessions/purge", authenticate, requireSuper, validate(purgeQuery, "quer
     res.json({ ok:true, supprimees:info.changes, avant, restantes, jours });
   });
 
-r.delete("/sessions/:id", authenticate, requireSuper, (req, res) => {
-  const s = db.prepare("SELECT * FROM sessions WHERE id=?").get(req.params.id);
+r.delete("/sessions/:id", authenticate, requireSuper, async (req, res) => {
+  const s = await db.prepare("SELECT * FROM sessions WHERE id=?").get(req.params.id);
   if(!s) return res.status(404).json({ error:"session introuvable" });
 
   if(s.id === req.jti && req.query.confirmer !== "1") return res.status(409).json({
@@ -256,9 +258,9 @@ r.delete("/sessions/:id", authenticate, requireSuper, (req, res) => {
      ferme dans l'urgence les accès d'un appareil perdu. */
   if(s.revoked) return res.json({ ok:true, revoquee:s.id, deja_revoquee:true });
 
-  revoke(s.id);
-  const cible = db.prepare("SELECT email FROM users WHERE id=?").get(s.user_id);
-  db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+  await revoke(s.id);
+  const cible = await db.prepare("SELECT email FROM users WHERE id=?").get(s.user_id);
+  await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
               VALUES (?,?,?,'securite','sessions',?,'revoke',?)`)
     .run(newId("aud"), req.user.id, req.user.email, s.id,
          `Session révoquée — compte ${cible?.email || s.user_id}`
@@ -271,19 +273,19 @@ const revocationQuery = z.object({
 }).strict();
 
 r.delete("/users/:id/sessions", authenticate, requireSuper, validate(revocationQuery, "query"),
-  (req, res) => {
-    const u = db.prepare("SELECT id, email FROM users WHERE id=?").get(req.params.id);
+  async (req, res) => {
+    const u = await db.prepare("SELECT id, email FROM users WHERE id=?").get(req.params.id);
     if(!u) return res.status(404).json({ error:"compte introuvable" });
 
     const inclure = req.query.inclure_courante === "1";
-    const sienne = db.prepare("SELECT 1 FROM sessions WHERE id=? AND user_id=? AND revoked=0")
+    const sienne = await db.prepare("SELECT 1 FROM sessions WHERE id=? AND user_id=? AND revoked=0")
       .get(req.jti, u.id);
     const info = inclure
-      ? db.prepare("UPDATE sessions SET revoked=1 WHERE user_id=? AND revoked=0").run(u.id)
-      : db.prepare("UPDATE sessions SET revoked=1 WHERE user_id=? AND revoked=0 AND id<>?")
+      ? await db.prepare("UPDATE sessions SET revoked=1 WHERE user_id=? AND revoked=0").run(u.id)
+      : await db.prepare("UPDATE sessions SET revoked=1 WHERE user_id=? AND revoked=0 AND id<>?")
           .run(u.id, req.jti);
 
-    db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
+    await db.prepare(`INSERT INTO audit (id,user_id,user_label,kind,entity,entity_id,action,text)
                 VALUES (?,?,?,'securite','sessions',?,'revoke_all',?)`)
       .run(newId("aud"), req.user.id, req.user.email, u.id,
            `Toutes les sessions du compte ${u.email} révoquées — ${info.changes} fermée(s)`
