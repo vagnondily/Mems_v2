@@ -6168,7 +6168,7 @@ test("référentiel de codes : le rapprochement pose les alias, est idempotent, 
 
   /* Le journal reprend le bilan ENTIER, échecs compris. */
   const trace = await db.prepare(`SELECT * FROM audit WHERE entity='code_referentiel' AND entity_id=?
-                            ORDER BY rowid DESC`).get(REF_CODES);
+                            ORDER BY id DESC`).get(REF_CODES);
   assert.ok(trace, "le rapprochement entre au journal");
   assert.match(trace.text, /sans site/);
   assert.match(trace.text, /à confirmer/);
@@ -6368,7 +6368,7 @@ test("référentiel de codes : une entrée qui PERD son site est comptée et nom
   assert.equal((await entree("603140001")).site_id, null);
 
   const trace = await db.prepare(`SELECT * FROM audit WHERE entity='code_referentiel' AND entity_id=?
-                            ORDER BY rowid DESC`).get(REF_CODES);
+                            ORDER BY id DESC`).get(REF_CODES);
   assert.match(trace.text, /1 détachée/);
 
   /* L'alias posé au passage précédent, lui, survit : il n'est retiré que par une
@@ -6727,7 +6727,7 @@ test("scripts d'analyse : une sortie trop longue est coupée et annoncée comme 
   assert.equal(Buffer.byteLength(ex.erreur), 1024);
 
   const trace = await db.prepare(`SELECT * FROM audit WHERE entity='scripts' AND action='execute'
-                            ORDER BY at DESC, rowid DESC LIMIT 1`).get();
+                            ORDER BY at DESC, id DESC LIMIT 1`).get();
   assert.match(trace.text, /sortie tronquée/, "le journal dit aussi que la sortie a été coupée");
 });
 
@@ -6788,7 +6788,7 @@ test("scripts d'analyse : données transmises par CSV local, fichiers produits s
   assert.deepEqual(travauxRestants(), [], "le répertoire de travail ne survit pas à l'exécution");
 
   const trace = await db.prepare(`SELECT * FROM audit WHERE entity='scripts' AND action='execute'
-                            AND at >= ? ORDER BY at DESC, rowid DESC LIMIT 1`).get(avant.slice(0,19).replace("T"," "));
+                            AND at >= ? ORDER BY at DESC, id DESC LIMIT 1`).get(avant.slice(0,19).replace("T"," "));
   assert.ok(trace, "toute exécution est journalisée");
   assert.equal(trace.kind, "securite");
   assert.equal(trace.user_id, (await db.prepare("SELECT id FROM users WHERE email='admin@test.local'").get()).id);
