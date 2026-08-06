@@ -5,7 +5,7 @@ import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, Line
          ResponsiveContainer, Tooltip, Treemap, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
-import { RULE_TYPES, applyFormulas, applyRules, fmt, n, pct, profileColumn, r1, siteScore, uid } from "../lib/calc.js";
+import { RULE_TYPES, applyFormulas, applyRules, evalFormula, fmt, n, pct, profileColumn, r1, siteScore, uid } from "../lib/calc.js";
 import { C, MONTHS, SERIES } from "../lib/constants.js";
 import { anneeMoisDe, dateDansPeriode, libelleCourtPeriode, moisDansPeriode,
   normalisePeriode, periodeAnnee } from "../lib/periode.js";
@@ -558,6 +558,12 @@ const SOURCES = {
              measures:[["planned","Bénéficiaires planifiés"],["actual","Bénéficiaires atteints"]] },
   outcomes:{ label:"Outcomes", dims:[["indicator","Indicateur"],["adm1","Zone"],["round","Ronde"]],
              measures:[["value","Valeur moyenne"],["planned","Valeur planifiée moyenne"],["sample","Échantillon"]] },
+  /* Indicateur composé : une formule LIBRE entre indicateurs de la masterlist,
+     désignés par leur code (FCS, FES…). La « dimension » répartit le calcul par
+     zone, par ronde, ou le fait globalement ; la « mesure » choisit sur quelle
+     valeur d'outcome portent les variables (mesurée ou planifiée). */
+  formule: { label:"Indicateur composé", dims:[["adm1","Zone"],["round","Ronde"],["_global","Ensemble"]],
+             measures:[["value","Valeur mesurée"],["planned","Valeur planifiée"]] },
 };
 /* Où la période mord réellement. Les sites sont un registre : leur nombre, leurs
    bénéficiaires et leur score de risque sont l'état du jour, pas une série
@@ -581,8 +587,43 @@ const CALCULS = ["ratio","gap","sum"];
 const combiner = (calc, va, vb) =>
   calc==="ratio" ? (vb ? va/vb*100 : 0) : calc==="gap" ? va - vb : va + vb;
 
-function aggregate(db, source, dim, measure, periode, measure2, calc){
+/* Codes d'indicateurs de la masterlist utilisables comme variables d'une
+   formule : ceux dont le code est un identifiant valide (lettres, chiffres, _,
+   ne commençant pas par un chiffre). Un code exotique n'est simplement pas
+   référençable — l'éditeur de formule le laisse hors des puces. */
+const codeValide = (c) => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c || "");
+const codesIndicateurs = (db) => (db.indicators||[]).map(i=>i.id).filter(codeValide);
+
+/* Évalue une formule libre entre indicateurs, répartie par `dim`. Pour chaque
+   bucket (zone, ronde, ou l'ensemble), on calcule la moyenne de la mesure de
+   base par indicateur cité, puis on évalue la formule sur ce jeu de variables.
+   Un bucket auquel il manque un des indicateurs cités est écarté : calculer un
+   ratio là où le dénominateur n'a pas été relevé donnerait un chiffre faux. */
+function aggregerFormule(db, dim, base, p, formula){
+  if(!formula || !formula.trim()) return [];
+  const codes = new Set(codesIndicateurs(db));
+  const cites = [...new Set((formula.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || []).filter(t => codes.has(t)))];
+  const clef = (o) => dim==="_global" ? "Ensemble" : dim==="round" ? (o.round||"—") : (o[dim]||"—");
+  const acc = {};                          /* acc[bucket][code] = { sum, n } */
+  db.outcomes.forEach(o => {
+    if(!dateDansPeriode(o.date, p) || !codes.has(o.indicator)) return;
+    const k = clef(o); acc[k] = acc[k] || {};
+    acc[k][o.indicator] = acc[k][o.indicator] || { sum:0, n:0 };
+    acc[k][o.indicator].sum += n(o[base]); acc[k][o.indicator].n++;
+  });
+  const rows = [];
+  Object.entries(acc).forEach(([bucket, parCode]) => {
+    if(!cites.every(c => parCode[c] && parCode[c].n)) return;
+    const scope = {}; cites.forEach(c => { scope[c] = parCode[c].sum / parCode[c].n; });
+    const r = evalFormula(formula, scope);
+    if(r.ok) rows.push({ name:String(bucket), value:r1(r.value) });
+  });
+  return rows.sort((a,b)=>b.value-a.value).slice(0,14);
+}
+
+function aggregate(db, source, dim, measure, periode, measure2, calc, formula){
   if(!SOURCES[source]) source = "sites";
+  if(source==="formule") return aggregerFormule(db, dim, measure, normalisePeriode(periode, db.year), formula);
   const croise = measure2 && measure2 !== measure && SOURCES[source].measures.some(m=>m[0]===measure2);
   const calcule = croise && CALCULS.includes(calc);
   const p = normalisePeriode(periode, db.year);
@@ -679,39 +720,50 @@ function Widget({ w, db, periode, onEdit, onDelete }){
   /* Le calcul n'a de sens qu'avec deux mesures : sans mesure croisée, il n'y a
      rien à combiner et l'on retombe sur la mesure simple. */
   const calc = (measure2 && CALCULS.includes(w.calc)) ? w.calc : "";
+  const estFormule = src==="formule";
+  const formula = estFormule ? (w.formula||"") : "";
   const p = normalisePeriode(periode, db.year);
-  const data = useMemo(()=>aggregate(db, src, dim, measure, p, measure2, calc),
-    [db,src,dim,measure,measure2,calc,p.annee,p.gran,p.valeur]);
+  const data = useMemo(()=>aggregate(db, src, dim, measure, p, measure2, calc, formula),
+    [db,src,dim,measure,measure2,calc,formula,p.annee,p.gran,p.valeur]);
   const dimLabel = (SRC.dims.find(d=>d[0]===dim)||[])[1] || dim;
   const mLabel = (SRC.measures.find(m=>m[0]===measure)||[])[1] || measure;
   const mLabel2 = measure2 ? ((SRC.measures.find(m=>m[0]===measure2)||[])[1] || measure2) : "";
   const calcLabel = calc==="ratio" ? `${mLabel} ÷ ${mLabel2} (%)`
     : calc==="gap" ? `${mLabel} − ${mLabel2}` : calc==="sum" ? `${mLabel} + ${mLabel2}` : "";
+  /* Une série CALCULÉE (formule composée ou indicateur calculé) rend une valeur
+     unique par catégorie : ni seconde série, ni « part » d'un total qui n'aurait
+     pas de sens sur des ratios. */
+  const serieLabel = estFormule ? (formula || "Composite") : calc ? calcLabel : mLabel;
+  const serieSimple = estFormule || !!calc;
   /* Le sous-titre ne mentionne la période que là où elle a servi à restreindre :
      ailleurs, il dirait à l'utilisateur qu'il regarde un trimestre alors qu'il
      regarde tout. */
   const portee = temporel(src, measure) ? `${SRC.label} · ${libelleCourtPeriode(p)}` : SRC.label;
-  const titre = w.title || (calc ? `${calcLabel} par ${dimLabel.toLowerCase()}`
+  const titre = w.title || (estFormule ? serieLabel
+    : calc ? `${calcLabel} par ${dimLabel.toLowerCase()}`
     : measure2 ? `${mLabel} et ${mLabel2.toLowerCase()} par ${dimLabel.toLowerCase()}`
     : `${mLabel} par ${dimLabel.toLowerCase()}`);
   return (
     <Card title={titre} subtitle={portee}
       right={<>{onEdit && <button onClick={onEdit} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
         {onDelete && <button onClick={onDelete} className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</>}>
-      {w.type==="table" ? (
+      {estFormule && !data.length ? (
+        <Empty icon={Sigma} title="Rien à tracer"
+          text={formula ? "Aucune zone ne réunit tous les indicateurs cités sur cette période — vérifiez la formule et les codes." : "Écrivez une formule entre indicateurs (ex. FCS / FES × 100) pour composer un indicateur."} />
+      ) : w.type==="table" ? (
         <TableWrap max="mh280">
           <thead><tr><Th>{dimLabel}</Th>
-            {calc ? <Th num>{calcLabel}</Th>
+            {serieSimple ? <Th num>{serieLabel}</Th>
               : measure2 ? <><Th num>{mLabel}</Th><Th num>{mLabel2}</Th></>
               : <><Th num>{mLabel}</Th><Th num>Part</Th></>}</tr></thead>
           <tbody>{data.map(d=>{ const tot=data.reduce((t,x)=>t+x.value,0);
             return <tr key={d.name} className="hover:bg-sky-50"><Td>{d.name}</Td>
-              {calc ? <Td num>{fmt(d.value)}{calc==="ratio"?" %":""}</Td>
+              {serieSimple ? <Td num>{fmt(d.value)}{calc==="ratio"?" %":""}</Td>
                 : measure2 ? <><Td num>{fmt(d.value)}</Td><Td num>{fmt(d.value2)}</Td></>
                 : <><Td num>{fmt(d.value)}</Td>
                     <Td num><div className="flex items-center gap-2 justify-end"><Bar2 value={pct(d.value,tot)} />{pct(d.value,tot)}%</div></Td></>}</tr>; })}
           </tbody></TableWrap>
-      ) : <ResponsiveContainer width="100%" height={250}>{chartEl(w.type, data, w.colors, [calc?calcLabel:mLabel, mLabel2])}</ResponsiveContainer>}
+      ) : <ResponsiveContainer width="100%" height={250}>{chartEl(w.type, data, w.colors, [serieLabel, mLabel2])}</ResponsiveContainer>}
     </Card>);
 }
 
@@ -864,13 +916,22 @@ function WidgetModal({ open, w, db, periode, onClose, onSave }){
   const aCroisee = croisable && !!f.measure2 && f.measure2 !== f.measure;
   const OPTIONS_CALC = [["ratio","Taux : mesure ÷ croisée (%)"],
     ["gap","Écart : mesure − croisée"], ["sum","Somme : mesure + croisée"]];
+  /* Constructeur de formule : les codes d'indicateurs référençables, et la
+     validation de l'expression saisie (mêmes garde-fous CSP que les jeux de
+     données — aucun `eval`, liste blanche de variables et de fonctions). */
+  const estFormule = f.source === "formule";
+  const codesDispo = codesIndicateurs(db);
+  const nomInd = (c) => ((db.indicators||[]).find(i=>i.id===c)||{}).name || c;
+  const erreurFormule = (estFormule && (f.formula||"").trim())
+    ? (evalFormula(f.formula, Object.fromEntries(codesDispo.map(c=>[c,1]))).err || "") : "";
   /* Position i de la palette effective, pour préremplir chaque case sans écraser
      ce que l'utilisateur a déjà choisi ailleurs. */
   const setCouleur = (i, v) => { const arr = (f.colors && f.colors.length ? [...f.colors] : SERIES.slice(0,8));
     while(arr.length < 8) arr.push(SERIES[arr.length]); arr[i] = v; u("colors", arr); };
   return (
     <Modal open onClose={onClose} wide title={w?.id?"Modifier la visualisation":"Nouvelle visualisation"}
-      subtitle="Choisissez la source, la dimension d'analyse et la mesure — vous pouvez en croiser une seconde"
+      subtitle={estFormule ? "Composez un indicateur par une formule libre entre indicateurs de la masterlist"
+        : "Choisissez la source, la dimension d'analyse et la mesure — vous pouvez en croiser une seconde"}
       footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn><Btn icon={Save} onClick={()=>onSave(f)}>Enregistrer</Btn></>}>
       <div className="grid grid-cols-2 gap-x-4">
         <Field label="Titre" className="col-span-2"><Input value={f.title||""} onChange={e=>u("title",e.target.value)} /></Field>
@@ -878,22 +939,39 @@ function WidgetModal({ open, w, db, periode, onClose, onSave }){
           options={Object.entries(SOURCES).map(([k,v])=>[k,v.label])} /></Field>
         <Field label="Type"><Select value={f.type} onChange={e=>u("type",e.target.value)}
           options={TYPES_VIZ} /></Field>
-        <Field label="Dimension"><Select value={f.dim} onChange={e=>u("dim",e.target.value)} options={S.dims} /></Field>
-        <Field label="Mesure"><Select value={f.measure} onChange={e=>u("measure",e.target.value)} options={S.measures} /></Field>
-        <Field label="Mesure croisée"
+        <Field label={estFormule?"Répartir par":"Dimension"}><Select value={f.dim} onChange={e=>u("dim",e.target.value)} options={S.dims} /></Field>
+        <Field label={estFormule?"Base des variables":"Mesure"}
+          hint={estFormule?"Chaque code d'indicateur de la formule prend cette valeur d'outcome — mesurée ou planifiée.":undefined}>
+          <Select value={f.measure} onChange={e=>u("measure",e.target.value)} options={S.measures} /></Field>
+        {!estFormule && <Field label="Mesure croisée"
           hint={croisable
             ? "Facultatif. Une seconde mesure sur la même dimension — réalisé contre planifié, par exemple."
             : "Type de composition (circulaire, anneau, radial, radar, treemap) : une seule mesure. Passez à un histogramme, une courbe, une aire ou un tableau pour en croiser deux."}>
           <Select value={croisable ? (f.measure2||"") : ""} disabled={!croisable}
             onChange={e=>u("measure2",e.target.value)} empty="— aucune —" options={mesuresCroisees} />
-        </Field>
-        <Field label="Indicateur calculé"
+        </Field>}
+        {!estFormule && <Field label="Indicateur calculé"
           hint={aCroisee
             ? "Facultatif. Combine les deux mesures en une valeur par catégorie : taux de réalisation (réalisé ÷ planifié), écart, ou somme. Une seule série est alors tracée."
             : "Choisissez d'abord une mesure croisée : un indicateur calculé combine les deux mesures."}>
           <Select value={aCroisee ? (f.calc||"") : ""} disabled={!aCroisee}
             onChange={e=>u("calc",e.target.value)} empty="— aucun (deux séries) —" options={OPTIONS_CALC} />
-        </Field>
+        </Field>}
+        {estFormule && (
+          <Field label="Formule" className="col-span-2"
+            hint="Combinez les indicateurs par leur code et les opérateurs + − × ÷ ( ). Ex. « FCS / FES * 100 » ou « MAMR - MAMD ». Fonctions permises : min, max, round, abs, sqrt, floor, ceil. Une zone où un des indicateurs cités n'a pas été relevé est écartée.">
+            <textarea value={f.formula||""} onChange={e=>u("formula",e.target.value)} rows={2}
+              className="m-code" spellCheck={false} placeholder="ex. FCS / FES * 100" />
+            {erreurFormule && <p className="f115 text-rose-700 mt-1">{erreurFormule}</p>}
+            {codesDispo.length ? (
+              <div className="flex flex-wrap gap-1 mt-2">
+                {codesDispo.map(c=>(
+                  <button key={c} type="button" title={nomInd(c)}
+                    onClick={()=>u("formula",(f.formula||"")+c)}
+                    className="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-sky-100 f11 text-slate-600 border border-slate-200">{c}</button>))}
+              </div>
+            ) : <p className="f115 text-amber-700 mt-1">Aucun indicateur de la masterlist n'a de code utilisable comme variable.</p>}
+          </Field>)}
         <Field label="Couleurs" className="col-span-2"
           hint="Facultatif. Choisissez au nuancier ou collez un code hexadécimal (#rrggbb). Les graphiques à catégories parcourent la liste ; courbes, aires, radars et mesure croisée utilisent les deux premières. « Réinitialiser » revient à la palette par défaut.">
           <div className="flex items-start gap-2 flex-wrap">
