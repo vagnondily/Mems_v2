@@ -14,20 +14,31 @@ import { PageHead } from "./Shell.jsx";
 
 /* ══════════════════ Analyses ══════════════════ */
 function Analytics({ db, set, me, sub, setSub, notify, can }){
-  const items = [["datasets","Jeux de données"],["scripts","Scripts d'analyse"],["viz","Visualisations"]];
+  const items = [["datasets","Jeux de données"],["scripts","Scripts d'analyse"]];
+  /* Le tableau de bord des visualisations n'est plus un sous-onglet d'ici : il est
+     devenu une destination de premier niveau (voir TableauDeBord). Un ancien
+     réglage encore pointé sur « viz » retombe donc sur les jeux de données. */
+  const actif = sub === "scripts" ? "scripts" : "datasets";
+  return (
+    <div className="space-y-4">
+      <PageHead title="Analyses" text="Constitution des jeux de données à partir d'ODK Central, apurement, scripts R ou SPSS." />
+      <Tabs items={items} value={actif} onChange={setSub} />
+      {actif==="datasets" && <Datasets db={db} set={set} notify={notify} can={can} />}
+      {actif==="scripts" && <Scripts db={db} set={set} me={me} notify={notify} can={can} />}
+    </div>);
+}
+
+/* Le TABLEAU DE BORD des visualisations, promu en destination de premier niveau
+   (menu du haut) plutôt qu'en sous-onglet des Analyses. Il porte sa propre barre
+   de période et le tableau modifiable (Viz). */
+function TableauDeBord({ db, set, notify, can }){
   const [periode,setPeriode] = useState(() => periodeAnnee(db.year));
   return (
     <div className="space-y-4">
-      <PageHead title="Analyses" text="Constitution des jeux de données à partir d'ODK Central, apurement, scripts R ou SPSS et visualisations." />
-      <Tabs items={items} value={sub} onChange={setSub} />
-      {/* La barre ne sort que sur les visualisations. Les jeux de données et les
-          scripts portent des colonnes ODK quelconques, sans date garantie ni
-          nommée : y poser un filtre de période afficherait un réglage qui ne
-          filtrerait rien. */}
-      {sub==="viz" && <BarrePeriode db={db} periode={periode} onChange={setPeriode} />}
-      {sub==="datasets" && <Datasets db={db} set={set} notify={notify} can={can} />}
-      {sub==="scripts" && <Scripts db={db} set={set} me={me} notify={notify} can={can} />}
-      {sub==="viz" && <Viz db={db} set={set} periode={periode} notify={notify} can={can} />}
+      <PageHead title="Tableau de bord"
+        text="Vos visualisations, modifiables à volonté : mesures, croisements et indicateurs composés, sur la période choisie." />
+      <BarrePeriode db={db} periode={periode} onChange={setPeriode} />
+      <Viz db={db} set={set} periode={periode} notify={notify} can={can} />
     </div>);
 }
 
@@ -991,4 +1002,4 @@ function WidgetModal({ open, w, db, periode, onClose, onSave }){
     </Modal>);
 }
 
-export { Analytics, CleanModal, Datasets, EtatMoteurs, ResultatExecution, SCRIPT_TPL, SOURCES, ScriptModal, Scripts, Viz, Widget, WidgetModal, aggregate, temporel };
+export { Analytics, CleanModal, Datasets, EtatMoteurs, ResultatExecution, SCRIPT_TPL, SOURCES, ScriptModal, Scripts, TableauDeBord, Viz, Widget, WidgetModal, aggregate, temporel };

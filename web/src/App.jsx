@@ -7,7 +7,7 @@ import { ACT_CATEGORIES, C, D_MMR, D_SCORING, D_ROLES, D_FORMULAS, D_WEIGHTS,
 import { api, setToken, setUnauthorizedHandler, createSyncQueue,
          setSandboxNotifier, subscribeSandbox, isSandbox } from "./lib/api.js";
 import { Admin } from "./views/Admin.jsx";
-import { Analytics } from "./views/Analytics.jsx";
+import { Analytics, TableauDeBord } from "./views/Analytics.jsx";
 import { Home } from "./views/Home.jsx";
 import { Login } from "./views/Login.jsx";
 import { Programme, Suivi } from "./views/Merged.jsx";
@@ -379,6 +379,7 @@ export default function App(){
         {view==="programme" && <Programme db={db} set={set} me={me} sub={subs.programme}
           setSub={setSub("programme")} notify={notify} can={can} go={setTab}
           volet={volets.programme} />}
+        {view==="viz" && <TableauDeBord db={db} set={set} notify={notify} can={can} />}
         {view==="map" && <MapView db={db} me={me} notify={notify} go={setTab} />}
         {/* `me` sert à l'exécution des scripts sur le serveur : elle est
             réservée au rôle `super` et non à la capacité « admin ». */}

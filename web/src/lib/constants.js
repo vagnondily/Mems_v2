@@ -174,7 +174,7 @@ const niveauIndicateur = (code) => CODES_INDIC_OUTPUT.has(code) ? "output" : "ou
    plus du suivi, c'est une lecture transversale — elle montre aussi bien le
    plan de distribution que la couverture. L'enfouir sous un sous-onglet la
    rendait introuvable à qui n'ouvrait pas ce menu. */
-const TABS_ALL = [["home","Accueil"],["suivi","Suivi-évaluation"],["programme","Programme"],
+const TABS_ALL = [["home","Accueil"],["viz","Tableau de bord"],["suivi","Suivi-évaluation"],["programme","Programme"],
   ["map","Cartographie"],["analytics","Analyses"],["reports","Rapports"],["settings","Paramètres"]];
 
 /* La console d'administration est la seule destination qui ne figure PAS dans

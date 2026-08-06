@@ -203,6 +203,111 @@ function Tabs2({ items, value, onChange }){
     </div>);
 }
 
+/* Le DÉTAIL d'un contrat, montré à la demande quand l'utilisateur entre dans une
+   ligne de la liste — solde, barème, avenants, périmètre et actions de gestion.
+   Extrait du corps de la liste pour que celle-ci reste une liste. */
+function ContractBody({ c, can, faire, setEditCtr, setRates, setZonesCtr, setAven }){
+  return (
+    <div>
+      {can("admin") && <div className="flex flex-wrap gap-2 items-center mb-4 pb-3 border-b border-slate-100">
+        <span className="f11 font-bold uppercase tracking-wide text-slate-500 mr-1">Statut</span>
+        <Select value={c.status}
+          onChange={e=>faire(() => api.setContractStatus(c.id, e.target.value), "Statut du contrat modifié")}
+          options={Object.entries(CTR).map(([v,[l]])=>[v,l])} />
+        <Btn size="sm" kind="sec" icon={Pencil} onClick={()=>setEditCtr({ ...c, tpm_id:c.tpm_id })}>Contrat</Btn>
+        <Btn size="sm" kind="sec" icon={Wallet}
+          onClick={()=>setRates({ contrat:c, lignes:c.rates.map(x=>({ ...x })) })}>Barème</Btn>
+        <Btn size="sm" kind="sec" icon={MapPin}
+          onClick={()=>setZonesCtr({ contrat:c, zones:(c.zones||[]).map(z=>({ ...z })) })}>Périmètre</Btn>
+        <Btn size="sm" kind="sec" icon={FileText} onClick={()=>setAven({ contrat:c })}>Avenant</Btn>
+        <Btn size="sm" kind="sec" icon={ClipboardList}
+          onClick={()=>faire(() => api.cloneContract(c.id), "Contrat dupliqué")}>Dupliquer</Btn>
+      </div>}
+
+      <div className="grid gap-px bg-slate-200 border border-slate-200 rounded overflow-hidden mb-3"
+        style={{gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))"}}>
+        {[["Plafond", c.solde.plafond, ""],
+          ["Engagé", c.solde.engage, "plans validés au niveau pays"],
+          ["En cours", c.solde.enCours, "dans le circuit"],
+          ["Dépensé", c.solde.depense, "constaté"],
+          ["Disponible", c.solde.disponible, "plafond − engagé"]].map(([l,v,s])=>(
+          <div key={l} className="bg-white px-3 py-2.5">
+            <div className="f105 font-bold uppercase tracking-wider text-slate-500">{l}</div>
+            <div className={clsx("f15 font-semibold tabular-nums mt-0.5",
+              l==="Disponible" && v <= 0 ? "text-rose-700" : "text-slate-800")}>
+              {fmt(Math.round(v))}</div>
+            {s && <div className="f105 text-slate-400">{s}</div>}
+          </div>))}
+      </div>
+      <div className="flex items-center gap-3 f115 text-slate-600 mb-3">
+        <span>Consommation du plafond</span>
+        <div className="flex-1 max-w-xs"><Bar2 value={c.solde.consommation || 0}
+          tone={c.solde.consommation > 95 ? "bad" : c.solde.consommation > 80 ? "warn" : "ok"} /></div>
+        <b className="tabular-nums">{c.solde.consommation ?? 0} %</b>
+        <span className="text-slate-400">{c.currency}</span>
+      </div>
+
+      <div className="grid gap-4" style={{gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))"}}>
+        <div>
+          <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-1.5">
+            Barème — {c.rates.length} ligne(s)</div>
+          {!c.rates.length
+            ? <div className="f115 text-amber-700">Aucun barème : les plans de ce contrat auront un budget nul.</div>
+            : <table className="w-full f115">
+                <tbody>{c.rates.map(x=>(
+                  <tr key={x.id} className="border-b border-slate-100 last:border-0">
+                    <td className="py-1 text-slate-700">{x.label}</td>
+                    <td className="py-1 text-slate-400">{x.unit}</td>
+                    <td className="py-1 text-right tabular-nums font-semibold">{fmt(x.unit_cost)}</td>
+                    <td className="py-1 pl-2 text-slate-400 f105">{(DRIVERS.find(d=>d[0]===x.driver)||[])[1]}</td>
+                  </tr>))}</tbody>
+              </table>}
+        </div>
+        <div>
+          <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-1.5">
+            Avenants — {c.amendments.length}</div>
+          {!c.amendments.length
+            ? <div className="f115 text-slate-400">Plafond inchangé depuis la signature.</div>
+            : <table className="w-full f115">
+                <tbody>{c.amendments.map(a=>(
+                  <tr key={a.id} className="border-b border-slate-100 last:border-0">
+                    <td className="py-1 text-slate-500">{a.signed_at || "—"}</td>
+                    <td className="py-1 text-slate-700">{a.ref || "avenant"}</td>
+                    <td className={clsx("py-1 text-right tabular-nums font-semibold",
+                      a.delta < 0 ? "text-rose-700" : "text-lime-700")}>
+                      {a.delta > 0 ? "+" : ""}{fmt(a.delta)}</td>
+                  </tr>))}
+                  <tr><td colSpan={2} className="py-1 text-slate-500">Cumul</td>
+                    <td className="py-1 text-right tabular-nums font-semibold">
+                      {c.solde.avenants > 0 ? "+" : ""}{fmt(c.solde.avenants)}</td></tr>
+                </tbody>
+              </table>}
+          {c.amendments.map(a => a.reason && (
+            <div key={a.id+"r"} className="f105 text-slate-500 mt-1">
+              <b>{a.ref || "avenant"}</b> — {a.reason}</div>))}
+        </div>
+      </div>
+
+      <div className="mt-3 pt-3 border-t border-slate-100">
+        <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-1.5">
+          Périmètre géographique — {(c.zones||[]).length
+            ? `${c.zones.length} zone(s) éligible(s)` : "non borné"}</div>
+        {!(c.zones||[]).length
+          ? <div className="f115 text-slate-400">Aucune zone déclarée : les plans peuvent affecter
+              n'importe quelle commune du référentiel. Bornez le contrat avec « Périmètre » pour ne
+              confier au prestataire que les communes prévues.</div>
+          : <div className="flex flex-wrap gap-1.5">
+              {c.zones.map(z => (
+                <span key={z.geo_pcode}
+                  className="inline-flex items-center gap-1 f105 rounded-full bg-slate-100 px-2 py-0.5 text-slate-700">
+                  {z.level==="adm2" && <Badge tone="n">district</Badge>}
+                  {z.zone}{z.district ? <span className="text-slate-400">· {z.district}</span> : null}
+                </span>))}
+            </div>}
+      </div>
+    </div>);
+}
+
 /* ── Contrats, barèmes, avenants ─────────────────────────────────────*/
 function Contracts({ tpms, db, can, notify, onChange }){
   const [editTpm, setEditTpm] = useState(null);
@@ -210,6 +315,7 @@ function Contracts({ tpms, db, can, notify, onChange }){
   const [rates, setRates]     = useState(null);   /* { contrat, lignes } */
   const [aven, setAven]       = useState(null);
   const [zonesCtr, setZonesCtr] = useState(null); /* contrat dont on édite le périmètre */
+  const [detail, setDetail]   = useState(null);   /* id du contrat dont on a ouvert le détail */
   const [busy, setBusy]       = useState(false);
 
   const faire = async (fn, message) => {
@@ -219,6 +325,10 @@ function Contracts({ tpms, db, can, notify, onChange }){
     catch(e){ notify(e.message, "err"); }
     setBusy(false);
   };
+  /* La liste plate de TOUS les contrats, prestataire porté en colonne : c'est la
+     liste ligne à ligne, on entre dans une ligne pour en voir le détail. */
+  const contrats = tpms.flatMap(t => (t.contrats||[]).map(c => ({ ...c, tpmName:t.name, tpm_id:t.id })));
+  const dc = detail ? contrats.find(x => x.id === detail) : null;
 
   return (
     <>
@@ -230,139 +340,65 @@ function Contracts({ tpms, db, can, notify, onChange }){
         son rôle dans le calcul : une ligne « superviseurs × jours » se remplit toute seule
         depuis les quantités de la zone ; une ligne « forfait » reste saisie.</Note>
 
-      {can("admin") && <div className="flex gap-2 mb-4">
-        <Btn size="sm" icon={Plus} onClick={()=>setEditTpm({ active:true })}>Nouveau prestataire</Btn>
-      </div>}
+      {/* Prestataires — gestion compacte : identité et nombre de contrats, sans
+          rien déplier. Le détail vit dans la liste des contrats ci-dessous. */}
+      <Card flush title="Prestataires" subtitle={`${tpms.length} prestataire(s)`}
+        right={can("admin") && <Btn size="sm" icon={Plus} onClick={()=>setEditTpm({ active:true })}>Nouveau prestataire</Btn>}>
+        {!tpms.length
+          ? <Empty icon={Building2} title="Aucun prestataire"
+              text="Un prestataire de suivi porte un ou plusieurs contrats, chacun avec son plafond, sa devise et son barème." />
+          : <TableWrap>
+              <thead><tr><Th>Prestataire</Th><Th>Code</Th><Th>Bureau</Th><Th num>Contrats</Th><Th /></tr></thead>
+              <tbody>{tpms.map(t => (
+                <tr key={t.id} className="hover:bg-sky-50">
+                  <Td className="font-medium text-slate-800">{t.name}</Td>
+                  <Td className="text-slate-500">{t.code || "—"}</Td>
+                  <Td className="text-slate-500">{t.office || "tous bureaux"}</Td>
+                  <Td num>{(t.contrats||[]).length}</Td>
+                  <Td className="text-right">{can("admin") && <>
+                    <Btn size="sm" kind="ghost" icon={Pencil} onClick={()=>setEditTpm(t)}>Modifier</Btn>
+                    <Btn size="sm" kind="ghost" icon={Plus}
+                      onClick={()=>setEditCtr({ tpm_id:t.id, currency:"MGA", status:"draft" })}>Contrat</Btn>
+                  </>}</Td>
+                </tr>))}</tbody>
+            </TableWrap>}
+      </Card>
 
-      {!tpms.length && <Empty icon={Building2} title="Aucun prestataire"
-        text="Un prestataire de suivi porte un ou plusieurs contrats, chacun avec son plafond, sa devise et son barème." />}
+      {/* Contrats — LISTE ligne à ligne. On clique une ligne pour ENTRER dans le
+          contrat ; rien n'est déplié d'office, ni regroupé par tiers. */}
+      <Card flush title="Contrats" subtitle={`${contrats.length} contrat(s)`}>
+        {!contrats.length
+          ? <Empty icon={FileText} title="Aucun contrat"
+              text="Ajoutez un contrat à un prestataire ci-dessus. Sans contrat, aucun plan mensuel ne peut être monté — le barème et le plafond viennent de là." />
+          : <TableWrap>
+              <thead><tr><Th>Référence</Th><Th>Prestataire</Th><Th>Statut</Th><Th>Période</Th>
+                <Th num>Plafond</Th><Th num>Consommation</Th><Th /></tr></thead>
+              <tbody>{contrats.map(c => (
+                <tr key={c.id} className="hover:bg-sky-50 cursor-pointer" onClick={()=>setDetail(c.id)}>
+                  <Td className="font-semibold text-slate-800">{c.ref}</Td>
+                  <Td className="text-slate-600">{c.tpmName}</Td>
+                  <Td><Badge tone={(CTR[c.status]||["",""])[1]}>{(CTR[c.status]||[c.status])[0]}</Badge></Td>
+                  <Td className="f115 text-slate-500">{c.start_date || "—"} → {c.end_date || "—"}</Td>
+                  <Td num>{fmt(Math.round(c.solde.plafond))} <span className="text-slate-400 f105">{c.currency}</span></Td>
+                  <Td num><div className="flex items-center gap-2 justify-end">
+                    <div className="w-20"><Bar2 value={c.solde.consommation || 0}
+                      tone={c.solde.consommation > 95 ? "bad" : c.solde.consommation > 80 ? "warn" : "ok"} /></div>
+                    <b className="tabular-nums">{c.solde.consommation ?? 0} %</b></div></Td>
+                  <Td className="text-right">
+                    <Btn size="sm" kind="ghost" icon={ChevronRight}
+                      onClick={e=>{ e.stopPropagation(); setDetail(c.id); }}>Ouvrir</Btn></Td>
+                </tr>))}</tbody>
+            </TableWrap>}
+      </Card>
 
-      {tpms.map(t => (
-        <Card key={t.id} title={t.name}
-          subtitle={[t.code, t.office || "tous bureaux", t.contact,
-            `${t.users} compte(s)`].filter(Boolean).join(" · ")}
-          right={can("admin") && <>
-            <Btn size="sm" kind="sec" icon={Pencil} onClick={()=>setEditTpm(t)}>Modifier</Btn>
-            <Btn size="sm" kind="sec" icon={Plus}
-              onClick={()=>setEditCtr({ tpm_id:t.id, currency:"MGA", status:"draft" })}>Contrat</Btn>
-          </>}>
-          {!t.contrats.length
-            ? <div className="f125 text-slate-500 py-2">Aucun contrat. Sans contrat, aucun plan
-                mensuel ne peut être monté — le barème et le plafond viennent de là.</div>
-            : t.contrats.map(c => (
-              <div key={c.id} className="border border-slate-200 rounded-xl p-4 mb-3 last:mb-0">
-                <div className="flex items-baseline gap-3 flex-wrap mb-3">
-                  <b className="f13 text-slate-800">{c.ref}</b>
-                  <Badge tone={(CTR[c.status]||["",""])[1]}>{(CTR[c.status]||[c.status])[0]}</Badge>
-                  <span className="f115 text-slate-500">
-                    {c.start_date || "—"} → {c.end_date || "—"}</span>
-                  {can("admin") && <span className="ml-auto flex gap-2 items-center">
-                    {/* Le statut se change ligne à ligne, d'un menu : c'est le cœur
-                        du cycle de vie demandé. */}
-                    <Select value={c.status}
-                      onChange={e=>faire(() => api.setContractStatus(c.id, e.target.value),
-                        "Statut du contrat modifié")}
-                      options={Object.entries(CTR).map(([v,[l]])=>[v,l])} />
-                    <Btn size="sm" kind="sec" icon={Pencil} onClick={()=>setEditCtr({ ...c, tpm_id:t.id })}>Contrat</Btn>
-                    <Btn size="sm" kind="sec" icon={Wallet}
-                      onClick={()=>setRates({ contrat:c, lignes:c.rates.map(x=>({ ...x })) })}>Barème</Btn>
-                    <Btn size="sm" kind="sec" icon={MapPin}
-                      onClick={()=>setZonesCtr({ contrat:c, zones:(c.zones||[]).map(z=>({ ...z })) })}>Périmètre</Btn>
-                    <Btn size="sm" kind="sec" icon={FileText} onClick={()=>setAven({ contrat:c })}>Avenant</Btn>
-                    <Btn size="sm" kind="sec" icon={ClipboardList}
-                      onClick={()=>faire(() => api.cloneContract(c.id), "Contrat dupliqué")}>Dupliquer</Btn>
-                  </span>}
-                </div>
-
-                {/* Le solde, décomposé. « Combien reste-t-il » n'a de sens que si l'on
-                    distingue ce qui est engagé de ce qui circule encore. */}
-                <div className="grid gap-px bg-slate-200 border border-slate-200 rounded overflow-hidden mb-3"
-                  style={{gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))"}}>
-                  {[["Plafond", c.solde.plafond, ""],
-                    ["Engagé", c.solde.engage, "plans validés au niveau pays"],
-                    ["En cours", c.solde.enCours, "dans le circuit"],
-                    ["Dépensé", c.solde.depense, "constaté"],
-                    ["Disponible", c.solde.disponible, "plafond − engagé"]].map(([l,v,s])=>(
-                    <div key={l} className="bg-white px-3 py-2.5">
-                      <div className="f105 font-bold uppercase tracking-wider text-slate-500">{l}</div>
-                      <div className={clsx("f15 font-semibold tabular-nums mt-0.5",
-                        l==="Disponible" && v <= 0 ? "text-rose-700" : "text-slate-800")}>
-                        {fmt(Math.round(v))}</div>
-                      {s && <div className="f105 text-slate-400">{s}</div>}
-                    </div>))}
-                </div>
-                <div className="flex items-center gap-3 f115 text-slate-600 mb-3">
-                  <span>Consommation du plafond</span>
-                  <div className="flex-1 max-w-xs"><Bar2 value={c.solde.consommation || 0}
-                    tone={c.solde.consommation > 95 ? "bad" : c.solde.consommation > 80 ? "warn" : "ok"} /></div>
-                  <b className="tabular-nums">{c.solde.consommation ?? 0} %</b>
-                  <span className="text-slate-400">{c.currency}</span>
-                </div>
-
-                <div className="grid gap-4" style={{gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))"}}>
-                  <div>
-                    <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-1.5">
-                      Barème — {c.rates.length} ligne(s)</div>
-                    {!c.rates.length
-                      ? <div className="f115 text-amber-700">Aucun barème : les plans de ce contrat
-                          auront un budget nul.</div>
-                      : <table className="w-full f115">
-                          <tbody>{c.rates.map(x=>(
-                            <tr key={x.id} className="border-b border-slate-100 last:border-0">
-                              <td className="py-1 text-slate-700">{x.label}</td>
-                              <td className="py-1 text-slate-400">{x.unit}</td>
-                              <td className="py-1 text-right tabular-nums font-semibold">{fmt(x.unit_cost)}</td>
-                              <td className="py-1 pl-2 text-slate-400 f105">
-                                {(DRIVERS.find(d=>d[0]===x.driver)||[])[1]}</td>
-                            </tr>))}</tbody>
-                        </table>}
-                  </div>
-                  <div>
-                    <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-1.5">
-                      Avenants — {c.amendments.length}</div>
-                    {!c.amendments.length
-                      ? <div className="f115 text-slate-400">Plafond inchangé depuis la signature.</div>
-                      : <table className="w-full f115">
-                          <tbody>{c.amendments.map(a=>(
-                            <tr key={a.id} className="border-b border-slate-100 last:border-0">
-                              <td className="py-1 text-slate-500">{a.signed_at || "—"}</td>
-                              <td className="py-1 text-slate-700">{a.ref || "avenant"}</td>
-                              <td className={clsx("py-1 text-right tabular-nums font-semibold",
-                                a.delta < 0 ? "text-rose-700" : "text-lime-700")}>
-                                {a.delta > 0 ? "+" : ""}{fmt(a.delta)}</td>
-                            </tr>))}
-                            <tr><td colSpan={2} className="py-1 text-slate-500">Cumul</td>
-                              <td className="py-1 text-right tabular-nums font-semibold">
-                                {c.solde.avenants > 0 ? "+" : ""}{fmt(c.solde.avenants)}</td></tr>
-                          </tbody>
-                        </table>}
-                    {c.amendments.map(a => a.reason && (
-                      <div key={a.id+"r"} className="f105 text-slate-500 mt-1">
-                        <b>{a.ref || "avenant"}</b> — {a.reason}</div>))}
-                  </div>
-                </div>
-
-                {/* Le périmètre géographique confié par le contrat. Vide = aucune
-                    borne ; sinon les plans mensuels n'affectent que ces zones. */}
-                <div className="mt-3 pt-3 border-t border-slate-100">
-                  <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-1.5">
-                    Périmètre géographique — {(c.zones||[]).length
-                      ? `${c.zones.length} zone(s) éligible(s)` : "non borné"}</div>
-                  {!(c.zones||[]).length
-                    ? <div className="f115 text-slate-400">Aucune zone déclarée : les plans peuvent
-                        affecter n'importe quelle commune du référentiel. Bornez le contrat avec
-                        « Périmètre » pour ne confier au prestataire que les communes prévues.</div>
-                    : <div className="flex flex-wrap gap-1.5">
-                        {c.zones.map(z => (
-                          <span key={z.geo_pcode}
-                            className="inline-flex items-center gap-1 f105 rounded-full bg-slate-100 px-2 py-0.5 text-slate-700">
-                            {z.level==="adm2" && <Badge tone="n">district</Badge>}
-                            {z.zone}{z.district ? <span className="text-slate-400">· {z.district}</span> : null}
-                          </span>))}
-                      </div>}
-                </div>
-              </div>))}
-        </Card>))}
+      {/* Détail d'un contrat — ouvert seulement quand on entre dans une ligne. */}
+      <Modal open={!!dc} wide onClose={()=>setDetail(null)}
+        title={dc ? `Contrat ${dc.ref} — ${dc.tpmName}` : ""}
+        subtitle={dc ? `${(CTR[dc.status]||[dc.status])[0]} · ${dc.start_date || "—"} → ${dc.end_date || "—"}` : ""}
+        footer={<Btn kind="sec" onClick={()=>setDetail(null)}>Fermer</Btn>}>
+        {dc && <ContractBody c={dc} can={can} faire={faire}
+          setEditCtr={setEditCtr} setRates={setRates} setZonesCtr={setZonesCtr} setAven={setAven} />}
+      </Modal>
 
       {/* Prestataire */}
       <Modal open={!!editTpm} onClose={()=>setEditTpm(null)}

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { BarChart3, Bell, CalendarRange, Check, ChevronDown, Cog, Database, FileText, KeyRound, LayoutDashboard, LogOut, MapPin, Save, ShieldCheck, UserCog } from "lucide-react";
+import { BarChart3, Bell, CalendarRange, Check, ChevronDown, Cog, Database, FileText, Gauge, KeyRound, LayoutDashboard, LogOut, MapPin, Save, ShieldCheck, UserCog } from "lucide-react";
 import { Badge, Btn, BrandMark, Empty, Field, Input, Modal, Note, NotesMenuItem, SandboxMenuItem, TestEnvMenuItem, useSandbox, useTestEnv } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
 import { clsx } from "../lib/calc.js";
@@ -85,6 +85,10 @@ function AccountModal({ open, me, db, notify, onMe, onClose }){
    tenir à jour, qui finirait par mentir le jour où un écran change les siens. */
 const NAV = [
   { id:"home", label:"Accueil", icon:LayoutDashboard },
+  /* Le tableau de bord des visualisations, modifiable par l'utilisateur, est une
+     destination de premier niveau (demande explicite), non un sous-onglet des
+     Analyses. */
+  { id:"viz", label:"Tableau de bord", icon:Gauge },
   /* Un sujet par destination : le prévu et le réalisé s'y basculent, ils ne se
      dupliquent plus. Le premier niveau suit les deux métiers, non la nature des données. */
   { id:"suivi", label:"Suivi-évaluation", icon:CalendarRange },
