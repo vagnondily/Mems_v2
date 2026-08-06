@@ -354,27 +354,26 @@ function Sante({ notify }){
     await recharger();
   };
 
-  const checkpoint = () => agir("checkpoint", "Point de contrôle WAL effectué",
+  const checkpoint = () => agir("checkpoint", "Point de contrôle effectué",
     () => api.baseCheckpoint(),
-    (r) => [`Journal WAL : ${poids(r.avant.wal)} → ${poids(r.apres.wal)} en ${r.ms} ms`,
-            r.complet ? "le journal a été entièrement replié dans la base"
-              : "un lecteur tenait encore le journal : le repli est partiel, réessayez plus tard"]);
+    (r) => [`Taille de la base : ${poids(r.avant.octets)} → ${poids(r.apres.octets)} en ${r.ms} ms`,
+            r.complet ? "le point de contrôle a été exécuté"
+              : "le rôle de l'application n'a pas le privilège CHECKPOINT : opération ignorée"]);
 
   const vacuum = () => setDemande({
     titre: "Lancer un VACUUM sur la base ?",
-    sous: "Réécriture complète du fichier de base",
+    sous: "VACUUM (ANALYZE) sur toute la base",
     libelle: "Lancer le VACUUM",
     corps: (<>
-      <p>SQLite va <b>réécrire le fichier de base entier</b> pour récupérer l'espace laissé par les
-        lignes supprimées — environ <b>{poids(donnees?.recuperable_par_vacuum)}</b> d'après les pages
-        libres actuelles.</p>
-      <p>L'opération <b>bloque toute lecture et toute écriture</b> pendant sa durée : sur une base
-        volumineuse, l'application paraîtra figée pour tous les utilisateurs connectés. Aucune donnée
-        n'est perdue, mais choisissez une heure creuse.</p>
+      <p>PostgreSQL va <b>récupérer l'espace</b> laissé par les lignes mortes et <b>rafraîchir les
+        statistiques</b> du planificateur. Contrairement à un VACUUM FULL, cette opération ne
+        verrouille pas les tables en écriture.</p>
+      <p>Elle peut néanmoins peser sur les entrées/sorties d'une base volumineuse : préférez une
+        heure creuse. Aucune donnée n'est perdue.</p>
     </>),
     onOui: () => agir("vacuum", "VACUUM terminé",
       () => api.baseVacuum(),
-      (r) => [`Fichier : ${poids(r.avant.principal)} → ${poids(r.apres.principal)} en ${r.ms} ms`,
+      (r) => [`Taille de la base : ${poids(r.avant.octets)} → ${poids(r.apres.octets)} en ${r.ms} ms`,
               `Espace récupéré : ${poids(Math.max(0, r.gain))}`]),
   });
 
@@ -394,12 +393,11 @@ function Sante({ notify }){
         <StatRow>
           <Stat label="Intégrité" value={conforme ? "Conforme" : "À examiner"}
             tone={conforme ? "ok" : "bad"} icon={HeartPulse}
-            sub={`contrôle « ${d.integrite.integrity_check} », ${d.integrite.violations_cles_etrangeres} violation(s) de clé`} />
-          <Stat label="Fichier de base" value={poids(d.fichier.total)}
-            sub={`dont journal WAL ${poids(d.fichier.wal)}`} />
-          <Stat label="Récupérable par VACUUM" value={poids(d.recuperable_par_vacuum)}
-            tone={d.recuperable_par_vacuum > 5_000_000 ? "warn" : undefined}
-            sub={`${fmt(d.reglages.freelist_count)} page(s) libre(s)`} />
+            sub={`${d.integrite.contraintes_non_validees} contrainte(s) non validée(s)`} />
+          <Stat label="Taille de la base" value={poids(d.base.octets)}
+            sub={`PostgreSQL ${d.base.version || ""}`} />
+          <Stat label="Connexions" value={fmt(d.base.connexions)}
+            sub="sessions ouvertes sur cette base" />
           <Stat label="Sauvegardes" value={fmt(d.sauvegardes)} icon={Archive} />
         </StatRow>
 
@@ -412,18 +410,19 @@ function Sante({ notify }){
               {occupe === "vacuum" ? "VACUUM en cours…" : "VACUUM"}</Btn>
           </div>
           <p className="f115 text-slate-500 mt-2 leading-relaxed">
-            Le <b>point de contrôle</b> replie le journal WAL dans la base et rend la place qu'il
-            occupe ; il est court. Le <b>VACUUM</b> réécrit le fichier entier pour récupérer l'espace
-            des lignes supprimées ; il bloque l'application le temps de son exécution.</p>
+            Le <b>point de contrôle</b> force PostgreSQL à écrire les pages modifiées sur le disque
+            (utile avant une sauvegarde) ; il exige un rôle privilégié. Le <b>VACUUM (ANALYZE)</b>
+            récupère l'espace des lignes mortes et rafraîchit les statistiques du planificateur, sans
+            verrouiller les tables en écriture.</p>
         </Card>
 
-        {!conforme && d.integrite.detail_violations?.length > 0 && (
-          <Card flush title="Violations de clés étrangères"
-            subtitle={`${d.integrite.violations_cles_etrangeres} au total, ${d.integrite.detail_violations.length} détaillée(s)`}>
+        {!conforme && d.integrite.detail?.length > 0 && (
+          <Card flush title="Contraintes non validées"
+            subtitle={`${d.integrite.contraintes_non_validees} au total, ${d.integrite.detail.length} détaillée(s) — posées NOT VALID, non encore vérifiées sur les lignes existantes`}>
             <TableWrap max="mh240">
-              <thead><tr><Th>Table</Th><Th num>Ligne</Th><Th>Table référencée</Th></tr></thead>
-              <tbody>{d.integrite.detail_violations.map((v,i) => (
-                <tr key={i}><Td>{v.table}</Td><Td num>{v.rowid}</Td><Td>{v.parent}</Td></tr>))}</tbody>
+              <thead><tr><Th>Contrainte</Th><Th>Table</Th></tr></thead>
+              <tbody>{d.integrite.detail.map((v,i) => (
+                <tr key={i}><Td>{v.conname}</Td><Td>{v.table}</Td></tr>))}</tbody>
             </TableWrap>
           </Card>)}
 
@@ -445,15 +444,20 @@ function Sante({ notify }){
           </Card>
         </div>
 
-        <Card title="Réglages SQLite" subtitle="Ce que le moteur applique réellement à cette base">
+        <Card title="Serveur PostgreSQL" subtitle="État de l'instance qui sert cette base">
           <div className="grid gap-x-4 gap-y-1"
             style={{gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))"}}>
-            {Object.entries(d.reglages).map(([k,v]) => (
+            {Object.entries({
+              version: d.base.version || "—",
+              taille: poids(d.base.octets),
+              connexions: d.base.connexions,
+              tables: d.tables.length,
+              migrations: d.migrations.length,
+            }).map(([k,v]) => (
               <div key={k} className="flex gap-2 f115 border-b border-slate-100 py-1">
                 <span className="text-slate-500">{k}</span>
                 <b className="ml-auto text-slate-800 tabular-nums">{String(v)}</b></div>))}
           </div>
-          <p className="f105 text-slate-400 mt-2">Fichier : {d.fichier.chemin}</p>
         </Card>
       </>)}
       <Confirmation demande={demande} onClose={()=>setDemande(null)} />

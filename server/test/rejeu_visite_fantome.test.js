@@ -1,9 +1,8 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
 import { execFileSync } from "node:child_process";
 import request from "supertest";
+import pg from "pg";
 
 /* Régression : le rejeu en masse du rattachement (POST /submissions/rattacher,
    {toutes:true}) qui DÉTACHE une soumission (son code externe est devenu ambigu
@@ -12,9 +11,11 @@ import request from "supertest";
    une visite fantôme et un site_months.done=1 restaient sur l'ancien site,
    gonflant la couverture (grave à l'échelle de milliers de soumissions). */
 
-const DB = path.resolve("./data/test_rejeu_fantome.db");
+/* Base Postgres dédiée à ce test, remise à zéro à chaque exécution — comme
+   api.test.js. `mems_rejeu` est créée par le harnais CI / le poste local. */
 process.env.NODE_ENV = "test";
-process.env.DB_FILE = DB;
+process.env.DATABASE_URL = process.env.REJEU_DATABASE_URL
+  || "postgres://mems:mems_dev_pw@127.0.0.1:5432/mems_rejeu";
 process.env.JWT_SECRET = "x".repeat(48);
 process.env.DATA_KEY = "y".repeat(48);
 process.env.BOOTSTRAP_EMAIL = "admin@test.local";
@@ -24,13 +25,27 @@ process.env.RATE_API_MAX = "100000";
 process.env.BCRYPT_ROUNDS = "4";
 process.env.FORCE_SEED = "1";
 
-for(const f of [DB, DB+"-wal", DB+"-shm"]) if(fs.existsSync(f)) fs.unlinkSync(f);
-fs.mkdirSync(path.dirname(DB), { recursive:true });
+{
+  /* Créer la base si besoin (CI), puis repartir d'un schéma vide. */
+  const sys = new pg.Client({ connectionString: process.env.DATABASE_URL.replace(/\/[^/]+$/, "/postgres") });
+  await sys.connect();
+  const nom = new URL(process.env.DATABASE_URL).pathname.slice(1);
+  const existe = await sys.query("SELECT 1 FROM pg_database WHERE datname=$1", [nom]);
+  if(!existe.rowCount) await sys.query(`CREATE DATABASE ${nom}`);
+  await sys.end();
+
+  const admin = new pg.Client({ connectionString: process.env.DATABASE_URL });
+  await admin.connect();
+  await admin.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+  await admin.end();
+}
 execFileSync(process.execPath, ["src/seed.js"], { stdio:"pipe", env: process.env });
 
 const { default: app } = await import("../src/index.js");
-const { db } = await import("../src/db.js");
-db.prepare("UPDATE users SET must_change_pw=0 WHERE email=?").run("admin@test.local");
+const { db, close } = await import("../src/db.js");
+await db.prepare("UPDATE users SET must_change_pw=0 WHERE email=?").run("admin@test.local");
+/* Fermer le pool à la fin, sinon node --test reste suspendu (voir api.test.js). */
+after(async () => { await close(); });
 
 let tok;
 const H = () => ({ Authorization: `Bearer ${tok}` });
@@ -49,14 +64,14 @@ test("rejeu {toutes:true} : une soumission détachée n'abandonne ni visite fant
     .send({ form_id:"SMP_2025", enregistrements:[
       { instance_id:"repro-1", SvyDate:"2026-11-12", site_code:"REPRO-CODE" }]});
   assert.equal(v.status, 200, JSON.stringify(v.body));
-  const sub = db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("repro-1");
+  const sub = await db.prepare("SELECT * FROM submissions WHERE instance_id=?").get("repro-1");
   assert.equal(sub.site_id, siteA, "la soumission est rattachée à A par son code externe");
 
   const suivi = await request(app).post("/api/submissions/suivi").set(H())
     .send({ year:2026, month:10, site_id:siteA });
   assert.equal(suivi.status, 200, JSON.stringify(suivi.body));
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(siteA).c, 1);
-  assert.equal(db.prepare("SELECT done FROM site_months WHERE site_id=? AND year=2026 AND month=10").get(siteA).done, 1);
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(siteA)).c, 1);
+  assert.equal((await db.prepare("SELECT done FROM site_months WHERE site_id=? AND year=2026 AND month=10").get(siteA)).done, 1);
 
   /* Un second site porte le MÊME code externe → « REPRO-CODE » devient ambigu. */
   const b = await request(app).post("/api/sites").set(H())
@@ -65,15 +80,15 @@ test("rejeu {toutes:true} : une soumission détachée n'abandonne ni visite fant
 
   const rejeu = await request(app).post("/api/submissions/rattacher").set(H()).send({ toutes:true });
   assert.equal(rejeu.status, 200, JSON.stringify(rejeu.body));
-  assert.equal(db.prepare("SELECT site_id FROM submissions WHERE instance_id=?").get("repro-1").site_id, null,
+  assert.equal((await db.prepare("SELECT site_id FROM submissions WHERE instance_id=?").get("repro-1")).site_id, null,
     "la soumission est détachée (code ambigu)");
   assert.ok(rejeu.body.detachees >= 1);
 
   /* Le correctif : plus de visite fantôme, plus de mois réalisé sur A. */
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(siteA).c, 0,
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM visits WHERE site_id=?").get(siteA)).c, 0,
     "la visite fantôme a été retirée de A");
-  assert.equal(db.prepare("SELECT done FROM site_months WHERE site_id=? AND year=2026 AND month=10").get(siteA).done, 0,
+  assert.equal((await db.prepare("SELECT done FROM site_months WHERE site_id=? AND year=2026 AND month=10").get(siteA)).done, 0,
     "le mois est retombé à non réalisé sur A");
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM visits WHERE submission_id=?").get(sub.id).c, 0,
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM visits WHERE submission_id=?").get(sub.id)).c, 0,
     "aucune visite ne pointe encore sur la soumission détachée");
 });

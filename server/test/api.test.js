@@ -59,6 +59,47 @@ const login = async (email, password) => {
   return r;
 };
 
+/* ── Inspection d'une base Postgres ISOLÉE ────────────────────────────
+   Certains tests lancent un script d'exploitation (seed-reel, import-sites)
+   contre une base à part, pour ne pas troubler la suite, puis en inspectent
+   le contenu. Sous SQLite on ouvrait le fichier .db avec better-sqlite3 ;
+   ici on parle à une base Postgres dédiée. `pgLite` reproduit la forme
+   `prepare(sql).get/all(...)` (avec `?` positionnels), pour que les tests
+   restent lisibles — seul `await` s'ajoute devant get/all. */
+function pgLite(client){
+  return { prepare(sql){
+    let i = 0; const text = sql.replace(/\?/g, () => `$${++i}`);
+    return {
+      get: async (...a) => (await client.query(text, a)).rows[0],
+      all: async (...a) => (await client.query(text, a)).rows,
+    };
+  } };
+}
+/* Prépare une base isolée : schéma vide, puis exécution du/des script(s)
+   d'exploitation avec DATABASE_URL pointant dessus. Rend un client pg connecté
+   enveloppé par pgLite, et sa fonction de fermeture. */
+async function baseIsolee(nomBase, scripts){
+  const url = process.env.DATABASE_URL.replace(/\/[^/]+$/, `/${nomBase}`);
+  /* Créer la base si elle n'existe pas (CI : rien à provisionner d'avance).
+     CREATE DATABASE ne peut pas tourner en transaction ni depuis la base cible :
+     on passe par la base « postgres ». */
+  const sys = new pg.Client({ connectionString: process.env.DATABASE_URL.replace(/\/[^/]+$/, "/postgres") });
+  await sys.connect();
+  const existe = await sys.query("SELECT 1 FROM pg_database WHERE datname=$1", [nomBase]);
+  if(!existe.rowCount) await sys.query(`CREATE DATABASE ${nomBase}`);
+  await sys.end();
+
+  const admin = new pg.Client({ connectionString: url });
+  await admin.connect();
+  await admin.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+  await admin.end();
+  for(const argv of scripts)
+    execFileSync(process.execPath, argv, { stdio:"pipe", env:{ ...process.env, DATABASE_URL:url } });
+  const client = new pg.Client({ connectionString: url });
+  await client.connect();
+  return { d: pgLite(client), fermer: () => client.end() };
+}
+
 /* Depuis le chantier A3, un mot de passe provisoire — `must_change_pw=1`, posé aussi
    bien par l'amorçage que par toute création de compte — ne donne plus accès qu'à son
    propre remplacement. Les tests ci-dessous portent sur tout le reste : ils franchissent
@@ -6654,7 +6695,7 @@ test("scripts d'analyse : le script n'hérite d'AUCUNE variable de l'application
   const code = [
     'echo "JWT=[$JWT_SECRET]"',
     'echo "CLE=[$DATA_KEY]"',
-    'echo "BASE=[$DB_FILE]"',
+    'echo "BASE=[$DATABASE_URL]"',
     'echo "AMORCE=[$BOOTSTRAP_PASSWORD]"',
     'echo "ODK=[$ODK_ALLOWED_HOSTS]"',
     'echo "---"',
@@ -8565,79 +8606,76 @@ const SITES_REEL = path.join(DOCS, "List Sites per Tag.xlsx");
 test("données réelles : activités et masterlist d'indicateurs chargées depuis le classeur du PAM",
   { skip: fs.existsSync(CLASSEUR_REEL) ? false : "docs/ ne contient pas le classeur du PAM" },
   async () => {
-    const base = path.resolve("./data/test-reel.db");
-    for(const f of [base, base+"-wal", base+"-shm"]) if(fs.existsSync(f)) fs.unlinkSync(f);
-    execFileSync(process.execPath, ["src/seed-reel.js", "--sans-geo"],
-      { stdio:"pipe", env:{ ...process.env, DB_FILE:base } });
-
-    const { default: Database } = await import("better-sqlite3");
-    const d2 = new Database(base, { readonly:true });
+    const { d: d2, fermer } = await baseIsolee("mems_reeltest", [["src/seed-reel.js", "--sans-geo"]]);
     try{
       /* Les activités : l'onglet « Annex 5 Activity tags » en porte 58. */
-      const actifs = d2.prepare("SELECT COUNT(*) c FROM activity_categories").get().c;
+      const actifs = (await d2.prepare("SELECT COUNT(*) c FROM activity_categories").get()).c;
       assert.equal(actifs, 58, "les 58 tags d'activité du classeur sont chargés");
-      const gd = d2.prepare("SELECT * FROM activity_categories WHERE tag='GD'").get();
+      const gd = await d2.prepare("SELECT * FROM activity_categories WHERE tag='GD'").get();
       assert.equal(gd.name, "General Distribution", "le tag GD porte son intitulé réel");
       assert.ok(gd.program_area, "et son groupe d'intervention");
       /* Le domaine posé existe dans SA liste : le semis ne fabrique pas d'orphelin. */
-      assert.ok(d2.prepare("SELECT 1 FROM list_item WHERE type='domaine' AND code=?")
+      assert.ok(await d2.prepare("SELECT 1 FROM list_item WHERE type='domaine' AND code=?")
         .get(gd.program_area), "le domaine est présent dans la liste des domaines");
 
       /* Les indicateurs : quatre onglets, quatre niveaux, chacun avec ses
          catégories thématiques — c'est ce qui rend l'écran filtrable. */
-      const parNiveau = Object.fromEntries(d2.prepare(
-        "SELECT level, COUNT(*) c FROM indicators GROUP BY level").all().map(x => [x.level, x.c]));
+      const parNiveau = Object.fromEntries((await d2.prepare(
+        "SELECT level, COUNT(*) c FROM indicators GROUP BY level").all()).map(x => [x.level, x.c]));
       assert.equal(parNiveau.outcome, 94,      "Annex 2 Outcome");
       assert.equal(parNiveau.output, 157,      "Annex 3 Output");
       assert.equal(parNiveau.other_output, 566,"Detailed Output");
       assert.equal(parNiveau.crosscutting, 25, "Annex 4 Crosscutting");
       assert.equal(parNiveau.sdg, 66,          "Annex 1 SDGs (codes dédoublonnés)");
-      assert.equal(d2.prepare("SELECT COUNT(*) c FROM indicators").get().c, 908);
+      assert.equal((await d2.prepare("SELECT COUNT(*) c FROM indicators").get()).c, 908);
       /* Les colonnes riches de la masterlist (migration 032) sont bien remplies
          par sous-groupe : statut partout, applicabilité en outcome, type et
          indicateur intermédiaire en détaillé. */
-      assert.ok(d2.prepare("SELECT COUNT(*) c FROM indicators WHERE status IS NOT NULL").get().c > 800,
+      assert.ok((await d2.prepare("SELECT COUNT(*) c FROM indicators WHERE status IS NOT NULL").get()).c > 800,
         "le statut brut est chargé");
-      assert.ok(d2.prepare("SELECT COUNT(*) c FROM indicators WHERE level='outcome' AND applicability IS NOT NULL").get().c > 80,
+      assert.ok((await d2.prepare("SELECT COUNT(*) c FROM indicators WHERE level='outcome' AND applicability IS NOT NULL").get()).c > 80,
         "l'applicabilité de l'Outcome est chargée");
-      assert.ok(d2.prepare("SELECT COUNT(*) c FROM indicators WHERE level='other_output' AND intermediate IS NOT NULL").get().c > 400,
+      assert.ok((await d2.prepare("SELECT COUNT(*) c FROM indicators WHERE level='other_output' AND intermediate IS NOT NULL").get()).c > 400,
         "l'indicateur intermédiaire du détaillé est chargé");
-      assert.equal(d2.prepare("SELECT COUNT(*) c FROM indicators WHERE kind<>'crf'").get().c, 0,
+      assert.equal((await d2.prepare("SELECT COUNT(*) c FROM indicators WHERE kind<>'crf'").get()).c, 0,
         "la masterlist est le cadre de résultats, pas du processus");
-      assert.equal(d2.prepare("SELECT COUNT(*) c FROM indicators WHERE category IS NULL").get().c, 0,
+      assert.equal((await d2.prepare("SELECT COUNT(*) c FROM indicators WHERE category IS NULL").get()).c, 0,
         "chaque indicateur porte sa catégorie");
 
-      const fcs = d2.prepare("SELECT * FROM indicators WHERE name LIKE 'Food consumption score'").get();
+      const fcs = await d2.prepare("SELECT * FROM indicators WHERE name LIKE 'Food consumption score'").get();
       assert.ok(fcs, "le score de consommation alimentaire est là");
       assert.equal(fcs.level, "outcome");
       assert.equal(fcs.category, "1. Food security and essential needs");
-      const cc = d2.prepare("SELECT * FROM indicators WHERE code='CC.1.1'").get();
+      const cc = await d2.prepare("SELECT * FROM indicators WHERE code='CC.1.1'").get();
       assert.equal(cc.category, "CC.1 Protection");
-      assert.ok(d2.prepare("SELECT * FROM indicators WHERE code='A.1.1'").get().name
+      assert.ok((await d2.prepare("SELECT * FROM indicators WHERE code='A.1.1'").get()).name
         .startsWith("Number of people receiving assistance"));
 
       /* Les catégories sont bien un axe de filtre : plusieurs par niveau. */
-      const cats = d2.prepare(
-        "SELECT COUNT(DISTINCT category) c FROM indicators WHERE level='outcome'").get().c;
+      const cats = (await d2.prepare(
+        "SELECT COUNT(DISTINCT category) c FROM indicators WHERE level='outcome'").get()).c;
       assert.equal(cats, 8, "les huit domaines programme de l'Annex 2");
-    } finally { d2.close(); }
+    } finally { await fermer(); }
   });
 
 test("données réelles : le semis est idempotent — relancé, il corrige sans dupliquer",
   { skip: fs.existsSync(CLASSEUR_REEL) ? false : "docs/ ne contient pas le classeur du PAM" },
   async () => {
-    const base = path.resolve("./data/test-reel.db");
+    /* On RELANCE seed-reel sur la base déjà semée par le test précédent
+       (mems_reeltest, PAS de remise à zéro) : c'est tout l'objet du test. */
+    const url = process.env.DATABASE_URL.replace(/\/[^/]+$/, "/mems_reeltest");
     execFileSync(process.execPath, ["src/seed-reel.js", "--sans-geo"],
-      { stdio:"pipe", env:{ ...process.env, DB_FILE:base } });
-    const { default: Database } = await import("better-sqlite3");
-    const d2 = new Database(base, { readonly:true });
+      { stdio:"pipe", env:{ ...process.env, DATABASE_URL:url } });
+    const client = new pg.Client({ connectionString: url });
+    await client.connect();
+    const d2 = pgLite(client);
     try{
-      assert.equal(d2.prepare("SELECT COUNT(*) c FROM indicators").get().c, 908,
+      assert.equal((await d2.prepare("SELECT COUNT(*) c FROM indicators").get()).c, 908,
         "aucun doublon au second passage");
-      assert.equal(d2.prepare("SELECT COUNT(*) c FROM activity_categories").get().c, 58);
+      assert.equal((await d2.prepare("SELECT COUNT(*) c FROM activity_categories").get()).c, 58);
       /* La révision a bougé : les lignes ont bien été RELUES, pas ignorées. */
-      assert.ok(d2.prepare("SELECT rev FROM indicators LIMIT 1").get().rev >= 2);
-    } finally { d2.close(); }
+      assert.ok((await d2.prepare("SELECT rev FROM indicators LIMIT 1").get()).rev >= 2);
+    } finally { await client.end(); }
   });
 
 test("données réelles : le shapefile Madagascar donne l'arbre adm0→adm3 complet",
@@ -8666,44 +8704,40 @@ test("données réelles : les sites par tag sont importés, rattachés à l'arbr
   { skip: (fs.existsSync(SITES_REEL) && fs.existsSync(SHP_REEL))
       ? false : "docs/ ne contient pas le classeur des sites ou le shapefile Madagascar" },
   async () => {
-    const base = path.resolve("./data/test-sites.db");
-    for(const s of ["", "-shm", "-wal"]) { try{ fs.rmSync(base + s, { force:true }); }catch(e){} }
     /* Il faut l'arbre administratif (le shapefile) ET les activités (Annex 5)
        chargés avant : le rattachement se fait par chemin de noms, le tag long du
        fichier se rapproche d'une activité réelle. seed-reel charge les deux. */
-    execFileSync(process.execPath, ["src/seed-reel.js"],
-      { stdio:"pipe", env:{ ...process.env, DB_FILE:base } });
-    execFileSync(process.execPath, ["src/import-sites.js"],
-      { stdio:"pipe", env:{ ...process.env, DB_FILE:base } });
-
-    const { default: Database } = await import("better-sqlite3");
-    const d2 = new Database(base, { readonly:true });
+    const { d: d2, fermer } = await baseIsolee("mems_sitestest",
+      [["src/seed-reel.js"], ["src/import-sites.js"]]);
     let total1;
     try{
-      total1 = d2.prepare("SELECT COUNT(*) c FROM sites").get().c;
+      total1 = (await d2.prepare("SELECT COUNT(*) c FROM sites").get()).c;
       assert.ok(total1 > 2000, `beaucoup de sites importés : ${total1}`);
       /* Chaque site importé est rattaché à l'arbre par son chemin de noms. */
-      assert.equal(d2.prepare("SELECT COUNT(*) c FROM sites WHERE geo_pcode IS NULL").get().c, 0,
+      assert.equal((await d2.prepare("SELECT COUNT(*) c FROM sites WHERE geo_pcode IS NULL").get()).c, 0,
         "chaque site est rattaché à une unité administrative");
-      assert.ok(d2.prepare("SELECT COUNT(*) c FROM sites WHERE lat IS NOT NULL AND lon IS NOT NULL").get().c > 2000,
+      assert.ok((await d2.prepare("SELECT COUNT(*) c FROM sites WHERE lat IS NOT NULL AND lon IS NOT NULL").get()).c > 2000,
         "les sites portent leurs coordonnées GPS");
       /* Le tag long (« School feeding (on-site) »…) est rapproché d'une activité
          réelle du référentiel, qui pose le tag et la catégorie. */
-      assert.ok(d2.prepare("SELECT COUNT(*) c FROM sites WHERE category_id IS NOT NULL").get().c > 2000,
+      assert.ok((await d2.prepare("SELECT COUNT(*) c FROM sites WHERE category_id IS NOT NULL").get()).c > 2000,
         "le tag du fichier est rapproché d'une activité du référentiel");
       /* Le POI_code d'origine est conservé comme code externe. */
-      assert.ok(d2.prepare("SELECT COUNT(*) c FROM sites WHERE external_code IS NOT NULL").get().c > 2000,
+      assert.ok((await d2.prepare("SELECT COUNT(*) c FROM sites WHERE external_code IS NOT NULL").get()).c > 2000,
         "le POI_code d'origine est conservé");
-    } finally { d2.close(); }
+    } finally { await fermer(); }
 
     /* Idempotence : relancé, il met à jour au lieu de dupliquer. */
+    const url = process.env.DATABASE_URL.replace(/\/[^/]+$/, "/mems_sitestest");
     execFileSync(process.execPath, ["src/import-sites.js"],
-      { stdio:"pipe", env:{ ...process.env, DB_FILE:base } });
-    const d3 = new Database(base, { readonly:true });
+      { stdio:"pipe", env:{ ...process.env, DATABASE_URL:url } });
+    const c3 = new pg.Client({ connectionString: url });
+    await c3.connect();
+    const d3 = pgLite(c3);
     try{
-      assert.equal(d3.prepare("SELECT COUNT(*) c FROM sites").get().c, total1,
+      assert.equal((await d3.prepare("SELECT COUNT(*) c FROM sites").get()).c, total1,
         "aucun doublon au second passage");
-    } finally { d3.close(); }
+    } finally { await c3.end(); }
   });
 
 /* ═══════════════════════════════════════════════════════════════════════
