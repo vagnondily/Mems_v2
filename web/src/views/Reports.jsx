@@ -186,7 +186,13 @@ const VIZ = [
   ["tableau", "Tableau par activité","Le résultat activité par activité, en lignes."],
 ];
 const estCalc = (b) => !!b && typeof b === "object" && b.b === "calc";
-const cleBloc = (b) => estCalc(b) ? `calc:${b.id}:${b.viz}` : String(b);
+/* Le bloc des indicateurs de résultat, sous ses deux formes : la simple chaîne
+   « outcomes » (toutes catégories, historique) ou l'objet paramétré qui porte
+   la liste des catégories retenues. */
+const estOutcomes = (b) => b === "outcomes" || (!!b && typeof b === "object" && b.b === "outcomes");
+const categoriesOutcomes = (b) => (b && typeof b === "object" && Array.isArray(b.categories)) ? b.categories : [];
+const cleBloc = (b) => estCalc(b) ? `calc:${b.id}:${b.viz}`
+  : estOutcomes(b) ? `outcomes:${categoriesOutcomes(b).join("|")}` : String(b);
 /* computeMMR raisonne à l'exercice : il proratise l'exigence annuelle sur les
    mois écoulés de l'année et compte les visites de cette année. La règle est la
    même ici, restreinte aux mois de la période — sur une année entière, les deux
@@ -295,6 +301,11 @@ function reportData(db, periode){
       return { tag:t.code, planned:g.reduce((a,o)=>a+n(o.planned),0), actual:g.reduce((a,o)=>a+n(o.actual),0),
         adjust:[...new Set(g.map(o=>o.adjust).filter(a=>a&&a!=="none"))]
           .map(a=>(D_ADJUST.find(x=>x[0]===a)||[])[1]).join(", ") }; }).filter(x=>x.planned||x.actual),
+    /* TOUS les indicateurs de la masterlist qui portent une valeur PLANIFIÉE
+       et/ou RÉALISÉE — plus seulement ceux déjà mesurés. Un indicateur ciblé
+       mais pas encore mesuré a sa place dans le rapport : c'est un écart à
+       combler, pas une ligne à cacher. Chacun porte sa catégorie thématique,
+       par laquelle le modèle pourra restreindre le bloc. */
     outcomes: db.indicators.map(ind => {
       const toutes = db.outcomes.filter(o=>o.indicator===ind.id);
       const vals = toutes.filter(o=>dateDansPeriode(o.date, p));
@@ -302,8 +313,14 @@ function reportData(db, periode){
       /* La référence est par nature antérieure à la période mesurée : la
          restreindre effacerait le point de comparaison qu'on vient chercher. */
       const base = toutes.find(v=>/référence|baseline/i.test(v.round));
-      return { id:ind.id, name:ind.name, unit:ind.unit, dir:ind.dir, base:base?base.value:null,
-        last:last?last.value:null, planned:last?n(last.planned)||ind.target:ind.target }; }).filter(x=>x.last!==null),
+      const actual = last ? last.value : null;
+      const planned = last ? (n(last.planned)||ind.target) : ind.target;
+      const hasActual  = actual !== null && actual !== undefined && actual !== "";
+      const hasPlanned = planned !== null && planned !== undefined && planned !== "" && n(planned) !== 0;
+      return { id:ind.id, name:ind.name, unit:ind.unit||"", dir:ind.dir,
+        category: ind.category || ind.basket || "Sans catégorie",
+        base: base?base.value:null, last: actual, planned, hasActual, hasPlanned };
+    }).filter(x => x.hasActual || x.hasPlanned),
     sites: sites.map(s => ({ id:s.id, poi:s.poi, office:s.subOffice, adm:[s.adm1,s.adm2,s.adm3].filter(Boolean).join(", "),
       tag:s.activityTag, status:s.status, benef:s.beneficiaries, prio:LEVELS[siteScore(s, db.weights, db).level].label,
       planned:cumul([s],"planned"), done:cumul([s],"done") })),
@@ -357,14 +374,6 @@ function reportHTML(db, tpl, periode){
         return `<tr><td><b>${esc(r.tag)}</b></td><td class="n">${fmt(r.planned)}</td><td class="n">${fmt(r.actual)}</td>
         <td>${bar(p,tone(p))}<span class="pc">${p} %</span></td><td class="muted">${esc(r.adjust||"—")}</td></tr>`; }).join("")}
       </tbody></table>`)}</section>`,
-    outcomes: () => `<section>${h2("Indicateurs de résultat", `dernière mesure sur ${D.libelle}`)}${
-      D.outcomes.length ? `<table><thead><tr><th>Indicateur</th><th class="n">Référence</th>
-      <th class="n">Dernière mesure</th><th class="n">Planifié</th><th>Sens</th></tr></thead><tbody>${
-      D.outcomes.map(r=>{ const ok = r.dir==="up" ? r.last>=r.planned : r.last<=r.planned;
-        return `<tr><td>${esc(r.name)}</td><td class="n">${r.base??"—"}</td>
-        <td class="n"><b class="${ok?"good":"bad"}">${r.last}</b></td><td class="n">${r.planned}</td>
-        <td class="muted">${r.dir==="up"?"à maximiser":"à minimiser"}</td></tr>`; }).join("")}
-      </tbody></table>` : `<p class="muted">Aucune mesure de résultat collectée sur cette période.</p>`}</section>`,
     sites: () => `<section>${h2("Sites", `colonnes Plan. et Réal. sur ${D.libelle}`)}<table><thead><tr><th>ID</th><th>Point d'intérêt</th><th>Bureau</th>
       <th>Emplacement</th><th>Activité</th><th class="n">Bénéf.</th><th>Priorité</th><th class="n">Plan.</th><th class="n">Réal.</th></tr></thead><tbody>${
       D.sites.map(s=>`<tr><td class="mono">${esc(s.id)}</td><td>${esc(s.poi)}</td><td>${esc(s.office)}</td>
@@ -419,8 +428,40 @@ function reportHTML(db, tpl, periode){
       <div class="kpi"><span>${esc(c.label)}</span><b>${r2(c.valeur)}</b>
       <em>expression : ${esc(c.expr)}</em></div></div></section>`;
   };
+  /* Les indicateurs de résultat, GROUPÉS par catégorie thématique et
+     restreints aux catégories du modèle (vide = toutes). Planifié ET réalisé
+     côte à côte, l'écart quand les deux existent, un tiret sinon — un
+     indicateur ciblé mais pas mesuré reste visible comme un écart à combler. */
+  const blocOutcomes = (categories) => {
+    const cats = Array.isArray(categories) && categories.length ? new Set(categories) : null;
+    const rows = D.outcomes.filter(r => !cats || cats.has(r.category));
+    if(!rows.length) return `<section>${h2("Indicateurs de résultat", `sur ${D.libelle}`)}`
+      + `<p class="muted">Aucun indicateur planifié ou mesuré${cats?" dans les catégories retenues":""} sur cette période.</p></section>`;
+    const ligne = (r) => {
+      const compare = r.hasActual && r.hasPlanned;
+      const ok = compare ? (r.dir==="up" ? n(r.last)>=n(r.planned) : n(r.last)<=n(r.planned)) : null;
+      const taux = compare ? pct(n(r.last), n(r.planned)) : null;
+      return `<tr><td>${esc(r.name)}${r.unit?` <span class="muted">(${esc(r.unit)})</span>`:""}</td>
+        <td class="n">${r.base??"—"}</td>
+        <td class="n">${r.hasPlanned?esc(r.planned):"—"}</td>
+        <td class="n">${r.hasActual?`<b class="${ok===null?"":ok?"good":"bad"}">${esc(r.last)}</b>`:'<span class="muted">—</span>'}</td>
+        <td>${compare?`${bar(Math.min(100,taux), ok?"ok":"")}<span class="pc">${taux} %</span>`:'<span class="muted">—</span>'}</td>
+        <td class="muted">${r.dir==="up"?"à maximiser":"à minimiser"}</td></tr>`;
+    };
+    const table = (list) => `<table><thead><tr><th>Indicateur</th><th class="n">Référence</th>
+      <th class="n">Planifié</th><th class="n">Réalisé</th><th>Atteinte</th><th>Sens</th></tr></thead><tbody>${
+      list.map(ligne).join("")}</tbody></table>`;
+    const parCat = {}; rows.forEach(r => { (parCat[r.category] = parCat[r.category] || []).push(r); });
+    const noms = Object.keys(parCat).sort();
+    const contenu = noms.length > 1
+      ? noms.map(cn => `<h3 class="cat">${esc(cn)} <span class="muted">(${parCat[cn].length})</span></h3>${table(parCat[cn])}`).join("")
+      : table(rows);
+    return `<section>${h2("Indicateurs de résultat", `planifié et réalisé sur ${D.libelle}`)}${contenu}</section>`;
+  };
   const body = (tpl.blocks||[]).map(b =>
-    estCalc(b) ? blocCalc(b) : (B[b] ? B[b]() : "")).join("");
+    estCalc(b) ? blocCalc(b)
+    : estOutcomes(b) ? blocOutcomes(categoriesOutcomes(b))
+    : (B[b] ? B[b]() : "")).join("");
   return `<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <title>${esc(tpl.name)} — ${esc(db.settings.org)}</title>
 <style>
@@ -434,6 +475,8 @@ header.hd .meta{opacity:.82;font-size:12.5px;margin-top:8px}
 .intro{padding:22px 40px;border-bottom:1px solid var(--l);white-space:pre-wrap;color:var(--t2)}
 section{padding:24px 40px;border-bottom:1px solid var(--l)}
 h2{font-size:15px;margin:0 0 14px;color:var(--bd);text-transform:uppercase;letter-spacing:.06em}
+h3.cat{font-size:11.5px;margin:16px 0 6px;color:var(--t2);text-transform:uppercase;letter-spacing:.05em;font-weight:700}
+h3.cat:first-of-type{margin-top:0}
 .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--l);border:1px solid var(--l)}
 .kpi{background:#fff;padding:16px 18px}
 .kpi span{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--t2);font-weight:700}
@@ -496,13 +539,21 @@ function reportCSV(db, tpl, periode){
       ["tag","label","plan","real","taux"]),
     outputs: () => bloc(`Bénéficiaires planifiés et atteints — ${D.libelle}`, D.outputs,
       ["tag","planned","actual","adjust"]),
-    outcomes: () => bloc(`Indicateurs de résultat — dernière mesure sur ${D.libelle}`, D.outcomes,
-      ["id","name","unit","base","last","planned","dir"]),
     sites: () => bloc(`Sites — colonnes planned/done sur ${D.libelle}`, D.sites,
       ["id","poi","office","adm","tag","status","benef","prio","planned","done"]),
     tasks: () => bloc("Points d'attention — état au jour du tirage", D.tasks, ["prio","kind","text","ctx"]),
   };
+  /* L'export des indicateurs de résultat suit le même filtrage par catégorie
+     que le rendu HTML, et sort planifié ET réalisé — colonne « category »
+     comprise, pour retrouver le regroupement dans le tableur. */
+  const csvOutcomes = (categories) => {
+    const cats = Array.isArray(categories) && categories.length ? new Set(categories) : null;
+    bloc(`Indicateurs de résultat — planifié et réalisé sur ${D.libelle}`,
+      D.outcomes.filter(r => !cats || cats.has(r.category)),
+      ["category","id","name","unit","base","planned","last","dir"]);
+  };
   (tpl.blocks||[]).forEach(b => {
+    if(estOutcomes(b)){ csvOutcomes(categoriesOutcomes(b)); return; }
     if(!estCalc(b)){ B[b] && B[b](); return; }
     /* Un calcul s'exporte par activité : c'est la seule ventilation qui donne des
        LIGNES, et un CSV d'une seule cellule ne s'ouvre nulle part utilement. Le
@@ -535,6 +586,22 @@ function ReportBuilder({ db, set, periode, notify, can }){
     t.blocks = t.blocks.map(b => estCalc(b) && b.id === id ? { ...b, viz } : b); return d; });
   const retirerCalc = (id) => set(d => { const t=d.reportTemplates.find(x=>x.id===tplId); if(!t) return d;
     t.blocks = t.blocks.filter(b => !(estCalc(b) && b.id === id)); return d; });
+  /* Le bloc des indicateurs de résultat : inclusion et filtre par catégorie. Une
+     catégorie cochée bascule le bloc de la chaîne « outcomes » (toutes) à l'objet
+     paramétré, et inversement quand on décoche la dernière. */
+  const blocOut = (tpl?.blocks || []).find(estOutcomes);
+  const outActif = blocOut !== undefined;
+  const outCats = categoriesOutcomes(blocOut);
+  const categoriesDispo = [...new Set((db.indicators||[]).map(i => i.category || i.basket || "Sans catégorie"))]
+    .filter(Boolean).sort((a,b)=>a.localeCompare(b));
+  const toggleOut = () => set(d => { const t=d.reportTemplates.find(x=>x.id===tplId); if(!t) return d;
+    t.blocks = outActif ? t.blocks.filter(b => !estOutcomes(b)) : [...t.blocks, "outcomes"]; return d; });
+  const toggleOutCat = (cat) => set(d => { const t=d.reportTemplates.find(x=>x.id===tplId); if(!t) return d;
+    const cur = t.blocks.find(estOutcomes); const curCats = categoriesOutcomes(cur);
+    const next = curCats.includes(cat) ? curCats.filter(c=>c!==cat) : [...curCats, cat];
+    const remplace = next.length ? { b:"outcomes", categories: next } : "outcomes";
+    t.blocks = cur === undefined ? [...t.blocks, remplace] : t.blocks.map(b => estOutcomes(b) ? remplace : b);
+    return d; });
   const [aAjouter,setAAjouter] = useState("");
   const build = () => { if(!tpl) return; setHtml(reportHTML(db, tpl, periode)); notify(`Rapport généré — ${libellePeriode(periode)}`,"ok"); };
   /* L'aperçu se vide dès que la période change : garder à l'écran un document
@@ -563,11 +630,35 @@ function ReportBuilder({ db, set, periode, notify, can }){
           </div>
         </Card>
         <Card title="Sections du rapport" subtitle="Cochez les blocs à inclure">
-          {BLOCKS.map(([b,l,d])=>(
+          {BLOCKS.filter(([b])=>b!=="outcomes").map(([b,l,d])=>(
             <label key={b} className="flex items-start gap-2.5 py-2 border-b border-slate-100 last:border-0 cursor-pointer">
               <input type="checkbox" className="mt-0.5" checked={!!tpl?.blocks?.includes(b)} disabled={!can("edit")} onChange={()=>toggle(b)} />
               <span><span className="f13 font-medium text-slate-800 block">{l}</span>
                 <span className="f115 text-slate-500">{d}</span></span></label>))}
+        </Card>
+
+        {/* ── Indicateurs de résultat : inclusion et périmètre par catégorie ── */}
+        <Card title="Indicateurs de résultat" subtitle="Planifié et réalisé, groupés par catégorie thématique">
+          <label className="flex items-start gap-2.5 pb-1 cursor-pointer">
+            <input type="checkbox" className="mt-0.5" checked={outActif} disabled={!can("edit")} onChange={toggleOut} />
+            <span><span className="f13 font-medium text-slate-800 block">Inclure le bloc</span>
+              <span className="f115 text-slate-500">Tous les indicateurs de la masterlist qui portent une valeur
+                planifiée et/ou réalisée sur la période — y compris ceux ciblés mais pas encore mesurés.</span></span></label>
+          {outActif && (
+            <div className="mt-2 border-t border-slate-100 pt-2">
+              <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-1.5">
+                Catégories {outCats.length ? `— ${outCats.length} choisie(s)` : "— toutes"}</div>
+              {!categoriesDispo.length
+                ? <p className="f115 text-slate-400">Aucun indicateur chargé.</p>
+                : <div className="max-h-52 overflow-y-auto pr-1 space-y-1">
+                    {categoriesDispo.map(cat=>(
+                      <label key={cat} className="flex items-center gap-2 f115 text-slate-700 cursor-pointer">
+                        <input type="checkbox" checked={outCats.includes(cat)} disabled={!can("edit")}
+                          onChange={()=>toggleOutCat(cat)} />
+                        <span className="truncate" title={cat}>{cat}</span></label>))}
+                  </div>}
+              <p className="f11 text-slate-400 mt-1.5">Aucune cochée = toutes les catégories.</p>
+            </div>)}
         </Card>
 
         {/* ── Les calculs, au même titre que les indicateurs ── */}

@@ -125,6 +125,10 @@ const COLLECTIONS = {
         z.string().max(40),
         z.object({ b: z.literal("calc"), id: z.string().min(1).max(64),
                    viz: z.enum(["nombre","jauge","barres","tableau"]).default("nombre") }),
+        /* Le bloc des indicateurs de résultat, PARAMÉTRÉ : la liste des
+           catégories thématiques de la masterlist à inclure (vide = toutes).
+           Le bloc reste rétro-compatible avec la simple chaîne « outcomes ». */
+        z.object({ b: z.literal("outcomes"), categories: z.array(z.string().max(160)).max(80).default([]) }),
       ])).max(60).default([]),
       intro:S(4000) }),
     map: (x) => ({ name:x.name, blocks:JSON.stringify(x.blocks), intro:x.intro }) },
