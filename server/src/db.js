@@ -156,7 +156,13 @@ export async function integrity(){
     const { rows } = await pool.query(
       `SELECT pg_database_size(current_database()) AS octets,
               (SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()) AS connexions`);
-    return { status:"ok", octets:Number(rows[0].octets), connexions:Number(rows[0].connexions) };
+    /* `foreignKeyViolations` est toujours 0 par construction : Postgres refuse
+       toute ligne qui violerait une clé étrangère, il n'existe donc aucun état
+       incohérent à recompter après coup. Le champ est conservé — l'écran de
+       santé et le contrat /health le lisent — mais sa valeur est une garantie
+       du moteur, pas le résultat d'un balayage comme le PRAGMA de SQLite. */
+    return { status:"ok", octets:Number(rows[0].octets), connexions:Number(rows[0].connexions),
+      foreignKeyViolations:0 };
   }catch(e){
     return { status:"erreur", message:e.message };
   }

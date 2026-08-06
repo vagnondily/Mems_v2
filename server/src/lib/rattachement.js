@@ -414,12 +414,12 @@ export async function rejouerRattachement({ ids = null, seulementNonResolues = t
          indélébile sur l'ancien site — ce que /detacher et /rattacher-a évitent
          déjà à la main. À l'échelle de milliers de soumissions re-résolues (un
          site ajouté rend un code ambigu), ces fantômes gonflent la couverture.
-         TODO-PG: lib/visites.js n'est pas encore converti au contrat async de
-         db.js (hors périmètre de cette conversion) ; une fois qu'il le sera,
-         cet appel devra être `await`é, et il s'exécute ici sur la connexion de
-         la transaction en cours (paramètre `db`), pas sur le pool global —
-         vérifier que retirerVisiteDeSoumission accepte bien cet exécuteur. */
-      if(l.site_id && l.site_id !== r.site_id) retirerVisiteDeSoumission(l.id);
+         L'appel est `await`é ET reçoit l'exécuteur `db` de la transaction en
+         cours : le retrait de la visite et la démarque du mois se valident avec
+         la réécriture de la soumission ci-dessus, en un seul tout. Sans l'await,
+         la démarque partait en tâche de fond hors transaction et le mois pouvait
+         rester « réalisé » selon l'ordonnancement. */
+      if(l.site_id && l.site_id !== r.site_id) await retirerVisiteDeSoumission(l.id, db);
     }
   });
   return { examinees: lignes.length, rattachees, detachees, nonResolues, protegees };

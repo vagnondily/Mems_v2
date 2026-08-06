@@ -202,7 +202,7 @@ r.get("/:id", async (req, res) => {
      chaque formulaire porte plusieurs codes (migration 018), et la fiche est le
      seul endroit où l'on peut les voir tous. */
   res.json({ site:s, months: await db.prepare("SELECT * FROM site_months WHERE site_id=?").all(s.id),
-    aliases: listerAlias(s.id),
+    aliases: await listerAlias(s.id),
     derniereVisite: combinerDerniereVisite(s.last_visit, await derniereVisiteOdk(s.id)) });
 });
 

@@ -299,7 +299,7 @@ CREATE TABLE datasets (
   id         text PRIMARY KEY,
   name       text NOT NULL,
   form_id    text REFERENCES odk_forms(id) ON DELETE SET NULL,
-  raw        jsonb NOT NULL DEFAULT '[]'::jsonb,
+  raw        json NOT NULL DEFAULT '[]'::json,
   rules      jsonb NOT NULL DEFAULT '[]'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now()
 );

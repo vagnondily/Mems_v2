@@ -75,7 +75,8 @@ r.post("/:id/executer", async (req, res, next) => {
       ? await db.prepare("SELECT * FROM datasets WHERE id=?").get(script.dataset_id) : null;
     if(!ds) return res.status(422).json({
       error:"ce script n'est relié à aucun jeu de données ; reliez-en un ou transmettez « lignes »" });
-    /* `datasets.raw` est du jsonb : pg le renvoie déjà désérialisé, plus de JSON.parse. */
+    /* `datasets.raw` est du json (pas jsonb) : pg le renvoie déjà désérialisé,
+       et le type `json` préserve l'ordre des colonnes — l'export CSV en dépend. */
     lignes = ds.raw;
     if(!Array.isArray(lignes)) lignes = [];
   }

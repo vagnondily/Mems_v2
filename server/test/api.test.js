@@ -5527,7 +5527,7 @@ test("grille mensuelle : le remède que le refus prescrit en est un — détache
     .get(site.id)).done, 0, "le mois retombe à « non réalisé » : plus rien ne le documente");
   /* La soumission, elle, survit : détacher rend la question au résolveur. */
   assert.equal((await db.prepare("SELECT COUNT(*) c FROM submissions WHERE id=?").get(sub.id)).c, 1);
-  assert.ok(await db.prepare(`SELECT text FROM audit WHERE entity_id=? AND action='detacher'`).get(sub.id)
+  assert.ok((await db.prepare(`SELECT text FROM audit WHERE entity_id=? AND action='detacher'`).get(sub.id))
     .text.includes("visite(s) issue(s) de cette soumission retirée(s)"),
     "le journal dit que la visite est partie avec le détachement");
 
@@ -7448,7 +7448,7 @@ test("administration : aucune route ne laisse sortir un secret", async () => {
      absentes du fichier, alors une sauvegarde volée ne déchiffre rien et ne
      signe aucun jeton — c'est toute la garantie. */
   for(const cle of [process.env.DATA_KEY, process.env.JWT_SECRET])
-    assert.ok(!octets.includes(Buffer.from(cle)),
+    assert.ok(!sql.includes(cle),
       "les clés vivent dans l'environnement, jamais dans la base");
 
   await db.prepare("DELETE FROM odk_forms WHERE id='odkf_secret'").run();

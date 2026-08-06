@@ -143,15 +143,19 @@ export async function ecrireEntrees(rows, ctx = {}){
 
    Les quatre s'additionnent au total. Un écran qui n'en montrerait que deux
    laisserait croire que le reste n'existe pas. */
+/* Les alias en casse mixte sont ENTRE GUILLEMETS : Postgres replie tout
+   identifiant non quoté en minuscules, et `c.aConfirmer` lirait alors une
+   colonne `aconfirmer` inexistante — undefined, donc 0. Les guillemets
+   préservent la casse exacte lue côté JS (aConfirmer, sansSite, …). */
 const COMPTEURS = `
   COUNT(*) entrees,
   SUM(CASE WHEN site_id IS NOT NULL THEN 1 ELSE 0 END) rattachees,
-  SUM(CASE WHEN site_id IS NULL AND rapproche_passe IS NOT NULL THEN 1 ELSE 0 END) aConfirmer,
+  SUM(CASE WHEN site_id IS NULL AND rapproche_passe IS NOT NULL THEN 1 ELSE 0 END) "aConfirmer",
   SUM(CASE WHEN site_id IS NULL AND rapproche_passe IS NULL AND rapproche_at IS NOT NULL
-           THEN 1 ELSE 0 END) sansSite,
-  SUM(CASE WHEN rapproche_at IS NULL THEN 1 ELSE 0 END) jamaisRapprochees,
-  MAX(rapproche_at) dernierRapprochement,
-  MAX(updated_at) dernierChargement`;
+           THEN 1 ELSE 0 END) "sansSite",
+  SUM(CASE WHEN rapproche_at IS NULL THEN 1 ELSE 0 END) "jamaisRapprochees",
+  MAX(rapproche_at) "dernierRapprochement",
+  MAX(updated_at) "dernierChargement"`;
 
 export const listerReferentiels = () =>
   db.prepare(`SELECT referentiel, ${COMPTEURS}
@@ -230,7 +234,7 @@ export async function lister({ referentiel, q = "", rattache = "", limit = 100, 
     SELECT c.id, c.referentiel, c.code, c.libelle, c.geo_pcode, c.adm1, c.adm2, c.adm3, c.adm4,
            c.site_code, c.source, c.note, c.site_id, c.rapproche_passe, c.rapproche_confiance,
            c.rapproche_motif, c.rapproche_at, c.updated_at,
-           s.code siteCode, s.name siteNom
+           s.code "siteCode", s.name "siteNom"
     FROM code_referentiel c
     LEFT JOIN sites s ON s.id = c.site_id ${office_id ? "AND s.office_id = ?" : ""}
     WHERE ${where.join(" AND ")}

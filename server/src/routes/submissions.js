@@ -252,8 +252,8 @@ r.post("/submissions/:id/rattacher-a", requireCap("edit"), async (req, res) => {
     if(s.site_id && s.site_id !== site.id) retrait = await retirerVisiteDeSoumission(s.id, db);
     if(p.data.creer_alias){
       alias = brut
-        ? { ...ajouterAlias({ site_id: site.id, code: brut, source: s.form_id,
-              note: `créé au rattachement manuel de la soumission ${s.instance_id} par ${qui}` }),
+        ? { ...(await ajouterAlias({ site_id: site.id, code: brut, source: s.form_id,
+              note: `créé au rattachement manuel de la soumission ${s.instance_id} par ${qui}` }, db)),
             code: brut, source: s.form_id }
         : { cree: false, motif: "la soumission ne porte aucun code brut à mémoriser" };
     }

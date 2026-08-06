@@ -846,7 +846,7 @@ test("administration : la destination existe pour le compte super et l'onglet Sa
   assert.ok(byText("h3", "Entretien"), "les opérations d'entretien sont proposées");
   assert.ok(byText("main button", "VACUUM"), "le VACUUM est offert, sous confirmation");
   assert.ok(byText("h3", "Migrations appliquées"), "les migrations appliquées sont listées");
-  assert.ok(texte.includes("journal_mode"), "les réglages SQLite viennent du serveur");
+  assert.ok(texte.includes("Serveur PostgreSQL"), "l'état du moteur PostgreSQL vient du serveur");
   assert.ok(all("main tbody tr").length > 5, "les tables de la base sont dénombrées");
 
   /* Une action destructrice ne part pas au premier clic : elle énonce d'abord
@@ -855,7 +855,7 @@ test("administration : la destination existe pour le compte super et l'onglet Sa
   await flush();
   assert.ok(byText(".z60 h3", "Lancer un VACUUM sur la base ?"),
     "la confirmation nomme l'opération avant de la lancer");
-  assert.ok(document.body.textContent.includes("bloque toute lecture et toute écriture"),
+  assert.ok(document.body.textContent.includes("ne verrouille pas les tables en écriture"),
     "la confirmation dit ce que l'opération va provoquer");
   await click(byText(".z60 button", "Annuler"), "annuler le VACUUM");
   await flush();
