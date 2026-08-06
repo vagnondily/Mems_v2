@@ -329,6 +329,9 @@ function Contracts({ tpms, db, can, notify, onChange }){
      liste ligne à ligne, on entre dans une ligne pour en voir le détail. */
   const contrats = tpms.flatMap(t => (t.contrats||[]).map(c => ({ ...c, tpmName:t.name, tpm_id:t.id })));
   const dc = detail ? contrats.find(x => x.id === detail) : null;
+  /* Les dates de contrat arrivent en ISO complet (…T00:00:00.000Z) : on n'en
+     montre que le jour, seul porteur de sens pour une période contractuelle. */
+  const jour = (d) => d ? String(d).slice(0, 10) : "—";
 
   return (
     <>
@@ -378,7 +381,7 @@ function Contracts({ tpms, db, can, notify, onChange }){
                   <Td className="font-semibold text-slate-800">{c.ref}</Td>
                   <Td className="text-slate-600">{c.tpmName}</Td>
                   <Td><Badge tone={(CTR[c.status]||["",""])[1]}>{(CTR[c.status]||[c.status])[0]}</Badge></Td>
-                  <Td className="f115 text-slate-500">{c.start_date || "—"} → {c.end_date || "—"}</Td>
+                  <Td className="f115 text-slate-500">{jour(c.start_date)} → {jour(c.end_date)}</Td>
                   <Td num>{fmt(Math.round(c.solde.plafond))} <span className="text-slate-400 f105">{c.currency}</span></Td>
                   <Td num><div className="flex items-center gap-2 justify-end">
                     <div className="w-20"><Bar2 value={c.solde.consommation || 0}
@@ -394,7 +397,7 @@ function Contracts({ tpms, db, can, notify, onChange }){
       {/* Détail d'un contrat — ouvert seulement quand on entre dans une ligne. */}
       <Modal open={!!dc} wide onClose={()=>setDetail(null)}
         title={dc ? `Contrat ${dc.ref} — ${dc.tpmName}` : ""}
-        subtitle={dc ? `${(CTR[dc.status]||[dc.status])[0]} · ${dc.start_date || "—"} → ${dc.end_date || "—"}` : ""}
+        subtitle={dc ? `${(CTR[dc.status]||[dc.status])[0]} · ${jour(dc.start_date)} → ${jour(dc.end_date)}` : ""}
         footer={<Btn kind="sec" onClick={()=>setDetail(null)}>Fermer</Btn>}>
         {dc && <ContractBody c={dc} can={can} faire={faire}
           setEditCtr={setEditCtr} setRates={setRates} setZonesCtr={setZonesCtr} setAven={setAven} />}

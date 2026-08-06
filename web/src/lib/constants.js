@@ -214,9 +214,13 @@ const D_ROLES = {
    y a été enregistrée : le serveur refuserait de toute façon, mieux vaut ne pas
    promettre une porte qui se referme au premier clic. */
 function destinationsAutorisees(u){
+  /* Le super-utilisateur voit TOUTES les destinations, y compris celles ajoutées
+     après que son compte a figé une liste `tabs` : son accès est total par
+     définition, une liste enregistrée obsolète ne doit pas lui masquer une
+     destination nouvelle (c'était le cas du « Tableau de bord » promu en menu). */
+  if(u?.role === "super") return [...TABS_ALL.map(t => t[0]), TAB_ADMIN[0]];
   const base = (u?.tabs?.length ? u.tabs : D_ROLES[u?.role]?.tabs) || ["home"];
-  const sansAdmin = base.filter(t => t !== TAB_ADMIN[0]);
-  return u?.role === "super" ? [...sansAdmin, TAB_ADMIN[0]] : sansAdmin;
+  return base.filter(t => t !== TAB_ADMIN[0]);
 }
 
 const D_WEIGHTS = {
