@@ -650,13 +650,17 @@ if(info){
       const insExp = db.prepare(`INSERT INTO tpm_expense (id,plan_id,line_id,spent_on,amount,ref)
                                  VALUES (?,?,?,?,?,?)`);
 
-      /* Barème commun, en ariary — les montants du classeur de référence. */
+      /* Barème commun, en ariary — les six lignes du classeur de référence
+         MAHAVOTSE_BUDGET_TPM, montants inclus. Les deux dernières sont des
+         forfaits : elles ne dérivent d'aucune quantité d'équipe et se saisissent
+         à la main sur le plan (leur coût unitaire sert de repère). */
       const BAREME = [
-        ["superviseur", "Indemnité des superviseurs", "pers-jour", 70000],
-        ["agent",       "Indemnité des agents",       "pers-jour", 60000],
-        ["vehicule",    "Location voiture",           "véhicule-jour", 300000],
-        ["carburant",   "Carburant voiture",          "litre", 5000],
-        ["forfait",     "Forfait communication",      "forfait", 10000],
+        ["superviseur", "Indemnité des superviseurs", "pers", 70000],
+        ["agent",       "Indemnité des agents",       "pers", 60000],
+        ["vehicule",    "Location voiture",           "Voiture", 300000],
+        ["carburant",   "Carburant voiture",          "litres", 5000],
+        ["forfait",     "Forfait 1st premium",        "FFT", 10000],
+        ["forfait",     "Groupe électrogène avec carburant", "Groupe", 80000],
       ];
       const PRESTATAIRES = [
         ["Mahavotse Suivi", "MAHAVOTSE", "Bureau de terrain d'Ambovombe",

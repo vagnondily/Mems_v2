@@ -886,86 +886,73 @@ function PlanModal({ open, plan, tpms, db, me, can, busy, setBusy, notify, onClo
         </tbody>
       </TableWrap>
 
-      {/* ── ② Corps du budget : fidèle au classeur ──
-          Les niveaux administratifs DISTINCTS (ADM1 | ADM2 | ADM3), le POI/équipe
-          et le nombre de sites affectés, puis la composition et le sous-total
-          (analyse Q18/Q14). Le prestataire n'est pas une colonne : c'est l'en-tête
-          de tout le plan. Lu sur l'affectation ENREGISTRÉE. */}
-      {!!plan.zones.length && (
-        <div className="mt-5">
-          <div className="flex items-baseline gap-3 mb-2">
-            <div className="f13 font-semibold text-slate-800">② Corps du budget</div>
-            <div className="f115 text-slate-500">
-              {plan.tpm} · {MONTHS_L[plan.month]} {plan.year}{modifiable ? " · d'après la dernière affectation enregistrée" : ""}</div>
-          </div>
-          <TableWrap max="mh300">
-            <thead><tr><Th>ADM1</Th><Th>ADM2</Th><Th>ADM3</Th><Th>POI / Équipe</Th>
-              <Th num>Nb sites</Th><Th num>Sup.</Th><Th num>Agents</Th><Th num>Jours</Th>
-              <Th num>Trajet</Th><Th num>Véhic.</Th><Th num>Carburant (L)</Th>
-              <Th num>Sous-total</Th></tr></thead>
-            <tbody>
-              {plan.zones.map(z => (
-                <tr key={z.id} className="hover:bg-sky-50">
-                  <Td className="f115 text-slate-600">{z.adm1 || "—"}</Td>
-                  <Td className="f115 text-slate-600">{z.adm2 || "—"}</Td>
-                  <Td className="f115 font-medium text-slate-800">{z.adm3 || z.zone}</Td>
-                  <Td className="f115">{z.team_label || z.activity_tag || "—"}</Td>
-                  <Td num>{fmt(z.sites)}</Td>
-                  <Td num>{fmt(z.supervisors)}</Td><Td num>{fmt(z.agents)}</Td><Td num>{fmt(z.days)}</Td>
-                  <Td num>{fmt(z.travel_days)}</Td><Td num>{fmt(z.vehicles)}</Td><Td num>{fmt(z.fuel_litres)}</Td>
-                  <Td num className="font-semibold">{fmt(Math.round(z.subtotal))}</Td>
-                </tr>))}
-              <tr className="bg-slate-100 font-bold">
-                <Td colSpan={4}>Total — {plan.zones.reduce((t,z)=>t+n(z.sites),0)} sites</Td>
-                <Td num>{fmt(plan.zones.reduce((t,z)=>t+n(z.sites),0))}</Td>
-                <Td colSpan={6} />
-                <Td num>{fmt(Math.round(plan.budget))}</Td></tr>
-            </tbody>
-          </TableWrap>
-        </div>)}
-
-      {/* ── Le détail par ligne, quand le plan est figé ── */}
-      {!modifiable && !!plan.zones.length && (
-        <div className="mt-4">
-          <div className="f13 font-semibold text-slate-800 mb-2">Détail par ligne</div>
-          <TableWrap max="mh300">
-            {/* Les intitulés du classeur de référence, à dessein : « Qtté 1 (jr) »,
-                « Qtté 2 (nb) », coût unitaire, total. */}
-            <thead><tr><Th>Équipe / zone</Th><Th>Ligne</Th><Th>Unité</Th><Th num>Qté 1 (jr)</Th>
-              <Th num>Qté 2 (nb)</Th><Th num>Coût unitaire</Th><Th num>Total</Th><Th num>Dépensé</Th></tr></thead>
-            <tbody>
-              {plan.zones.flatMap(z => [
-                ...z.lines.map(l => (
-                  <tr key={l.id} className="hover:bg-sky-50">
-                    <Td className="text-slate-500 f115">{z.team_label || z.zone}</Td>
-                    <Td>{l.label}{!l.derived && <Badge tone="y">ajustée</Badge>}</Td>
-                    <Td className="text-slate-500 f115">{l.unit}</Td>
-                    <Td num>{fmt(l.qty1)}</Td><Td num>{fmt(l.qty2)}</Td>
-                    <Td num>{fmt(l.unit_cost)}</Td>
-                    <Td num className="font-semibold">{fmt(Math.round(l.total))}</Td>
-                    <Td num className={l.spent != null && l.spent > l.total ? "text-rose-700" : ""}>
-                      {l.spent == null ? "—" : fmt(Math.round(l.spent))}</Td>
-                  </tr>)),
-                <tr key={z.id+"st"} className="bg-slate-50">
-                  <Td colSpan={6} className="text-right f115 text-slate-600">
-                    Sous-total {z.team_label || z.zone}</Td>
-                  <Td num className="font-bold">{fmt(Math.round(z.subtotal))}</Td><Td /></tr>,
-              ])}
-              {plan.communes.map(l => (
-                <tr key={l.id} className="hover:bg-sky-50">
-                  <Td className="text-slate-400 f115">frais commun</Td>
-                  <Td>{l.label}</Td><Td className="text-slate-500 f115">{l.unit}</Td>
-                  <Td num>{fmt(l.qty1)}</Td><Td num>{fmt(l.qty2)}</Td><Td num>{fmt(l.unit_cost)}</Td>
-                  <Td num className="font-semibold">{fmt(Math.round(l.total))}</Td>
-                  <Td num>{l.spent == null ? "—" : fmt(Math.round(l.spent))}</Td>
-                </tr>))}
-              <tr className="bg-slate-100 font-bold">
-                <Td colSpan={6} className="text-right">Total général</Td>
-                <Td num>{fmt(Math.round(plan.budget))}</Td>
-                <Td num>{plan.spent == null ? "—" : fmt(Math.round(plan.spent))}</Td></tr>
-            </tbody>
-          </TableWrap>
-        </div>)}
+      {/* ── ② Corps du budget : fidèle à la feuille BUDGET du classeur ──
+          Un bloc par ÉQUIPE (une équipe couvre une ou plusieurs communes), ses
+          lignes DÉSIGNATION | Unité | Qté 1 (jr) | Qté 2 (nb) | Coût unitaire |
+          Budget TOT — le total étant Qté1 × Qté2 × coût, exactement la colonne F
+          du classeur (F = E×D×C). Un SOUS-TOTAL par équipe, puis le TOTAL
+          GÉNÉRAL. Le prestataire n'est pas une colonne : c'est l'en-tête du plan
+          (analyse Q18). Le libellé d'équipe rappelle ses communes et son district
+          — l'écho de la ligne « Data collection - Process (…) - TEAM N ». */}
+      {!!plan.zones.length && (() => {
+        const teams = []; const idx = {};
+        for(const z of plan.zones){
+          const key = z.team_label || z.zone;
+          if(!(key in idx)){ idx[key] = teams.length;
+            teams.push({ label:key, communes:[], district:z.adm2||"", lines:[], subtotal:0, sites:0 }); }
+          const t = teams[idx[key]];
+          if(z.adm3 && !t.communes.includes(z.adm3)) t.communes.push(z.adm3);
+          t.lines.push(...z.lines); t.subtotal += z.subtotal; t.sites += n(z.sites);
+        }
+        return (
+          <div className="mt-5">
+            <div className="flex items-baseline gap-3 mb-2">
+              <div className="f13 font-semibold text-slate-800">② Corps du budget</div>
+              <div className="f115 text-slate-500">
+                {plan.tpm} · {MONTHS_L[plan.month]} {plan.year} · total = Qté 1 (jr) × Qté 2 (nb) × coût unitaire</div>
+            </div>
+            <TableWrap max="mh360">
+              <thead><tr><Th>Désignation</Th><Th>Unité</Th><Th num>Qté 1 (jr)</Th>
+                <Th num>Qté 2 (nb)</Th><Th num>Coût unitaire</Th><Th num>Budget TOT</Th>
+                <Th num>Dépensé</Th></tr></thead>
+              <tbody>
+                {teams.flatMap(t => [
+                  <tr key={t.label+"h"} className="bg-slate-100">
+                    <Td colSpan={7} className="f115 font-semibold text-slate-700">
+                      {t.label}{t.communes.length ? ` — ${t.communes.join(", ")}` : ""}
+                      {t.district ? ` (${t.district})` : ""}{t.sites ? ` · ${t.sites} site(s)` : ""}</Td></tr>,
+                  ...t.lines.map(l => (
+                    <tr key={l.id} className="hover:bg-sky-50">
+                      <Td className="pl-4">{l.label}{!l.derived && <Badge tone="y">ajustée</Badge>}</Td>
+                      <Td className="text-slate-500 f115">{l.unit}</Td>
+                      <Td num>{fmt(l.qty1)}</Td><Td num>{fmt(l.qty2)}</Td><Td num>{fmt(l.unit_cost)}</Td>
+                      <Td num className="font-semibold">{fmt(Math.round(l.total))}</Td>
+                      <Td num className={l.spent != null && l.spent > l.total ? "text-rose-700" : ""}>
+                        {l.spent == null ? "—" : fmt(Math.round(l.spent))}</Td>
+                    </tr>)),
+                  <tr key={t.label+"st"} className="bg-slate-50">
+                    <Td colSpan={5} className="text-right f115 text-slate-600">SOUS-TOTAL {t.label}</Td>
+                    <Td num className="font-bold">{fmt(Math.round(t.subtotal))}</Td><Td /></tr>,
+                ])}
+                {plan.communes.length > 0 && [
+                  <tr key="fc-h" className="bg-slate-100"><Td colSpan={7}
+                    className="f115 font-semibold text-slate-700">Frais communs au plan</Td></tr>,
+                  ...plan.communes.map(l => (
+                    <tr key={l.id} className="hover:bg-sky-50">
+                      <Td className="pl-4">{l.label}</Td><Td className="text-slate-500 f115">{l.unit}</Td>
+                      <Td num>{fmt(l.qty1)}</Td><Td num>{fmt(l.qty2)}</Td><Td num>{fmt(l.unit_cost)}</Td>
+                      <Td num className="font-semibold">{fmt(Math.round(l.total))}</Td>
+                      <Td num>{l.spent == null ? "—" : fmt(Math.round(l.spent))}</Td>
+                    </tr>)),
+                ]}
+                <tr className="bg-slate-200 font-bold">
+                  <Td colSpan={5} className="text-right">TOTAL GÉNÉRAL</Td>
+                  <Td num>{fmt(Math.round(plan.budget))}</Td>
+                  <Td num>{plan.spent == null ? "—" : fmt(Math.round(plan.spent))}</Td></tr>
+              </tbody>
+            </TableWrap>
+          </div>);
+      })()}
 
       {/* ── Validation ── */}
       {a.valider && (
