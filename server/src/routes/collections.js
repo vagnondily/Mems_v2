@@ -27,10 +27,13 @@ const COLLECTIONS = {
   params: { table:"coverage_params", cap:"edit", office:true,
     schema: z.object({ id:S(64), csp:S(40), office_id:z.string().max(64),
       category_id:S(64), tag:z.string().min(1).max(20),
-      duration:I(0,12), riskLevel:I(1,3), feasiblePerMonth:I(0,1000) }),
+      duration:I(0,12), riskLevel:I(1,3), feasiblePerMonth:I(0,1000),
+      /* Formulaires réalisables par jour et par personne — 0 = non renseigné.
+         Sert au calcul des jours d'un plan TPM d'après le MMR (migration 041). */
+      formsPerDay:I(0,200) }),
     map: (x) => ({ csp:x.csp, office_id:x.office_id, category_id:x.category_id,
       activity_tag:x.tag, duration:x.duration, risk_level:x.riskLevel,
-      feasible_per_month:x.feasiblePerMonth }) },
+      feasible_per_month:x.feasiblePerMonth, forms_per_day:x.formsPerDay }) },
 
   outputs: { table:"outputs", cap:"edit",
     schema: z.object({ id:S(64), tag:z.string().min(1).max(20), year:I(2000,2100),

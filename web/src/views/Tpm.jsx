@@ -829,22 +829,33 @@ function PlanModal({ open, plan, tpms, db, me, can, busy, setBusy, notify, onClo
             Cliquez pour affecter.</div>
           <TableWrap max="mh240">
             <thead><tr><Th>Commune</Th><Th>District</Th><Th num>Sites actifs</Th>
-              <Th num>Prévus</Th><Th num>Visités</Th><Th num>Écart</Th><Th num>Risque</Th><Th /></tr></thead>
+              <Th num>Prévus</Th><Th num>Visités</Th><Th num>Écart</Th>
+              <Th num>Charge (j·pers)</Th><Th num>Risque</Th><Th /></tr></thead>
             <tbody>{sugg.map(s=>{
               const deja = zones.some(z => z.geo_pcode === s.geo_pcode);
+              /* Les jours viennent du MMR : la charge en jours-personnes du mois
+                 (formulaires à faire ÷ productivité par activité), divisée par le
+                 nombre d'agents — 1 à l'affectation, ajustable ensuite. À défaut
+                 de productivité déclarée, on retombe sur l'écart de couverture. */
+              const jours = s.chargeJours > 0
+                ? Math.max(1, s.chargeJours)
+                : Math.min(10, Math.max(2, s.ecart || 2));
               return (
                 <tr key={s.geo_pcode} className={clsx("hover:bg-white", deja && "opacity-50")}>
                   <Td className="font-medium text-slate-800">{s.zone}</Td>
                   <Td className="text-slate-600 f115">{s.district}</Td>
                   <Td num>{s.actifs}</Td><Td num>{s.planifies}</Td><Td num>{s.visites}</Td>
                   <Td num className={s.ecart ? "text-amber-700 font-semibold" : ""}>{s.ecart}</Td>
+                  <Td num title={s.planifiesSansCadence
+                    ? `${s.planifiesSansCadence} site(s) prévus sans productivité déclarée : renseignez « formulaires/jour » dans les paramètres de couverture`
+                    : ""}>{s.chargeJours > 0 ? s.chargeJours : "—"}</Td>
                   <Td num>{s.risque}</Td>
                   <Td className="text-right">
                     <Btn size="sm" kind="sec" disabled={deja}
                       onClick={()=>setZones(p=>[...p,{ geo_pcode:s.geo_pcode, zone:`${s.zone} (${s.district})`,
                         activity_tag:s.tags[0]||"", team_label:`TEAM${p.length+1}`,
-                        supervisors:1, agents:1, days:Math.min(10, Math.max(2, s.ecart || 2)),
-                        travel_days:1, vehicles:1, fuel_litres:15*Math.min(10, Math.max(2, s.ecart||2)),
+                        supervisors:1, agents:1, days:jours,
+                        travel_days:1, vehicles:1, fuel_litres:15*jours,
                         sites:s.actifs }])}>
                       {deja ? "Affectée" : "Affecter"}</Btn></Td>
                 </tr>); })}</tbody>

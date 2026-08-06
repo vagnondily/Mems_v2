@@ -108,7 +108,8 @@ r.get("/state", async (req, res) => {
   ).map(p => ({
     id:p.id, rev:p.rev, csp:p.csp||"", office: officeName[p.office_id]||"", office_id:p.office_id,
     tag:p.activity_tag, category: catName[p.category_id]||"", category_id:p.category_id,
-    duration:p.duration, riskLevel:p.risk_level, feasiblePerMonth:p.feasible_per_month }));
+    duration:p.duration, riskLevel:p.risk_level, feasiblePerMonth:p.feasible_per_month,
+    formsPerDay:p.forms_per_day }));
 
   const visits = (officeFilter
     ? await db.prepare("SELECT * FROM visits WHERE office_id=? ORDER BY visit_date DESC LIMIT 5000").all(officeFilter)

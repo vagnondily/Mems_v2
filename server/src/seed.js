@@ -230,14 +230,18 @@ if(info){
       (id,site_id,office_id,visit_date,activity_tag,monitor,form_id,status,origin,manual_reason)
       VALUES (?,?,?,?,?,?,?,?,'manuelle','inconnu_anterieur')`);
     const insParam = db.prepare(`INSERT INTO coverage_params
-      (id,csp,office_id,category_id,activity_tag,duration,risk_level,feasible_per_month)
-      VALUES (?,?,?,?,?,?,?,?)`);
+      (id,csp,office_id,category_id,activity_tag,duration,risk_level,feasible_per_month,forms_per_day)
+      VALUES (?,?,?,?,?,?,?,?,?)`);
+    /* Formulaires réalisables par jour et par personne, par type d'activité —
+       de démonstration : un GD se collecte plus vite qu'un suivi nutritionnel.
+       C'est ce qui fait calculer les jours d'un plan TPM d'après le MMR. */
+    const FORMS_PER_DAY = { URT:8, SMP:6, CAR:5, MPA:5, NTA:4, MPA_PREV:4, SAMS:4, ACL:4 };
 
     let n = 0, pIdx = 0;
     for(const [office, cats] of PLAN){
       for(const [tag, count, dur, risk, feas] of cats){
         await insParam.run(newId("cov"), `ACT-${YEAR}-${String(++pIdx).padStart(3,"0")}`,
-          officeId[office], catId[tag].id, tag, dur, risk, feas);
+          officeId[office], catId[tag].id, tag, dur, risk, feas, FORMS_PER_DAY[tag] || 5);
         for(let k=0;k<count;k++){
           const zone = ZONES[office] || GEO.map((_,i)=>i);
           const g = GEO[zone[n % zone.length]];

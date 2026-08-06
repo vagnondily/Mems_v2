@@ -285,11 +285,21 @@ export async function suggestZones({ year, month, officeId, limit = 60 }){
              AVG(COALESCE(s.issue_ipm,0) + COALESCE(s.issue_report,0)
                  + COALESCE(s.issue_cfm,0) + COALESCE(s.fraud,0)) risque,
              SUM(COALESCE(s.beneficiaries,0)) beneficiaires,
-             string_agg(DISTINCT s.activity_tag, ',') tags
+             string_agg(DISTINCT s.activity_tag, ',') tags,
+             /* La charge de suivi du mois en JOURS-PERSONNES, d'après le MMR :
+                pour chaque site à suivre ce mois, un formulaire à faire divisé
+                par la productivité (formulaires/jour/personne) propre à son
+                activité. Les sites sans productivité déclarée n'y comptent pas —
+                le calcul ne s'impose que là où il est renseigné. */
+             SUM(CASE WHEN m.planned=1 AND cp.forms_per_day > 0
+                      THEN 1.0 / cp.forms_per_day ELSE 0 END) charge_brut,
+             SUM(CASE WHEN m.planned=1 AND (cp.forms_per_day IS NULL OR cp.forms_per_day = 0)
+                      THEN 1 ELSE 0 END) planifies_sans_cadence
       FROM sites s
       JOIN geo_unit u ON u.pcode = s.geo_pcode AND u.version_id = ?
       LEFT JOIN geo_unit p ON p.version_id = u.version_id AND p.pcode = u.parent_pcode
       LEFT JOIN site_months m ON m.site_id = s.id AND m.year = ? AND m.month = ?
+      LEFT JOIN coverage_params cp ON cp.office_id = s.office_id AND cp.activity_tag = s.activity_tag
       WHERE s.geo_pcode IS NOT NULL ${filtreBureau}
       GROUP BY u.pcode, u.name, p.name
       HAVING SUM(CASE WHEN s.status='Active' THEN 1 ELSE 0 END) > 0
@@ -302,6 +312,10 @@ export async function suggestZones({ year, month, officeId, limit = 60 }){
       /* L'écart de couverture du mois : ce qui était prévu et n'est pas fait. */
       ecart: Math.max(0, (r.planifies || 0) - (r.visites || 0)),
       risque: Math.round((r.risque || 0) * 100) / 100,
+      /* La charge du mois arrondie au jour-personne supérieur : c'est elle que
+         l'affectation divise par le nombre d'agents pour proposer les jours. */
+      chargeJours: Math.ceil(Number(r.charge_brut) || 0),
+      planifiesSansCadence: Number(r.planifies_sans_cadence) || 0,
     }));
 }
 

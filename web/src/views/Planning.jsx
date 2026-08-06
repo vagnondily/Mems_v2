@@ -90,10 +90,10 @@ function Overreaching({ db, set, notify, can }){
       <Card flush title="Paramètres par bureau et activité"
         subtitle={`${rows.length} lignes · le nombre de sites est compté en direct dans le registre`}
         right={can("edit") && <Btn size="sm" icon={Plus} onClick={()=>setEdit({ id:null, csp:"",
-          office:db.lists.offices[0], tag:db.lists.tags[0].code, duration:12, riskLevel:2, feasiblePerMonth:0 })}>Ajouter</Btn>}>
+          office:db.lists.offices[0], tag:db.lists.tags[0].code, duration:12, riskLevel:2, feasiblePerMonth:0, formsPerDay:0 })}>Ajouter</Btn>}>
         <TableWrap>
           <thead><tr>{["N°","Bureau","Activité"].map(h=><Th key={h}>{h}</Th>)}
-            {["Durée","Sites","Risque","Interv. min.","Fréq. min.","Cible/mois","Faisable/mois","Ratio","Fréq. ajustée","Interv. ajusté"].map(h=><Th key={h} num>{h}</Th>)}
+            {["Durée","Sites","Risque","Interv. min.","Fréq. min.","Cible/mois","Faisable/mois","Form./jour","Ratio","Fréq. ajustée","Interv. ajusté"].map(h=><Th key={h} num>{h}</Th>)}
             <Th /></tr></thead>
           <tbody>{rows.map(r=>{ const c=r.c;
             const tone = c.feasibilityRatio>=1?"ok" : c.feasibilityRatio>=.6?"warn":"bad";
@@ -105,6 +105,7 @@ function Overreaching({ db, set, notify, can }){
                 <Td num><Badge tone={c.riskLevel===3?"r":c.riskLevel===2?"y":"g"}>{c.riskLevel}</Badge></Td>
                 <Td num>{r1(c.minInterval)}</Td><Td num>{r1(c.minFreq)}</Td><Td num>{r1(c.targetPerMonth)}</Td>
                 <Td num>{c.feasiblePerMonth}</Td>
+                <Td num>{r.formsPerDay || "—"}</Td>
                 <Td num><div className="flex items-center gap-2 justify-end"><Bar2 value={c.feasibilityRatio*100} tone={tone} />{r1(c.feasibilityRatio)}</div></Td>
                 <Td num>{r1(c.adjustedFreq)}</Td><Td num><b>{r1(c.adjustedInterval)}</b></Td>
                 <Td className="text-right">
@@ -137,6 +138,9 @@ function ParamModal({ open, row, db, onClose, onSave }){
           options={[[1,"1 — Faible"],[2,"2 — Moyen"],[3,"3 — Élevé"]]} /></Field>
         <Field label="Visites faisables par mois" hint="Capacité réelle de l'équipe">
           <Input type="number" min="0" value={f.feasiblePerMonth??0} onChange={e=>u("feasiblePerMonth",n(e.target.value))} /></Field>
+        <Field label="Formulaires par jour et par personne"
+          hint="0 = non renseigné. Sert au calcul des jours d'un plan TPM d'après le MMR.">
+          <Input type="number" min="0" value={f.formsPerDay??0} onChange={e=>u("formsPerDay",n(e.target.value))} /></Field>
         <Field label="Nombre de sites" hint="Compté automatiquement">
           <Input value={c.nbSites} readOnly /></Field>
       </div>

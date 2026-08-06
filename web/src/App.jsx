@@ -52,7 +52,8 @@ const SHAPERS = {
     method:i.method, frequency:i.freq })),
   params: (rows) => rows.map(p => ({ id:p.id, rev:p.rev, csp:p.csp, office_id:p.office_id,
     category_id:p.category_id, tag:p.tag, duration:p.duration,
-    riskLevel:p.riskLevel, feasiblePerMonth:p.feasiblePerMonth })).filter(p => p.office_id),
+    riskLevel:p.riskLevel, feasiblePerMonth:p.feasiblePerMonth,
+    formsPerDay:p.formsPerDay })).filter(p => p.office_id),
   pdd: (rows, db) => rows.map(p => ({ ...p, year: p.year || db.year })),
 };
 

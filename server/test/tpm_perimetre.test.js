@@ -187,3 +187,42 @@ test("cycle de vie du contrat : draft → validated, plans réservés au validé
   const ref = await request(app).get("/api/tpm/plans").set(H());
   assert.ok(ref.body.referentiel.contractStatuses.some(s => s.value==="template" && s.label==="Modèle"));
 });
+
+test("jours d'après le MMR : /suggest rend la charge en jours-personnes selon la productivité", async () => {
+  const { newId } = await import("../src/lib/crypto.js");
+  const site = await db.prepare(
+    `SELECT id, office_id, activity_tag, geo_pcode FROM sites
+     WHERE office_id IS NOT NULL AND activity_tag IS NOT NULL AND geo_pcode IS NOT NULL LIMIT 1`).get();
+  assert.ok(site, "au moins un site du jeu de démonstration porte bureau, activité et commune");
+
+  /* Productivité déclarée : 5 formulaires par jour et par personne pour ce
+     couple (bureau, activité). */
+  const cov = await db.prepare("SELECT id FROM coverage_params WHERE office_id=? AND activity_tag=?")
+    .get(site.office_id, site.activity_tag);
+  if(cov) await db.prepare("UPDATE coverage_params SET forms_per_day=5 WHERE id=?").run(cov.id);
+  else await db.prepare(`INSERT INTO coverage_params
+    (id,office_id,activity_tag,duration,risk_level,feasible_per_month,forms_per_day)
+    VALUES (?,?,?,12,2,0,5)`).run(newId("cov"), site.office_id, site.activity_tag);
+
+  /* On planifie CE site pour un mois libre (2033-05) : lui seul est prévu ce
+     mois-là, la charge de sa commune est donc entièrement la sienne. */
+  await db.prepare(`INSERT INTO site_months (site_id,year,month,active,planned,done)
+    VALUES (?,?,?,1,1,0)`).run(site.id, 2033, 5);
+
+  const sug = await request(app).get("/api/tpm/suggest?year=2033&month=5").set(H());
+  assert.equal(sug.status, 200, JSON.stringify(sug.body));
+  const row = sug.body.rows.find(r => r.geo_pcode === site.geo_pcode);
+  assert.ok(row, "la commune du site planifié est proposée");
+  assert.ok(row.planifies >= 1, "le site prévu est compté");
+  /* 1 formulaire ÷ 5 par jour = 1 jour-personne (arrondi supérieur). */
+  assert.equal(row.chargeJours, 1, "la charge en jours-personnes suit la productivité déclarée");
+
+  /* Sans productivité, la charge ne s'impose pas et le site est signalé. */
+  if(cov) await db.prepare("UPDATE coverage_params SET forms_per_day=0 WHERE id=?").run(cov.id);
+  else await db.prepare("UPDATE coverage_params SET forms_per_day=0 WHERE office_id=? AND activity_tag=?")
+    .run(site.office_id, site.activity_tag);
+  const sug2 = await request(app).get("/api/tpm/suggest?year=2033&month=5").set(H());
+  const row2 = sug2.body.rows.find(r => r.geo_pcode === site.geo_pcode);
+  assert.equal(row2.chargeJours, 0, "sans productivité, aucune charge n'est imposée");
+  assert.ok(row2.planifiesSansCadence >= 1, "le site prévu sans productivité est signalé");
+});
