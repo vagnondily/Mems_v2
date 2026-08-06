@@ -573,9 +573,18 @@ const temporel = (source, measure) =>
 const estMoyenne = (source, measure) =>
   measure==="score" || measure==="value" || (measure==="planned" && source==="outcomes");
 
-function aggregate(db, source, dim, measure, periode, measure2){
+/* Combine deux mesures agrégées en UNE valeur affichée, par catégorie. C'est le
+   cœur des indicateurs calculés : un taux de réalisation (réalisé ÷ planifié),
+   un écart (planifié − réalisé), un cumul. Le ratio se garde d'une division par
+   zéro — une catégorie sans planifié rend 0, pas l'infini. */
+const CALCULS = ["ratio","gap","sum"];
+const combiner = (calc, va, vb) =>
+  calc==="ratio" ? (vb ? va/vb*100 : 0) : calc==="gap" ? va - vb : va + vb;
+
+function aggregate(db, source, dim, measure, periode, measure2, calc){
   if(!SOURCES[source]) source = "sites";
   const croise = measure2 && measure2 !== measure && SOURCES[source].measures.some(m=>m[0]===measure2);
+  const calcule = croise && CALCULS.includes(calc);
   const p = normalisePeriode(periode, db.year);
   /* La grille mensuelle et les outputs ne descendent du serveur que pour
      l'exercice chargé : sur une autre année il n'y a rien à agréger, et
@@ -603,10 +612,14 @@ function aggregate(db, source, dim, measure, periode, measure2){
   else db.outcomes.forEach(o => {
     if(!dateDansPeriode(o.date, p)) return;
     push(o[dim], n(o[measure]), croise ? n(o[measure2]) : undefined); });
-  return Object.values(map).map(x => ({ name:String(x.key),
-    value: estMoyenne(source,measure) ? r1(x.sum/x.n) : x.sum,
-    ...(croise ? { value2: estMoyenne(source,measure2) ? r1(x.sum2/x.n) : x.sum2 } : {}) }))
-    .sort((a,b)=>b.value-a.value).slice(0,14);
+  return Object.values(map).map(x => {
+    const va = estMoyenne(source,measure)  ? (x.n ? x.sum/x.n  : 0) : x.sum;
+    const vb = estMoyenne(source,measure2) ? (x.n ? x.sum2/x.n : 0) : x.sum2;
+    /* Un indicateur calculé rend UNE série (la valeur dérivée) ; une simple
+       mesure croisée en rend DEUX (value + value2) ; une mesure seule, une. */
+    if(calcule) return { name:String(x.key), value: r1(combiner(calc, va, vb)) };
+    return { name:String(x.key), value: r1(va), ...(croise ? { value2: r1(vb) } : {}) };
+  }).sort((a,b)=>b.value-a.value).slice(0,14);
 }
 function Viz({ db, set, periode, notify, can }){
   const [edit,setEdit] = useState(null);
@@ -628,7 +641,7 @@ function Viz({ db, set, periode, notify, can }){
       const i=d.widgets.findIndex(y=>y.id===w.id);
       if(i>=0) d.widgets[i]=w; else d.widgets.push({...w,id:uid("w")}); return x; });
     setEdit(null); notify("Visualisation enregistrée","ok"); };
-  const modele = () => ({ type:"bar", source:"sites", dim:"subOffice", measure:"count", measure2:"", title:"", colors:[] });
+  const modele = () => ({ type:"bar", source:"sites", dim:"subOffice", measure:"count", measure2:"", calc:"", title:"", colors:[] });
   return (
     <>
       <div className="flex items-center gap-2 mb-3 flex-wrap">
@@ -663,17 +676,23 @@ function Widget({ w, db, periode, onEdit, onDelete }){
      unique, sans surprise. */
   const measure2 = (TYPES_CROISABLES.includes(w.type) && w.measure2 && w.measure2!==measure
     && SRC.measures.some(m=>m[0]===w.measure2)) ? w.measure2 : "";
+  /* Le calcul n'a de sens qu'avec deux mesures : sans mesure croisée, il n'y a
+     rien à combiner et l'on retombe sur la mesure simple. */
+  const calc = (measure2 && CALCULS.includes(w.calc)) ? w.calc : "";
   const p = normalisePeriode(periode, db.year);
-  const data = useMemo(()=>aggregate(db, src, dim, measure, p, measure2),
-    [db,src,dim,measure,measure2,p.annee,p.gran,p.valeur]);
+  const data = useMemo(()=>aggregate(db, src, dim, measure, p, measure2, calc),
+    [db,src,dim,measure,measure2,calc,p.annee,p.gran,p.valeur]);
   const dimLabel = (SRC.dims.find(d=>d[0]===dim)||[])[1] || dim;
   const mLabel = (SRC.measures.find(m=>m[0]===measure)||[])[1] || measure;
   const mLabel2 = measure2 ? ((SRC.measures.find(m=>m[0]===measure2)||[])[1] || measure2) : "";
+  const calcLabel = calc==="ratio" ? `${mLabel} ÷ ${mLabel2} (%)`
+    : calc==="gap" ? `${mLabel} − ${mLabel2}` : calc==="sum" ? `${mLabel} + ${mLabel2}` : "";
   /* Le sous-titre ne mentionne la période que là où elle a servi à restreindre :
      ailleurs, il dirait à l'utilisateur qu'il regarde un trimestre alors qu'il
      regarde tout. */
   const portee = temporel(src, measure) ? `${SRC.label} · ${libelleCourtPeriode(p)}` : SRC.label;
-  const titre = w.title || (measure2 ? `${mLabel} et ${mLabel2.toLowerCase()} par ${dimLabel.toLowerCase()}`
+  const titre = w.title || (calc ? `${calcLabel} par ${dimLabel.toLowerCase()}`
+    : measure2 ? `${mLabel} et ${mLabel2.toLowerCase()} par ${dimLabel.toLowerCase()}`
     : `${mLabel} par ${dimLabel.toLowerCase()}`);
   return (
     <Card title={titre} subtitle={portee}
@@ -681,14 +700,18 @@ function Widget({ w, db, periode, onEdit, onDelete }){
         {onDelete && <button onClick={onDelete} className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</>}>
       {w.type==="table" ? (
         <TableWrap max="mh280">
-          <thead><tr><Th>{dimLabel}</Th><Th num>{mLabel}</Th>
-            {measure2 ? <Th num>{mLabel2}</Th> : <Th num>Part</Th>}</tr></thead>
+          <thead><tr><Th>{dimLabel}</Th>
+            {calc ? <Th num>{calcLabel}</Th>
+              : measure2 ? <><Th num>{mLabel}</Th><Th num>{mLabel2}</Th></>
+              : <><Th num>{mLabel}</Th><Th num>Part</Th></>}</tr></thead>
           <tbody>{data.map(d=>{ const tot=data.reduce((t,x)=>t+x.value,0);
-            return <tr key={d.name} className="hover:bg-sky-50"><Td>{d.name}</Td><Td num>{fmt(d.value)}</Td>
-              {measure2 ? <Td num>{fmt(d.value2)}</Td>
-                : <Td num><div className="flex items-center gap-2 justify-end"><Bar2 value={pct(d.value,tot)} />{pct(d.value,tot)}%</div></Td>}</tr>; })}
+            return <tr key={d.name} className="hover:bg-sky-50"><Td>{d.name}</Td>
+              {calc ? <Td num>{fmt(d.value)}{calc==="ratio"?" %":""}</Td>
+                : measure2 ? <><Td num>{fmt(d.value)}</Td><Td num>{fmt(d.value2)}</Td></>
+                : <><Td num>{fmt(d.value)}</Td>
+                    <Td num><div className="flex items-center gap-2 justify-end"><Bar2 value={pct(d.value,tot)} />{pct(d.value,tot)}%</div></Td></>}</tr>; })}
           </tbody></TableWrap>
-      ) : <ResponsiveContainer width="100%" height={250}>{chartEl(w.type, data, w.colors, [mLabel, mLabel2])}</ResponsiveContainer>}
+      ) : <ResponsiveContainer width="100%" height={250}>{chartEl(w.type, data, w.colors, [calc?calcLabel:mLabel, mLabel2])}</ResponsiveContainer>}
     </Card>);
 }
 
@@ -831,11 +854,16 @@ function WidgetModal({ open, w, db, periode, onClose, onSave }){
   if(!open) return null;
   const S = SOURCES[f.source] || SOURCES.sites;
   const u=(k,v)=>setF(p=>{ const x={...p,[k]:v};
-    if(k==="source"){ x.dim = SOURCES[v].dims[0][0]; x.measure = SOURCES[v].measures[0][0]; x.measure2 = ""; } return x; });
+    if(k==="source"){ x.dim = SOURCES[v].dims[0][0]; x.measure = SOURCES[v].measures[0][0]; x.measure2 = ""; x.calc = ""; }
+    if(k==="measure2" && !v) x.calc = "";   /* sans seconde mesure, aucun calcul possible */
+    return x; });
   /* La mesure croisée n'a de sens que sur un type à deux séries et ne doit pas
      répéter la mesure principale : on lui retire donc cette dernière du choix. */
   const croisable = TYPES_CROISABLES.includes(f.type);
   const mesuresCroisees = S.measures.filter(m => m[0] !== f.measure);
+  const aCroisee = croisable && !!f.measure2 && f.measure2 !== f.measure;
+  const OPTIONS_CALC = [["ratio","Taux : mesure ÷ croisée (%)"],
+    ["gap","Écart : mesure − croisée"], ["sum","Somme : mesure + croisée"]];
   /* Position i de la palette effective, pour préremplir chaque case sans écraser
      ce que l'utilisateur a déjà choisi ailleurs. */
   const setCouleur = (i, v) => { const arr = (f.colors && f.colors.length ? [...f.colors] : SERIES.slice(0,8));
@@ -852,12 +880,19 @@ function WidgetModal({ open, w, db, periode, onClose, onSave }){
           options={TYPES_VIZ} /></Field>
         <Field label="Dimension"><Select value={f.dim} onChange={e=>u("dim",e.target.value)} options={S.dims} /></Field>
         <Field label="Mesure"><Select value={f.measure} onChange={e=>u("measure",e.target.value)} options={S.measures} /></Field>
-        <Field label="Mesure croisée" className="col-span-2"
+        <Field label="Mesure croisée"
           hint={croisable
-            ? "Facultatif. Affiche une seconde mesure sur la même dimension — réalisé contre planifié, par exemple — en histogramme, barres, courbe, aire ou tableau."
-            : "Le type choisi (circulaire, anneau, radial, radar, treemap) répartit un tout : il ne porte qu'une seule mesure. Choisissez un histogramme, une courbe, une aire ou un tableau pour en croiser deux."}>
+            ? "Facultatif. Une seconde mesure sur la même dimension — réalisé contre planifié, par exemple."
+            : "Type de composition (circulaire, anneau, radial, radar, treemap) : une seule mesure. Passez à un histogramme, une courbe, une aire ou un tableau pour en croiser deux."}>
           <Select value={croisable ? (f.measure2||"") : ""} disabled={!croisable}
             onChange={e=>u("measure2",e.target.value)} empty="— aucune —" options={mesuresCroisees} />
+        </Field>
+        <Field label="Indicateur calculé"
+          hint={aCroisee
+            ? "Facultatif. Combine les deux mesures en une valeur par catégorie : taux de réalisation (réalisé ÷ planifié), écart, ou somme. Une seule série est alors tracée."
+            : "Choisissez d'abord une mesure croisée : un indicateur calculé combine les deux mesures."}>
+          <Select value={aCroisee ? (f.calc||"") : ""} disabled={!aCroisee}
+            onChange={e=>u("calc",e.target.value)} empty="— aucun (deux séries) —" options={OPTIONS_CALC} />
         </Field>
         <Field label="Couleurs" className="col-span-2"
           hint="Facultatif. Choisissez au nuancier ou collez un code hexadécimal (#rrggbb). Les graphiques à catégories parcourent la liste ; courbes, aires, radars et mesure croisée utilisent les deux premières. « Réinitialiser » revient à la palette par défaut.">
