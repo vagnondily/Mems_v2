@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, AlertTriangle, BarChart3, Code2, Database, Download, FileDown, Filter, Pencil, Play, Plus, Save, Sigma, Trash2, Upload } from "lucide-react";
-import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart,
+         PolarAngleAxis, PolarGrid, PolarRadiusAxis, Radar, RadarChart, RadialBar, RadialBarChart,
+         ResponsiveContainer, Tooltip, Treemap, XAxis, YAxis } from "recharts";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
 import { RULE_TYPES, applyFormulas, applyRules, fmt, n, pct, profileColumn, r1, siteScore, uid } from "../lib/calc.js";
@@ -648,31 +650,89 @@ function Widget({ w, db, periode, onEdit, onDelete }){
             return <tr key={d.name} className="hover:bg-sky-50"><Td>{d.name}</Td><Td num>{fmt(d.value)}</Td>
               <Td num><div className="flex items-center gap-2 justify-end"><Bar2 value={pct(d.value,tot)} />{pct(d.value,tot)}%</div></Td></tr>; })}
           </tbody></TableWrap>
-      ) : w.type==="pie" ? (
-        <ResponsiveContainer width="100%" height={250}>
-          <PieChart><Pie data={data} dataKey="value" nameKey="name" innerRadius="45%" outerRadius="78%" paddingAngle={1}>
-            {data.map((d,i)=><Cell key={i} fill={SERIES[i%SERIES.length]} />)}</Pie>
-            <Tooltip contentStyle={{fontSize:11,borderRadius:3}} formatter={v=>fmt(v)} />
-            <Legend wrapperStyle={{fontSize:10.5}} /></PieChart></ResponsiveContainer>
-      ) : w.type==="line" ? (
-        <ResponsiveContainer width="100%" height={250}>
-          <LineChart data={data} margin={{top:6,right:6,left:-14,bottom:0}}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#eef2f5" vertical={false} />
-            <XAxis dataKey="name" tick={{fontSize:10,fill:C.t2}} axisLine={{stroke:"#e2e8ec"}} tickLine={false} />
-            <YAxis tick={{fontSize:10,fill:C.t2}} axisLine={false} tickLine={false} />
-            <Tooltip contentStyle={{fontSize:11,borderRadius:3}} formatter={v=>fmt(v)} />
-            <Line type="monotone" dataKey="value" stroke={C.brand} strokeWidth={2.4} dot={{r:3}} /></LineChart></ResponsiveContainer>
-      ) : (
-        <ResponsiveContainer width="100%" height={250}>
-          <BarChart data={data} margin={{top:6,right:6,left:-14,bottom:0}}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#eef2f5" vertical={false} />
-            <XAxis dataKey="name" tick={{fontSize:9.5,fill:C.t2}} axisLine={{stroke:"#e2e8ec"}} tickLine={false} interval={0} angle={-18} textAnchor="end" height={52} />
-            <YAxis tick={{fontSize:10,fill:C.t2}} axisLine={false} tickLine={false} />
-            <Tooltip contentStyle={{fontSize:11,borderRadius:3}} formatter={v=>fmt(v)} />
-            <Bar dataKey="value" radius={[2,2,0,0]}>{data.map((d,i)=><Cell key={i} fill={SERIES[i%SERIES.length]} />)}</Bar>
-          </BarChart></ResponsiveContainer>)}
+      ) : <ResponsiveContainer width="100%" height={250}>{chartEl(w.type, data)}</ResponsiveContainer>}
     </Card>);
 }
+
+/* La PALETTE de graphiques du tableau de bord modifiable. Chaque type produit
+   son composant recharts à partir des mêmes données agrégées `[{name,value}]`.
+   Ajouter un type ici l'ajoute partout : l'aperçu, le sélecteur et le rendu
+   passent tous par cette seule fonction. */
+const AXE_X = { dataKey:"name", tick:{fontSize:9.5,fill:C.t2}, axisLine:{stroke:"#e2e8ec"}, tickLine:false };
+const AXE_Y = { tick:{fontSize:10,fill:C.t2}, axisLine:false, tickLine:false };
+const TIP = { contentStyle:{fontSize:11,borderRadius:3}, formatter:v=>fmt(v) };
+const GRID = <CartesianGrid strokeDasharray="3 3" stroke="#eef2f5" vertical={false} />;
+const cellules = (data) => data.map((d,i)=><Cell key={i} fill={SERIES[i%SERIES.length]} />);
+
+function TreemapCell({ x, y, width, height, index, name }){
+  if(width<=0 || height<=0) return null;
+  return (<g>
+    <rect x={x} y={y} width={width} height={height} fill={SERIES[index%SERIES.length]} stroke="#fff" />
+    {width>46 && height>18 && <text x={x+4} y={y+14} fontSize={10} fill="#fff">{String(name).slice(0,18)}</text>}
+  </g>);
+}
+
+function chartEl(type, data){
+  const m = { top:6, right:6, left:-14, bottom:0 };
+  switch(type){
+    case "barh":
+      return (
+        <BarChart data={data} layout="vertical" margin={{top:6,right:12,left:6,bottom:0}}>
+          {GRID}
+          <XAxis type="number" {...AXE_Y} />
+          <YAxis type="category" dataKey="name" width={110} tick={{fontSize:9.5,fill:C.t2}} axisLine={false} tickLine={false} />
+          <Tooltip {...TIP} />
+          <Bar dataKey="value" radius={[0,2,2,0]}>{cellules(data)}</Bar>
+        </BarChart>);
+    case "line":
+      return (
+        <LineChart data={data} margin={m}>{GRID}<XAxis {...AXE_X} /><YAxis {...AXE_Y} /><Tooltip {...TIP} />
+          <Line type="monotone" dataKey="value" stroke={C.brand} strokeWidth={2.4} dot={{r:3}} /></LineChart>);
+    case "area":
+      return (
+        <AreaChart data={data} margin={m}>
+          <defs><linearGradient id="gArea" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={C.brand} stopOpacity={0.35} /><stop offset="100%" stopColor={C.brand} stopOpacity={0.02} />
+          </linearGradient></defs>
+          {GRID}<XAxis {...AXE_X} /><YAxis {...AXE_Y} /><Tooltip {...TIP} />
+          <Area type="monotone" dataKey="value" stroke={C.brand} strokeWidth={2.2} fill="url(#gArea)" /></AreaChart>);
+    case "pie":
+    case "donut":
+      return (
+        <PieChart>
+          <Pie data={data} dataKey="value" nameKey="name" paddingAngle={1}
+            innerRadius={type==="donut" ? "55%" : 0} outerRadius="80%">{cellules(data)}</Pie>
+          <Tooltip {...TIP} /><Legend wrapperStyle={{fontSize:10.5}} /></PieChart>);
+    case "radial":
+      return (
+        <RadialBarChart data={data} innerRadius="20%" outerRadius="95%" startAngle={90} endAngle={-270}>
+          <RadialBar dataKey="value" background cornerRadius={2}>{cellules(data)}</RadialBar>
+          <Tooltip {...TIP} /><Legend iconSize={8} wrapperStyle={{fontSize:10}} /></RadialBarChart>);
+    case "radar":
+      return (
+        <RadarChart data={data} outerRadius="72%">
+          <PolarGrid stroke="#e2e8ec" /><PolarAngleAxis dataKey="name" tick={{fontSize:9.5,fill:C.t2}} />
+          <PolarRadiusAxis tick={{fontSize:9,fill:C.t2}} /><Tooltip {...TIP} />
+          <Radar dataKey="value" stroke={C.brand} fill={C.brand} fillOpacity={0.35} /></RadarChart>);
+    case "treemap":
+      return <Treemap data={data} dataKey="value" nameKey="name" stroke="#fff" content={<TreemapCell />} isAnimationActive={false} />;
+    default: /* bar */
+      return (
+        <BarChart data={data} margin={m}>{GRID}
+          <XAxis {...AXE_X} interval={0} angle={-18} textAnchor="end" height={52} />
+          <YAxis {...AXE_Y} /><Tooltip {...TIP} />
+          <Bar dataKey="value" radius={[2,2,0,0]}>{cellules(data)}</Bar></BarChart>);
+  }
+}
+
+/* Les types offerts au constructeur, avec leur libellé. L'ordre est celui du
+   menu déroulant. Une seule liste, réutilisée par le sélecteur. */
+const TYPES_VIZ = [
+  ["bar","Histogramme"], ["barh","Barres horizontales"], ["line","Courbe"],
+  ["area","Aire"], ["pie","Circulaire"], ["donut","Anneau"],
+  ["radial","Barres radiales"], ["radar","Radar"], ["treemap","Treemap"],
+  ["table","Tableau croisé"],
+];
 function WidgetModal({ open, w, db, periode, onClose, onSave }){
   const [f,setF] = useState({});
   useEffect(()=>{ setF(w||{}); },[w]);
@@ -689,7 +749,7 @@ function WidgetModal({ open, w, db, periode, onClose, onSave }){
         <Field label="Source"><Select value={f.source} onChange={e=>u("source",e.target.value)}
           options={Object.entries(SOURCES).map(([k,v])=>[k,v.label])} /></Field>
         <Field label="Type"><Select value={f.type} onChange={e=>u("type",e.target.value)}
-          options={[["bar","Histogramme"],["pie","Diagramme circulaire"],["line","Courbe"],["table","Tableau croisé"]]} /></Field>
+          options={TYPES_VIZ} /></Field>
         <Field label="Dimension"><Select value={f.dim} onChange={e=>u("dim",e.target.value)} options={S.dims} /></Field>
         <Field label="Mesure"><Select value={f.measure} onChange={e=>u("measure",e.target.value)} options={S.measures} /></Field>
       </div>
