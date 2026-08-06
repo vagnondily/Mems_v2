@@ -1,4 +1,10 @@
 import express from "express";
+/* Express 4 n'achemine PAS le rejet d'un handler `async` vers le middleware
+   d'erreur : un `throw` (ou un `await` qui rejette) dans une route async se
+   perdrait en unhandledRejection. Sous SQLite les handlers étaient synchrones,
+   Express attrapait leurs `throw`. Ce paquet rétablit ce comportement pour les
+   handlers async — importé AVANT toute route, il les couvre toutes. */
+import "express-async-errors";
 import helmet from "helmet";
 import cors from "cors";
 import compression from "compression";

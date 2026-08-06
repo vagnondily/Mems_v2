@@ -119,7 +119,11 @@ export async function verifier(chemin){
        corrompue ou tronquée — l'atteindre suffit à prouver que le fichier
        s'ouvre. Le nombre d'entrées de table y est un contrôle de plausibilité
        en plus, pas une preuve à lui seul. */
-    const entreesTable = (sortie.match(/; TABLE DATA /g) || []).length;
+    /* Format d'une entrée de TOC : « <id>; <n> <n> TABLE DATA <schéma> <table>
+       <propriétaire> ». Le séparateur avant « TABLE DATA » est une ESPACE, pas
+       « ; » — pg_dump -Fc émet une entrée par table, même vide, donc leur nombre
+       égale bien celui du manifeste. */
+    const entreesTable = (sortie.match(/ TABLE DATA /g) || []).length;
     const lisible = entreesTable >= m.tables?.length;
     return { lisible, tables:m.tables || [], migrations:m.migrations || [],
       entreesTable, motif: lisible ? null

@@ -833,7 +833,9 @@ test("comptes : un PUT partiel ne réactive ni ne rétrograde ce qu'il n'envoie 
   assert.equal(apres.first_name, "Partiel corrigé", "ce qui est envoyé est bien écrit");
   assert.equal(apres.active, 0, "un compte désactivé ne se réactive pas tout seul");
   assert.equal(apres.role, "editor", "le rôle n'est pas rétrogradé en « viewer »");
-  assert.equal(apres.tabs, avant.tabs, "les onglets ne sont pas vidés");
+  /* `tabs` est jsonb : pg le rend comme un TABLEAU (SQLite rendait une chaîne).
+     assert.equal comparerait deux tableaux par référence — on compare le contenu. */
+  assert.deepEqual(apres.tabs, avant.tabs, "les onglets ne sont pas vidés");
   assert.equal(apres.tpm_id, tpm.id, "le rattachement au prestataire tient");
   assert.equal(apres.office_id, avant.office_id, "le rattachement au bureau tient");
   assert.equal(apres.last_name, "Ancien", "les champs facultatifs ne sont pas effacés");
@@ -3213,7 +3215,7 @@ test("pays : la devise d'un contrat vient de la configuration, non du code", asy
   /* On change la devise du pays : un contrat créé ensuite la reprend. */
   const mdg = await db.prepare("SELECT * FROM country WHERE code='MDG'").get();
   await request(app).put("/api/country/MDG").set("Authorization", `Bearer ${adminToken}`)
-    .send({ name:mdg.name, currency:"EUR", levels:JSON.parse(mdg.levels),
+    .send({ name:mdg.name, currency:"EUR", levels:mdg.levels,
             lat:mdg.lat, lon:mdg.lon, active:true, rev:mdg.rev });
   const c2 = await request(app).post("/api/tpm/contracts").set("Authorization", `Bearer ${adminToken}`)
     .send({ tpm_id:t.body.id, ref:"CTR-DEVISE-2", ceiling:1_000_000 });
@@ -3222,7 +3224,7 @@ test("pays : la devise d'un contrat vient de la configuration, non du code", asy
   /* Remis en état : la base d'essai ne doit pas rester en euros. */
   const maj = await db.prepare("SELECT rev FROM country WHERE code='MDG'").get();
   await request(app).put("/api/country/MDG").set("Authorization", `Bearer ${adminToken}`)
-    .send({ name:mdg.name, currency:"MGA", levels:JSON.parse(mdg.levels),
+    .send({ name:mdg.name, currency:"MGA", levels:mdg.levels,
             lat:mdg.lat, lon:mdg.lon, active:true, rev:maj.rev });
 });
 
@@ -3295,7 +3297,7 @@ test("pays : le pays courant ne se supprime ni ne se désactive", async () => {
   assert.equal(del.status, 409);
   const mdg = await db.prepare("SELECT * FROM country WHERE code='MDG'").get();
   const off = await request(app).put("/api/country/MDG").set("Authorization", `Bearer ${adminToken}`)
-    .send({ name:mdg.name, currency:mdg.currency, levels:JSON.parse(mdg.levels),
+    .send({ name:mdg.name, currency:mdg.currency, levels:mdg.levels,
             active:false, rev:mdg.rev });
   assert.equal(off.status, 409);
   assert.ok(/pays courant/.test(off.body.error), off.body.error);
@@ -3716,7 +3718,7 @@ test("connecteurs MoDa : les 5 sources pré-créées attendent « Token » (API 
     assert.equal(c.auth_schema, "jeton",
       `${c.name} : le schéma est « jeton » (Token), celui que MoDa v1 exige`);
     assert.equal(c.kind, "kobo");
-    const cfg = JSON.parse(c.config);
+    const cfg = c.config;
     assert.equal(cfg.apiVersion, "v1", `${c.name} : l'API v1 est pré-réglée`);
     assert.ok(cfg.activityTag, `${c.name} : la source est liée à son activité`);
   }
@@ -5683,7 +5685,7 @@ test("soumissions : le tirage ODK conserve l'identifiant d'instance, et le cache
 
   /* `__id` était écarté avec le reste des champs système d'OData : sans lui, deux
      tirages du même formulaire créaient des doublons au lieu de se recouvrir. */
-  const cache = JSON.parse((await db.prepare("SELECT raw FROM odk_forms WHERE id=?").get(f.id)).raw);
+  const cache = (await db.prepare("SELECT raw FROM odk_forms WHERE id=?").get(f.id)).raw;
   assert.ok(cache.every(x => x.instance_id), "chaque soumission du cache porte son identifiant");
 
   const un = await verser({ odk_form_id:f.id });
