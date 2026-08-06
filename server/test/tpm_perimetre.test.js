@@ -92,6 +92,10 @@ test("périmètre TPM : un plan n'affecte que des zones que le contrat confie", 
   const ok = await poserZone(commA.pcode);
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   assert.equal(ok.body.plan.zones[0].geo_pcode, commA.pcode);
+  /* Le corps du budget veut les niveaux DISTINCTS (analyse Q18) : la zone
+     enregistrée porte son ADM2 et son ADM3 séparément, pas un libellé fusionné. */
+  assert.ok(ok.body.plan.zones[0].adm3, "la zone porte un ADM3 distinct");
+  assert.ok(ok.body.plan.zones[0].adm2, "la zone porte un ADM2 distinct");
 
   /* ── On confie le DISTRICT de A : sa commune A devient éligible par héritage ── */
   const perimDistrict = await request(app).put(`/api/tpm/contracts/${contrat.id}/zones`).set(H())

@@ -805,11 +805,14 @@ function PlanModal({ open, plan, tpms, db, me, can, busy, setBusy, notify, onClo
         return dernier && <Note tone="err"><b>Renvoyé par {dernier.by}</b> — {dernier.comment}</Note>;
       })()}
 
-      {/* ── Affectation ── */}
+      {/* ── ① Affectation : le plan de suivi, commune par commune ──
+          L'affectation se fait par ZONE ENTIÈRE et pour toutes les activités à la
+          fois, jamais site par site (analyse Q16 du classeur). Le budget en
+          découle : ces quantités × le barème contractuel, aucun total saisi. */}
       <div className="flex items-baseline gap-3 mb-2">
-        <div className="f13 font-semibold text-slate-800">Zones affectées</div>
+        <div className="f13 font-semibold text-slate-800">① Affectation — commune par commune</div>
         <div className="f115 text-slate-500">
-          le budget découle de ces quantités et du barème contractuel</div>
+          une commune, une équipe, toutes ses activités ; le budget en découle</div>
         {modifiable && <span className="ml-auto flex gap-2">
           <Btn size="sm" kind="sec" icon={Target} onClick={chargerSugg}>Zones à couvrir</Btn>
           <Btn size="sm" kind="sec" icon={Plus}
@@ -883,10 +886,48 @@ function PlanModal({ open, plan, tpms, db, me, can, busy, setBusy, notify, onClo
         </tbody>
       </TableWrap>
 
-      {/* ── Le détail des lignes, quand le plan est figé ── */}
+      {/* ── ② Corps du budget : fidèle au classeur ──
+          Les niveaux administratifs DISTINCTS (ADM1 | ADM2 | ADM3), le POI/équipe
+          et le nombre de sites affectés, puis la composition et le sous-total
+          (analyse Q18/Q14). Le prestataire n'est pas une colonne : c'est l'en-tête
+          de tout le plan. Lu sur l'affectation ENREGISTRÉE. */}
+      {!!plan.zones.length && (
+        <div className="mt-5">
+          <div className="flex items-baseline gap-3 mb-2">
+            <div className="f13 font-semibold text-slate-800">② Corps du budget</div>
+            <div className="f115 text-slate-500">
+              {plan.tpm} · {MONTHS_L[plan.month]} {plan.year}{modifiable ? " · d'après la dernière affectation enregistrée" : ""}</div>
+          </div>
+          <TableWrap max="mh300">
+            <thead><tr><Th>ADM1</Th><Th>ADM2</Th><Th>ADM3</Th><Th>POI / Équipe</Th>
+              <Th num>Nb sites</Th><Th num>Sup.</Th><Th num>Agents</Th><Th num>Jours</Th>
+              <Th num>Trajet</Th><Th num>Véhic.</Th><Th num>Carburant (L)</Th>
+              <Th num>Sous-total</Th></tr></thead>
+            <tbody>
+              {plan.zones.map(z => (
+                <tr key={z.id} className="hover:bg-sky-50">
+                  <Td className="f115 text-slate-600">{z.adm1 || "—"}</Td>
+                  <Td className="f115 text-slate-600">{z.adm2 || "—"}</Td>
+                  <Td className="f115 font-medium text-slate-800">{z.adm3 || z.zone}</Td>
+                  <Td className="f115">{z.team_label || z.activity_tag || "—"}</Td>
+                  <Td num>{fmt(z.sites)}</Td>
+                  <Td num>{fmt(z.supervisors)}</Td><Td num>{fmt(z.agents)}</Td><Td num>{fmt(z.days)}</Td>
+                  <Td num>{fmt(z.travel_days)}</Td><Td num>{fmt(z.vehicles)}</Td><Td num>{fmt(z.fuel_litres)}</Td>
+                  <Td num className="font-semibold">{fmt(Math.round(z.subtotal))}</Td>
+                </tr>))}
+              <tr className="bg-slate-100 font-bold">
+                <Td colSpan={4}>Total — {plan.zones.reduce((t,z)=>t+n(z.sites),0)} sites</Td>
+                <Td num>{fmt(plan.zones.reduce((t,z)=>t+n(z.sites),0))}</Td>
+                <Td colSpan={6} />
+                <Td num>{fmt(Math.round(plan.budget))}</Td></tr>
+            </tbody>
+          </TableWrap>
+        </div>)}
+
+      {/* ── Le détail par ligne, quand le plan est figé ── */}
       {!modifiable && !!plan.zones.length && (
         <div className="mt-4">
-          <div className="f13 font-semibold text-slate-800 mb-2">Détail du budget</div>
+          <div className="f13 font-semibold text-slate-800 mb-2">Détail par ligne</div>
           <TableWrap max="mh300">
             {/* Les intitulés du classeur de référence, à dessein : « Qtté 1 (jr) »,
                 « Qtté 2 (nb) », coût unitaire, total. */}

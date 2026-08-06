@@ -111,10 +111,22 @@ export async function planDetail(planId){
   if(!plan) return null;
 
   const v = await currentVersion();
-  const noms = v ? Object.fromEntries((await db.prepare(
-    `SELECT u.pcode, u.name, p.name parent FROM geo_unit u
+  const unites = v ? await db.prepare(
+    `SELECT u.pcode, u.name, u.path, p.name parent FROM geo_unit u
      LEFT JOIN geo_unit p ON p.version_id=u.version_id AND p.pcode=u.parent_pcode
-     WHERE u.version_id=?`).all(v.id)).map(x => [x.pcode, x.parent ? `${x.name} (${x.parent})` : x.name])) : {};
+     WHERE u.version_id=?`).all(v.id) : [];
+  /* Le libellé fusionné « commune (district) » reste pour l'affichage compact. */
+  const noms = Object.fromEntries(unites.map(x => [x.pcode, x.parent ? `${x.name} (${x.parent})` : x.name]));
+  /* Mais le corps du budget veut les niveaux DISTINCTS — ADM1|ADM2|ADM3|ADM4 —
+     et non le libellé fusionné (analyse Q18/Q14 du classeur). On les résout
+     depuis le chemin matérialisé : chaque segment est le pcode d'un ancêtre,
+     dans l'ordre pays/région/district/commune/fokontany. */
+  const nomDe = Object.fromEntries(unites.map(u => [u.pcode, u.name]));
+  const pathDe = Object.fromEntries(unites.map(u => [u.pcode, u.path]));
+  const niveaux = (pcode) => {
+    const s = String(pathDe[pcode] || "").split("/");
+    return { adm1: nomDe[s[1]] || "", adm2: nomDe[s[2]] || "", adm3: nomDe[s[3]] || "", adm4: nomDe[s[4]] || "" };
+  };
 
   const lignes = await db.prepare("SELECT * FROM tpm_line WHERE plan_id=? ORDER BY sort, id").all(planId);
   const depenses = await db.prepare("SELECT * FROM tpm_expense WHERE plan_id=? ORDER BY spent_on, id").all(planId);
@@ -132,6 +144,7 @@ export async function planDetail(planId){
       const mien = lignes.filter(l => l.zone_id === z.id);
       return {
         id:z.id, geo_pcode:z.geo_pcode, zone: noms[z.geo_pcode] || z.geo_pcode,
+        ...niveaux(z.geo_pcode),        /* adm1, adm2, adm3, adm4 distincts (Q18) */
         activity_tag:z.activity_tag || "", team_label:z.team_label || "",
         supervisors:z.supervisors, agents:z.agents, days:z.days, travel_days:z.travel_days,
         vehicles:z.vehicles, fuel_litres:z.fuel_litres, sites:z.sites, note:z.note || "",
