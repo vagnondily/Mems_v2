@@ -95,9 +95,16 @@ before(async () => {
      de Leaflet et ses icônes) n'ont pas de sens dans jsdom, qui ne peint rien :
      on les vide plutôt que d'ajouter des chargeurs qui alourdiraient le bundle
      de test sans rien apprendre. Vite, lui, les traite normalement. */
+  /* recharts reste EXTERNE : chargé en ESM depuis node_modules à l'exécution du
+     test, jamais bundlé ici. Sans cela, esbuild bundle le CJS de recharts 3,
+     dont le `require("react")` interne devient un « Dynamic require » qui échoue
+     à l'exécution (react est externe). leaflet et lucide-react, eux, restent
+     bundlés : leaflet importe son CSS par sous-chemin (que Node ne sait pas
+     charger, mais qu'esbuild neutralise via .css=empty), et lucide-react se
+     bundle sans souci. */
   execFileSync("npx", ["esbuild", "src/App.jsx", "--bundle", "--format=esm",
     "--loader:.jsx=jsx", "--jsx=automatic", "--external:react", "--external:react-dom",
-    "--external:react/jsx-runtime",
+    "--external:react/jsx-runtime", "--external:recharts",
     "--loader:.css=empty", "--loader:.png=empty", "--loader:.svg=empty",
     "--outfile=test/_app.mjs", "--log-level=error"], { stdio:"pipe" });
 
