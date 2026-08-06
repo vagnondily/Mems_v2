@@ -24,5 +24,6 @@
     "postcss": "^8.5.25",
     "tailwindcss": "^3.4.19",
     "vite": "^5.4.8"
-  }
+  },
+  "comment:audit": "Les avis npm audit restants (esbuild imbriqué dans vite ; vite : path traversal des deps optimisées et contournement de server.fs.deny) ne concernent QUE le serveur de DÉVELOPPEMENT de vite (vite dev / preview). En production, MEMS sert le résultat statique de `vite build` via Express — le serveur de dev de vite n'y tourne jamais, l'impact est donc nul. Les corriger imposerait vite 8 (rupture) ; forcer esbuild casse le build de vite 5 (essayé). On documente au lieu de casser. Dépréciations restantes : whatwg-encoding (jsdom, tests) et recharts@2 (v3 = migration majeure) — pas des vulnérabilités."
 }
