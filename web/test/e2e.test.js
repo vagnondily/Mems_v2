@@ -849,6 +849,13 @@ test("administration : la destination existe pour le compte super et l'onglet Sa
   assert.ok(texte.includes("Serveur PostgreSQL"), "l'état du moteur PostgreSQL vient du serveur");
   assert.ok(all("main tbody tr").length > 5, "les tables de la base sont dénombrées");
 
+  /* Le miroir (mode test) se pilote depuis la Santé : la carte est là, et elle
+     dit qu'aucun instantané n'existe tant qu'on ne l'a pas pris. */
+  assert.ok(byText("h3", "Mode test (miroir de la production)"),
+    "la gestion du miroir est proposée dans la Santé");
+  assert.ok(texte.includes("Aucun instantané"), "l'absence d'instantané est annoncée");
+  assert.ok(byText("main button", "Activer le mode test"), "l'activation du miroir est offerte");
+
   /* Une action destructrice ne part pas au premier clic : elle énonce d'abord
      ce qu'elle va faire. */
   await click(byText("main button", "VACUUM"), "VACUUM");

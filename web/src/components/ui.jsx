@@ -1,8 +1,8 @@
 import { useEffect, useId, useState, useSyncExternalStore } from "react";
-import { ChevronDown, ChevronUp, Eye, EyeOff, FlaskConical, HelpCircle, Layers, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Eye, EyeOff, FlaskConical, HelpCircle, Layers, TestTube, X } from "lucide-react";
 import { clsx, n } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
-import { isSandbox, setSandbox, subscribeSandbox } from "../lib/api.js";
+import { isSandbox, setSandbox, subscribeSandbox, isTestEnv, setTestEnv, subscribeTestEnv, api } from "../lib/api.js";
 
 /* ══════════════════ Notes explicatives : un interrupteur global ══════════════════
    « Pour toutes les petites notes dans chaque view, mettre en show and hide. »
@@ -259,6 +259,39 @@ const SandboxMenuItem = ({ onDone }) => {
     </button>);
 };
 
+/* ── Mode TEST (miroir serveur) ──────────────────────────────────────────
+   Différent du bac à sable ci-dessus : ici les écritures PERSISTENT, mais dans
+   un jumeau isolé de la production. On ne peut y entrer que si l'installation a
+   pris un instantané (schéma test) — sinon l'entrée n'aurait aucun monde où
+   aller. Le menu vérifie donc l'existence du miroir avant d'y basculer et, à
+   défaut, oriente vers l'écran qui le crée. */
+const useTestEnv = () => useSyncExternalStore(subscribeTestEnv, isTestEnv, isTestEnv);
+const TestEnvMenuItem = ({ onDone }) => {
+  const actif = useTestEnv();
+  const [existe, setExiste] = useState(actif);
+  useEffect(() => { let vif = true;
+    api.miroirEtat().then(e => { if(vif) setExiste(!!e?.actif); }).catch(() => {});
+    return () => { vif = false; };
+  }, []);
+  const basculer = async () => {
+    if(actif){ setTestEnv(false); onDone?.(); return; }
+    /* Re-vérifie au moment du clic : un autre poste a pu fermer le miroir. */
+    const e = await api.miroirEtat().catch(() => null);
+    if(!e?.actif){ setExiste(false);
+      alert("Aucun instantané de test n'existe. Créez-le d'abord dans Administration → Santé → Mode test.");
+      return; }
+    setTestEnv(true); onDone?.();
+  };
+  return (
+    <button onClick={basculer} disabled={!actif && !existe}
+      title={!actif && !existe ? "Aucun instantané de test — créez-le dans Administration → Santé" : ""}
+      className={clsx("flex items-center gap-2 w-full px-4 py-2.5 f13 border-t border-slate-100",
+        (!actif && !existe) ? "text-slate-300 cursor-not-allowed" : "text-slate-700 hover:bg-slate-50")}>
+      <TestTube size={14} className={actif ? "text-violet-600" : ""} />
+      {actif ? "Quitter le mode test" : "Entrer en mode test (miroir)"}
+    </button>);
+};
+
 /* Aide repliable — « cache les commentaires en hide/show, ils occupent trop de
    place ». Une longue note explicative ne s'impose plus à l'écran : elle se
    dévoile d'un clic pour qui la veut, et reste repliée par défaut. */
@@ -346,4 +379,4 @@ function parseCSV(txt){
   return rows.filter(r=>r.some(c=>c!=="")).map(r=>Object.fromEntries(head.map((h,i)=>[h,(r[i]??"").trim()])));
 }
 
-export { Aide, Badge, Bar2, BrandMark, Btn, Card, Empty, Field, Input, Logo, Modal, Note, NotesMenuItem, SandboxMenuItem, Select, SideRail, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, Toast, download, inputCls, parseCSV, setNotesMasquees, toCSV, useNotesMasquees, useSandbox };
+export { Aide, Badge, Bar2, BrandMark, Btn, Card, Empty, Field, Input, Logo, Modal, Note, NotesMenuItem, SandboxMenuItem, Select, SideRail, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, TestEnvMenuItem, Toast, download, inputCls, parseCSV, setNotesMasquees, toCSV, useNotesMasquees, useSandbox, useTestEnv };

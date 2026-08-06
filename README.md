@@ -56,6 +56,19 @@ shapefile), `--force-geo` (créer un nouveau millésime même si le découpage e
 de l'administrateur initial. Notez-le : il n'est stocké nulle part en clair et n'apparaît
 jamais dans l'application. À la première connexion, l'application impose son remplacement.
 
+### Mode test (miroir de la production)
+
+Un super-utilisateur peut prendre, depuis **Administration → Santé → Mode test**, un
+**instantané de la production** : toutes les tables et leurs données sont clonées dans un schéma
+PostgreSQL séparé (`test`), avec leurs clés étrangères, entièrement **isolé** de la production.
+Chaque poste bascule ensuite dans ce miroir depuis le menu de son compte (« Entrer en mode
+test ») : ses écritures s'y enregistrent **pour de vrai, mais dans le bac à sable**, jamais dans
+les données réelles. L'instantané reste **figé** à l'instant du clic — écrire en production
+ensuite n'y remonte pas — jusqu'à ce qu'on le **rafraîchisse** ou le **ferme**. Techniquement, un
+en-tête `X-MEMS-Env: test` route la requête vers le schéma miroir ; l'authentification, elle, se
+lit toujours en production. À distinguer du **mode démonstration**, purement local au navigateur,
+qui n'enregistre rien nulle part.
+
 ### Sur GitHub Codespaces
 
 Un `.devcontainer/devcontainer.json` fait le travail ci-dessus automatiquement à la création

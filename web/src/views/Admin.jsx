@@ -4,7 +4,7 @@ import { Archive, ChevronLeft, ChevronRight, Download, HeartPulse, Monitor, Refr
 import { Badge, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow,
          TableWrap, Tabs, Td, Th, download, toCSV } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
-import { fmt } from "../lib/calc.js";
+import { clsx, fmt, n } from "../lib/calc.js";
 import { PageHead } from "./Shell.jsx";
 
 /* ══════════════════ Console d'administration ══════════════════
@@ -334,6 +334,77 @@ function Journal({ notify }){
     </div>);
 }
 
+/* ── Le miroir (mode test) ──────────────────────────────────────────────
+   Prendre / rafraîchir / jeter l'instantané de production dans lequel le mode
+   test travaille. Geste d'administration de l'installation, donc rendu dans la
+   Santé, réservé au super-utilisateur (le serveur le garantit). */
+function Miroir({ notify }){
+  const [etat, setEtat] = useState(null);
+  const [occupe, setOccupe] = useState("");
+  const [demande, setDemande] = useState(null);
+  const recharger = () => api.miroirEtat().then(setEtat).catch(() => {});
+  useEffect(() => { recharger(); }, []);
+
+  const agir = async (nom, appel, message) => {
+    setOccupe(nom);
+    try{ const e = await appel(); setEtat(e); notify(message, "ok"); }
+    catch(e){ notify(e.message, "err"); }
+    finally{ setOccupe(""); }
+  };
+  const quand = etat?.instantane ? new Date(etat.instantane).toLocaleString("fr-FR") : null;
+
+  return (
+    <Card title="Mode test (miroir de la production)"
+      subtitle="Un instantané isolé où l'on peut tout essayer sans toucher aux données réelles">
+      <Note>Activer le mode test <b>clone la production à l'instant t</b> dans un schéma séparé.
+        Chacun peut ensuite y basculer depuis le menu de son compte : ses écritures s'y enregistrent
+        pour de vrai, mais dans ce bac à sable, jamais dans la production. <b>Rafraîchir</b> reprend un
+        instantané neuf (et jette les essais en cours) ; <b>désactiver</b> supprime le bac à sable. La
+        production n'est jamais modifiée par ces gestes.</Note>
+      <div className="mt-3 flex items-center gap-2.5 f125">
+        <span className={clsx("w-2.5 h-2.5 rounded-full shrink-0", etat?.actif ? "bg-violet-500" : "bg-slate-300")} />
+        {etat?.actif
+          ? <span>Instantané <b>actif</b>{quand ? ` — pris le ${quand}` : ""}{etat.par ? `, par ${etat.par}` : ""}
+              {etat.lignes ? ` · ${n(etat.lignes.sites)} sites, ${n(etat.lignes.soumissions)} soumissions, ${etat.tables} tables` : ""}.</span>
+          : <span>Aucun instantané. Le mode test n'est pas disponible tant qu'il n'a pas été pris.</span>}
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {!etat?.actif && (
+          <Btn onClick={() => setDemande({
+            titre:"Prendre un instantané de la production ?",
+            sous:"Clone toutes les tables et leurs données dans le schéma test",
+            libelle:"Prendre l'instantané", ton:"primary",
+            corps:<p>La production est copiée telle qu'elle est maintenant. L'opération ne la modifie
+              pas. Selon le volume, elle peut prendre quelques secondes.</p>,
+            onOui:() => agir("activer", () => api.miroirActiver(), "Mode test activé — instantané pris"),
+          })} disabled={!!occupe}>
+            {occupe==="activer" ? "Clonage…" : "Activer le mode test"}</Btn>)}
+        {etat?.actif && (<>
+          <Btn onClick={() => setDemande({
+            titre:"Rafraîchir l'instantané ?",
+            sous:"Reprend la production et JETTE les essais en cours dans le bac à sable",
+            libelle:"Rafraîchir", ton:"primary",
+            corps:<p>Le bac à sable actuel est supprimé et remplacé par un instantané neuf de la
+              production. Tout ce qui a été essayé en mode test sera perdu. La production, elle, reste
+              intacte.</p>,
+            onOui:() => agir("rafraichir", () => api.miroirRafraichir(), "Instantané rafraîchi"),
+          })} disabled={!!occupe}>
+            {occupe==="rafraichir" ? "Rafraîchissement…" : "Rafraîchir l'instantané"}</Btn>
+          <Btn kind="danger" onClick={() => setDemande({
+            titre:"Fermer le mode test ?",
+            sous:"Supprime le bac à sable ; la production n'est pas touchée",
+            libelle:"Fermer le mode test", ton:"danger",
+            corps:<p>Le schéma test et tout ce qu'il contient sont supprimés. Les postes encore en mode
+              test repasseront sur la production. Aucune donnée réelle n'est perdue.</p>,
+            onOui:() => agir("desactiver", () => api.miroirDesactiver(), "Mode test fermé"),
+          })} disabled={!!occupe}>
+            {occupe==="desactiver" ? "Fermeture…" : "Fermer le mode test"}</Btn>
+        </>)}
+      </div>
+      <Confirmation demande={demande} onClose={() => setDemande(null)} />
+    </Card>);
+}
+
 /* ══════════════════ 3. Santé et entretien ══════════════════ */
 function Sante({ notify }){
   const { donnees, erreur, chargement, recharger } = useDonnees(() => api.baseEtat());
@@ -459,6 +530,7 @@ function Sante({ notify }){
                 <b className="ml-auto text-slate-800 tabular-nums">{String(v)}</b></div>))}
           </div>
         </Card>
+        <Miroir notify={notify} />
       </>)}
       <Confirmation demande={demande} onClose={()=>setDemande(null)} />
     </div>);

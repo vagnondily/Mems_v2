@@ -35,6 +35,40 @@ export const subscribeSandbox = (fn) => { sandboxSubs.add(fn); return () => { sa
 /* L'écran s'abonne pour signaler « non enregistré » — throttlé par l'appelant. */
 export const setSandboxNotifier = (fn) => { onSandboxBlocked = fn || (() => {}); };
 
+/* ══════════════════ Mode TEST (miroir serveur) ══════════════════════════
+   Le vrai bac à sable : quand l'installation a pris un instantané de la
+   production (schéma `test` côté serveur), le poste peut basculer dedans. Toute
+   requête part alors avec l'en-tête « X-MEMS-Env: test » et le serveur la route
+   vers le miroir — les écritures PERSISTENT, mais dans le jumeau isolé, jamais
+   dans la production. C'est différent du mode démonstration ci-dessus, qui
+   n'écrit nulle part : ici on écrit pour de vrai, dans un monde à part.
+
+   Le drapeau vit en localStorage (local au poste, comme le bac à sable) et se
+   relève au chargement. Basculer en mode test éteint le mode démonstration :
+   les deux ne coexistent pas — on absorbe les écritures OU on les envoie au
+   miroir, pas les deux. */
+const ENV_KEY = "mems.env";
+let envTest = (() => { try{ return localStorage.getItem(ENV_KEY) === "test"; }catch{ return false; } })();
+const envSubs = new Set();
+export const isTestEnv = () => envTest;
+export const setTestEnv = (v) => {
+  envTest = !!v;
+  try{ localStorage.setItem(ENV_KEY, envTest ? "test" : "prod"); }catch{}
+  if(envTest && sandbox) setSandbox(false);   /* exclusifs : voir ci-dessus */
+  envSubs.forEach(fn => { try{ fn(envTest); }catch{} });
+};
+export const subscribeTestEnv = (fn) => { envSubs.add(fn); return () => { envSubs.delete(fn); }; };
+
+/* En-têtes communs à toutes les requêtes : le jeton, et la marque d'environnement
+   quand le poste est en mode test. Un seul endroit les pose, pour que `call`,
+   les téléchargements et les téléversements partent tous vers le même monde. */
+function entetes(base = {}){
+  const h = { ...base };
+  if(token) h["Authorization"] = `Bearer ${token}`;
+  if(envTest) h["X-MEMS-Env"] = "test";
+  return h;
+}
+
 /* Mutations qui NE persistent PAS : on les laisse atteindre le serveur même en
    bac à sable, car elles ne font que lire/analyser (parse XLSForm, aperçu d'un
    import, épreuve de connexion, suggestions, plan de renommage). Se connecter
@@ -48,7 +82,10 @@ const SANDBOX_LAISSER_PASSER = [
 ];
 const MUTATIONS = new Set(["POST","PUT","PATCH","DELETE"]);
 const estMutationBloquee = (method, path) =>
-  sandbox && MUTATIONS.has(method) && !SANDBOX_LAISSER_PASSER.some(re => re.test(path));
+  /* En mode test (miroir), les écritures ne sont PAS absorbées : elles partent
+     au serveur, qui les range dans le schéma test. Le blocage ne concerne que le
+     mode démonstration pur, sans miroir. */
+  !envTest && sandbox && MUTATIONS.has(method) && !SANDBOX_LAISSER_PASSER.some(re => re.test(path));
 
 let sandboxSeq = 0;
 const idProvisoire = () => `demo-${Date.now().toString(36)}-${(sandboxSeq++).toString(36)}`;
@@ -87,9 +124,8 @@ export class ApiError extends Error {
 
 async function call(method, path, body, opts = {}){
   if(estMutationBloquee(method, path)) return reponseBacASable(method, path, body);
-  const headers = { "Accept": "application/json" };
+  const headers = entetes({ "Accept": "application/json" });
   if(body !== undefined) headers["Content-Type"] = "application/json";
-  if(token) headers["Authorization"] = `Bearer ${token}`;
   let res;
   try{
     res = await fetch(BASE + path, {
@@ -113,8 +149,7 @@ async function call(method, path, body, opts = {}){
 
 /* Le modèle Excel est un binaire : il ne passe pas par `call`, qui attend du JSON. */
 async function fetchBlob(path){
-  const headers = {};
-  if(token) headers["Authorization"] = `Bearer ${token}`;
+  const headers = entetes();
   const res = await fetch(BASE + path, { headers, credentials:"include" });
   if(!res.ok){
     let msg = `erreur ${res.status}`;
@@ -151,8 +186,7 @@ const messageEnvoi = (res, payload) =>
 /* Téléversement multipart : le Content-Type est posé par le navigateur, avec sa frontière. */
 async function postFile(path, file, field = "file"){
   if(estMutationBloquee("POST", path)) return reponseBacASable("POST", path, {});
-  const headers = {};
-  if(token) headers["Authorization"] = `Bearer ${token}`;
+  const headers = entetes();
   const body = new FormData(); body.append(field, file, file.name);
   const res = await fetch(BASE + path, { method:"POST", headers, credentials:"include", body });
   let payload = null;
@@ -165,8 +199,7 @@ async function postFile(path, file, field = "file"){
    millésime. Le serveur les classe par extension ; le nom de champ importe peu. */
 async function postFiles(path, files, fields = {}){
   if(estMutationBloquee("POST", path)) return reponseBacASable("POST", path, {});
-  const headers = {};
-  if(token) headers["Authorization"] = `Bearer ${token}`;
+  const headers = entetes();
   const body = new FormData();
   for(const f of files) if(f) body.append("fichier", f, f.name);
   for(const [k, v] of Object.entries(fields)) if(v != null) body.append(k, String(v));
@@ -494,6 +527,17 @@ export const api = {
      cocher se coche par réflexe, un mot ne s'écrit pas par accident. */
   restaurerBase:        (fichier, confirmation) =>
                                    call("POST", `${ADMIN}/restauration`, { fichier, confirmation }),
+
+  /* Le miroir (mode test) : lire l'état, prendre / rafraîchir / jeter
+     l'instantané. Ces appels visent TOUJOURS la production (l'en-tête de mode
+     test ne s'applique pas à leur gestion) — mais comme le poste peut être en
+     mode test au moment du clic, on les envoie sans dépendre de ce drapeau : le
+     routeur serveur /api/miroir n'est de toute façon pas monté avec le routage
+     vers le schéma test. */
+  miroirEtat:        ()  => call("GET", "/miroir"),
+  miroirActiver:     ()  => call("POST", "/miroir/activer", {}),
+  miroirRafraichir:  ()  => call("POST", "/miroir/rafraichir", {}),
+  miroirDesactiver:  ()  => call("POST", "/miroir/desactiver", {}),
 };
 
 /* Un navigateur ne rend jamais ce minuteur — seul Node (tests, rendu serveur) expose

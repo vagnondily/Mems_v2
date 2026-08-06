@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { BarChart3, Bell, CalendarRange, Check, ChevronDown, Cog, Database, FileText, KeyRound, LayoutDashboard, LogOut, MapPin, Save, ShieldCheck, UserCog } from "lucide-react";
-import { Badge, Btn, BrandMark, Empty, Field, Input, Modal, Note, NotesMenuItem, SandboxMenuItem, useSandbox } from "../components/ui.jsx";
+import { Badge, Btn, BrandMark, Empty, Field, Input, Modal, Note, NotesMenuItem, SandboxMenuItem, TestEnvMenuItem, useSandbox, useTestEnv } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
 import { clsx } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
@@ -231,6 +231,7 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, notify, onM
   const [cloche,setCloche] = useState(false);
   const [compte,setCompte] = useState(false);
   const sandbox = useSandbox();
+  const testEnv = useTestEnv();
   useEffect(()=>{ const h=()=>{setMenu(false);setCloche(false);};
     window.addEventListener("click",h); return ()=>window.removeEventListener("click",h); },[]);
   const initials = (me.firstName?.[0]||"") + (me.lastName?.[0]||"");
@@ -323,6 +324,11 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, notify, onM
                 {/* Le bac à sable : réservé au super, il fait vivre l'application
                     sans jamais toucher la donnée réelle. */}
                 {me.role==="super" && <SandboxMenuItem onDone={()=>setMenu(false)} />}
+                {/* Le mode test (miroir serveur) : y basculer envoie chaque
+                    requête vers l'instantané isolé de la production. Ouvert à
+                    tout compte quand un miroir existe — c'est un bac à sable
+                    partagé, pas un droit d'administration. */}
+                <TestEnvMenuItem onDone={()=>setMenu(false)} />
                 {allowed.includes("settings") && (
                   <button onClick={()=>{setTab("settings");setMenu(false);}}
                     className="flex items-center gap-2 w-full px-4 py-2.5 f13 text-slate-700 hover:bg-slate-50 border-t border-slate-100">
@@ -342,6 +348,14 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, notify, onM
             <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 flex items-center gap-2.5 f125 text-amber-900">
               <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0 animate-pulse" />
               <span><b>Mode démonstration</b> — vous pouvez remplir les formulaires, mais rien n'est enregistré sur les données réelles. Quittez ce mode depuis le menu du compte.</span>
+            </div>)}
+          {/* Bandeau MODE TEST (miroir) — ici les écritures PERSISTENT, mais dans
+              le jumeau isolé de la production. Un violet franc pour ne jamais le
+              confondre avec la production ni avec la démonstration. */}
+          {testEnv && (
+            <div className="mb-4 rounded-xl border border-violet-300 bg-violet-50 px-4 py-2.5 flex items-center gap-2.5 f125 text-violet-900">
+              <span className="w-2.5 h-2.5 rounded-full bg-violet-500 shrink-0 animate-pulse" />
+              <span><b>Mode test</b> — vous travaillez sur un instantané isolé de la production. Vos écritures sont enregistrées ici, dans le bac à sable, jamais sur les données réelles. Quittez ce mode depuis le menu du compte.</span>
             </div>)}
           {children}
         </div>
