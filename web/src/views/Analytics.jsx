@@ -567,8 +567,15 @@ const SOURCES = {
 const temporel = (source, measure) =>
   source==="sites" ? (measure==="planned" || measure==="done") : true;
 
-function aggregate(db, source, dim, measure, periode){
+/* Certaines mesures sont des MOYENNES (score de risque, valeur d'outcome), pas
+   des sommes : les cumuler donnerait un total dénué de sens. Une seule règle,
+   consultée pour la mesure principale comme pour la mesure croisée. */
+const estMoyenne = (source, measure) =>
+  measure==="score" || measure==="value" || (measure==="planned" && source==="outcomes");
+
+function aggregate(db, source, dim, measure, periode, measure2){
   if(!SOURCES[source]) source = "sites";
+  const croise = measure2 && measure2 !== measure && SOURCES[source].measures.some(m=>m[0]===measure2);
   const p = normalisePeriode(periode, db.year);
   /* La grille mensuelle et les outputs ne descendent du serveur que pour
      l'exercice chargé : sur une autre année il n'y a rien à agréger, et
@@ -576,97 +583,112 @@ function aggregate(db, source, dim, measure, periode){
   const grille = p.annee === db.year;
   const dansP = (mi) => moisDansPeriode(mi+1, p);   /* le magasin indexe les mois de 0 à 11 */
   const map = {};
-  const push = (k,v) => { k = (k===undefined||k===null||k==="") ? "—" : k;
-    map[k] = map[k] || { key:k, sum:0, n:0 }; map[k].sum += v; map[k].n++; };
+  const push = (k,v,v2) => { k = (k===undefined||k===null||k==="") ? "—" : k;
+    map[k] = map[k] || { key:k, sum:0, sum2:0, n:0 }; map[k].sum += v;
+    if(v2!==undefined) map[k].sum2 += v2; map[k].n++; };
   const surPeriode = (s,champ) => grille ? s.plan.filter((x,i)=>x[champ] && dansP(i)).length : 0;
-  if(source==="sites") db.sites.forEach(s => {
-    const v = measure==="count" ? 1 : measure==="beneficiaries" ? n(s.beneficiaries)
-      : measure==="planned" ? surPeriode(s,"planned")
-      : measure==="done" ? surPeriode(s,"done") : siteScore(s, db.weights, db).pct;
-    push(s[dim], v); });
+  /* Valeur d'un enregistrement pour UNE mesure — factorisée pour servir la
+     mesure principale et la mesure croisée par le même chemin, sans divergence. */
+  const valSite = (s,mz) => mz==="count" ? 1 : mz==="beneficiaries" ? n(s.beneficiaries)
+    : mz==="planned" ? surPeriode(s,"planned") : mz==="done" ? surPeriode(s,"done")
+    : siteScore(s, db.weights, db).pct;
+  if(source==="sites") db.sites.forEach(s =>
+    push(s[dim], valSite(s,measure), croise ? valSite(s,measure2) : undefined));
   else if(source==="visits") db.visits.forEach(v => {
     if(!dateDansPeriode(v.date, p)) return;
-    push(dim==="month" ? MONTHS[anneeMoisDe(v.date).mois-1] : v[dim], 1); });
+    push(dim==="month" ? MONTHS[anneeMoisDe(v.date).mois-1] : v[dim], 1, croise ? 1 : undefined); });
   else if(source==="outputs") db.outputs.forEach(o => {
     if(!grille || !dansP(o.month)) return;
-    push(dim==="month" ? MONTHS[o.month] : o[dim], n(o[measure])); });
+    push(dim==="month" ? MONTHS[o.month] : o[dim], n(o[measure]), croise ? n(o[measure2]) : undefined); });
   else db.outcomes.forEach(o => {
     if(!dateDansPeriode(o.date, p)) return;
-    push(o[dim], n(o[measure])); });
+    push(o[dim], n(o[measure]), croise ? n(o[measure2]) : undefined); });
   return Object.values(map).map(x => ({ name:String(x.key),
-    value: (measure==="score"||measure==="value"||measure==="planned"&&source==="outcomes") ? r1(x.sum/x.n) : x.sum }))
+    value: estMoyenne(source,measure) ? r1(x.sum/x.n) : x.sum,
+    ...(croise ? { value2: estMoyenne(source,measure2) ? r1(x.sum2/x.n) : x.sum2 } : {}) }))
     .sort((a,b)=>b.value-a.value).slice(0,14);
 }
 function Viz({ db, set, periode, notify, can }){
-  const [active,setActive] = useState(db.dashboards[0]?.id); const [edit,setEdit] = useState(null);
-  const dash = db.dashboards.find(d=>d.id===active) || db.dashboards[0];
-  const addDash = () => { const d = { id:uid("db"), name:"Nouvel onglet", widgets:[] };
-    set(x=>{ x.dashboards.push(d); return x; }); setActive(d.id); };
-  const renameDash = (name) => set(x=>{ const d=x.dashboards.find(y=>y.id===active); if(d) d.name=name; return x; });
-  /* Supprimer l'onglet actif, avec confirmation — on garde toujours au moins un
-     onglet, sinon le tableau de bord n'a plus de support. */
-  const delDash = () => {
-    if(db.dashboards.length<=1){ notify("Gardez au moins un onglet","warn"); return; }
-    const d = db.dashboards.find(y=>y.id===active);
-    if(!window.confirm(`Supprimer l'onglet « ${d?.name||""} » et ses ${d?.widgets?.length||0} visualisation(s) ?`)) return;
-    const suivant = db.dashboards.find(x=>x.id!==active)?.id;
-    set(x=>{ x.dashboards = x.dashboards.filter(y=>y.id!==active); return x; });
-    setActive(suivant); notify("Onglet supprimé","ok");
-  };
-  const saveW = (w) => { set(x=>{ const d=x.dashboards.find(y=>y.id===active);
+  const [edit,setEdit] = useState(null);
+  /* Un seul tableau de bord éditable. Les installations qui portaient encore
+     plusieurs onglets voient leurs visualisations fusionnées une fois dans le
+     premier tableau — on ne perd aucune vue — puis les onglets surnuméraires
+     sont retirés (la synchronisation les supprime côté serveur par diff d'id). */
+  useEffect(() => {
+    if((db.dashboards||[]).length > 1) set(x=>{
+      const [premier,...reste] = x.dashboards;
+      premier.widgets = [...(premier.widgets||[]), ...reste.flatMap(d=>d.widgets||[])];
+      premier.name = "Tableau de bord";
+      x.dashboards = [premier];
+      return x;
+    });
+  }, [db.dashboards, set]);
+  const dash = (db.dashboards||[])[0];
+  const saveW = (w) => { set(x=>{ const d=x.dashboards[0]; if(!d) return x;
       const i=d.widgets.findIndex(y=>y.id===w.id);
       if(i>=0) d.widgets[i]=w; else d.widgets.push({...w,id:uid("w")}); return x; });
     setEdit(null); notify("Visualisation enregistrée","ok"); };
-  const modele = () => ({ type:"bar", source:"sites", dim:"subOffice", measure:"count", title:"", colors:[] });
+  const modele = () => ({ type:"bar", source:"sites", dim:"subOffice", measure:"count", measure2:"", title:"", colors:[] });
   return (
     <>
       <div className="flex items-center gap-2 mb-3 flex-wrap">
-        <Tabs className="flex-1 min-w-0" items={db.dashboards.map(d=>[d.id,d.name])} value={active} onChange={setActive} />
-        {can("edit") && dash && <Input className="w-40" value={dash.name}
-          onChange={e=>renameDash(e.target.value)} placeholder="Nom de l'onglet" title="Renommer l'onglet actif" />}
-        {can("edit") && <Btn kind="sec" size="sm" icon={Trash2} onClick={delDash}
-          disabled={db.dashboards.length<=1} title="Supprimer l'onglet actif" />}
-        {can("edit") && <Btn kind="sec" size="sm" icon={Plus} onClick={addDash}>Onglet</Btn>}
+        <div className="flex-1 min-w-0 f13 font-semibold text-slate-700">Tableau de bord</div>
         {can("edit") && <Btn size="sm" icon={Plus} onClick={()=>setEdit(modele())}>Visualisation</Btn>}
       </div>
       {dash?.widgets?.length ? (
         <div className="grid gap-4" style={{gridTemplateColumns:"repeat(auto-fit,minmax(400px,1fr))"}}>
           {dash.widgets.map(w=><Widget key={w.id} w={w} db={db} periode={periode}
             onEdit={can("edit")?()=>setEdit(w):null}
-            onDelete={can("edit")?()=>set(x=>{ const d=x.dashboards.find(y=>y.id===active);
+            onDelete={can("edit")?()=>set(x=>{ const d=x.dashboards[0]; if(!d) return x;
               d.widgets=d.widgets.filter(y=>y.id!==w.id); return x; }):null} />)}
         </div>
-      ) : <Card><Empty icon={BarChart3} title="Onglet vide" text="Ajoutez une visualisation en choisissant une source, une dimension et une mesure."
+      ) : <Card><Empty icon={BarChart3} title="Tableau de bord vide" text="Ajoutez une visualisation en choisissant une source, une dimension et une mesure — vous pouvez croiser deux mesures sur un même graphique."
             action={can("edit") && <Btn icon={Plus} onClick={()=>setEdit(modele())}>Ajouter</Btn>} /></Card>}
       <WidgetModal open={!!edit} w={edit} db={db} periode={periode} onClose={()=>setEdit(null)} onSave={saveW} />
     </>);
 }
+/* Les types qui savent porter DEUX séries — donc croiser deux mesures. Les
+   graphiques de composition (circulaire, anneau, radial, radar, treemap)
+   répartissent un tout entre des parts : y superposer une seconde mesure n'a
+   pas de sens, la mesure croisée n'y est simplement pas proposée. */
+const TYPES_CROISABLES = ["bar","barh","line","area","table"];
+
 function Widget({ w, db, periode, onEdit, onDelete }){
   const src = SOURCES[w.source] ? w.source : "sites";
   const SRC = SOURCES[src];
   const dim = SRC.dims.some(d=>d[0]===w.dim) ? w.dim : SRC.dims[0][0];
   const measure = SRC.measures.some(m=>m[0]===w.measure) ? w.measure : SRC.measures[0][0];
+  /* La mesure croisée n'est retenue que si le type de graphique sait l'afficher
+     et qu'elle diffère de la mesure principale — sinon on retombe sur une série
+     unique, sans surprise. */
+  const measure2 = (TYPES_CROISABLES.includes(w.type) && w.measure2 && w.measure2!==measure
+    && SRC.measures.some(m=>m[0]===w.measure2)) ? w.measure2 : "";
   const p = normalisePeriode(periode, db.year);
-  const data = useMemo(()=>aggregate(db, src, dim, measure, p),
-    [db,src,dim,measure,p.annee,p.gran,p.valeur]);
+  const data = useMemo(()=>aggregate(db, src, dim, measure, p, measure2),
+    [db,src,dim,measure,measure2,p.annee,p.gran,p.valeur]);
   const dimLabel = (SRC.dims.find(d=>d[0]===dim)||[])[1] || dim;
   const mLabel = (SRC.measures.find(m=>m[0]===measure)||[])[1] || measure;
+  const mLabel2 = measure2 ? ((SRC.measures.find(m=>m[0]===measure2)||[])[1] || measure2) : "";
   /* Le sous-titre ne mentionne la période que là où elle a servi à restreindre :
      ailleurs, il dirait à l'utilisateur qu'il regarde un trimestre alors qu'il
      regarde tout. */
   const portee = temporel(src, measure) ? `${SRC.label} · ${libelleCourtPeriode(p)}` : SRC.label;
+  const titre = w.title || (measure2 ? `${mLabel} et ${mLabel2.toLowerCase()} par ${dimLabel.toLowerCase()}`
+    : `${mLabel} par ${dimLabel.toLowerCase()}`);
   return (
-    <Card title={w.title || `${mLabel} par ${dimLabel.toLowerCase()}`} subtitle={portee}
+    <Card title={titre} subtitle={portee}
       right={<>{onEdit && <button onClick={onEdit} className="text-slate-400 m-ico p-1"><Pencil size={13}/></button>}
         {onDelete && <button onClick={onDelete} className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={13}/></button>}</>}>
       {w.type==="table" ? (
         <TableWrap max="mh280">
-          <thead><tr><Th>{dimLabel}</Th><Th num>{mLabel}</Th><Th num>Part</Th></tr></thead>
+          <thead><tr><Th>{dimLabel}</Th><Th num>{mLabel}</Th>
+            {measure2 ? <Th num>{mLabel2}</Th> : <Th num>Part</Th>}</tr></thead>
           <tbody>{data.map(d=>{ const tot=data.reduce((t,x)=>t+x.value,0);
             return <tr key={d.name} className="hover:bg-sky-50"><Td>{d.name}</Td><Td num>{fmt(d.value)}</Td>
-              <Td num><div className="flex items-center gap-2 justify-end"><Bar2 value={pct(d.value,tot)} />{pct(d.value,tot)}%</div></Td></tr>; })}
+              {measure2 ? <Td num>{fmt(d.value2)}</Td>
+                : <Td num><div className="flex items-center gap-2 justify-end"><Bar2 value={pct(d.value,tot)} />{pct(d.value,tot)}%</div></Td>}</tr>; })}
           </tbody></TableWrap>
-      ) : <ResponsiveContainer width="100%" height={250}>{chartEl(w.type, data, w.colors)}</ResponsiveContainer>}
+      ) : <ResponsiveContainer width="100%" height={250}>{chartEl(w.type, data, w.colors, [mLabel, mLabel2])}</ResponsiveContainer>}
     </Card>);
 }
 
@@ -692,11 +714,17 @@ function TreemapCell({ x, y, width, height, index, name, palette }){
   </g>);
 }
 
-function chartEl(type, data, colors){
+function chartEl(type, data, colors, names){
   const m = { top:6, right:6, left:-14, bottom:0 };
   const pal = paletteDe(colors);
   const c0 = pal[0];                       /* couleur des courbes/aires/radar (mono-série) */
+  const c1 = pal[1%pal.length];            /* couleur de la mesure croisée (2ᵉ série) */
+  const dual = data.some(d=>d.value2!==undefined);   /* une mesure a-t-elle été croisée ? */
+  const n0 = (names&&names[0]) || "Mesure";
+  const n1 = (names&&names[1]) || "Mesure 2";
   const gid = "gArea-" + c0.replace(/[^a-z0-9]/gi, "");   /* id de dégradé unique par couleur */
+  const gid2 = "gArea2-" + c1.replace(/[^a-z0-9]/gi, "");
+  const LEG = dual && <Legend wrapperStyle={{fontSize:10.5}} />;
   switch(type){
     case "barh":
       return (
@@ -704,21 +732,27 @@ function chartEl(type, data, colors){
           {GRID}
           <XAxis type="number" {...AXE_Y} />
           <YAxis type="category" dataKey="name" width={110} tick={{fontSize:9.5,fill:C.t2}} axisLine={false} tickLine={false} />
-          <Tooltip {...TIP} />
-          <Bar dataKey="value" radius={[0,2,2,0]}>{cellules(data, pal)}</Bar>
+          <Tooltip {...TIP} />{LEG}
+          <Bar dataKey="value" name={n0} fill={dual?c0:undefined} radius={[0,2,2,0]}>{dual ? null : cellules(data, pal)}</Bar>
+          {dual && <Bar dataKey="value2" name={n1} fill={c1} radius={[0,2,2,0]} />}
         </BarChart>);
     case "line":
       return (
-        <LineChart data={data} margin={m}>{GRID}<XAxis {...AXE_X} /><YAxis {...AXE_Y} /><Tooltip {...TIP} />
-          <Line type="monotone" dataKey="value" stroke={c0} strokeWidth={2.4} dot={{r:3}} /></LineChart>);
+        <LineChart data={data} margin={m}>{GRID}<XAxis {...AXE_X} /><YAxis {...AXE_Y} /><Tooltip {...TIP} />{LEG}
+          <Line type="monotone" dataKey="value" name={n0} stroke={c0} strokeWidth={2.4} dot={{r:3}} />
+          {dual && <Line type="monotone" dataKey="value2" name={n1} stroke={c1} strokeWidth={2.4} dot={{r:3}} />}</LineChart>);
     case "area":
       return (
         <AreaChart data={data} margin={m}>
           <defs><linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor={c0} stopOpacity={0.35} /><stop offset="100%" stopColor={c0} stopOpacity={0.02} />
+          </linearGradient>
+          <linearGradient id={gid2} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={c1} stopOpacity={0.35} /><stop offset="100%" stopColor={c1} stopOpacity={0.02} />
           </linearGradient></defs>
-          {GRID}<XAxis {...AXE_X} /><YAxis {...AXE_Y} /><Tooltip {...TIP} />
-          <Area type="monotone" dataKey="value" stroke={c0} strokeWidth={2.2} fill={`url(#${gid})`} /></AreaChart>);
+          {GRID}<XAxis {...AXE_X} /><YAxis {...AXE_Y} /><Tooltip {...TIP} />{LEG}
+          <Area type="monotone" dataKey="value" name={n0} stroke={c0} strokeWidth={2.2} fill={`url(#${gid})`} />
+          {dual && <Area type="monotone" dataKey="value2" name={n1} stroke={c1} strokeWidth={2.2} fill={`url(#${gid2})`} />}</AreaChart>);
     case "pie":
     case "donut":
       return (
@@ -757,16 +791,58 @@ const TYPES_VIZ = [
   ["radial","Barres radiales"], ["radar","Radar"], ["treemap","Treemap"],
   ["table","Tableau croisé"],
 ];
+
+/* Normalise un code couleur saisi à la main vers `#rrggbb` minuscule, ou rend
+   `null` si ce n'est pas un hexadécimal valide. Tolère l'absence de « # » et la
+   forme courte à 3 chiffres (`#abc` → `#aabbcc`) — ce que tapent réellement les
+   gens quand ils collent une couleur de charte. */
+const normHex = (s) => {
+  if(typeof s !== "string") return null;
+  let h = s.trim().replace(/^#/, "");
+  if(/^[0-9a-fA-F]{3}$/.test(h)) h = h.split("").map(c=>c+c).join("");
+  return /^[0-9a-fA-F]{6}$/.test(h) ? "#" + h.toLowerCase() : null;
+};
+
+/* Une case de couleur : le nuancier natif ET un champ où coller un code
+   hexadécimal. Le brouillon de texte vit localement pour qu'on puisse taper
+   « #1a » sans que la valeur soit rejetée à chaque frappe ; on ne remonte au
+   parent qu'un code valide, et un champ laissé invalide revient à la couleur
+   courante à la sortie du champ. */
+function ColorSlot({ index, value, onChange }){
+  const [txt,setTxt] = useState(value);
+  useEffect(()=>{ setTxt(value); },[value]);
+  const commit = (v) => { const h = normHex(v); if(h) onChange(h); };
+  return (
+    <div className="flex items-center gap-1">
+      <input type="color" title={`Couleur ${index+1}`}
+        className="w-7 h-7 rounded cursor-pointer border border-slate-200 p-0 bg-white shrink-0"
+        value={normHex(txt) || value}
+        onChange={e=>{ setTxt(e.target.value); onChange(e.target.value); }} />
+      <input value={txt} spellCheck={false} placeholder="#rrggbb"
+        aria-label={`Code hexadécimal de la couleur ${index+1}`}
+        className="w-[4.6rem] f11 font-mono px-1.5 py-1 border border-slate-200 rounded"
+        onChange={e=>{ setTxt(e.target.value); commit(e.target.value); }}
+        onBlur={()=>setTxt(value)} />
+    </div>);
+}
 function WidgetModal({ open, w, db, periode, onClose, onSave }){
   const [f,setF] = useState({});
   useEffect(()=>{ setF(w||{}); },[w]);
   if(!open) return null;
   const S = SOURCES[f.source] || SOURCES.sites;
   const u=(k,v)=>setF(p=>{ const x={...p,[k]:v};
-    if(k==="source"){ x.dim = SOURCES[v].dims[0][0]; x.measure = SOURCES[v].measures[0][0]; } return x; });
+    if(k==="source"){ x.dim = SOURCES[v].dims[0][0]; x.measure = SOURCES[v].measures[0][0]; x.measure2 = ""; } return x; });
+  /* La mesure croisée n'a de sens que sur un type à deux séries et ne doit pas
+     répéter la mesure principale : on lui retire donc cette dernière du choix. */
+  const croisable = TYPES_CROISABLES.includes(f.type);
+  const mesuresCroisees = S.measures.filter(m => m[0] !== f.measure);
+  /* Position i de la palette effective, pour préremplir chaque case sans écraser
+     ce que l'utilisateur a déjà choisi ailleurs. */
+  const setCouleur = (i, v) => { const arr = (f.colors && f.colors.length ? [...f.colors] : SERIES.slice(0,8));
+    while(arr.length < 8) arr.push(SERIES[arr.length]); arr[i] = v; u("colors", arr); };
   return (
     <Modal open onClose={onClose} wide title={w?.id?"Modifier la visualisation":"Nouvelle visualisation"}
-      subtitle="Choisissez la source, la dimension d'analyse et la mesure"
+      subtitle="Choisissez la source, la dimension d'analyse et la mesure — vous pouvez en croiser une seconde"
       footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn><Btn icon={Save} onClick={()=>onSave(f)}>Enregistrer</Btn></>}>
       <div className="grid grid-cols-2 gap-x-4">
         <Field label="Titre" className="col-span-2"><Input value={f.title||""} onChange={e=>u("title",e.target.value)} /></Field>
@@ -776,15 +852,21 @@ function WidgetModal({ open, w, db, periode, onClose, onSave }){
           options={TYPES_VIZ} /></Field>
         <Field label="Dimension"><Select value={f.dim} onChange={e=>u("dim",e.target.value)} options={S.dims} /></Field>
         <Field label="Mesure"><Select value={f.measure} onChange={e=>u("measure",e.target.value)} options={S.measures} /></Field>
+        <Field label="Mesure croisée" className="col-span-2"
+          hint={croisable
+            ? "Facultatif. Affiche une seconde mesure sur la même dimension — réalisé contre planifié, par exemple — en histogramme, barres, courbe, aire ou tableau."
+            : "Le type choisi (circulaire, anneau, radial, radar, treemap) répartit un tout : il ne porte qu'une seule mesure. Choisissez un histogramme, une courbe, une aire ou un tableau pour en croiser deux."}>
+          <Select value={croisable ? (f.measure2||"") : ""} disabled={!croisable}
+            onChange={e=>u("measure2",e.target.value)} empty="— aucune —" options={mesuresCroisees} />
+        </Field>
         <Field label="Couleurs" className="col-span-2"
-          hint="Facultatif. Les graphiques à catégories (barres, circulaire, radial, treemap) parcourent ces couleurs ; les courbes, aires et radars utilisent la première. « Réinitialiser » revient à la palette par défaut.">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {Array.from({length:8}).map((_,i)=>(
-              <input key={i} type="color" title={`Couleur ${i+1}`}
-                className="w-7 h-7 rounded cursor-pointer border border-slate-200 p-0 bg-white"
-                value={(f.colors&&f.colors[i])||SERIES[i]}
-                onChange={e=>{ const arr=(f.colors&&f.colors.length?[...f.colors]:SERIES.slice(0,8));
-                  while(arr.length<8) arr.push(SERIES[arr.length]); arr[i]=e.target.value; u("colors",arr); }} />))}
+          hint="Facultatif. Choisissez au nuancier ou collez un code hexadécimal (#rrggbb). Les graphiques à catégories parcourent la liste ; courbes, aires, radars et mesure croisée utilisent les deux premières. « Réinitialiser » revient à la palette par défaut.">
+          <div className="flex items-start gap-2 flex-wrap">
+            <div className="grid grid-cols-4 gap-x-3 gap-y-1.5">
+              {Array.from({length:8}).map((_,i)=>(
+                <ColorSlot key={i} index={i} value={(f.colors&&f.colors[i])||SERIES[i]}
+                  onChange={v=>setCouleur(i,v)} />))}
+            </div>
             <Btn kind="sec" size="sm" onClick={()=>u("colors",[])}>Réinitialiser</Btn>
           </div>
         </Field>
