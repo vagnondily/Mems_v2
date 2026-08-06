@@ -602,16 +602,32 @@ function Viz({ db, set, periode, notify, can }){
   const dash = db.dashboards.find(d=>d.id===active) || db.dashboards[0];
   const addDash = () => { const d = { id:uid("db"), name:"Nouvel onglet", widgets:[] };
     set(x=>{ x.dashboards.push(d); return x; }); setActive(d.id); };
+  const renameDash = (name) => set(x=>{ const d=x.dashboards.find(y=>y.id===active); if(d) d.name=name; return x; });
+  /* Supprimer l'onglet actif, avec confirmation — on garde toujours au moins un
+     onglet, sinon le tableau de bord n'a plus de support. */
+  const delDash = () => {
+    if(db.dashboards.length<=1){ notify("Gardez au moins un onglet","warn"); return; }
+    const d = db.dashboards.find(y=>y.id===active);
+    if(!window.confirm(`Supprimer l'onglet « ${d?.name||""} » et ses ${d?.widgets?.length||0} visualisation(s) ?`)) return;
+    const suivant = db.dashboards.find(x=>x.id!==active)?.id;
+    set(x=>{ x.dashboards = x.dashboards.filter(y=>y.id!==active); return x; });
+    setActive(suivant); notify("Onglet supprimé","ok");
+  };
   const saveW = (w) => { set(x=>{ const d=x.dashboards.find(y=>y.id===active);
       const i=d.widgets.findIndex(y=>y.id===w.id);
       if(i>=0) d.widgets[i]=w; else d.widgets.push({...w,id:uid("w")}); return x; });
     setEdit(null); notify("Visualisation enregistrée","ok"); };
+  const modele = () => ({ type:"bar", source:"sites", dim:"subOffice", measure:"count", title:"", colors:[] });
   return (
     <>
-      <div className="flex items-center gap-2 mb-3">
-        <Tabs className="flex-1" items={db.dashboards.map(d=>[d.id,d.name])} value={active} onChange={setActive} />
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <Tabs className="flex-1 min-w-0" items={db.dashboards.map(d=>[d.id,d.name])} value={active} onChange={setActive} />
+        {can("edit") && dash && <Input className="w-40" value={dash.name}
+          onChange={e=>renameDash(e.target.value)} placeholder="Nom de l'onglet" title="Renommer l'onglet actif" />}
+        {can("edit") && <Btn kind="sec" size="sm" icon={Trash2} onClick={delDash}
+          disabled={db.dashboards.length<=1} title="Supprimer l'onglet actif" />}
         {can("edit") && <Btn kind="sec" size="sm" icon={Plus} onClick={addDash}>Onglet</Btn>}
-        {can("edit") && <Btn size="sm" icon={Plus} onClick={()=>setEdit({ type:"bar", source:"sites", dim:"subOffice", measure:"count", title:"" })}>Visualisation</Btn>}
+        {can("edit") && <Btn size="sm" icon={Plus} onClick={()=>setEdit(modele())}>Visualisation</Btn>}
       </div>
       {dash?.widgets?.length ? (
         <div className="grid gap-4" style={{gridTemplateColumns:"repeat(auto-fit,minmax(400px,1fr))"}}>
@@ -621,7 +637,7 @@ function Viz({ db, set, periode, notify, can }){
               d.widgets=d.widgets.filter(y=>y.id!==w.id); return x; }):null} />)}
         </div>
       ) : <Card><Empty icon={BarChart3} title="Onglet vide" text="Ajoutez une visualisation en choisissant une source, une dimension et une mesure."
-            action={can("edit") && <Btn icon={Plus} onClick={()=>setEdit({ type:"bar", source:"sites", dim:"subOffice", measure:"count", title:"" })}>Ajouter</Btn>} /></Card>}
+            action={can("edit") && <Btn icon={Plus} onClick={()=>setEdit(modele())}>Ajouter</Btn>} /></Card>}
       <WidgetModal open={!!edit} w={edit} db={db} periode={periode} onClose={()=>setEdit(null)} onSave={saveW} />
     </>);
 }
@@ -650,7 +666,7 @@ function Widget({ w, db, periode, onEdit, onDelete }){
             return <tr key={d.name} className="hover:bg-sky-50"><Td>{d.name}</Td><Td num>{fmt(d.value)}</Td>
               <Td num><div className="flex items-center gap-2 justify-end"><Bar2 value={pct(d.value,tot)} />{pct(d.value,tot)}%</div></Td></tr>; })}
           </tbody></TableWrap>
-      ) : <ResponsiveContainer width="100%" height={250}>{chartEl(w.type, data)}</ResponsiveContainer>}
+      ) : <ResponsiveContainer width="100%" height={250}>{chartEl(w.type, data, w.colors)}</ResponsiveContainer>}
     </Card>);
 }
 
@@ -662,18 +678,25 @@ const AXE_X = { dataKey:"name", tick:{fontSize:9.5,fill:C.t2}, axisLine:{stroke:
 const AXE_Y = { tick:{fontSize:10,fill:C.t2}, axisLine:false, tickLine:false };
 const TIP = { contentStyle:{fontSize:11,borderRadius:3}, formatter:v=>fmt(v) };
 const GRID = <CartesianGrid strokeDasharray="3 3" stroke="#eef2f5" vertical={false} />;
-const cellules = (data) => data.map((d,i)=><Cell key={i} fill={SERIES[i%SERIES.length]} />);
+/* La palette effective d'un widget : celle qu'il a choisie si elle existe,
+   sinon la palette par défaut de l'application. */
+const paletteDe = (colors) => (Array.isArray(colors) && colors.length ? colors : SERIES);
+const cellules = (data, pal) => data.map((d,i)=><Cell key={i} fill={pal[i%pal.length]} />);
 
-function TreemapCell({ x, y, width, height, index, name }){
+function TreemapCell({ x, y, width, height, index, name, palette }){
   if(width<=0 || height<=0) return null;
+  const pal = palette || SERIES;
   return (<g>
-    <rect x={x} y={y} width={width} height={height} fill={SERIES[index%SERIES.length]} stroke="#fff" />
+    <rect x={x} y={y} width={width} height={height} fill={pal[index%pal.length]} stroke="#fff" />
     {width>46 && height>18 && <text x={x+4} y={y+14} fontSize={10} fill="#fff">{String(name).slice(0,18)}</text>}
   </g>);
 }
 
-function chartEl(type, data){
+function chartEl(type, data, colors){
   const m = { top:6, right:6, left:-14, bottom:0 };
+  const pal = paletteDe(colors);
+  const c0 = pal[0];                       /* couleur des courbes/aires/radar (mono-série) */
+  const gid = "gArea-" + c0.replace(/[^a-z0-9]/gi, "");   /* id de dégradé unique par couleur */
   switch(type){
     case "barh":
       return (
@@ -682,46 +705,47 @@ function chartEl(type, data){
           <XAxis type="number" {...AXE_Y} />
           <YAxis type="category" dataKey="name" width={110} tick={{fontSize:9.5,fill:C.t2}} axisLine={false} tickLine={false} />
           <Tooltip {...TIP} />
-          <Bar dataKey="value" radius={[0,2,2,0]}>{cellules(data)}</Bar>
+          <Bar dataKey="value" radius={[0,2,2,0]}>{cellules(data, pal)}</Bar>
         </BarChart>);
     case "line":
       return (
         <LineChart data={data} margin={m}>{GRID}<XAxis {...AXE_X} /><YAxis {...AXE_Y} /><Tooltip {...TIP} />
-          <Line type="monotone" dataKey="value" stroke={C.brand} strokeWidth={2.4} dot={{r:3}} /></LineChart>);
+          <Line type="monotone" dataKey="value" stroke={c0} strokeWidth={2.4} dot={{r:3}} /></LineChart>);
     case "area":
       return (
         <AreaChart data={data} margin={m}>
-          <defs><linearGradient id="gArea" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={C.brand} stopOpacity={0.35} /><stop offset="100%" stopColor={C.brand} stopOpacity={0.02} />
+          <defs><linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={c0} stopOpacity={0.35} /><stop offset="100%" stopColor={c0} stopOpacity={0.02} />
           </linearGradient></defs>
           {GRID}<XAxis {...AXE_X} /><YAxis {...AXE_Y} /><Tooltip {...TIP} />
-          <Area type="monotone" dataKey="value" stroke={C.brand} strokeWidth={2.2} fill="url(#gArea)" /></AreaChart>);
+          <Area type="monotone" dataKey="value" stroke={c0} strokeWidth={2.2} fill={`url(#${gid})`} /></AreaChart>);
     case "pie":
     case "donut":
       return (
         <PieChart>
           <Pie data={data} dataKey="value" nameKey="name" paddingAngle={1}
-            innerRadius={type==="donut" ? "55%" : 0} outerRadius="80%">{cellules(data)}</Pie>
+            innerRadius={type==="donut" ? "55%" : 0} outerRadius="80%">{cellules(data, pal)}</Pie>
           <Tooltip {...TIP} /><Legend wrapperStyle={{fontSize:10.5}} /></PieChart>);
     case "radial":
       return (
         <RadialBarChart data={data} innerRadius="20%" outerRadius="95%" startAngle={90} endAngle={-270}>
-          <RadialBar dataKey="value" background cornerRadius={2}>{cellules(data)}</RadialBar>
+          <RadialBar dataKey="value" background cornerRadius={2}>{cellules(data, pal)}</RadialBar>
           <Tooltip {...TIP} /><Legend iconSize={8} wrapperStyle={{fontSize:10}} /></RadialBarChart>);
     case "radar":
       return (
         <RadarChart data={data} outerRadius="72%">
           <PolarGrid stroke="#e2e8ec" /><PolarAngleAxis dataKey="name" tick={{fontSize:9.5,fill:C.t2}} />
           <PolarRadiusAxis tick={{fontSize:9,fill:C.t2}} /><Tooltip {...TIP} />
-          <Radar dataKey="value" stroke={C.brand} fill={C.brand} fillOpacity={0.35} /></RadarChart>);
+          <Radar dataKey="value" stroke={c0} fill={c0} fillOpacity={0.35} /></RadarChart>);
     case "treemap":
-      return <Treemap data={data} dataKey="value" nameKey="name" stroke="#fff" content={<TreemapCell />} isAnimationActive={false} />;
+      return <Treemap data={data} dataKey="value" nameKey="name" stroke="#fff"
+        content={<TreemapCell palette={pal} />} isAnimationActive={false} />;
     default: /* bar */
       return (
         <BarChart data={data} margin={m}>{GRID}
           <XAxis {...AXE_X} interval={0} angle={-18} textAnchor="end" height={52} />
           <YAxis {...AXE_Y} /><Tooltip {...TIP} />
-          <Bar dataKey="value" radius={[2,2,0,0]}>{cellules(data)}</Bar></BarChart>);
+          <Bar dataKey="value" radius={[2,2,0,0]}>{cellules(data, pal)}</Bar></BarChart>);
   }
 }
 
@@ -752,6 +776,18 @@ function WidgetModal({ open, w, db, periode, onClose, onSave }){
           options={TYPES_VIZ} /></Field>
         <Field label="Dimension"><Select value={f.dim} onChange={e=>u("dim",e.target.value)} options={S.dims} /></Field>
         <Field label="Mesure"><Select value={f.measure} onChange={e=>u("measure",e.target.value)} options={S.measures} /></Field>
+        <Field label="Couleurs" className="col-span-2"
+          hint="Facultatif. Les graphiques à catégories (barres, circulaire, radial, treemap) parcourent ces couleurs ; les courbes, aires et radars utilisent la première. « Réinitialiser » revient à la palette par défaut.">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {Array.from({length:8}).map((_,i)=>(
+              <input key={i} type="color" title={`Couleur ${i+1}`}
+                className="w-7 h-7 rounded cursor-pointer border border-slate-200 p-0 bg-white"
+                value={(f.colors&&f.colors[i])||SERIES[i]}
+                onChange={e=>{ const arr=(f.colors&&f.colors.length?[...f.colors]:SERIES.slice(0,8));
+                  while(arr.length<8) arr.push(SERIES[arr.length]); arr[i]=e.target.value; u("colors",arr); }} />))}
+            <Btn kind="sec" size="sm" onClick={()=>u("colors",[])}>Réinitialiser</Btn>
+          </div>
+        </Field>
       </div>
       <div className="border border-slate-200 rounded p-3 bg-slate-50">
         <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">Aperçu</div>
