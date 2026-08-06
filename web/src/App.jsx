@@ -49,7 +49,12 @@ const SHAPERS = {
     collected_at:o.date, sample:o.sample })).filter(o => o.indicator_id),
   indicators: (rows) => rows.map(i => ({ id:i.key, rev:i.rev, code:i.id, name:i.name,
     basket:i.basket, unit:i.unit, target:i.target, direction:i.dir,
-    method:i.method, frequency:i.freq })),
+    method:i.method, frequency:i.freq,
+    /* La formule d'un indicateur composé voyage avec sa ligne : tous les
+       indicateurs sont hydratés avec leur formule (vide pour un mesuré), donc
+       resynchroniser la collection préserve celles des autres et n'écrit que
+       celle qu'on vient d'éditer. */
+    formula: i.formula || "" })),
   params: (rows) => rows.map(p => ({ id:p.id, rev:p.rev, csp:p.csp, office_id:p.office_id,
     category_id:p.category_id, tag:p.tag, duration:p.duration,
     riskLevel:p.riskLevel, feasiblePerMonth:p.feasiblePerMonth,

@@ -6,7 +6,7 @@ import { useGeoCascade, resetGeoCache } from "../lib/geo.js";
 import { Activity, ArrowRightLeft, Building2, CalendarRange, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, FileText, KeyRound, Layers, Link2, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, X } from "lucide-react";
 import { Area, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Aide, Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, SideRail, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
-import { LEVELS, clsx, computeMMR, computeParam, evalFormula, fmt, motifLisible, n, pct, r2, r5, siteRequirement, siteScore, uid, variablesProcessus, visiteOdk } from "../lib/calc.js";
+import { LEVELS, clsx, codeVariable, computeMMR, computeParam, evalFormula, fmt, motifLisible, n, pct, r2, r5, siteRequirement, siteScore, uid, variablesProcessus, visiteOdk } from "../lib/calc.js";
 import { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, DURATIONS, D_FORMULAS, D_SECURITY, D_STATUS, D_URBAN, MONITORING_TYPES, PROG_AREAS, SITE_TYPES, TABS_ALL, siteDerived, sitePriority } from "../lib/constants.js";
 import { collecterLocalites, csvLocalites } from "../lib/exportGeo.js";
 import { niveau, niveaux } from "../lib/levels.js";
@@ -2600,7 +2600,8 @@ function SetIndicators({ db, set, notify, can }){
                     {ouvert && enfants.map(ind=>(
                       <tr key={ind.id} className="hover:bg-sky-50 align-top">
                         <Td className="pl-6"><Badge tone="b">{ind.id}</Badge></Td>
-                        <Td className="mw420 text-slate-800" style={{whiteSpace:"normal"}} title={ind.name}>{ind.name}</Td>
+                        <Td className="mw420 text-slate-800" style={{whiteSpace:"normal"}} title={ind.name}>{ind.name}
+                          {ind.formula && <span className="ml-1.5" title={ind.formula}><Badge tone="y">calculé</Badge></span>}</Td>
                         <Td>{indActif(ind) ? <Badge tone="g">{ind.status || "Actif"}</Badge> : <Badge tone="r">{ind.status || "Inactif"}</Badge>}</Td>
                         {colClésAff.map(k => <Td key={k} className="text-slate-600 f11"
                           style={{whiteSpace:"normal", maxWidth: k==="cat"?240:200}}
@@ -2614,7 +2615,8 @@ function SetIndicators({ db, set, notify, can }){
               : <tbody>{visibles.map(ind=>(
               <tr key={ind.id} className="hover:bg-sky-50 align-top">
                 <Td><Badge tone="b">{ind.id}</Badge></Td>
-                <Td className="mw420 font-medium text-slate-800" style={{whiteSpace:"normal"}} title={ind.name}>{ind.name}</Td>
+                <Td className="mw420 font-medium text-slate-800" style={{whiteSpace:"normal"}} title={ind.name}>{ind.name}
+                  {ind.formula && <span className="ml-1.5" title={ind.formula}><Badge tone="y">calculé</Badge></span>}</Td>
                 {crf ? <>
                   <Td>{indActif(ind)
                     ? <Badge tone="g">{ind.status || "Actif"}</Badge>
@@ -2646,18 +2648,26 @@ function SetIndicators({ db, set, notify, can }){
             </div>)}
           </>}
         </Card>
-        <IndicatorModal open={!!edit} ind={edit} activites={activites}
+        <IndicatorModal open={!!edit} ind={edit} activites={activites} indicateurs={db.indicators}
           categories={categories} onClose={()=>setEdit(null)} onSave={save} />
       </>} />
   );
 }
 
-function IndicatorModal({ open, ind, activites, categories = [], onClose, onSave }){
+function IndicatorModal({ open, ind, activites, categories = [], indicateurs = [], onClose, onSave }){
   const [f,setF] = useState({});
   useEffect(()=>{ setF(ind||{}); },[ind]);
   if(!open) return null;
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
   const crf = (f.kind||"crf") === "crf";
+  /* Un indicateur COMPOSÉ se définit par une formule entre les codes des autres
+     indicateurs de la masterlist. On propose ces codes (hors celui édité, pour
+     interdire l'auto-référence) et l'on valide l'expression par l'évaluateur sûr,
+     comme les jeux de données — mêmes garde-fous CSP. */
+  const codesRef = (indicateurs || []).map(i=>i.id).filter(c => codeVariable(c) && c !== f.id);
+  const nomRef = (c) => ((indicateurs||[]).find(i=>i.id===c)||{}).name || c;
+  const erreurFormule = (f.formula||"").trim()
+    ? (evalFormula(f.formula, Object.fromEntries(codesRef.map(c=>[c,1]))).err || "") : "";
   return (
     <Modal open onClose={onClose}
       title={`${ind?.id?"Modifier":"Nouvel"} indicateur ${crf?"CRF":"de processus"}`}
@@ -2689,6 +2699,21 @@ function IndicatorModal({ open, ind, activites, categories = [], onClose, onSave
           options={["Mensuel","Trimestriel","Semestriel","Annuel"]} /></Field>
         <Field label="Méthode de collecte" className="col-span-2"><Input value={f.method||""} onChange={e=>u("method",e.target.value)}
           placeholder={crf?"Enquête ménage, registres, suivi post-distribution":"Extraction XLSForm, agrégation des soumissions"} /></Field>
+        {crf && (
+          <Field label="Formule (indicateur composé)" className="col-span-2"
+            hint="Facultatif. Laissez vide pour un indicateur MESURÉ. Une formule le rend CALCULÉ : combinez d'autres indicateurs par leur code (ex. « FCS / FES * 100 »), sans données propres — réalisé et planifié se déduisent de ses composants. Fonctions : min, max, round, abs, sqrt, floor, ceil.">
+            <Input value={f.formula||""} onChange={e=>u("formula",e.target.value)}
+              placeholder="ex. FCS / FES * 100" className={erreurFormule?"border-rose-300":undefined} />
+            {erreurFormule && <p className="f115 text-rose-700 mt-1">{erreurFormule}</p>}
+            {(f.formula||"").trim() && !erreurFormule && <p className="f115 text-lime-700 mt-1">Formule valide — indicateur calculé.</p>}
+            {!!codesRef.length && (
+              <div className="flex flex-wrap gap-1 mt-2">
+                {codesRef.slice(0,60).map(c=>(
+                  <button key={c} type="button" title={nomRef(c)}
+                    onClick={()=>u("formula",(f.formula||"")+c)}
+                    className="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-sky-100 f11 text-slate-600 border border-slate-200">{c}</button>))}
+              </div>)}
+          </Field>)}
       </div>
     </Modal>);
 }

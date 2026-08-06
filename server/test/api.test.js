@@ -1993,6 +1993,38 @@ test("indicateurs : les natures CRF et XLSForm font l'aller-retour", async () =>
   assert.equal(refus.status, 422, "un niveau de cadre logique inconnu est rejeté");
 });
 
+/* Indicateur COMPOSÉ (migration 042) : la formule se persiste, se relit par
+   /state, et — parce que la colonne est NOT NULL — un enregistrement ultérieur
+   qui n'envoie PAS de formule ne l'efface pas (il laisse la valeur existante). */
+test("indicateurs : la formule d'un indicateur composé fait l'aller-retour et n'est pas écrasée", async () => {
+  const t = (await login("admin@test.local", "MotDePasseTest2026")).body.token;
+
+  const ecrit = await request(app).put("/api/collections/indicators")
+    .set("Authorization", `Bearer ${t}`)
+    .send({ rows: [{ code:"COMP-1", name:"Ratio composé", kind:"crf", level:"outcome",
+      unit:"%", target:100, direction:"up", formula:"FCS / FES * 100" }] });
+  assert.equal(ecrit.status, 200, JSON.stringify(ecrit.body));
+
+  const stocke = await db.prepare("SELECT * FROM indicators WHERE code=?").get("COMP-1");
+  assert.equal(stocke.formula, "FCS / FES * 100");
+  const key = stocke.id;
+
+  const etat = (await request(app).get("/api/state").set("Authorization", `Bearer ${t}`)).body;
+  assert.equal(etat.indicators.find(i => i.id === "COMP-1").formula, "FCS / FES * 100");
+
+  /* On rééecrit la MÊME ligne sans champ formula (à sa révision courante) :
+     la formule doit survivre, la colonne NOT NULL ne doit pas être mise à null. */
+  const rev = (await db.prepare("SELECT rev FROM indicators WHERE id=?").get(key)).rev;
+  const maj = await request(app).put("/api/collections/indicators")
+    .set("Authorization", `Bearer ${t}`)
+    .send({ rows: [{ id:key, rev, code:"COMP-1", name:"Ratio composé (renommé)",
+      kind:"crf", level:"outcome", unit:"%", target:100, direction:"up" }] });
+  assert.equal(maj.status, 200, JSON.stringify(maj.body));
+  const apres = await db.prepare("SELECT * FROM indicators WHERE code=?").get("COMP-1");
+  assert.equal(apres.name, "Ratio composé (renommé)");
+  assert.equal(apres.formula, "FCS / FES * 100", "la formule n'est pas effacée par une mise à jour sans formula");
+});
+
 /* Chantier S6 — « un éditeur peut être attribué à planifier les suivis ». La
    configuration de planification (MRE + calendrier de collecte) se persiste par une
    route en droit ÉDITEUR, distincte des réglages admin ; le calendrier va dans sa

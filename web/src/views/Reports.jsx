@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { CalendarRange, Download, FileText, Filter, Plus, Sparkles, Table2, Trash2 } from "lucide-react";
 import { Badge, Btn, Card, Empty, Field, Input, Note, Select, TableWrap, Tabs, Td, Th, download, inputCls, toCSV } from "../components/ui.jsx";
-import { LEVELS, evalFormula, fmt, n, pct, r2, siteRequirement, siteScore, variablesProcessus } from "../lib/calc.js";
+import { LEVELS, evalComposite, evalFormula, fmt, n, pct, r2, siteRequirement, siteScore, variablesProcessus } from "../lib/calc.js";
 import { D_ADJUST } from "../lib/constants.js";
 import { GRANULARITES, anneesDisponibles, bornesPeriode, dateDansPeriode, libelleCourtPeriode,
   libellePeriode, moisDansPeriode, moisEcoules, normalisePeriode, optionsValeur, periodeAnnee,
@@ -307,6 +307,20 @@ function reportData(db, periode){
        combler, pas une ligne à cacher. Chacun porte sa catégorie thématique,
        par laquelle le modèle pourra restreindre le bloc. */
     outcomes: db.indicators.map(ind => {
+      /* Un indicateur COMPOSÉ n'a pas de mesures propres : son réalisé et son
+         planifié se DÉDUISENT de sa formule, appliquée aux valeurs mesurées puis
+         planifiées de ses composants sur la période. La même fonction sert le
+         tableau de bord, pour que rapport et écran s'accordent au chiffre près. */
+      if(ind.formula && ind.formula.trim()){
+        const dateOk = (d) => dateDansPeriode(d, p);
+        const actualC  = evalComposite(ind, db.indicators, db.outcomes, "value", dateOk);
+        const plannedC = evalComposite(ind, db.indicators, db.outcomes, "planned", dateOk);
+        const planC = plannedC !== null ? plannedC : (n(ind.target) || null);
+        return { id:ind.id, name:ind.name, unit:ind.unit||"", dir:ind.dir, composite:true,
+          category: ind.category || ind.basket || "Sans catégorie",
+          base:null, last: actualC, planned: planC,
+          hasActual: actualC !== null, hasPlanned: planC !== null && n(planC) !== 0 };
+      }
       const toutes = db.outcomes.filter(o=>o.indicator===ind.id);
       const vals = toutes.filter(o=>dateDansPeriode(o.date, p));
       const last = vals.slice().sort((a,b)=>String(b.date).localeCompare(String(a.date)))[0];
@@ -317,7 +331,7 @@ function reportData(db, periode){
       const planned = last ? (n(last.planned)||ind.target) : ind.target;
       const hasActual  = actual !== null && actual !== undefined && actual !== "";
       const hasPlanned = planned !== null && planned !== undefined && planned !== "" && n(planned) !== 0;
-      return { id:ind.id, name:ind.name, unit:ind.unit||"", dir:ind.dir,
+      return { id:ind.id, name:ind.name, unit:ind.unit||"", dir:ind.dir, composite:false,
         category: ind.category || ind.basket || "Sans catégorie",
         base: base?base.value:null, last: actual, planned, hasActual, hasPlanned };
     }).filter(x => x.hasActual || x.hasPlanned),
@@ -441,7 +455,7 @@ function reportHTML(db, tpl, periode){
       const compare = r.hasActual && r.hasPlanned;
       const ok = compare ? (r.dir==="up" ? n(r.last)>=n(r.planned) : n(r.last)<=n(r.planned)) : null;
       const taux = compare ? pct(n(r.last), n(r.planned)) : null;
-      return `<tr><td>${esc(r.name)}${r.unit?` <span class="muted">(${esc(r.unit)})</span>`:""}</td>
+      return `<tr><td>${esc(r.name)}${r.unit?` <span class="muted">(${esc(r.unit)})</span>`:""}${r.composite?' <span class="tag">calculé</span>':""}</td>
         <td class="n">${r.base??"—"}</td>
         <td class="n">${r.hasPlanned?esc(r.planned):"—"}</td>
         <td class="n">${r.hasActual?`<b class="${ok===null?"":ok?"good":"bad"}">${esc(r.last)}</b>`:'<span class="muted">—</span>'}</td>
@@ -477,6 +491,8 @@ section{padding:24px 40px;border-bottom:1px solid var(--l)}
 h2{font-size:15px;margin:0 0 14px;color:var(--bd);text-transform:uppercase;letter-spacing:.06em}
 h3.cat{font-size:11.5px;margin:16px 0 6px;color:var(--t2);text-transform:uppercase;letter-spacing:.05em;font-weight:700}
 h3.cat:first-of-type{margin-top:0}
+.tag{display:inline-block;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+  color:var(--bd);background:#eef4f9;border:1px solid #d6e4ef;border-radius:3px;padding:0 4px;vertical-align:middle}
 .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--l);border:1px solid var(--l)}
 .kpi{background:#fff;padding:16px 18px}
 .kpi span{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--t2);font-weight:700}

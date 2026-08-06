@@ -69,7 +69,12 @@ const COLLECTIONS = {
       /* Colonnes riches de la masterlist (migration 032), toutes facultatives. */
       status:S(80), applicability:S(200), reportingReq:S(200), outputType:S(120),
       unitInterp:S(200), flexibility:S(80), followValue:S(200), intermediate:S(300),
-      activity:S(40) }),
+      activity:S(40),
+      /* Indicateur COMPOSÉ (migration 042) : une formule entre codes
+         d'indicateurs. Vide = indicateur mesuré classique. Le serveur ne fait que
+         la stocker et borner sa taille ; l'évaluation (liste blanche de variables
+         et de fonctions, sans eval) reste côté client, au rendu. */
+      formula:S(400) }),
     map: (x) => ({ code:x.code, name:x.name, basket:x.basket, unit:x.unit,
       target:x.target, direction:x.direction, method:x.method, frequency:x.frequency,
       kind:x.kind, level:x.level, category:x.category, activity:x.activity,
@@ -82,7 +87,12 @@ const COLLECTIONS = {
       ...(x.unitInterp !== undefined ? { unit_interp: x.unitInterp } : {}),
       ...(x.flexibility !== undefined ? { flexibility: x.flexibility } : {}),
       ...(x.followValue !== undefined ? { follow_value: x.followValue } : {}),
-      ...(x.intermediate !== undefined ? { intermediate: x.intermediate } : {}) }) },
+      ...(x.intermediate !== undefined ? { intermediate: x.intermediate } : {}),
+      /* `!= null` (et non `!== undefined`) : le schéma transforme un `formula`
+         absent en `null`, or la colonne est NOT NULL. On l'omet donc quand il
+         n'est pas fourni — l'INSERT prend le défaut '', l'UPDATE laisse l'existant
+         — et on ne l'écrit que lorsqu'une vraie chaîne arrive. */
+      ...(x.formula != null ? { formula: x.formula } : {}) }) },
 
   outcomes: { table:"outcomes", cap:"edit",
     schema: z.object({ id:S(64), indicator_id:z.string().min(1).max(64), adm1:S(120),

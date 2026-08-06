@@ -142,7 +142,10 @@ r.get("/state", async (req, res) => {
     status: i.status || "", applicability: i.applicability || "",
     reportingReq: i.reporting_req || "", outputType: i.output_type || "",
     unitInterp: i.unit_interp || "", flexibility: i.flexibility || "",
-    followValue: i.follow_value || "", intermediate: i.intermediate || "" }));
+    followValue: i.follow_value || "", intermediate: i.intermediate || "",
+    /* Formule d'un indicateur COMPOSÉ (migration 042), vide pour un indicateur
+       mesuré. Le rendu (rapports, tableau de bord) la calcule sur les composants. */
+    formula: i.formula || "" }));
   const indByKey = Object.fromEntries(indicators.map(i=>[i.key, i.id]));
 
   /* Les résultats n'ont aucune dimension « bureau » dans le schéma : ils sont mesurés par

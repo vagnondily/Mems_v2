@@ -190,6 +190,35 @@ function evalFormula(expr, scope){
     return Number.isFinite(v) ? { ok:true, value:v } : { ok:false, value:0, err:"Résultat non numérique" };
   }catch(e){ return { ok:false, value:0, err:e.message }; }
 }
+
+/* Un code d'indicateur n'est utilisable comme VARIABLE de formule que s'il est un
+   identifiant valide (lettres, chiffres, _, sans commencer par un chiffre). */
+const codeVariable = (c) => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c || "");
+
+/* Valeur d'un indicateur COMPOSÉ : sa formule évaluée sur la MOYENNE de chacun de
+   ses indicateurs composants, sur la base choisie (« value » = réalisé, « planned »
+   = planifié), en ne retenant que les outcomes acceptés par `dateOk`. Rend `null`
+   dès qu'un composant cité n'a aucune mesure sur la période — on ne calcule pas un
+   ratio dont le dénominateur n'a pas été relevé. Facteur commun aux rapports et au
+   tableau de bord, pour que la même formule y produise le même chiffre. */
+function evalComposite(ind, indicators, outcomes, base, dateOk){
+  if(!ind || !ind.formula || !ind.formula.trim()) return null;
+  const codes = new Set((indicators || []).map(i => i.id).filter(codeVariable));
+  const cites = [...new Set((ind.formula.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || []).filter(t => codes.has(t)))];
+  if(!cites.length) return null;
+  const acc = {};
+  (outcomes || []).forEach(o => {
+    if(!codes.has(o.indicator)) return;
+    if(dateOk && !dateOk(o.date)) return;
+    acc[o.indicator] = acc[o.indicator] || { sum:0, n:0 };
+    acc[o.indicator].sum += n(o[base]); acc[o.indicator].n++;
+  });
+  if(!cites.every(c => acc[c] && acc[c].n)) return null;
+  const scope = {}; cites.forEach(c => { scope[c] = acc[c].sum / acc[c].n; });
+  const r = evalFormula(ind.formula, scope);
+  return r.ok ? r.value : null;
+}
+
 function computeParam(row, sites, formulas){
   const F = Object.fromEntries((formulas||D_FORMULAS).map(f=>[f.id,f.expr]));
   const nbSites = sites.filter(s => s.subOffice===row.office && s.activityTag===row.tag && s.status!=="Inactive").length;
@@ -432,4 +461,4 @@ function profileColumn(rows, field){
   return stat;
 }
 
-export { FNS, IND_FNS, KEY, LEVELS, POP_BASE_YEAR, RULE_TYPES, SAFE_CHARS, applyFormulas, applyRules, clsx, codeOf, computeMMR, computeParam, derniereVisite, evalFormula, evalIndicator, fmt, legacyScore, monthsSince, motifLisible, motifSaisissable, n, paramFor, pct, populationFor, profileColumn, r1, r2, r5, siteRequirement, siteScore, uid, variablesProcessus, visiteOdk, visitesDuMois };
+export { FNS, IND_FNS, KEY, LEVELS, POP_BASE_YEAR, RULE_TYPES, SAFE_CHARS, applyFormulas, applyRules, clsx, codeOf, codeVariable, computeMMR, computeParam, derniereVisite, evalComposite, evalFormula, evalIndicator, fmt, legacyScore, monthsSince, motifLisible, motifSaisissable, n, paramFor, pct, populationFor, profileColumn, r1, r2, r5, siteRequirement, siteScore, uid, variablesProcessus, visiteOdk, visitesDuMois };
