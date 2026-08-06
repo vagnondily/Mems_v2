@@ -105,6 +105,14 @@ docker compose up -d
 Le conteneur écoute sur `127.0.0.1:4000`. Publiez-le derrière un reverse proxy TLS
 (voir §7) : l'application ne termine pas elle-même le chiffrement.
 
+### Sur Windows Server 2022 (sans Docker)
+
+Le serveur n'a **aucune dépendance native** (100 % JavaScript, `pg`) : rien à
+compiler, pas de Build Tools. Le guide pas à pas — PostgreSQL 16, Node 20/22,
+`.env`, service Windows, reverse proxy HTTPS, sauvegardes — est dans
+[`docs/WINDOWS.md`](docs/WINDOWS.md). Un script d'amorçage de la configuration
+est fourni : `scripts\windows\setup-env.ps1`.
+
 ### Démo hors ligne
 
 Ouvrez directement `web/demo.html` dans un navigateur pour une version de présentation qui illustre l'interface sans exiger de serveur en local.
