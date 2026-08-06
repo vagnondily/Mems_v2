@@ -8915,7 +8915,8 @@ test("dérivation : les districts et la région naissent des communes du millés
     JOIN geo_unit u  ON u.pcode=p.pcode AND u.version_id=p.version_id
     JOIN geo_unit uc ON uc.parent_pcode=u.pcode AND uc.version_id=u.version_id
     JOIN geo_geom c  ON c.pcode=uc.pcode AND c.version_id=uc.version_id
-    WHERE p.version_id=? AND p.level='adm2' GROUP BY p.pcode`).get(vid);
+    WHERE p.version_id=? AND p.level='adm2'
+    GROUP BY p.pcode, p.min_lon, p.min_lat, p.max_lon, p.max_lat`).get(vid);
   assert.equal(cadre.pl, cadre.cl); assert.equal(cadre.pb, cadre.cb);
   assert.equal(cadre.pr, cadre.cr); assert.equal(cadre.pt, cadre.ct);
 

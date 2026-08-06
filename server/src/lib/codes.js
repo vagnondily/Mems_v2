@@ -118,7 +118,7 @@ export async function ecrireEntrees(rows, ctx = {}){
     ON CONFLICT(referentiel, code) DO UPDATE SET
       ${ecrites.map(f => `${f}=excluded.${f}`).join(", ")}${ecrites.length ? "," : ""}
       import_batch_id=excluded.import_batch_id,
-      updated_at=now(), rev=rev+1`);
+      updated_at=now(), rev=code_referentiel.rev+1`);
 
   let crees = 0, modifies = 0;
   for(const r of rows){

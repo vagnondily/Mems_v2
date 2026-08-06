@@ -152,10 +152,10 @@ r.post("/:cle", garde, async (req, res, next) => {
   res.status(201).json({ item: await forme(def, await ligne(def, id)) });
 });
 
-r.put("/:cle/:id", garde, (req, res, next) => {
+r.put("/:cle/:id", garde, async (req, res, next) => {
   const def = parCle(req.params.cle);
   if(!def) return res.status(404).json({ error:"type de liste inconnu" });
-  const cur = ligne(def, req.params.id);
+  const cur = await ligne(def, req.params.id);
   if(!cur) return res.status(404).json({ error:"item introuvable" });
   const p = corps.safeParse(req.body);
   if(!p.success) return res.status(422).json({ error:"item invalide",
@@ -165,7 +165,7 @@ r.put("/:cle/:id", garde, (req, res, next) => {
   /* Verrouillage optimiste — même règle que les bureaux et les activités :
      on rend la valeur courante pour que l'écran montre ce qui a changé. */
   if(b.rev && b.rev !== (cur[def.cols.rev] || 1))
-    return res.status(409).json({ error:"cet item a été modifié entre-temps", courant: forme(def, cur) });
+    return res.status(409).json({ error:"cet item a été modifié entre-temps", courant: await forme(def, cur) });
 
   /* ── LE CODE D'IDENTIFICATION EST PRÉSERVÉ ────────────────────────
      « Possibilité de mettre à jour mais le code d'identification reste
@@ -185,11 +185,11 @@ r.put("/:cle/:id", garde, (req, res, next) => {
       + "ce qui réécrit du même coup toutes les lignes qui le portent.",
     code: cur[def.cols.code], voie: `POST /api/listes/${def.cle}/${cur.id}/renommer-code` });
 
-  if(lignes(def).some(x => x.id !== cur.id
+  if((await lignes(def)).some(x => x.id !== cur.id
       && (x[def.cols.label] || "").toLowerCase() === b.label.toLowerCase()))
     return res.status(409).json({ error:`le libellé « ${b.label} » est déjà pris dans cette liste` });
 
-  const { colonnes, erreurs } = champsValides(def, b.champs);
+  const { colonnes, erreurs } = await champsValides(def, b.champs);
   if(erreurs.length) return res.status(422).json({ error:"champ invalide", details:erreurs });
 
   const cols = { ...colonnes,
@@ -200,7 +200,7 @@ r.put("/:cle/:id", garde, (req, res, next) => {
 
   const keys = Object.keys(cols);
   try{
-    db.prepare(`UPDATE ${def.table} SET ${keys.map(k => k + "=?").join(",")},
+    await db.prepare(`UPDATE ${def.table} SET ${keys.map(k => k + "=?").join(",")},
                 ${def.cols.rev}=${def.cols.rev}+1 WHERE id=?`).run(...keys.map(k => cols[k]), cur.id);
   }catch(e){
     if(/unique|duplicate key/i.test(e.message)) return res.status(409).json({ error:"doublon : cet item existe déjà" });
@@ -210,10 +210,10 @@ r.put("/:cle/:id", garde, (req, res, next) => {
   const chg = [];
   if(b.label !== cur[def.cols.label]) chg.push(`renommé « ${cur[def.cols.label]} » → « ${b.label} »`);
   if(b.active !== !!cur[def.cols.active]) chg.push(b.active ? "réactivé" : "désactivé");
-  invalider(def);
-  audit(req, def.cle, "update", cur.id,
+  await invalider(def);
+  await audit(req, def.cle, "update", cur.id,
     `${def.label} — ${b.label}${chg.length ? ` : ${chg.join(", ")}` : " modifié"}`);
-  res.json({ item: forme(def, ligne(def, cur.id)) });
+  res.json({ item: await forme(def, await ligne(def, cur.id)) });
 });
 
 /* ── Désactiver, l'issue que le refus de suppression propose ─────────
@@ -221,28 +221,28 @@ r.put("/:cle/:id", garde, (req, res, next) => {
    qu'une chose à faire — retirer l'item des choix sans toucher au reste.
    Lui faire renvoyer l'item entier pour cela, c'est lui donner l'occasion
    d'écraser un libellé ou un champ que quelqu'un vient de corriger. */
-r.put("/:cle/:id/actif", garde, (req, res) => {
+r.put("/:cle/:id/actif", garde, async (req, res) => {
   const def = parCle(req.params.cle);
-  const cur = ligne(def, req.params.id);
+  const cur = await ligne(def, req.params.id);
   if(!cur) return res.status(404).json({ error:"item introuvable" });
   const p = z.object({ active: z.boolean(),
                        rev: z.coerce.number().int().min(1).optional() }).safeParse(req.body);
   if(!p.success) return res.status(422).json({ error:"état invalide" });
   if(p.data.rev && p.data.rev !== (cur[def.cols.rev] || 1))
-    return res.status(409).json({ error:"cet item a été modifié entre-temps", courant: forme(def, cur) });
+    return res.status(409).json({ error:"cet item a été modifié entre-temps", courant: await forme(def, cur) });
 
-  db.prepare(`UPDATE ${def.table} SET ${def.cols.active}=?, ${def.cols.rev}=${def.cols.rev}+1
+  await db.prepare(`UPDATE ${def.table} SET ${def.cols.active}=?, ${def.cols.rev}=${def.cols.rev}+1
               WHERE id=?`).run(p.data.active ? 1 : 0, cur.id);
-  invalider(def);
-  audit(req, def.cle, p.data.active ? "enable" : "disable", cur.id,
+  await invalider(def);
+  await audit(req, def.cle, p.data.active ? "enable" : "disable", cur.id,
     `${def.label} — ${cur[def.cols.label]} ${p.data.active ? "réactivé" : "désactivé"}`);
-  res.json({ item: forme(def, ligne(def, cur.id)) });
+  res.json({ item: await forme(def, await ligne(def, cur.id)) });
 });
 
-r.delete("/:cle/:id", garde, (req, res, next) => {
+r.delete("/:cle/:id", garde, async (req, res, next) => {
   const def = parCle(req.params.cle);
   if(!def) return res.status(404).json({ error:"type de liste inconnu" });
-  const cur = ligne(def, req.params.id);
+  const cur = await ligne(def, req.params.id);
   if(!cur) return res.status(404).json({ error:"item introuvable" });
 
   /* « Si une liste est enregistrée et a été déjà utilisée, impossible de
@@ -250,20 +250,20 @@ r.delete("/:cle/:id", garde, (req, res, next) => {
      reste pour ne pas perdre les données). » Le refus n'est pas une
      précaution générale : il énumère ce qui retient l'item, table par
      table, pour que la réponse soit une information et non un mur. */
-  const u = usage(def, cur);
+  const u = await usage(def, cur);
   if(totalUsage(u)) return res.status(409).json({
     error: `« ${cur[def.cols.label]} » est encore référencé ; désactivez-le plutôt que de le supprimer`,
     usage: u, usageTotal: totalUsage(u) });
 
   try{
-    db.prepare(`DELETE FROM ${def.table} WHERE id=?`).run(cur.id);
+    await db.prepare(`DELETE FROM ${def.table} WHERE id=?`).run(cur.id);
   }catch(e){
     if(/foreign key/i.test(e.message)) return res.status(409).json({
       error:"cet item est référencé par une clé étrangère ; désactivez-le plutôt que de le supprimer" });
     return next(e);
   }
-  invalider(def);
-  audit(req, def.cle, "delete", cur.id, `${def.label} — item supprimé : ${cur[def.cols.label]}`);
+  await invalider(def);
+  await audit(req, def.cle, "delete", cur.id, `${def.label} — item supprimé : ${cur[def.cols.label]}`);
   res.json({ ok:true });
 });
 
@@ -285,11 +285,11 @@ r.delete("/:cle/:id", garde, (req, res, next) => {
    procéder à un mappage puis validation pour ne pas perdre des données. »
    Cette route n'écrit RIEN : elle rend la correspondance ancien → nouveau,
    table par table, avec le nombre de lignes touchées et son empreinte. */
-r.post("/:cle/:id/renommer-code/plan", requireSuper, (req, res) => {
+r.post("/:cle/:id/renommer-code/plan", requireSuper, async (req, res) => {
   const p = z.object({ nouveau: z.string().trim().min(1).max(80) }).safeParse(req.body);
   if(!p.success) return res.status(422).json({ error:"nouveau code invalide",
     details: p.error.issues.map(i => ({ champ:i.path.join("."), message:i.message })) });
-  const plan = planRenommage(req.params.cle, req.params.id, p.data.nouveau);
+  const plan = await planRenommage(req.params.cle, req.params.id, p.data.nouveau);
   if(plan.erreur) return res.status(plan.statut || 422).json({ error:plan.erreur });
   res.json({ plan });
 });
@@ -300,7 +300,7 @@ r.post("/:cle/:id/renommer-code/plan", requireSuper, (req, res) => {
    transforme le renommage en fusion —, les deux empreintes diffèrent et
    rien ne s'écrit. Sans jeton, la réponse est le plan lui-même : le geste
    ne se refuse pas, il se demande deux fois. */
-r.post("/:cle/:id/renommer-code", requireSuper, (req, res, next) => {
+r.post("/:cle/:id/renommer-code", requireSuper, async (req, res, next) => {
   const p = z.object({
     nouveau: z.string().trim().min(1).max(80),
     mode: z.enum(["renommer", "fusionner"]).optional(),
@@ -309,7 +309,7 @@ r.post("/:cle/:id/renommer-code", requireSuper, (req, res, next) => {
   if(!p.success) return res.status(422).json({ error:"renommage invalide",
     details: p.error.issues.map(i => ({ champ:i.path.join("."), message:i.message })) });
 
-  const plan = planRenommage(req.params.cle, req.params.id, p.data.nouveau);
+  const plan = await planRenommage(req.params.cle, req.params.id, p.data.nouveau);
   if(plan.erreur) return res.status(plan.statut || 422).json({ error:plan.erreur });
   if(p.data.mode && p.data.mode !== plan.mode) return res.status(409).json({
     error: plan.mode === "fusionner"
@@ -329,10 +329,10 @@ r.post("/:cle/:id/renommer-code", requireSuper, (req, res, next) => {
     plan });
 
   try{
-    const bilan = appliquerRenommage(req.params.cle, req.params.id, plan.nouveau);
+    const bilan = await appliquerRenommage(req.params.cle, req.params.id, plan.nouveau);
     const def = parCle(req.params.cle);
-    invalider(def);
-    audit(req, def.cle, bilan.mode, req.params.id,
+    await invalider(def);
+    await audit(req, def.cle, bilan.mode, req.params.id,
       `${def.label} — code ${bilan.mode === "fusionner" ? "fusionné" : "renommé"} `
       + `« ${bilan.ancien} » → « ${bilan.nouveau} » : ${bilan.total} ligne(s) réécrite(s) dans `
       + `${bilan.tables.length} table(s)`);
@@ -350,20 +350,20 @@ r.post("/:cle/:id/renommer-code", requireSuper, (req, res, next) => {
    bonne, et cela se voit à l'écran. Toute écriture ultérieure sur un item
    efface la marque (`invalider`), sinon le badge survivrait à ce qu'il
    certifie. */
-r.post("/:cle/valider", garde, (req, res) => {
+r.post("/:cle/valider", garde, async (req, res) => {
   const def = parCle(req.params.cle);
   if(!def) return res.status(404).json({ error:"type de liste inconnu" });
   const p = z.object({ note: S(400) }).safeParse(req.body || {});
   if(!p.success) return res.status(422).json({ error:"note invalide" });
-  const n = lignes(def).length;
-  db.prepare(`INSERT INTO list_validation (type,validated_at,validated_by,user_label,items,note)
-              VALUES (?,datetime('now'),?,?,?,?)
+  const n = (await lignes(def)).length;
+  await db.prepare(`INSERT INTO list_validation (type,validated_at,validated_by,user_label,items,note)
+              VALUES (?,now(),?,?,?,?)
               ON CONFLICT(type) DO UPDATE SET validated_at=excluded.validated_at,
                 validated_by=excluded.validated_by, user_label=excluded.user_label,
                 items=excluded.items, note=excluded.note`)
     .run(def.cle, req.user.id, req.user.email || req.user.first_name, n, p.data.note);
-  audit(req, def.cle, "validate", null, `${def.label} — liste validée (${n} item(s))`);
-  res.json({ ok:true, validation: validation(def) });
+  await audit(req, def.cle, "validate", null, `${def.label} — liste validée (${n} item(s))`);
+  res.json({ ok:true, validation: await validation(def) });
 });
 
 export default r;

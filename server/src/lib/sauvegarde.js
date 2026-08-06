@@ -146,7 +146,11 @@ export async function sauvegarder({ motif = "manuelle" } = {}){
     .map(r => r.name);
 
   const { args, env } = connexion();
-  await executer("pg_dump", [...args, "-Fc", "--no-owner", "--file", chemin]);
+  /* `-w` : ne jamais demander de mot de passe de façon interactive. Sans lui, un
+     échec d'authentification ferait attendre pg_dump sur « Password: » jusqu'au
+     SIGKILL du délai — un blocage au lieu d'une erreur lisible. PGPASSWORD (env)
+     porte le secret. */
+  await executer("pg_dump", [...args, "-w", "-Fc", "--no-owner", "--file", chemin], env);
   fs.writeFileSync(cheminManifeste(chemin),
     JSON.stringify({ tables, migrations, creeLe:new Date().toISOString() }, null, 2));
 
@@ -218,7 +222,7 @@ export async function restaurer({ chemin, nom }){
   const t0 = Date.now();
   const { args, env } = connexion();
   await executer("pg_restore",
-    [...args, "--clean", "--if-exists", "--no-owner", "--single-transaction", chemin], env);
+    [...args, "-w", "--clean", "--if-exists", "--no-owner", "--single-transaction", chemin], env);
   const ms = Date.now() - t0;
 
   const apresTables = (await db.prepare(

@@ -327,10 +327,14 @@ export async function deriverNiveaux({ versionId, source = null, remplacerExista
      calculé — jamais un contour importé à la main, qui vaut mieux qu'un
      calcul. La marque est la source, posée par writeGeometries. */
   const estDerive = async (niveau) => {
+    /* PostgreSQL ne SUM pas un booléen (SQLite comptait true=1) : on compte par
+       un CASE explicite. `d` peut revenir en chaîne (bigint) selon le pilote,
+       d'où Number(). */
     const r = await exec.prepare(
-      "SELECT COUNT(*) c, SUM(source LIKE 'dérivé%') d FROM geo_geom WHERE version_id=? AND level=?")
+      `SELECT COUNT(*) c, SUM(CASE WHEN source LIKE 'dérivé%' THEN 1 ELSE 0 END) d
+       FROM geo_geom WHERE version_id=? AND level=?`)
       .get(versionId, niveau);
-    return r.c > 0 && r.d === r.c;
+    return r.c > 0 && Number(r.d) === Number(r.c);
   };
 
   /* Un lot d'écriture reçoit l'exécuteur seulement si l'appelant en a fourni un :
