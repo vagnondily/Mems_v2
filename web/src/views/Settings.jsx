@@ -222,6 +222,13 @@ function SetGeneral({ db, set }){
       <div className="grid grid-cols-2 gap-x-3">
         <Field label="Éléments par page" hint="Pagination des tableaux de planification">
           <Input type="number" value={s.pageSize} onChange={e=>u("pageSize",n(e.target.value))} /></Field>
+        {/* Productivité de collecte par DÉFAUT, pour le calcul des jours d'un plan
+            de suivi tiers (TPM) d'après le MMR. Une valeur propre à un couple
+            (bureau, activité) la surcharge dans « Calculs automatiques ». */}
+        <Field label="Sites à suivre par jour et par agent"
+          hint="Valeur par défaut du calcul des jours d'un plan TPM (MMR). 0 = non renseigné ; une productivité par bureau × activité la surcharge dans « Calculs automatiques ».">
+          <Input type="number" min="0" value={s.sitesJourAgent ?? 0}
+            onChange={e=>u("sitesJourAgent",n(e.target.value))} /></Field>
       </div>
     </Card>);
   const scoring = (

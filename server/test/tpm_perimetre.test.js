@@ -225,4 +225,13 @@ test("jours d'après le MMR : /suggest rend la charge en jours-personnes selon l
   const row2 = sug2.body.rows.find(r => r.geo_pcode === site.geo_pcode);
   assert.equal(row2.chargeJours, 0, "sans productivité, aucune charge n'est imposée");
   assert.ok(row2.planifiesSansCadence >= 1, "le site prévu sans productivité est signalé");
+
+  /* Le réglage GLOBAL « sites à suivre par jour et par agent » sert de défaut :
+     déclaré à 2, il rattrape le site sans productivité propre. */
+  const cfg = await request(app).put("/api/settings").set(H()).send({ sitesJourAgent: 2 });
+  assert.equal(cfg.status, 200, JSON.stringify(cfg.body));
+  const sug3 = await request(app).get("/api/tpm/suggest?year=2033&month=5").set(H());
+  const row3 = sug3.body.rows.find(r => r.geo_pcode === site.geo_pcode);
+  assert.equal(row3.chargeJours, 1, "1 formulaire ÷ 2 par jour (défaut global) = 1 jour-personne");
+  assert.equal(row3.planifiesSansCadence, 0, "avec un défaut global, plus de site sans cadence");
 });

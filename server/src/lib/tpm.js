@@ -262,6 +262,19 @@ export async function contractBalance(contractId, exec = db){
 export async function suggestZones({ year, month, officeId, limit = 60 }){
   const v = await currentVersion();
   if(!v) return [];
+  /* La productivité par DÉFAUT — « sites à suivre par jour et par agent » — est
+     un réglage global de la configuration. Un couple (bureau, activité) qui
+     déclare la sienne dans les paramètres de couverture la surcharge ; sinon
+     c'est ce défaut qui s'applique. 0 = aucune valeur, le calcul ne s'impose pas.
+     L'entier est validé puis interpolé (aucune injection : ce n'est pas une
+     saisie libre mais un nombre borné). */
+  const rowDef = await db.prepare("SELECT value FROM settings WHERE key='sitesJourAgent'").get();
+  let cadenceDefaut = 0;
+  try{ cadenceDefaut = Math.max(0, Math.min(200, Math.floor(Number(JSON.parse(rowDef?.value ?? "0")) || 0))); }
+  catch{ cadenceDefaut = 0; }
+  /* Productivité EFFECTIVE d'un site : la sienne si déclarée, sinon le défaut. */
+  const CADENCE = `COALESCE(NULLIF(cp.forms_per_day, 0), ${cadenceDefaut})`;
+
   /* Paramètres anonymes et dans l'ordre : SQLite refuse de mélanger la numérotation
      explicite (?1) et les points d'interrogation nus dans la même requête. */
   const args = [v.id, year, month];
@@ -291,9 +304,9 @@ export async function suggestZones({ year, month, officeId, limit = 60 }){
                 par la productivité (formulaires/jour/personne) propre à son
                 activité. Les sites sans productivité déclarée n'y comptent pas —
                 le calcul ne s'impose que là où il est renseigné. */
-             SUM(CASE WHEN m.planned=1 AND cp.forms_per_day > 0
-                      THEN 1.0 / cp.forms_per_day ELSE 0 END) charge_brut,
-             SUM(CASE WHEN m.planned=1 AND (cp.forms_per_day IS NULL OR cp.forms_per_day = 0)
+             SUM(CASE WHEN m.planned=1 AND ${CADENCE} > 0
+                      THEN 1.0 / ${CADENCE} ELSE 0 END) charge_brut,
+             SUM(CASE WHEN m.planned=1 AND ${CADENCE} = 0
                       THEN 1 ELSE 0 END) planifies_sans_cadence
       FROM sites s
       JOIN geo_unit u ON u.pcode = s.geo_pcode AND u.version_id = ?
