@@ -34,6 +34,14 @@ const ETAT = {
   renvoye:       ["Renvoyé", "r"],
   cloture:       ["Clôturé", "n"],
 };
+/* Le cycle de vie du CONTRAT (migration 040) : libellé et ton du badge. */
+const CTR = {
+  draft:     ["Brouillon", "n"],
+  submitted: ["Soumis", "y"],
+  validated: ["Validé", "g"],
+  canceled:  ["Annulé", "r"],
+  template:  ["Modèle", "b"],
+};
 /* L'avancement dans le circuit, pour le montrer d'un coup d'œil. */
 const ETAPES = ["soumis", "valide_tpm", "valide_bureau", "valide_pays"];
 const DRIVERS = [
@@ -236,7 +244,7 @@ function Contracts({ tpms, db, can, notify, onChange }){
           right={can("admin") && <>
             <Btn size="sm" kind="sec" icon={Pencil} onClick={()=>setEditTpm(t)}>Modifier</Btn>
             <Btn size="sm" kind="sec" icon={Plus}
-              onClick={()=>setEditCtr({ tpm_id:t.id, currency:"MGA", status:"actif" })}>Contrat</Btn>
+              onClick={()=>setEditCtr({ tpm_id:t.id, currency:"MGA", status:"draft" })}>Contrat</Btn>
           </>}>
           {!t.contrats.length
             ? <div className="f125 text-slate-500 py-2">Aucun contrat. Sans contrat, aucun plan
@@ -245,16 +253,24 @@ function Contracts({ tpms, db, can, notify, onChange }){
               <div key={c.id} className="border border-slate-200 rounded-xl p-4 mb-3 last:mb-0">
                 <div className="flex items-baseline gap-3 flex-wrap mb-3">
                   <b className="f13 text-slate-800">{c.ref}</b>
-                  <Badge tone={c.status==="actif"?"g":c.status==="clos"?"n":"y"}>{c.status}</Badge>
+                  <Badge tone={(CTR[c.status]||["",""])[1]}>{(CTR[c.status]||[c.status])[0]}</Badge>
                   <span className="f115 text-slate-500">
                     {c.start_date || "—"} → {c.end_date || "—"}</span>
-                  {can("admin") && <span className="ml-auto flex gap-2">
+                  {can("admin") && <span className="ml-auto flex gap-2 items-center">
+                    {/* Le statut se change ligne à ligne, d'un menu : c'est le cœur
+                        du cycle de vie demandé. */}
+                    <Select value={c.status}
+                      onChange={e=>faire(() => api.setContractStatus(c.id, e.target.value),
+                        "Statut du contrat modifié")}
+                      options={Object.entries(CTR).map(([v,[l]])=>[v,l])} />
                     <Btn size="sm" kind="sec" icon={Pencil} onClick={()=>setEditCtr({ ...c, tpm_id:t.id })}>Contrat</Btn>
                     <Btn size="sm" kind="sec" icon={Wallet}
                       onClick={()=>setRates({ contrat:c, lignes:c.rates.map(x=>({ ...x })) })}>Barème</Btn>
                     <Btn size="sm" kind="sec" icon={MapPin}
                       onClick={()=>setZonesCtr({ contrat:c, zones:(c.zones||[]).map(z=>({ ...z })) })}>Périmètre</Btn>
                     <Btn size="sm" kind="sec" icon={FileText} onClick={()=>setAven({ contrat:c })}>Avenant</Btn>
+                    <Btn size="sm" kind="sec" icon={ClipboardList}
+                      onClick={()=>faire(() => api.cloneContract(c.id), "Contrat dupliqué")}>Dupliquer</Btn>
                   </span>}
                 </div>
 
@@ -389,7 +405,7 @@ function Contracts({ tpms, db, can, notify, onChange }){
               const b = { tpm_id:editCtr.tpm_id, ref:editCtr.ref,
                 ceiling:n(editCtr.ceiling), currency:(editCtr.currency||"MGA").toUpperCase(),
                 start_date:editCtr.start_date||null, end_date:editCtr.end_date||null,
-                status:editCtr.status||"actif", note:editCtr.note||null };
+                status:editCtr.status||"draft", note:editCtr.note||null };
               if(editCtr.id) b.rev = editCtr.rev;
               return editCtr.id ? api.updateContract(editCtr.id, b) : api.createContract(b);
             }, "Contrat enregistré")}>Enregistrer</Btn></>}>
@@ -405,8 +421,8 @@ function Contracts({ tpms, db, can, notify, onChange }){
               <Input type="number" value={editCtr.ceiling ?? ""} readOnly={!!editCtr.id}
                 onChange={e=>setEditCtr(p=>({...p,ceiling:e.target.value}))} /></Field>
             <Field label="Statut">
-              <Select value={editCtr.status||"actif"} onChange={e=>setEditCtr(p=>({...p,status:e.target.value}))}
-                options={[["projet","Projet"],["actif","Actif"],["suspendu","Suspendu"],["clos","Clos"]]} /></Field>
+              <Select value={editCtr.status||"draft"} onChange={e=>setEditCtr(p=>({...p,status:e.target.value}))}
+                options={Object.entries(CTR).map(([v,[l]])=>[v,l])} /></Field>
             <Field label="Début"><Input type="date" value={editCtr.start_date||""}
               onChange={e=>setEditCtr(p=>({...p,start_date:e.target.value}))} /></Field>
             <Field label="Fin"><Input type="date" value={editCtr.end_date||""}
@@ -607,7 +623,7 @@ function Budget({ tpms, plans }){
             <tbody>{contrats.map(c=>(
               <tr key={c.id} className="hover:bg-sky-50">
                 <Td className="font-medium text-slate-800">{c.tpm}</Td>
-                <Td className="f115">{c.ref} <Badge tone={c.status==="actif"?"g":"n"}>{c.status}</Badge></Td>
+                <Td className="f115">{c.ref} <Badge tone={(CTR[c.status]||["","n"])[1]}>{(CTR[c.status]||[c.status])[0]}</Badge></Td>
                 <Td num>{fmt(Math.round(c.solde.ceiling))}</Td>
                 <Td num className={c.solde.avenants ? "font-semibold" : "text-slate-400"}>
                   {c.solde.avenants ? (c.solde.avenants>0?"+":"")+fmt(Math.round(c.solde.avenants)) : "—"}</Td>
@@ -652,7 +668,7 @@ function PlanModal({ open, plan, tpms, db, me, can, busy, setBusy, notify, onClo
   /* ── Création ── */
   if(plan._nouveau){
     const tpm = tpms.find(x => x.id === neuf.tpm_id);
-    const contrats = (tpm?.contrats || []).filter(c => c.status === "actif");
+    const contrats = (tpm?.contrats || []).filter(c => c.status === "validated");
     return (
       <Modal open onClose={onClose} title="Nouveau plan mensuel"
         subtitle="Un plan couvre un prestataire et un mois. Le contrat fixe le barème et le plafond."
@@ -671,7 +687,7 @@ function PlanModal({ open, plan, tpms, db, me, can, busy, setBusy, notify, onClo
             <Select value={neuf.tpm_id||""} disabled={!!me?.tpm_id}
               onChange={e=>setNeuf(p=>({...p,tpm_id:e.target.value,contract_id:""}))}
               empty="Choisir" options={tpms.map(x=>[x.id,x.name])} /></Field>
-          <Field label="Contrat" hint={!contrats.length ? "Aucun contrat actif pour ce prestataire" : "Barème et plafond"}>
+          <Field label="Contrat" hint={!contrats.length ? "Aucun contrat validé pour ce prestataire" : "Barème et plafond"}>
             <Select value={neuf.contract_id||""} onChange={e=>setNeuf(p=>({...p,contract_id:e.target.value}))}
               empty="Choisir" options={contrats.map(c=>[c.id,
                 `${c.ref} — disponible ${fmt(Math.round(c.solde.disponible))} ${c.currency}`])} /></Field>

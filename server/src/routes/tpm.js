@@ -151,9 +151,19 @@ const contractSchema = z.object({
      du module, donc avant que le pays courant soit connu. */
   currency: z.string().trim().length(3).optional(),
   start_date:S(10), end_date:S(10),
-  status: z.enum(["projet","actif","suspendu","clos"]).default("actif"),
+  /* Le cycle de vie du contrat (migration 040). Un contrat naît « draft » ;
+     « validated » est le seul état opérationnel — celui qui reçoit des plans. */
+  status: z.enum(["draft","submitted","validated","canceled","template"]).default("draft"),
   note:S(600), rev: z.coerce.number().int().min(1).optional(),
 });
+
+/* Le vocabulaire du cycle, pour les libellés et les gestes. Exposé au client via
+   le référentiel des plans (GET /plans) pour que l'écran n'ait pas à le redéfinir. */
+export const CONTRACT_STATUSES = ["draft","submitted","validated","canceled","template"];
+const CONTRACT_STATUS_LABEL = {
+  draft:"Brouillon", submitted:"Soumis", validated:"Validé",
+  canceled:"Annulé", template:"Modèle",
+};
 
 r.post("/contracts", requireCap("admin"), async (req, res) => {
   const p = contractSchema.safeParse(req.body);
@@ -220,6 +230,62 @@ r.post("/contracts/:id/amendments", requireCap("admin"), async (req, res) => {
   await audit(req, "tpm_contract", c.id, "update",
     `Avenant ${b.ref || ""} au contrat ${c.ref} : ${b.delta > 0 ? "+" : ""}${b.delta} ${c.currency} — ${b.reason}`);
   res.status(201).json({ ok:true, id, solde: await contractBalance(c.id) });
+});
+
+/* ── Le cycle de vie du contrat ──────────────────────────────────────
+   Changer le statut est un geste à part, distinct de la modification des champs :
+   c'est ce que la liste ligne à ligne propose en un clic. La seule règle dure —
+   un contrat qui porte des plans ne peut pas quitter « validé », sinon ces plans
+   perdraient le contrat sur lequel ils reposent. « Modèle » est un brouillon
+   sauvegardé : on le range là, on le duplique ensuite pour repartir d'une base. */
+r.put("/contracts/:id/status", requireCap("admin"), async (req, res) => {
+  const c = await db.prepare("SELECT * FROM tpm_contract WHERE id=?").get(req.params.id);
+  if(!c) return res.status(404).json({ error:"contrat introuvable" });
+  const p = z.object({ status: z.enum(CONTRACT_STATUSES) }).safeParse(req.body);
+  if(!p.success) return res.status(422).json({ error:"statut invalide" });
+  const nouveau = p.data.status;
+  if(nouveau === c.status) return res.json({ ok:true, status:nouveau });
+
+  if(c.status === "validated" && nouveau !== "validated"){
+    const plans = (await db.prepare("SELECT COUNT(*) c FROM tpm_plan WHERE contract_id=?").get(c.id)).c;
+    if(plans) return res.status(409).json({
+      error:`ce contrat porte ${plans} plan(s) : il ne peut quitter « validé » sans les laisser sans contrat. `
+        + "Clôturez ou supprimez d'abord les plans concernés." });
+  }
+  await db.prepare("UPDATE tpm_contract SET status=?, rev=rev+1, updated_at=now() WHERE id=?")
+    .run(nouveau, c.id);
+  await audit(req, "tpm_contract", c.id, "update",
+    `Contrat ${c.ref} : ${CONTRACT_STATUS_LABEL[c.status] || c.status} → ${CONTRACT_STATUS_LABEL[nouveau]}`);
+  res.json({ ok:true, status:nouveau });
+});
+
+/* Dupliquer un contrat — le geste qui rend un « modèle » utile : on repart de sa
+   base (plafond, devise, période, barème, périmètre) plutôt que d'une page
+   blanche. La copie naît « draft », avec une référence dérivée, et sans avenants
+   ni plans : ceux-là appartiennent à l'original, pas au modèle. */
+r.post("/contracts/:id/clone", requireCap("admin"), async (req, res) => {
+  const c = await db.prepare("SELECT * FROM tpm_contract WHERE id=?").get(req.params.id);
+  if(!c) return res.status(404).json({ error:"contrat introuvable" });
+  /* Une référence libre parmi « <ref> (copie) », « <ref> (copie 2) »… */
+  let ref = `${c.ref} (copie)`;
+  for(let i = 2; await db.prepare("SELECT 1 FROM tpm_contract WHERE tpm_id=? AND ref=?").get(c.tpm_id, ref); i++)
+    ref = `${c.ref} (copie ${i})`;
+
+  const id = newId("tct");
+  await tx(async (db) => {
+    await db.prepare(`INSERT INTO tpm_contract (id,tpm_id,ref,ceiling,currency,start_date,end_date,
+                status,note,updated_at) VALUES (?,?,?,?,?,?,?,'draft',?,now())`)
+      .run(id, c.tpm_id, ref, c.ceiling, c.currency, c.start_date, c.end_date, c.note);
+    const rates = await db.prepare("SELECT * FROM tpm_rate WHERE contract_id=?").all(c.id);
+    const insR = db.prepare(`INSERT INTO tpm_rate (id,contract_id,driver,label,unit,unit_cost,active,sort)
+                             VALUES (?,?,?,?,?,?,?,?)`);
+    for(const x of rates) await insR.run(newId("trt"), id, x.driver, x.label, x.unit, x.unit_cost, x.active, x.sort);
+    const zones = await db.prepare("SELECT geo_pcode FROM tpm_contract_zone WHERE contract_id=?").all(c.id);
+    const insZ = db.prepare("INSERT INTO tpm_contract_zone (contract_id,geo_pcode) VALUES (?,?)");
+    for(const zn of zones) await insZ.run(id, zn.geo_pcode);
+  });
+  await audit(req, "tpm_contract", id, "create", `Contrat ${ref} dupliqué depuis ${c.ref}`);
+  res.status(201).json({ ok:true, id, ref });
 });
 
 /* ── Le périmètre géographique du contrat ────────────────────────────
@@ -358,7 +424,8 @@ r.get("/plans", async (req, res) => {
     },
     /* Ma file d'attente : les plans que je peux valider tout de suite. */
     aValider: rows.filter(p => p.actions.valider).map(p => p.id),
-    referentiel: { transitions: TRANSITIONS },
+    referentiel: { transitions: TRANSITIONS,
+      contractStatuses: CONTRACT_STATUSES.map(s => ({ value:s, label:CONTRACT_STATUS_LABEL[s] })) },
   });
 });
 
@@ -439,8 +506,9 @@ r.post("/plans", requireCap("edit"), async (req, res) => {
   const c = await db.prepare("SELECT * FROM tpm_contract WHERE id=? AND tpm_id=?")
     .get(b.contract_id, b.tpm_id);
   if(!c) return res.status(404).json({ error:"contrat introuvable pour ce prestataire" });
-  if(c.status !== "actif") return res.status(409).json({
-    error:`le contrat ${c.ref} est « ${c.status} » : aucun plan ne peut s'y rattacher` });
+  if(c.status !== "validated") return res.status(409).json({
+    error:`le contrat ${c.ref} est « ${CONTRACT_STATUS_LABEL[c.status] || c.status} » : `
+      + "seul un contrat validé peut recevoir des plans" });
   if(await db.prepare("SELECT 1 FROM tpm_plan WHERE tpm_id=? AND year=? AND month=?")
       .get(b.tpm_id, b.year, b.month))
     return res.status(409).json({ error:"un plan existe déjà pour ce prestataire et ce mois" });

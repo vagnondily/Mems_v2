@@ -60,8 +60,8 @@ test("périmètre TPM : un plan n'affecte que des zones que le contrat confie", 
 
   /* Un contrat actif du jeu de démonstration, et un plan neuf pour un mois
      libre (2031-01 n'est pas semé). */
-  const contrat = await db.prepare("SELECT id, tpm_id, ref FROM tpm_contract WHERE status='actif' LIMIT 1").get();
-  assert.ok(contrat, "le jeu de démonstration porte un contrat actif");
+  const contrat = await db.prepare("SELECT id, tpm_id, ref FROM tpm_contract WHERE status='validated' LIMIT 1").get();
+  assert.ok(contrat, "le jeu de démonstration porte un contrat validé");
   const plan = await request(app).post("/api/tpm/plans").set(H())
     .send({ tpm_id:contrat.tpm_id, contract_id:contrat.id, year:2031, month:0 });
   assert.equal(plan.status, 201, JSON.stringify(plan.body));
@@ -122,4 +122,64 @@ test("périmètre TPM : un plan n'affecte que des zones que le contrat confie", 
   assert.equal(vider.body.zones.length, 0);
   assert.equal((await poserZone(commB.pcode)).status, 200,
     "sans périmètre, la commune B repasse");
+});
+
+test("cycle de vie du contrat : draft → validated, plans réservés au validé, modèle et duplication", async () => {
+  const tpm = await db.prepare("SELECT id FROM tpm LIMIT 1").get();
+
+  /* Un contrat neuf naît « draft ». */
+  const cre = await request(app).post("/api/tpm/contracts").set(H())
+    .send({ tpm_id:tpm.id, ref:"CYCLE-01", ceiling:5_000_000, currency:"MGA" });
+  assert.equal(cre.status, 201, JSON.stringify(cre.body));
+  const cid = cre.body.id;
+  assert.equal((await db.prepare("SELECT status FROM tpm_contract WHERE id=?").get(cid)).status, "draft");
+
+  /* Aucun plan ne se rattache à un brouillon. */
+  const refusPlan = await request(app).post("/api/tpm/plans").set(H())
+    .send({ tpm_id:tpm.id, contract_id:cid, year:2032, month:2 });
+  assert.equal(refusPlan.status, 409, JSON.stringify(refusPlan.body));
+  assert.match(refusPlan.body.error, /validé/);
+
+  /* On le valide, et le plan passe. */
+  const valide = await request(app).put(`/api/tpm/contracts/${cid}/status`).set(H())
+    .send({ status:"validated" });
+  assert.equal(valide.status, 200, JSON.stringify(valide.body));
+  const plan = await request(app).post("/api/tpm/plans").set(H())
+    .send({ tpm_id:tpm.id, contract_id:cid, year:2032, month:2 });
+  assert.equal(plan.status, 201, JSON.stringify(plan.body));
+
+  /* Un contrat qui porte un plan ne peut plus quitter « validé ». */
+  const refusStatut = await request(app).put(`/api/tpm/contracts/${cid}/status`).set(H())
+    .send({ status:"draft" });
+  assert.equal(refusStatut.status, 409, JSON.stringify(refusStatut.body));
+  assert.match(refusStatut.body.error, /plan/);
+
+  /* On donne au contrat un barème et un périmètre, puis on le duplique : la copie
+     naît « draft », reprend barème et périmètre, sans plan ni avenant. */
+  await request(app).put(`/api/tpm/contracts/${cid}/rates`).set(H())
+    .send({ rates:[{ driver:"superviseur", label:"Indemnité", unit:"pers-jour", unit_cost:70000 }] });
+  const commune = await db.prepare("SELECT pcode FROM geo_unit WHERE level='adm3' ORDER BY path LIMIT 1").get();
+  await request(app).put(`/api/tpm/contracts/${cid}/zones`).set(H()).send({ zones:[commune.pcode] });
+
+  const clone = await request(app).post(`/api/tpm/contracts/${cid}/clone`).set(H()).send({});
+  assert.equal(clone.status, 201, JSON.stringify(clone.body));
+  assert.match(clone.body.ref, /\(copie\)/);
+  const copie = clone.body.id;
+  assert.equal((await db.prepare("SELECT status FROM tpm_contract WHERE id=?").get(copie)).status, "draft");
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM tpm_rate WHERE contract_id=?").get(copie)).c, 1,
+    "le barème est repris dans la copie");
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM tpm_contract_zone WHERE contract_id=?").get(copie)).c, 1,
+    "le périmètre est repris dans la copie");
+  assert.equal((await db.prepare("SELECT COUNT(*) c FROM tpm_plan WHERE contract_id=?").get(copie)).c, 0,
+    "les plans, eux, restent à l'original");
+
+  /* La copie (sans plan) peut être rangée comme modèle. */
+  const modele = await request(app).put(`/api/tpm/contracts/${copie}/status`).set(H())
+    .send({ status:"template" });
+  assert.equal(modele.status, 200, JSON.stringify(modele.body));
+  assert.equal((await db.prepare("SELECT status FROM tpm_contract WHERE id=?").get(copie)).status, "template");
+
+  /* Le référentiel des statuts est servi à l'écran. */
+  const ref = await request(app).get("/api/tpm/plans").set(H());
+  assert.ok(ref.body.referentiel.contractStatuses.some(s => s.value==="template" && s.label==="Modèle"));
 });

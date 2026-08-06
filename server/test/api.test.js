@@ -2653,7 +2653,7 @@ test("TPM : prestataire, contrat et barème — le budget dérive de l'affectati
 
   const c = await request(app).post("/api/tpm/contracts").set("Authorization", `Bearer ${adminToken}`)
     .send({ tpm_id:tpmCtx.tpm, ref:"CTR-ESSAI-01", ceiling:10_000_000, currency:"MGA",
-            start_date:"2026-01-01", end_date:"2026-12-31" });
+            status:"validated", start_date:"2026-01-01", end_date:"2026-12-31" });
   assert.equal(c.status, 201);
   tpmCtx.contract = c.body.id;
 
@@ -3033,7 +3033,7 @@ test("TPM : le plafond ne se modifie pas en place, seulement par avenant", async
   const avant = (await db.prepare("SELECT ceiling FROM tpm_contract WHERE id=?").get(tpmCtx.contract)).ceiling;
   const r = await request(app).put(`/api/tpm/contracts/${tpmCtx.contract}`)
     .set("Authorization", `Bearer ${adminToken}`)
-    .send({ ref:"CTR-ESSAI-01", ceiling: avant * 10, currency:"MGA", status:"actif" });
+    .send({ ref:"CTR-ESSAI-01", ceiling: avant * 10, currency:"MGA", status:"validated" });
   assert.equal(r.status, 200);
   assert.ok(/avenant/.test(r.body.avertissement || ""), r.body.avertissement);
   assert.equal((await db.prepare("SELECT ceiling FROM tpm_contract WHERE id=?").get(tpmCtx.contract)).ceiling,

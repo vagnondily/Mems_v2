@@ -636,7 +636,7 @@ if(info){
                                  VALUES (?,?,?,?,?,?,1,now())`);
       const insCtr = db.prepare(`INSERT INTO tpm_contract
         (id,tpm_id,ref,ceiling,currency,start_date,end_date,status,note,updated_at)
-        VALUES (?,?,?,?,'MGA',?,?,'actif',?,now())`);
+        VALUES (?,?,?,?,'MGA',?,?,'validated',?,now())`);
       const insRate = db.prepare(`INSERT INTO tpm_rate
         (id,contract_id,driver,label,unit,unit_cost,active,sort) VALUES (?,?,?,?,?,?,1,?)`);
       const insPlan = db.prepare(`INSERT INTO tpm_plan
