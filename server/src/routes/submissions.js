@@ -169,7 +169,7 @@ r.post("/submissions/rattacher", requireCap("admin"), async (req, res) => {
     toutes: z.boolean().default(false),
   }).safeParse(req.body || {});
   if(!p.success) return res.status(422).json({ error: "demande de rattachement invalide" });
-  const bilan = rejouerRattachement({ ids: p.data.ids || null,
+  const bilan = await rejouerRattachement({ ids: p.data.ids || null,
     seulementNonResolues: !p.data.toutes, office_id: await officeBound(req.user) });
   await audit(req, "rattacher", null,
     `Rattachement rejoué — ${bilan.examinees} examinée(s), ${bilan.rattachees} rattachée(s), `

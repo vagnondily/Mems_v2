@@ -130,7 +130,7 @@ const caseload = {
   seed: async ({ year, units, tags }) => {
     const out = [];
     for(const u of units){
-      const l = labelsFor(u.pcode);
+      const l = await labelsFor(u.pcode);
       for(const tag of ["", ...tags]){
         const cur = await db.prepare(`SELECT * FROM caseload
           WHERE geo_pcode=? AND year=? AND activity_tag=? AND month IS NULL`).get(u.pcode, year, tag);
@@ -232,7 +232,7 @@ const pdd = {
           x.tonnage, x.amount, x.benef_actual, x.received, x.distributed, x.status, cur.id);
         modifies++;
       } else {
-        const l = labelsFor(x.geo_pcode);
+        const l = await labelsFor(x.geo_pcode);
         await ins.run(newId("pdd"), x.year, x.month, x.act_type,
           x.act_type === "GD" ? "URT_GD" : "URT_PREV", ctx.officeId || null,
           x.bureau || "—", x.geo_pcode, l.adm1 || null, l.adm2 || null, l.adm3 || null,
@@ -246,7 +246,7 @@ const pdd = {
   seed: async ({ year, units }) => {
     const out = [];
     for(const u of units){
-      const l = labelsFor(u.pcode);
+      const l = await labelsFor(u.pcode);
       const rows = await db.prepare(`SELECT * FROM pdd WHERE geo_pcode=? AND year=? ORDER BY month`)
         .all(u.pcode, year);
       if(rows.length){

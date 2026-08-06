@@ -370,7 +370,7 @@ test("collections : la synchronisation crée, met à jour et supprime en une tra
   assert.equal((await db.prepare("SELECT COUNT(*) c FROM report_templates").get()).c, rows.length);
 
   /* Suppression explicite. */
-  const aSupprimer = await db.prepare("SELECT id FROM report_templates").all()
+  const aSupprimer = (await db.prepare("SELECT id FROM report_templates").all())
     .map(x => x.id).slice(1);
   const dernier = (await request(app).get("/api/state").set("Authorization", `Bearer ${adminToken}`))
     .body.reportTemplates;
@@ -6952,7 +6952,9 @@ const { encrypt } = await import("../src/lib/crypto.js");
 const { execFileSync: execDump } = await import("node:child_process");
 const listerDump = (chemin) => {
   const sortie = execDump("pg_restore", ["--list", chemin], { encoding:"utf8" });
-  return (sortie.match(/; \d+; \d+ \d+ TABLE DATA /g) || []).length;
+  /* Format d'une entrée : « <id>; <n> <n> TABLE DATA <schéma> <table> <owner> ».
+     Un seul « ; », le séparateur avant TABLE DATA est une espace. */
+  return (sortie.match(/ TABLE DATA /g) || []).length;
 };
 
 /* Le `jti` est dans la charge utile du jeton : le lire évite de deviner
@@ -7428,13 +7430,18 @@ test("administration : aucune route ne laisse sortir un secret", async () => {
      Ce qui compte est qu'il n'y ait RIEN EN CLAIR : bcrypt d'un côté, AES-GCM
      de l'autre, et la clé de déchiffrement dans l'environnement, jamais dans
      le fichier. Un sauvegarde volée ne rend pas un jeton ODK. */
-  const octets = fs.readFileSync(path.join(dossierSauvegardes(), s.nom));
-  assert.ok(!octets.includes(Buffer.from(EN_CLAIR)),
+  /* Le dump `pg_dump -Fc` est COMPRESSÉ : on ne peut pas y chercher une chaîne
+     à l'octet. On le restitue en SQL clair (`pg_restore -f -`, sans connexion à
+     une base) et on cherche dans ce texte — l'équivalent Postgres du grep sur le
+     fichier SQLite. */
+  const sql = execDump("pg_restore", ["-f", "-", path.join(dossierSauvegardes(), s.nom)],
+    { encoding:"utf8", maxBuffer: 512 * 1024 * 1024 });
+  assert.ok(!sql.includes(EN_CLAIR),
     "le jeton en clair ne doit apparaître nulle part dans la sauvegarde");
-  assert.ok(!octets.includes(Buffer.from("MotDePasseTest2026")),
+  assert.ok(!sql.includes("MotDePasseTest2026"),
     "aucun mot de passe en clair dans la sauvegarde");
-  assert.ok(octets.includes(Buffer.from(chiffre)), "le chiffré, lui, est bien sauvegardé");
-  assert.ok(octets.includes(Buffer.from(empreinte)), "l'empreinte bcrypt aussi");
+  assert.ok(sql.includes(chiffre), "le chiffré, lui, est bien sauvegardé");
+  assert.ok(sql.includes(empreinte), "l'empreinte bcrypt aussi");
   /* Ce sont les VALEURS des clés qu'on cherche, pas leurs noms : « DATA_KEY »
      apparaît légitimement dans du code de script stocké en base, et confondre
      les deux ferait échouer le test sans rien prouver. Si ces deux valeurs sont
