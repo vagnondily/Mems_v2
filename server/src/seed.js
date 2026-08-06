@@ -221,12 +221,19 @@ if(info){
        périmètre des 6 fichiers de cette conversion. */
     await writeVersion({ label:"Jeu de démonstration", source:"seed.js", units });
 
-    const insInd = db.prepare(`INSERT INTO indicators (id,code,name,basket,unit,target,direction,method,frequency)
-                               VALUES (?,?,?,?,?,?,?,?,?)`);
+    /* Le NIVEAU de cadre de résultats. Sans lui, un indicateur n'apparaît sous
+       aucun onglet de la masterlist (l'écran filtre par niveau), même s'il est
+       bien en base et servi aux rapports. Les indicateurs de service et de
+       traitement sont des OUTPUTS ; tout le reste (consommation, adaptation,
+       nutrition, résilience) relève de l'OUTCOME. */
+    const CODES_OUTPUT = new Set(["MAMR","MAMD","SAMR","PLW","COV","ADH"]);
+    const niveauInd = (code) => CODES_OUTPUT.has(code) ? "output" : "outcome";
+    const insInd = db.prepare(`INSERT INTO indicators (id,code,name,basket,unit,target,direction,method,frequency,level)
+                               VALUES (?,?,?,?,?,?,?,?,?,?)`);
     const indId = {};
     for(const i of INDICATORS){
       const id = newId("ind"); indId[i[0]] = id;
-      await insInd.run(id, ...i);
+      await insInd.run(id, ...i, niveauInd(i[0]));
     }
 
     const insSite = db.prepare(`INSERT INTO sites

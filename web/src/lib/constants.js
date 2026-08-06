@@ -161,6 +161,12 @@ const D_INDICATORS = [
   /* ── Résilience et avoirs ── */
   { id:"ABI",   name:"Indice de bénéfice des avoirs communautaires créés ou réhabilités",       unit:"idx",target:3,  dir:"up",   basket:"Résilience et avoirs",    method:"Suivi des actifs", freq:"Annuel" },
 ];
+/* Niveau de cadre de résultats d'un indicateur : les indicateurs de service et
+   de traitement sont des OUTPUTS, tout le reste des OUTCOMES. Sans niveau, un
+   indicateur n'apparaît sous aucun onglet de la masterlist. Une seule règle,
+   partagée par l'amorçage hors-ligne (seed) et miroir de celle du serveur. */
+const CODES_INDIC_OUTPUT = new Set(["MAMR","MAMD","SAMR","PLW","COV","ADH"]);
+const niveauIndicateur = (code) => CODES_INDIC_OUTPUT.has(code) ? "output" : "outcome";
 
 /* Le prévu et le réalisé ne sont pas deux sujets mais deux vues du même sujet :
    le premier niveau suit désormais les deux métiers réellement distincts. */
@@ -362,4 +368,4 @@ function coverageRows(db, category, scope){
     cumul: { active: Math.max(0,...active), plan: plan.reduce((t,x)=>t+x,0), actual: actual.reduce((t,x)=>t+x,0) } };
 }
 
-export { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, CSS, DURATIONS, D_ADJUST, D_FORMULAS, D_INDICATORS, D_MMR, D_MODALITY, D_OFFICES, D_PARTNERS, D_POI_SUB, D_ROLES, D_SCORING, D_SECURITY, D_STATUS, D_TAGS, D_URBAN, D_WEIGHTS, MODALITY_TYPES, MONITORING_TYPES, MONTHS, MONTHS_L, PROG_AREAS, SERIES, SITE_TYPES, TABS_ALL, TAB_ADMIN, caseloadScore, coverageRows, destinationsAutorisees, siteDerived, sitePriority };
+export { ACT_CATEGORIES, C, CALC_VARS, CAT_TO_AREA, CSS, DURATIONS, D_ADJUST, D_FORMULAS, D_INDICATORS, D_MMR, D_MODALITY, D_OFFICES, D_PARTNERS, D_POI_SUB, D_ROLES, D_SCORING, D_SECURITY, D_STATUS, D_TAGS, D_URBAN, D_WEIGHTS, MODALITY_TYPES, MONITORING_TYPES, MONTHS, MONTHS_L, PROG_AREAS, SERIES, SITE_TYPES, TABS_ALL, TAB_ADMIN, caseloadScore, coverageRows, destinationsAutorisees, niveauIndicateur, siteDerived, sitePriority };

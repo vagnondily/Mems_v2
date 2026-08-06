@@ -1,7 +1,7 @@
 import { Note } from "../components/ui.jsx";
 import { rate, seedPDD } from "../views/Planning.jsx";
 import { n, r1, r5, uid } from "./calc.js";
-import { ACT_CATEGORIES, CAT_TO_AREA, DURATIONS, D_FORMULAS, D_INDICATORS, D_MMR, D_MODALITY, D_OFFICES, D_PARTNERS, D_POI_SUB, D_ROLES, D_SCORING, D_TAGS, D_WEIGHTS, MONITORING_TYPES, MONTHS, PROG_AREAS, SITE_TYPES } from "./constants.js";
+import { ACT_CATEGORIES, CAT_TO_AREA, DURATIONS, D_FORMULAS, D_INDICATORS, D_MMR, D_MODALITY, D_OFFICES, D_PARTNERS, D_POI_SUB, D_ROLES, D_SCORING, D_TAGS, D_WEIGHTS, MONITORING_TYPES, MONTHS, PROG_AREAS, SITE_TYPES, niveauIndicateur } from "./constants.js";
 
 /* ══════════════════ Jeu de données initial ══════════════════ */
 const GEO = [
@@ -128,7 +128,7 @@ function seedDB(){
 
   return {
     year, sites, params, visits, outputs, outcomes, audit,
-    indicators: JSON.parse(JSON.stringify(D_INDICATORS)),
+    indicators: D_INDICATORS.map(o => ({ ...o, level: o.level || niveauIndicateur(o.id) })),
     population: GEO.map(g => ({ key:g[2], level:"adm2", base: 40000+Math.floor(Math.random()*160000), rate: 2.7, values:{} }))
       .filter((v,i,a)=>a.findIndex(x=>x.key===v.key)===i),
     pdd: seedPDD(),
