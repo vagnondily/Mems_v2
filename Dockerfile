@@ -1,5 +1,5 @@
 # ── Étape 1 : compilation du frontend ────────────────────────────────
-FROM node:20-bookworm-slim AS web
+FROM node:22-bookworm-slim AS web
 WORKDIR /app/web
 COPY web/package*.json ./
 RUN npm ci
@@ -9,13 +9,13 @@ RUN npm run build
 # ── Étape 2 : dépendances du serveur ─────────────────────────────────
 # `pg` est un client JavaScript pur — contrairement à better-sqlite3, plus
 # aucun compilateur natif (python3/make/g++) n'est nécessaire ici.
-FROM node:20-bookworm-slim AS deps
+FROM node:22-bookworm-slim AS deps
 WORKDIR /app/server
 COPY server/package*.json ./
 RUN npm ci --omit=dev
 
 # ── Étape 3 : image finale ───────────────────────────────────────────
-FROM node:20-bookworm-slim AS runtime
+FROM node:22-bookworm-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 

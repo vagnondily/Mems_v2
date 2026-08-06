@@ -12,18 +12,18 @@
   "dependencies": {
     "leaflet": "^1.9.4",
     "lucide-react": "^0.446.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "recharts": "^2.12.7"
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "recharts": "^2.15.4"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.1",
+    "@vitejs/plugin-react": "^6.0.0",
     "autoprefixer": "^10.5.4",
     "esbuild": "^0.28.1",
     "jsdom": "^25.0.0",
     "postcss": "^8.5.25",
     "tailwindcss": "^3.4.19",
-    "vite": "^5.4.8"
+    "vite": "^8.0.0"
   },
-  "comment:audit": "Les avis npm audit restants (esbuild imbriqué dans vite ; vite : path traversal des deps optimisées et contournement de server.fs.deny) ne concernent QUE le serveur de DÉVELOPPEMENT de vite (vite dev / preview). En production, MEMS sert le résultat statique de `vite build` via Express — le serveur de dev de vite n'y tourne jamais, l'impact est donc nul. Les corriger imposerait vite 8 (rupture) ; forcer esbuild casse le build de vite 5 (essayé). On documente au lieu de casser. Dépréciations restantes : whatwg-encoding (jsdom, tests) et recharts@2 (v3 = migration majeure) — pas des vulnérabilités."
+  "comment:audit": "vite 8 embarque un esbuild corrigé et ferme les avis dev-server de vite 5 (path traversal / server.fs.deny). Dépréciations restantes, sans vulnérabilité : whatwg-encoding (via jsdom, tests) et recharts@2 (v3 = migration majeure de l'API des graphiques). React et react-dom sont en 19."
 }
