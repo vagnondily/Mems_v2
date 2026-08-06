@@ -14,10 +14,12 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
-import { db, migrate, integrity } from "./db.js";
+import { db, migrate, integrity, envStore } from "./db.js";
 import { log } from "./lib/logger.js";
 import { backfillFromLegacy } from "./lib/geo.js";
 import { authenticate } from "./lib/auth.js";
+import { initMiroir, miroirActif } from "./lib/miroir.js";
+import miroirRoutes from "./routes/miroir.js";
 import authRoutes from "./routes/auth.js";
 import stateRoutes from "./routes/state.js";
 import siteRoutes from "./routes/sites.js";
@@ -53,6 +55,9 @@ await migrate(path.join(here, "..", "migrations"));
    on le reprend une seule fois vers l'arbre, sinon le référentiel apparaîtrait vide. */
 const _geoBackfill = await backfillFromLegacy();
 if(_geoBackfill) log.info("référentiel repris depuis l'ancienne table", _geoBackfill);
+/* Le miroir (mode test) survit-il d'un démarrage à l'autre ? On aligne le
+   drapeau mémoire sur la présence réelle du schéma test. */
+await initMiroir();
 
 export const app = express();
 app.disable("x-powered-by");
@@ -131,56 +136,77 @@ app.get("/api/health", async (req, res) => {
     version:"1.0.0", uptime: Math.round(process.uptime()), database: i });
 });
 
+/* ── Routage vers le MIROIR (mode test) ─────────────────────────────────
+   Une requête entre dans le bac à sable quand elle le demande explicitement
+   (en-tête X-MEMS-Env: test) ET qu'un miroir existe. Le contexte asynchrone
+   ainsi posé fait router toutes les requêtes SQL de ce handler vers le schéma
+   test (voir db.js). Placé APRÈS `authenticate` dans chaque montage de route :
+   l'authentification — sessions, comptes — se lit TOUJOURS en production, jamais
+   dans le miroir, sinon la session courante (créée après l'instantané) n'y
+   figurerait pas et la requête serait rejetée à tort. */
+const mirror = (req, res, next) =>
+  miroirActif() && req.get("X-MEMS-Env") === "test"
+    ? envStore.run({ schema:"test" }, () => next())
+    : next();
+const authMirror = [authenticate, mirror];
+
+/* L'administration du miroir se fait TOUJOURS sur la production : ce montage
+   n'inclut donc pas `mirror`. Lecture de l'état ouverte à tout compte, gestion
+   réservée au super-utilisateur (le routeur pose son propre garde). */
+app.use("/api/miroir", authenticate, miroirRoutes);
+
 app.use("/api/auth", authRoutes);
-app.use("/api", authenticate, stateRoutes);
-app.use("/api/sites", authenticate, siteRoutes);
-app.use("/api/geo", authenticate, geoRoutes);
-app.use("/api/users", authenticate, userRoutes);
-app.use("/api/offices", authenticate, officeRoutes);
-app.use("/api/activities", authenticate, activityRoutes);
+app.use("/api", authMirror, stateRoutes);
+app.use("/api/sites", authMirror, siteRoutes);
+app.use("/api/geo", authMirror, geoRoutes);
+app.use("/api/users", authMirror, userRoutes);
+app.use("/api/offices", authMirror, officeRoutes);
+app.use("/api/activities", authMirror, activityRoutes);
 /* Les listes paramétrables typées — une route pour onze référentiels, dont
    les activités ci-dessus, présentées sous une forme commune (lib/listes.js).
    Lecture ouverte : l'application a besoin des libellés partout. */
-app.use("/api/listes", authenticate, listeRoutes);
-app.use("/api/country", authenticate, countryRoutes);
-app.use("/api/analytics", authenticate, analyticsRoutes);
-app.use("/api/caseload", authenticate, caseloadRoutes);
-app.use("/api/targeting", authenticate, targetingRoutes);
-app.use("/api/import", authenticate, importRoutes);
-app.use("/api", authenticate, odkRoutes);
+app.use("/api/listes", authMirror, listeRoutes);
+app.use("/api/country", authMirror, countryRoutes);
+app.use("/api/analytics", authMirror, analyticsRoutes);
+app.use("/api/caseload", authMirror, caseloadRoutes);
+app.use("/api/targeting", authMirror, targetingRoutes);
+app.use("/api/import", authMirror, importRoutes);
+app.use("/api", authMirror, odkRoutes);
 /* Suite immédiate du tirage ODK : `odk-forms/:id/pull` remplit le cache,
    `submissions/ingest` en tire des lignes rattachées à des sites. */
-app.use("/api", authenticate, submissionRoutes);
+app.use("/api", authMirror, submissionRoutes);
 /* Les codes externes des sites : monté sous /api et APRÈS le routeur des sites,
    parce qu'il sert « /sites/:id/aliases » — deux segments, que `/:id` du routeur
    des sites ne capte pas, et qui lui reviennent donc naturellement. */
-app.use("/api", authenticate, aliasRoutes);
+app.use("/api", authMirror, aliasRoutes);
 /* Les référentiels de codes d'identification — les listes que le bureau tient à
    part et sans lesquelles SMP ne se rattache à rien. Données de référence
    NATIONALES, sans bureau propriétaire : lecture ouverte, écriture sous
    « admin », cloisonnement au seul endroit où des sites sont touchés. */
-app.use("/api/code-referentiels", authenticate, codeRoutes);
+app.use("/api/code-referentiels", authMirror, codeRoutes);
 /* Indicateurs de suivi de processus, extraits des XLSForms : référentiel de
    référence, lecture ouverte, alimenté par le renflouement « données réelles ».
    Le tableau de bord en calcule la performance. */
-app.use("/api/process-indicators", authenticate, processIndicatorRoutes);
-app.use("/api", authenticate, xlsformRoutes);
+app.use("/api/process-indicators", authMirror, processIndicatorRoutes);
+app.use("/api", authMirror, xlsformRoutes);
 /* Connecteurs et correspondance des variables : monté sous /api comme les deux
    précédents, dont il prolonge le travail — le XLSForm dit ce que la source
    contient, le connecteur dit ce que MEMS en retient. */
-app.use("/api", authenticate, connectorRoutes);
+app.use("/api", authMirror, connectorRoutes);
 /* Exécution des scripts R et SPSS. Désactivée tant qu'aucun interpréteur n'est
    déclaré, et réservée au super-utilisateur : le routeur pose lui-même son
-   garde, monter la route ne l'ouvre donc à personne. Voir lib/moteur.js. */
+   garde, monter la route ne l'ouvre donc à personne. Voir lib/moteur.js.
+   Reste en PRODUCTION (pas de `mirror`) : ces scripts s'exécutent sur le
+   serveur et ne sont pas un geste de bac à sable. */
 app.use("/api/scripts", authenticate, scriptRoutes);
 /* Administration de l'INSTANCE — sessions, journal de sécurité, santé du
    fichier de base, sauvegarde et restauration. Distincte de l'administration
    du contenu (/api/users, /api/offices…), ouverte aux administrateurs : ce
    routeur-ci pose lui-même `requireSuper` sur sa totalité. */
 app.use("/api/admin", authenticate, adminRoutes);
-app.use("/api/mre", authenticate, mreRoutes);
-app.use("/api/tpm", authenticate, tpmRoutes);
-app.use("/api", authenticate, collectionRoutes);
+app.use("/api/mre", authMirror, mreRoutes);
+app.use("/api/tpm", authMirror, tpmRoutes);
+app.use("/api", authMirror, collectionRoutes);
 
 /* En production le serveur sert aussi le frontend compilé. */
 const webDist = path.join(here, "..", "..", "web", "dist");

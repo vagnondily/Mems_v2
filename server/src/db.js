@@ -1,6 +1,7 @@
 import pg from "pg";
 import fs from "node:fs";
 import path from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { config } from "./config.js";
 import { log } from "./lib/logger.js";
 
@@ -36,11 +37,46 @@ export const pool = new pg.Pool({
   max: config.dbPoolMax,
 });
 
-pool.on("error", (err) => {
-  /* Une erreur sur une connexion IDLE du pool (réseau coupé, base redémarrée) :
-     elle ne doit pas faire planter le process, seulement se signaler. */
-  log.error("erreur inattendue sur une connexion inactive du pool pg", { message: err.message });
+/* ── Le pool du MIROIR (mode test) ──────────────────────────────────────
+   Le mode test est un environnement miroir : un instantané de la production
+   cloné dans le schéma `test` de la MÊME base (mêmes tables, mêmes clés
+   étrangères, mêmes données au moment du clic), où l'on peut écrire sans
+   toucher à la production. Ce second pool ne diffère du premier que par son
+   `search_path` fixé à `test` : chaque connexion résout donc les noms de
+   table non qualifiés dans le schéma miroir, sans qu'aucune des ~600 requêtes
+   de l'application n'ait à être réécrite. `pg_catalog` reste implicitement en
+   tête du chemin, donc les fonctions natives (now(), etc.) restent trouvables.
+   Tant que le miroir n'est pas activé, ce pool n'est jamais sollicité — ses
+   connexions inactives ne coûtent rien. */
+export const poolTest = new pg.Pool({
+  connectionString: config.databaseUrl,
+  max: config.dbPoolMax,
+  options: "-c search_path=test",
 });
+
+/* Le schéma actif de la requête EN COURS, porté par le contexte asynchrone.
+   Un middleware l'établit sur `test` quand la requête demande explicitement le
+   miroir (en-tête X-MEMS-Env: test) ET que le miroir existe ; partout ailleurs
+   le contexte est absent et l'on tombe sur la production. AsyncLocalStorage
+   propage cette valeur à travers tous les `await` de la requête sans qu'aucun
+   point d'appel n'ait à la transmettre. */
+export const envStore = new AsyncLocalStorage();
+
+/* Le pool à employer POUR CETTE REQUÊTE : le miroir si le contexte le dit, la
+   production sinon. Résolu à chaque requête (et non à la préparation), car des
+   modules préparent leurs `db.prepare(...)` au chargement, bien avant qu'une
+   requête n'ait choisi son schéma. */
+function poolActif(){
+  return envStore.getStore()?.schema === "test" ? poolTest : pool;
+}
+
+for(const [nom, p] of [["production", pool], ["miroir", poolTest]])
+  p.on("error", (err) => {
+    /* Une erreur sur une connexion IDLE du pool (réseau coupé, base redémarrée) :
+       elle ne doit pas faire planter le process, seulement se signaler. */
+    log.error(`erreur inattendue sur une connexion inactive du pool pg (${nom})`,
+      { message: err.message });
+  });
 
 /* `?` → `$1, $2, …` — un seul endroit traduit la syntaxe, mis en cache par
    texte de requête pour ne pas répéter le travail à chaque appel.
@@ -70,11 +106,15 @@ function normalizeArgs(args){
   return args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
 }
 
-/* Reproduit `db.prepare(sql)` : un exécuteur (le pool, ou un client de
-   transaction) suffit à fabriquer les trois méthodes attendues partout. */
-function statement(executor, sql){
+/* Reproduit `db.prepare(sql)`. L'exécuteur est fourni par une FONCTION appelée
+   à chaque requête, non capturé une fois pour toutes : c'est ce qui permet au
+   `db` global de router vers la production ou vers le miroir selon le contexte
+   de la requête en cours, alors même que le `db.prepare(...)` a pu être écrit
+   au chargement du module. Une transaction, elle, passe une fonction constante
+   (son client dédié) — elle reste liée à sa connexion. */
+function statement(getExecutor, sql){
   const text = translate(sql);
-  const query = (args) => executor.query(text, normalizeArgs(args));
+  const query = (args) => getExecutor().query(text, normalizeArgs(args));
   return {
     all: async (...args) => (await query(args)).rows,
     get: async (...args) => (await query(args)).rows[0],
@@ -85,24 +125,28 @@ function statement(executor, sql){
   };
 }
 
-function makeDb(executor){
+function makeDb(getExecutor){
   return {
-    prepare: (sql) => statement(executor, sql),
-    exec: (sql) => executor.query(sql),
+    prepare: (sql) => statement(getExecutor, sql),
+    exec: (sql) => getExecutor().query(sql),
   };
 }
 
-export const db = makeDb(pool);
+/* Le `db` global route par requête : production par défaut, miroir quand le
+   contexte asynchrone le demande. */
+export const db = makeDb(poolActif);
 
 /* Remplace `db.transaction(fn)` (synchrone, better-sqlite3) : extrait un
    client DÉDIÉ du pool pour que BEGIN…COMMIT porte sur une seule connexion.
    `fn` reçoit un objet `db`-compatible lié à ce client, pas le pool global —
    c'est ce qui rend la transaction atomique. */
 export async function tx(fn){
-  const client = await pool.connect();
+  /* La transaction s'ouvre sur le pool ACTIF de la requête : dans le miroir,
+     elle porte donc sur le schéma test, isolée de la production. */
+  const client = await poolActif().connect();
   try{
     await client.query("BEGIN");
-    const result = await fn(makeDb(client));
+    const result = await fn(makeDb(() => client));
     await client.query("COMMIT");
     return result;
   }catch(e){
@@ -168,4 +212,4 @@ export async function integrity(){
   }
 }
 
-export async function close(){ await pool.end(); }
+export async function close(){ await Promise.all([pool.end(), poolTest.end()]); }
