@@ -6,8 +6,9 @@ import { requireCap, can } from "../lib/auth.js";
 import { isNational, officeBound, tpmBound } from "../lib/scope.js";
 import { currentVersion } from "../lib/geo.js";
 import { localCurrency } from "../lib/country.js";
-import { contractBalance, lineTotal, modifiable, niveauAttendu, planAmount, planDetail,
-         regenerate, suggestZones, TRANSITIONS } from "../lib/tpm.js";
+import { contractBalance, contractZones, contractZoneSet, lineTotal, modifiable, niveauAttendu,
+         planAmount, planDetail, regenerate, suggestZones, TRANSITIONS,
+         zoneDansPerimetre } from "../lib/tpm.js";
 
 /* ═══════════════════════════════════════════════════════════════════════
    Suivi tiers — contrats, affectation, budget, validation, dépenses.
@@ -66,6 +67,10 @@ r.get("/", async (req, res) => {
     const contrats = await Promise.all(contratsRaw.map(async c => ({ id:c.id, ref:c.ref, currency:c.currency, status:c.status,
         start_date:c.start_date, end_date:c.end_date, note:c.note || "", rev:c.rev,
         solde: await contractBalance(c.id),
+        /* Le périmètre géographique confié par ce contrat — ce que le détail
+           montre comme « communes/districts affectés », et ce dans quoi ses
+           plans mensuels pourront puiser. */
+        zones: await contractZones(c.id),
         rates: (await db.prepare("SELECT * FROM tpm_rate WHERE contract_id=? ORDER BY sort, label")
           .all(c.id)).map(x => ({ id:x.id, driver:x.driver, label:x.label, unit:x.unit || "",
             unit_cost:x.unit_cost, active:!!x.active, sort:x.sort })),
@@ -217,6 +222,47 @@ r.post("/contracts/:id/amendments", requireCap("admin"), async (req, res) => {
   res.status(201).json({ ok:true, id, solde: await contractBalance(c.id) });
 });
 
+/* ── Le périmètre géographique du contrat ────────────────────────────
+   Les communes (ou districts) que le contrat confie au prestataire. Défini à la
+   conception du contrat ; les plans mensuels n'y puisent ensuite que ce qui leur
+   est ouvert (voir PUT /plans/:id/zones). */
+r.get("/contracts/:id/zones", async (req, res) => {
+  const c = await db.prepare("SELECT id FROM tpm_contract WHERE id=?").get(req.params.id);
+  if(!c) return res.status(404).json({ error:"contrat introuvable" });
+  res.json({ zones: await contractZones(c.id) });
+});
+
+/* Remplacé en bloc, comme le barème : l'écran a le périmètre entier sous les
+   yeux. On n'admet que des unités du référentiel courant ; le niveau (district
+   ou commune) est libre — assigner un district ouvrira toutes ses communes. */
+r.put("/contracts/:id/zones", requireCap("admin"), async (req, res) => {
+  const c = await db.prepare("SELECT * FROM tpm_contract WHERE id=?").get(req.params.id);
+  if(!c) return res.status(404).json({ error:"contrat introuvable" });
+  const p = z.object({ zones: z.array(z.string().trim().min(1).max(64)).max(3000) })
+    .safeParse(req.body);
+  if(!p.success) return res.status(422).json({ error:"périmètre invalide" });
+
+  const v = await currentVersion();
+  if(!v) return res.status(409).json({ error:"aucun référentiel courant" });
+  const connus = new Set((await db.prepare(
+    "SELECT pcode FROM geo_unit WHERE version_id=?").all(v.id)).map(x => x.pcode));
+  const pcodes = [...new Set(p.data.zones)];          /* dédoublonnés */
+  const inconnus = pcodes.filter(pc => !connus.has(pc));
+  if(inconnus.length) return res.status(422).json({
+    error:"certaines unités sont absentes du référentiel courant",
+    details: inconnus.slice(0, 10).map(pc => ({ champ:"geo_pcode", message:pc })) });
+
+  await tx(async (db) => {
+    await db.prepare("DELETE FROM tpm_contract_zone WHERE contract_id=?").run(c.id);
+    const ins = db.prepare("INSERT INTO tpm_contract_zone (contract_id,geo_pcode) VALUES (?,?)");
+    for(const pc of pcodes) await ins.run(c.id, pc);
+  });
+  const zones = await contractZones(c.id);
+  await audit(req, "tpm_contract", c.id, "update",
+    `Périmètre du contrat ${c.ref} : ${zones.length} zone(s) éligible(s)`);
+  res.json({ ok:true, zones });
+});
+
 /* Le barème, remplacé en bloc : c'est une grille tarifaire, on la relit et on la
    réécrit d'un tenant. Les plans déjà validés ne sont pas recalculés — leurs
    lignes portent le coût unitaire du jour où ils ont été montés. */
@@ -322,6 +368,9 @@ r.get("/plans/:id", async (req, res) => {
   const p = await planDetail(g.plan.id);
   p.actions = await actionsFor(req, p);
   p.solde = await contractBalance(g.plan.contract_id);
+  /* Le périmètre du contrat, pour que l'éditeur de zones borne son sélecteur aux
+     communes éligibles plutôt que d'offrir tout le référentiel. */
+  p.eligibleZones = await contractZones(g.plan.contract_id);
   res.json({ plan:p });
 });
 
@@ -438,12 +487,26 @@ r.put("/plans/:id/zones", requireCap("edit"), async (req, res) => {
 
   const v = await currentVersion();
   if(!v) return res.status(409).json({ error:"aucun référentiel courant" });
-  const connus = new Set((await db.prepare("SELECT pcode FROM geo_unit WHERE version_id=?")
-    .all(v.id)).map(x => x.pcode));
-  const inconnus = p.data.zones.filter(z => !connus.has(z.geo_pcode));
+  /* Le chemin matérialisé de chaque unité sert à décider de l'appartenance au
+     périmètre du contrat (une commune sous un district affecté est éligible). */
+  const chemins = Object.fromEntries((await db.prepare(
+    "SELECT pcode, path FROM geo_unit WHERE version_id=?").all(v.id)).map(x => [x.pcode, x.path]));
+  const inconnus = p.data.zones.filter(z => !(z.geo_pcode in chemins));
   if(inconnus.length) return res.status(422).json({
     error:"certaines zones sont absentes du référentiel courant",
     details:inconnus.slice(0,10).map(z => ({ champ:"geo_pcode", message:z.geo_pcode })) });
+
+  /* Le périmètre du contrat : les plans n'y puisent que ce qui leur est ouvert.
+     Un périmètre vide ne borne rien (le contrat n'a pas déclaré ses zones). Sinon
+     chaque zone doit tomber dans une commune/district éligible — sans quoi le
+     refus NOMME les zones hors périmètre, pour qu'on sache lesquelles retirer. */
+  const eligible = await contractZoneSet(plan.contract_id);
+  const horsPerimetre = p.data.zones.filter(
+    z => !zoneDansPerimetre(z.geo_pcode, chemins[z.geo_pcode], eligible));
+  if(horsPerimetre.length) return res.status(422).json({
+    error:"certaines zones sont hors du périmètre géographique du contrat ; "
+      + "elles doivent faire partie des communes (ou districts) que le contrat confie au prestataire",
+    details:horsPerimetre.slice(0,10).map(z => ({ champ:"geo_pcode", message:z.geo_pcode })) });
   /* Deux fois la même zone pour la même activité, c'est un doublon de saisie —
      et le budget serait compté deux fois sans que rien ne le signale. */
   const clés = p.data.zones.map(z => z.geo_pcode + "|" + (z.activity_tag || ""));
@@ -679,11 +742,23 @@ r.get("/suggest", async (req, res) => {
     year: z.coerce.number().int().min(2000).max(2100).default(new Date().getFullYear()),
     month: z.coerce.number().int().min(0).max(11).default(new Date().getMonth()),
     office_id: z.string().max(64).optional(),
+    /* Optionnel : borne les suggestions au périmètre d'un contrat. L'écran
+       d'affectation le passe pour n'offrir que des communes éligibles. */
+    contract_id: z.string().max(64).optional(),
   }).safeParse(req.query);
   if(!q.success) return res.status(422).json({ error:"filtres invalides" });
   const bureau = (await officeBound(req.user)) || q.data.office_id || null;
-  res.json({ year:q.data.year, month:q.data.month,
-    rows: await suggestZones({ year:q.data.year, month:q.data.month, officeId:bureau }) });
+  let rows = await suggestZones({ year:q.data.year, month:q.data.month, officeId:bureau });
+  if(q.data.contract_id){
+    const eligible = await contractZoneSet(q.data.contract_id);
+    if(eligible.size){
+      const v = await currentVersion();
+      const chemins = v ? Object.fromEntries((await db.prepare(
+        "SELECT pcode, path FROM geo_unit WHERE version_id=?").all(v.id)).map(x => [x.pcode, x.path])) : {};
+      rows = rows.filter(z => zoneDansPerimetre(z.geo_pcode, chemins[z.geo_pcode], eligible));
+    }
+  }
+  res.json({ year:q.data.year, month:q.data.month, rows });
 });
 
 export default r;

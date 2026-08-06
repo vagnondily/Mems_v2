@@ -161,6 +161,43 @@ export async function planDetail(planId){
   };
 }
 
+/* ── Le périmètre géographique d'un contrat ──────────────────────────
+   Les communes (ou districts) que le contrat confie au prestataire. C'est ici
+   que se décide, une fois, ce dans quoi les plans mensuels pourront puiser.
+
+   `contractZones` rend la liste résolue pour l'affichage (nom de commune, son
+   district parent, le niveau). `contractZoneSet` rend l'ensemble brut des
+   pcodes, pour l'application de la règle : une zone de plan est admise si son
+   pcode OU l'un de ses ancêtres (chemin geo_unit) y figure — assigner un
+   district ouvre ainsi toutes ses communes. Un ensemble VIDE ne borne rien. */
+export async function contractZones(contractId, exec = db){
+  const rows = await exec.prepare(
+    "SELECT geo_pcode FROM tpm_contract_zone WHERE contract_id=? ORDER BY geo_pcode").all(contractId);
+  if(!rows.length) return [];
+  const v = await currentVersion();
+  const info = v ? Object.fromEntries((await exec.prepare(
+    `SELECT u.pcode, u.name, u.level, p.name parent FROM geo_unit u
+     LEFT JOIN geo_unit p ON p.version_id=u.version_id AND p.pcode=u.parent_pcode
+     WHERE u.version_id=?`).all(v.id)).map(x => [x.pcode, x])) : {};
+  return rows.map(r => { const u = info[r.geo_pcode];
+    return { geo_pcode:r.geo_pcode, zone: u?.name || r.geo_pcode,
+      district: u?.parent || "", level: u?.level || "" }; });
+}
+
+export async function contractZoneSet(contractId, exec = db){
+  return new Set((await exec.prepare(
+    "SELECT geo_pcode FROM tpm_contract_zone WHERE contract_id=?").all(contractId)).map(r => r.geo_pcode));
+}
+
+/* Une zone (commune) est-elle dans le périmètre `eligible` ? Vraie si son pcode
+   ou l'un de ses ancêtres du chemin matérialisé y figure. `path` a la forme
+   « MG/MG81/MG81101/MG81101001 » : chacun de ses segments est un ancêtre. */
+export function zoneDansPerimetre(pcode, path, eligible){
+  if(!eligible.size) return true;                 /* aucun périmètre = pas de borne */
+  if(eligible.has(pcode)) return true;
+  return String(path || "").split("/").some(seg => seg && eligible.has(seg));
+}
+
 /* ── Le solde d'un contrat ───────────────────────────────────────────
    « Combien reste-t-il ? » est la question à laquelle le plafond sert à répondre.
    Elle n'a de sens que si l'on distingue trois choses :

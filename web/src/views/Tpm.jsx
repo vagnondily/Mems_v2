@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Banknote, Building2, CalendarRange, Check, ChevronRight, ClipboardList, Download,
-         FileText, Pencil, Plus, RefreshCw, Save, Send, Target, Trash2, Wallet, X } from "lucide-react";
+         FileText, MapPin, Pencil, Plus, RefreshCw, Save, Send, Target, Trash2, Wallet, X } from "lucide-react";
 import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow,
          TableWrap, Td, Th, download, inputCls, toCSV } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
@@ -201,12 +201,13 @@ function Contracts({ tpms, db, can, notify, onChange }){
   const [editCtr, setEditCtr] = useState(null);
   const [rates, setRates]     = useState(null);   /* { contrat, lignes } */
   const [aven, setAven]       = useState(null);
+  const [zonesCtr, setZonesCtr] = useState(null); /* contrat dont on édite le périmètre */
   const [busy, setBusy]       = useState(false);
 
   const faire = async (fn, message) => {
     setBusy(true);
     try{ await fn(); await onChange(); notify(message, "ok");
-      setEditTpm(null); setEditCtr(null); setRates(null); setAven(null); }
+      setEditTpm(null); setEditCtr(null); setRates(null); setAven(null); setZonesCtr(null); }
     catch(e){ notify(e.message, "err"); }
     setBusy(false);
   };
@@ -251,6 +252,8 @@ function Contracts({ tpms, db, can, notify, onChange }){
                     <Btn size="sm" kind="sec" icon={Pencil} onClick={()=>setEditCtr({ ...c, tpm_id:t.id })}>Contrat</Btn>
                     <Btn size="sm" kind="sec" icon={Wallet}
                       onClick={()=>setRates({ contrat:c, lignes:c.rates.map(x=>({ ...x })) })}>Barème</Btn>
+                    <Btn size="sm" kind="sec" icon={MapPin}
+                      onClick={()=>setZonesCtr({ contrat:c, zones:(c.zones||[]).map(z=>({ ...z })) })}>Périmètre</Btn>
                     <Btn size="sm" kind="sec" icon={FileText} onClick={()=>setAven({ contrat:c })}>Avenant</Btn>
                   </span>}
                 </div>
@@ -321,6 +324,26 @@ function Contracts({ tpms, db, can, notify, onChange }){
                       <div key={a.id+"r"} className="f105 text-slate-500 mt-1">
                         <b>{a.ref || "avenant"}</b> — {a.reason}</div>))}
                   </div>
+                </div>
+
+                {/* Le périmètre géographique confié par le contrat. Vide = aucune
+                    borne ; sinon les plans mensuels n'affectent que ces zones. */}
+                <div className="mt-3 pt-3 border-t border-slate-100">
+                  <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-1.5">
+                    Périmètre géographique — {(c.zones||[]).length
+                      ? `${c.zones.length} zone(s) éligible(s)` : "non borné"}</div>
+                  {!(c.zones||[]).length
+                    ? <div className="f115 text-slate-400">Aucune zone déclarée : les plans peuvent
+                        affecter n'importe quelle commune du référentiel. Bornez le contrat avec
+                        « Périmètre » pour ne confier au prestataire que les communes prévues.</div>
+                    : <div className="flex flex-wrap gap-1.5">
+                        {c.zones.map(z => (
+                          <span key={z.geo_pcode}
+                            className="inline-flex items-center gap-1 f105 rounded-full bg-slate-100 px-2 py-0.5 text-slate-700">
+                            {z.level==="adm2" && <Badge tone="n">district</Badge>}
+                            {z.zone}{z.district ? <span className="text-slate-400">· {z.district}</span> : null}
+                          </span>))}
+                      </div>}
                 </div>
               </div>))}
         </Card>))}
@@ -458,7 +481,99 @@ function Contracts({ tpms, db, can, notify, onChange }){
             <Input value={aven.reason||""} onChange={e=>setAven(p=>({...p,reason:e.target.value}))} /></Field>
         </>)}
       </Modal>
+
+      {/* Périmètre géographique du contrat */}
+      <PerimetreModal etat={zonesCtr} onClose={()=>setZonesCtr(null)} busy={busy}
+        onSave={(pcodes)=>faire(() => api.saveContractZones(zonesCtr.contrat.id, pcodes),
+          "Périmètre enregistré")} />
     </>);
+}
+
+/* ── Le périmètre géographique d'un contrat ──────────────────────────
+   On confie au contrat des communes (ou des districts entiers). La source est le
+   référentiel courant, cherché à la frappe ; les unités déjà retenues sont
+   montrées à part et se retirent d'un clic. Assigner un district ouvre toutes ses
+   communes (le serveur applique la règle par héritage du chemin). */
+function PerimetreModal({ etat, onClose, onSave, busy }){
+  const [choisies, setChoisies] = useState([]);
+  const [niveau, setNiveau]     = useState("adm3");
+  const [q, setQ]               = useState("");
+  const [res, setRes]           = useState([]);
+  const [charge, setCharge]     = useState(false);
+
+  useEffect(() => { setChoisies(etat ? (etat.zones||[]).map(z=>({ ...z })) : []); setQ(""); setRes([]); }, [etat]);
+  useEffect(() => {
+    if(!etat) return;
+    let vif = true; setCharge(true);
+    const t = setTimeout(async () => {
+      try{
+        const params = new URLSearchParams({ level:niveau, limit:"200" });
+        if(q.trim()) params.set("search", q.trim());
+        const r = await api.geo(`?${params}`);
+        if(vif) setRes(r.rows || []);
+      }catch{ if(vif) setRes([]); }
+      finally{ if(vif) setCharge(false); }
+    }, 250);
+    return () => { vif = false; clearTimeout(t); };
+  }, [etat, niveau, q]);
+
+  const retenues = new Set(choisies.map(z => z.geo_pcode));
+  const ajouter = (u) => { if(retenues.has(u.pcode)) return;
+    setChoisies(p => [...p, { geo_pcode:u.pcode, zone:u.name, district:u.p3 || u.p2 || "", level:u.level }]); };
+  const retirer = (pcode) => setChoisies(p => p.filter(z => z.geo_pcode !== pcode));
+
+  return (
+    <Modal open={!!etat} wide onClose={onClose}
+      title={etat ? `Périmètre du contrat ${etat.contrat.ref}` : ""}
+      subtitle="Les communes ou districts que ce contrat confie au prestataire — les plans mensuels n'y puisent que ce qui y figure"
+      footer={<><Btn kind="sec" onClick={onClose}>Annuler</Btn>
+        <Btn icon={Save} disabled={busy}
+          onClick={()=>onSave(choisies.map(z => z.geo_pcode))}>Enregistrer le périmètre</Btn></>}>
+      {etat && (<>
+        <Note>Un périmètre <b>vide</b> ne borne rien. Assigner un <b>district</b> ouvre toutes ses
+          communes. C'est un choix de conception du contrat : il vaut pour tous ses plans mensuels.</Note>
+        <div className="grid gap-4 mt-3" style={{gridTemplateColumns:"1fr 1fr"}}>
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <Select value={niveau} onChange={e=>setNiveau(e.target.value)}
+                options={[["adm3","Communes"],["adm2","Districts"]]} />
+              <Input placeholder="Chercher une unité…" value={q} onChange={e=>setQ(e.target.value)} />
+            </div>
+            <div className="border border-slate-200 rounded-lg overflow-y-auto" style={{maxHeight:"46vh"}}>
+              {charge && !res.length
+                ? <div className="f115 text-slate-400 p-3">Recherche…</div>
+                : !res.length
+                  ? <div className="f115 text-slate-400 p-3">Aucune unité.</div>
+                  : res.map(u => (
+                    <button key={u.pcode} onClick={()=>ajouter(u)} disabled={retenues.has(u.pcode)}
+                      className={clsx("flex items-center gap-2 w-full text-left px-3 py-1.5 f115 border-b border-slate-100 last:border-0",
+                        retenues.has(u.pcode) ? "opacity-40 cursor-default" : "hover:bg-slate-50")}>
+                      <Plus size={13} className="text-slate-400 shrink-0"/>
+                      <span className="text-slate-700">{u.name}</span>
+                      <span className="text-slate-400 f105 ml-auto">{u.p3 || u.p2 || u.p1 || ""}</span>
+                    </button>))}
+            </div>
+          </div>
+          <div>
+            <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">
+              Retenues — {choisies.length}</div>
+            <div className="border border-slate-200 rounded-lg overflow-y-auto" style={{maxHeight:"46vh"}}>
+              {!choisies.length
+                ? <div className="f115 text-slate-400 p-3">Aucune zone retenue : le contrat ne bornera rien.</div>
+                : choisies.map(z => (
+                  <div key={z.geo_pcode}
+                    className="flex items-center gap-2 px-3 py-1.5 f115 border-b border-slate-100 last:border-0">
+                    {z.level==="adm2" && <Badge tone="n">district</Badge>}
+                    <span className="text-slate-700">{z.zone}</span>
+                    {z.district && <span className="text-slate-400 f105">· {z.district}</span>}
+                    <button onClick={()=>retirer(z.geo_pcode)} className="ml-auto text-slate-400 hover:text-rose-600">
+                      <X size={14}/></button>
+                  </div>))}
+            </div>
+          </div>
+        </div>
+      </>)}
+    </Modal>);
 }
 
 /* ── Suivi budgétaire consolidé ──────────────────────────────────────*/
@@ -628,6 +743,9 @@ function PlanModal({ open, plan, tpms, db, me, can, busy, setBusy, notify, onClo
   const chargerSugg = async () => {
     try{
       const q = new URLSearchParams({ year:String(plan.year), month:String(plan.month) });
+      /* Bornées au périmètre du contrat : l'écran ne propose que des communes que
+         le contrat confie au prestataire (le serveur le refuserait autrement). */
+      if(plan.contract_id) q.set("contract_id", plan.contract_id);
       const r = await api.tpmSuggest("?" + q);
       setSugg(r.rows || []);
     }catch(e){ notify(e.message, "err"); }
