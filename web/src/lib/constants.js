@@ -117,17 +117,49 @@ const D_PARTNERS = ["Partenaire A","Partenaire B","Partenaire C","Partenaire D",
 const D_ADJUST = [["none","Aucun ajustement"],["up","Extension de la couverture"],["down","Réduction de la couverture"],["new","Nouveau ciblage"]];
 
 /* Masterlist d'indicateurs de résultat, entièrement modifiable dans les paramètres */
+/* Le référentiel standard d'indicateurs de sécurité alimentaire et de nutrition,
+   assimilé des cadres institutionnels (CARI/PAM, IPC/CH, FANTA, indicateurs OMS
+   d'ANJE). Les CODES sont des identifiants valides — sans tiret ni espace — pour
+   pouvoir servir de variables dans les formules d'indicateurs composés. Les
+   cibles sont indicatives, l'écran les laisse ajuster par bureau. */
 const D_INDICATORS = [
-  { id:"FCS",  name:"Score de consommation alimentaire — ménages en consommation acceptable", unit:"%", target:80, dir:"up",   basket:"Consommation alimentaire", method:"Enquête ménage", freq:"Semestriel" },
-  { id:"rCSI", name:"Indice réduit des stratégies d'adaptation",                               unit:"idx",target:12, dir:"down", basket:"Stratégies d'adaptation", method:"Enquête ménage", freq:"Semestriel" },
-  { id:"LCSI", name:"Stratégies d'adaptation des moyens d'existence — aucune stratégie",       unit:"%", target:60, dir:"up",   basket:"Stratégies d'adaptation", method:"Enquête ménage", freq:"Annuel" },
-  { id:"FES",  name:"Part des dépenses consacrées à l'alimentation",                           unit:"%", target:65, dir:"down", basket:"Économie du ménage",      method:"Enquête ménage", freq:"Annuel" },
-  { id:"MAD",  name:"Régime alimentaire minimum acceptable — enfants 6 à 23 mois",             unit:"%", target:35, dir:"up",   basket:"Nutrition",               method:"Enquête ménage", freq:"Annuel" },
-  { id:"MAMR", name:"Taux de guérison du traitement de la malnutrition aiguë modérée",         unit:"%", target:75, dir:"up",   basket:"Nutrition",               method:"Registres des sites", freq:"Mensuel" },
-  { id:"MAMD", name:"Taux d'abandon du traitement de la malnutrition aiguë modérée",           unit:"%", target:15, dir:"down", basket:"Nutrition",               method:"Registres des sites", freq:"Mensuel" },
-  { id:"RET",  name:"Taux de rétention scolaire",                                              unit:"%", target:90, dir:"up",   basket:"Éducation",               method:"Registres scolaires", freq:"Annuel" },
-  { id:"COV",  name:"Couverture du programme de prévention",                                   unit:"%", target:70, dir:"up",   basket:"Couverture",              method:"Enquête de couverture", freq:"Annuel" },
-  { id:"ADH",  name:"Adhérence — participation à un nombre suffisant de distributions",        unit:"%", target:80, dir:"up",   basket:"Couverture",              method:"Suivi post-distribution", freq:"Trimestriel" },
+  /* ── Consommation alimentaire ── */
+  { id:"FCS",   name:"Score de consommation alimentaire — ménages en consommation acceptable", unit:"%", target:80, dir:"up",   basket:"Consommation alimentaire", method:"Enquête ménage", freq:"Semestriel" },
+  { id:"FCGP",  name:"Ménages en consommation alimentaire pauvre (FCS)",                        unit:"%", target:10, dir:"down", basket:"Consommation alimentaire", method:"Enquête ménage", freq:"Semestriel" },
+  { id:"HDDS",  name:"Score de diversité alimentaire des ménages",                              unit:"idx",target:6,  dir:"up",   basket:"Consommation alimentaire", method:"Enquête ménage", freq:"Annuel" },
+  /* ── Stratégies d'adaptation ── */
+  { id:"rCSI",  name:"Indice réduit des stratégies d'adaptation alimentaire",                   unit:"idx",target:12, dir:"down", basket:"Stratégies d'adaptation", method:"Enquête ménage", freq:"Semestriel" },
+  { id:"CSI",   name:"Indice des stratégies d'adaptation (contextuel)",                         unit:"idx",target:20, dir:"down", basket:"Stratégies d'adaptation", method:"Enquête ménage", freq:"Semestriel" },
+  { id:"LCSI",  name:"Stratégies d'adaptation des moyens d'existence — aucune stratégie",       unit:"%", target:60, dir:"up",   basket:"Stratégies d'adaptation", method:"Enquête ménage", freq:"Annuel" },
+  { id:"LCSIE", name:"Ménages recourant à des stratégies de crise ou d'urgence (LCSI)",         unit:"%", target:20, dir:"down", basket:"Stratégies d'adaptation", method:"Enquête ménage", freq:"Annuel" },
+  /* ── Économie du ménage ── */
+  { id:"FES",   name:"Part des dépenses consacrées à l'alimentation",                           unit:"%", target:65, dir:"down", basket:"Économie du ménage",      method:"Enquête ménage", freq:"Annuel" },
+  { id:"ECMEN", name:"Capacité économique à couvrir les besoins essentiels",                    unit:"%", target:60, dir:"up",   basket:"Économie du ménage",      method:"Enquête ménage", freq:"Annuel" },
+  /* ── Faim et vécu de l'insécurité ── */
+  { id:"HHS",   name:"Échelle de la faim des ménages — faim modérée à sévère",                  unit:"%", target:10, dir:"down", basket:"Faim et vécu",           method:"Enquête ménage", freq:"Semestriel" },
+  { id:"FIES",  name:"Insécurité alimentaire vécue — modérée ou sévère (FIES)",                 unit:"%", target:30, dir:"down", basket:"Faim et vécu",           method:"Enquête ménage", freq:"Annuel" },
+  /* ── Synthèse de sécurité alimentaire ── */
+  { id:"CARI",  name:"Ménages en sécurité alimentaire (synthèse CARI)",                         unit:"%", target:60, dir:"up",   basket:"Sécurité alimentaire (synthèse)", method:"Enquête ménage", freq:"Annuel" },
+  /* ── Nutrition — alimentation du jeune enfant et de la femme ── */
+  { id:"MAD",   name:"Régime alimentaire minimum acceptable — enfants 6 à 23 mois",             unit:"%", target:35, dir:"up",   basket:"Nutrition",               method:"Enquête ménage", freq:"Annuel" },
+  { id:"MDD",   name:"Diversité alimentaire minimale — enfants 6 à 23 mois",                    unit:"%", target:50, dir:"up",   basket:"Nutrition",               method:"Enquête ménage", freq:"Annuel" },
+  { id:"MMF",   name:"Fréquence minimale des repas — enfants 6 à 23 mois",                      unit:"%", target:55, dir:"up",   basket:"Nutrition",               method:"Enquête ménage", freq:"Annuel" },
+  { id:"MDDW",  name:"Diversité alimentaire minimale des femmes (15 à 49 ans)",                 unit:"%", target:50, dir:"up",   basket:"Nutrition",               method:"Enquête ménage", freq:"Annuel" },
+  /* ── Nutrition — état nutritionnel et traitement ── */
+  { id:"GAM",   name:"Prévalence de la malnutrition aiguë globale",                             unit:"%", target:5,  dir:"down", basket:"Nutrition",               method:"Enquête nutritionnelle (SMART)", freq:"Annuel" },
+  { id:"SAM",   name:"Prévalence de la malnutrition aiguë sévère",                              unit:"%", target:1,  dir:"down", basket:"Nutrition",               method:"Enquête nutritionnelle (SMART)", freq:"Annuel" },
+  { id:"STUNT", name:"Prévalence du retard de croissance (malnutrition chronique)",             unit:"%", target:25, dir:"down", basket:"Nutrition",               method:"Enquête nutritionnelle (SMART)", freq:"Annuel" },
+  { id:"MAMR",  name:"Taux de guérison du traitement de la malnutrition aiguë modérée",         unit:"%", target:75, dir:"up",   basket:"Nutrition",               method:"Registres des sites", freq:"Mensuel" },
+  { id:"MAMD",  name:"Taux d'abandon du traitement de la malnutrition aiguë modérée",           unit:"%", target:15, dir:"down", basket:"Nutrition",               method:"Registres des sites", freq:"Mensuel" },
+  { id:"SAMR",  name:"Taux de guérison du traitement de la malnutrition aiguë sévère",          unit:"%", target:75, dir:"up",   basket:"Nutrition",               method:"Registres des sites", freq:"Mensuel" },
+  { id:"PLW",   name:"Femmes enceintes et allaitantes recevant un supplément nutritionnel",     unit:"%", target:80, dir:"up",   basket:"Nutrition",               method:"Registres des sites", freq:"Trimestriel" },
+  /* ── Éducation ── */
+  { id:"RET",   name:"Taux de rétention scolaire",                                              unit:"%", target:90, dir:"up",   basket:"Éducation",               method:"Registres scolaires", freq:"Annuel" },
+  /* ── Couverture et adhérence ── */
+  { id:"COV",   name:"Couverture du programme de prévention",                                   unit:"%", target:70, dir:"up",   basket:"Couverture",              method:"Enquête de couverture", freq:"Annuel" },
+  { id:"ADH",   name:"Adhérence — participation à un nombre suffisant de distributions",        unit:"%", target:80, dir:"up",   basket:"Couverture",              method:"Suivi post-distribution", freq:"Trimestriel" },
+  /* ── Résilience et avoirs ── */
+  { id:"ABI",   name:"Indice de bénéfice des avoirs communautaires créés ou réhabilités",       unit:"idx",target:3,  dir:"up",   basket:"Résilience et avoirs",    method:"Suivi des actifs", freq:"Annuel" },
 ];
 
 /* Le prévu et le réalisé ne sont pas deux sujets mais deux vues du même sujet :
