@@ -31,10 +31,17 @@ createuser mems --pwprompt && createdb mems --owner mems
 echo "DATABASE_URL=postgres://mems:<mot de passe>@127.0.0.1:5432/mems" >> .env
 
 npm run install:all
-npm run seed          # crée le schéma, les données d'exemple et le compte administrateur
+npm run seed          # crée le schéma et le compte administrateur (base NUE, prête pour la production)
+SEED_DEMO=1 npm run seed   # variante DÉCOUVERTE : ajoute le jeu de démonstration (bureaux fictifs, 300+ sites)
 npm run seed:reel     # (optionnel) charge les données RÉELLES déposées dans docs/
 npm run dev            # API (http://localhost:4000) et interface (http://localhost:5173) ensemble
 ```
+> **Production vs démonstration.** `npm run seed` crée par défaut une base **nue** : le seul
+> contenu est le compte administrateur, et l'organisation configure ensuite son propre
+> référentiel (bureaux, activités, découpage géographique). Le jeu de démonstration fictif —
+> utile pour découvrir l'outil — ne s'ajoute que si `SEED_DEMO=1` est présent (les tests
+> l'activent automatiquement via `NODE_ENV=test`). Ne définissez **jamais** `SEED_DEMO` sur un
+> déploiement de production.
 `npm run seed:reel` remplit les **tables réelles** à partir des fichiers de `docs/` : les
 **58 tags d'activité** du PAM (« Annex 5 Activity tags »), les **842 indicateurs** de la
 masterlist rangés par nature et par catégorie filtrable (Annex 2 Outcome, Annex 3 Output,

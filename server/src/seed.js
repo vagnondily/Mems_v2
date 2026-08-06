@@ -94,6 +94,16 @@ async function seed(){
   return { plainPassword, generated };
 }
 
+/* ── Données de démonstration : JAMAIS en production ─────────────────────
+   Le jeu factice (bureaux d'Androy, 300+ sites fictifs, contours en rectangles,
+   contrats TPM d'exemple) sert à découvrir l'outil et à alimenter les tests. Une
+   base de production n'en veut pas : elle démarre NUE, avec pour seul contenu le
+   compte administrateur d'amorçage, et l'organisation configure ensuite son
+   propre référentiel. Les tests le réclament (NODE_ENV=test) ; un poste de
+   développement peut l'exiger explicitement (SEED_DEMO=1). Partout ailleurs — la
+   production — le semis s'arrête au compte d'amorçage. */
+const withDemo = process.env.SEED_DEMO === "1" || process.env.NODE_ENV === "test";
+
 const info = await seed();
 if(info){
   const pwHash = await hashPassword(info.plainPassword);
@@ -107,6 +117,7 @@ if(info){
                     /* geo_version efface geo_unit en cascade */
                     "office_scope","geo_version","geo"]) await db.prepare(`DELETE FROM ${t}`).run();
 
+    if(withDemo){
     const officeId = {};
     /* Le bureau central est national : ses staffs voient tous les sites sans être
        administrateurs. Les antennes viennent de ZONES pour rester cohérentes
@@ -741,6 +752,8 @@ if(info){
       }
     }
 
+    } /* fin du jeu de démonstration */
+
     const uid = newId("user");
     await db.prepare(`INSERT INTO users (id,email,pw_hash,first_name,last_name,title,office_id,role,tabs,active,must_change_pw)
                 VALUES (?,?,?,?,?,?,?, 'super', ?, 1, 1)`)
@@ -758,7 +771,8 @@ if(info){
   const counts = (await Promise.all(["offices","activity_categories","sites","site_months","visits","coverage_params",
     "outputs","outcomes","pdd","indicators","geo","users"]
     .map(async t => `${t}=${(await db.prepare(`SELECT COUNT(*) c FROM ${t}`).get()).c}`))).join("  ");
-  log.info("jeu de données initial créé", { tables: counts });
+  log.info(withDemo ? "jeu de démonstration créé" : "base amorcée (production, sans démonstration)",
+    { tables: counts });
   process.stdout.write(
 `\n──────────────────────────────────────────────────────────────
  Compte administrateur initial
