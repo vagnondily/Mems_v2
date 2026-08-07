@@ -5,7 +5,7 @@ import "leaflet/dist/leaflet.css";
 import { C, MONTHS_L, D_SECURITY } from "../lib/constants.js";
 import { fmt, pct, n, r2, clsx } from "../lib/calc.js";
 import { download, toCSV } from "../components/ui.jsx";
-import { Card, Btn, Select, Stat, StatRow, Empty, Note, Bar2, TableWrap, Th, Td, inputCls } from "../components/ui.jsx";
+import { Card, Btn, Select, Stat, StatRow, Empty, Note, Bar2, Modal, TableWrap, Th, Td, inputCls } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
 import { useGeoCascade, names } from "../lib/geo.js";
 import { niveau, niveaux } from "../lib/levels.js";
@@ -52,6 +52,12 @@ const COLOR_MODES = [
   ["activity", "Catégorie d'activité"],
   ["status", "Statut du site"],
 ];
+
+/* Les champs proposés dans la fiche d'un site — l'utilisateur choisit lesquels
+   afficher (préférence personnelle, mémorisée dans le navigateur). L'ordre ici
+   est celui de la fiche. Le libellé de « adm4 » dépend du découpage du pays et se
+   calcule dans le composant. */
+const CHAMPS_DEFAUT = ["emplacement","category","activity_tag","beneficiaries","security","coords","last_visit"];
 
 /* Aplats du fond administratif. « Contours seuls » laisse le fond de carte
    visible : c'est ce qu'il faut quand on regarde les points. Les trois autres
@@ -119,6 +125,32 @@ export default function MapView({ db, me, notify, go }){
      par défaut : la barre ne montre plus que les filtres de sélection, et se
      déplie à la demande — c'est la densité qui gâchait l'écran. */
   const [optAff, setOptAff] = useState(false);
+  const [legendeVisible, setLegendeVisible] = useState(true);
+  /* Champs affichés dans la fiche d'un site, personnalisables et mémorisés dans
+     le navigateur (préférence propre au poste, comme le choix des contours). */
+  const [champsFiche, setChampsFiche] = useState(() => {
+    try{ const s = stockageLocal()?.getItem("carte.champs"); return s ? JSON.parse(s) : CHAMPS_DEFAUT; }
+    catch{ return CHAMPS_DEFAUT; }
+  });
+  const [champsOpen, setChampsOpen] = useState(false);
+  const majChamps = (arr) => { setChampsFiche(arr);
+    try{ stockageLocal()?.setItem("carte.champs", JSON.stringify(arr)); }catch(e){ /* stockage privé */ } };
+  /* Le catalogue des champs disponibles pour la fiche : clé, libellé (celui de
+     « adm4 » suit le découpage du pays) et fonction de valeur. Sert au sélecteur
+     comme au rendu de la fiche, pour qu'ils ne divergent jamais. */
+  const CHAMPS_CATALOGUE = [
+    { k:"emplacement",   l:"Emplacement",     v:s=>[s.adm1,s.adm2,s.adm3].filter(Boolean).join(", ")||"—" },
+    { k:"adm4",          l:niveau(db,"adm4"), v:s=>s.adm4||"—" },
+    { k:"category",      l:"Catégorie",       v:s=>s.category||"—" },
+    { k:"activity_tag",  l:"Activité",        v:s=>s.activity_tag||"—" },
+    { k:"beneficiaries", l:"Bénéficiaires",   v:s=>fmt(s.beneficiaries) },
+    { k:"modality",      l:"Modalité",        v:s=>s.modality||"—" },
+    { k:"partner",       l:"Partenaire",      v:s=>s.partner||"—" },
+    { k:"security",      l:"Sécurité",        v:s=>(D_SECURITY.find(x=>x[0]===s.security)||[])[1]||s.security||"—" },
+    { k:"status",        l:"Statut",          v:s=>s.status||"—" },
+    { k:"coords",        l:"Coordonnées",     v:s=>s.lat==null?"non renseignées":`${r2(s.lat)}, ${r2(s.lon)}` },
+    { k:"last_visit",    l:"Dernière visite", v:s=>s.last_visit||"jamais" },
+  ];
   /* État de chargement des tuiles, pour pouvoir DIRE que le fond n'arrive pas
      au lieu d'afficher un damier vide. C'est le défaut qu'avait la première
      version : silencieuse, elle laissait croire à un bogue de l'application. */
@@ -609,6 +641,11 @@ export default function MapView({ db, me, notify, go }){
               title="Positions relevées au GPS par les formulaires de collecte, distinctes de la position déclarée du site">
               <input type="checkbox" checked={gps} onChange={e=>setGps(e.target.checked)} />
               relevés GPS{releves.count ? ` (${fmt(releves.count)})` : ""}</label>
+            <span className="w-px h-6 bg-slate-300 mx-1" />
+            <label className="flex items-center gap-1.5 f115 text-slate-600">
+              <input type="checkbox" checked={legendeVisible} onChange={e=>setLegendeVisible(e.target.checked)} />
+              légende</label>
+            <Btn size="sm" kind="sec" icon={SlidersHorizontal} onClick={()=>setChampsOpen(true)}>Champs de la fiche…</Btn>
           </div>)}
 
         {error ? <Note tone="err">{error}</Note> : null}
@@ -780,13 +817,15 @@ export default function MapView({ db, me, notify, go }){
                 </div>);
             })()}
 
-            <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">Légende des points</div>
-            <ul className="space-y-1.5 mb-4">
-              {legend.map(([col,label]) => (
-                <li key={label} className="flex items-center gap-2 f115 text-slate-600">
-                  <i className="w-3 h-3 rounded-full inline-block shrink-0" style={{ background:col }} />
-                  <span className="truncate" title={label}>{label}</span></li>))}
-            </ul>
+            {legendeVisible && (<>
+              <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-2">Légende des points</div>
+              <ul className="space-y-1.5 mb-4">
+                {legend.map(([col,label]) => (
+                  <li key={label} className="flex items-center gap-2 f115 text-slate-600">
+                    <i className="w-3 h-3 rounded-full inline-block shrink-0" style={{ background:col }} />
+                    <span className="truncate" title={label}>{label}</span></li>))}
+              </ul>
+            </>)}
 
             {sel ? (
               <>
@@ -795,17 +834,12 @@ export default function MapView({ db, me, notify, go }){
                   <div className="f13 font-semibold text-slate-800">{sel.name}</div>
                   <div className="f11 text-slate-500 mb-2">{sel.code} · {sel.office}</div>
                   <dl className="space-y-1 f115">
-                    {[["Emplacement", [sel.adm1, sel.adm2, sel.adm3].filter(Boolean).join(", ")],
-                      [niveau(db, "adm4"), sel.adm4 || "—"],
-                      ["Catégorie", sel.category || "—"],
-                      ["Activité", sel.activity_tag || "—"],
-                      ["Bénéficiaires", fmt(sel.beneficiaries)],
-                      ["Sécurité", (D_SECURITY.find(x=>x[0]===sel.security)||[])[1] || sel.security],
-                      ["Coordonnées", sel.lat == null ? "non renseignées" : `${r2(sel.lat)}, ${r2(sel.lon)}`],
-                      ["Dernière visite", sel.last_visit || "jamais"]].map(([k,v]) => (
-                      <div key={k} className="flex gap-2">
-                        <dt className="text-slate-500 w-28 shrink-0">{k}</dt>
-                        <dd className="text-slate-800 min-w-0 break-words">{v}</dd></div>))}
+                    {/* Uniquement les champs retenus par l'utilisateur, dans l'ordre
+                        du catalogue — personnalisables via « Champs de la fiche ». */}
+                    {CHAMPS_CATALOGUE.filter(c => champsFiche.includes(c.k)).map(c => (
+                      <div key={c.k} className="flex gap-2">
+                        <dt className="text-slate-500 w-28 shrink-0">{c.l}</dt>
+                        <dd className="text-slate-800 min-w-0 break-words">{c.v(sel)}</dd></div>))}
                   </dl>
                   <div className="mt-3 pt-3 border-t border-slate-100">
                     <div className="flex justify-between f115 text-slate-600 mb-1">
@@ -895,6 +929,22 @@ export default function MapView({ db, me, notify, go }){
             </tr>))}</tbody>
         </TableWrap>
       </Card>
+
+      {/* Personnalisation des champs de la fiche d'un site. */}
+      <Modal open={champsOpen} onClose={()=>setChampsOpen(false)}
+        title="Champs de la fiche d'un site"
+        subtitle="Choisissez les informations affichées au clic sur un site. Ce choix est mémorisé sur ce poste."
+        footer={<><Btn kind="sec" onClick={()=>majChamps(CHAMPS_DEFAUT)}>Réinitialiser</Btn>
+          <Btn onClick={()=>setChampsOpen(false)}>Fermer</Btn></>}>
+        <div className="grid grid-cols-2 gap-x-6 gap-y-1.5">
+          {CHAMPS_CATALOGUE.map(c => (
+            <label key={c.k} className="flex items-center gap-2 f13 text-slate-700 cursor-pointer py-1">
+              <input type="checkbox" checked={champsFiche.includes(c.k)}
+                onChange={e=>majChamps(e.target.checked
+                  ? [...champsFiche, c.k] : champsFiche.filter(x=>x!==c.k))} />
+              {c.l}</label>))}
+        </div>
+      </Modal>
     </div>
   );
 }

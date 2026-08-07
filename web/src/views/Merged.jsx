@@ -8,7 +8,6 @@ import { CoveragePlan, DistributionActual, DistributionPlan, OutcomePlan, Overre
 import { ActualSummary, ImportView, OutcomeData, OutputData, ProcessData,
          Sources } from "./ActualData.jsx";
 import { SitesModule } from "./Settings.jsx";
-import { ProcessDashboard } from "./ProcessDashboard.jsx";
 import MreView from "./Mre.jsx";
 import Soumissions from "./Soumissions.jsx";
 import TpmView from "./Tpm.jsx";
@@ -73,7 +72,7 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go, onglets, vole
   /* Le tableau de bord est mis EN TÊTE, juste avant le résumé global (l'aperçu) :
      c'est la lecture de synthèse la plus consultée, elle doit ressortir en
      premier plutôt que d'être un onglet parmi d'autres. */
-  const items = [["dashboard","Synthèse du suivi"],["summary","Résumé global"],
+  const items = [["summary","Résumé global"],
     ["monitoring","Suivi des sites"],
     ["mre","Plan MRE et budget"],["tpm","Suivi tiers"],
     ["coverage","Couverture et MMR"],
@@ -85,8 +84,6 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go, onglets, vole
       <Tabs items={items} value={sub} onChange={setSub} />
 
       {sub==="summary" && <ActualSummary db={db} />}
-
-      {sub==="dashboard" && <ProcessDashboard db={db} go={go} notify={notify} onglets={onglets} />}
 
       {sub==="monitoring" && (<>
         <Volet value={volet} onChange={setVolet}

@@ -94,7 +94,7 @@ export default function App(){
   /* Suivi-évaluation ouvre sur le tableau de bord (mis en tête dans Merged.jsx) :
      c'est la vue de synthèse la plus consultée, elle est ce qu'on veut voir en
      arrivant plutôt que le résumé global tabulaire. */
-  const [subs, setSubs] = useState({ suivi:"dashboard", programme:"distribution",
+  const [subs, setSubs] = useState({ suivi:"summary", programme:"distribution",
     analytics:"datasets", reports:"extract", settings:"general", admin:"sessions" });
   /* Volet demandé par la dernière navigation, par destination (« plan » / « reel »). */
   const [volets, setVolets] = useState({});
@@ -231,11 +231,10 @@ export default function App(){
     loadState().catch(()=>{});
   }), [loadState, notify]);
 
-  /* L'écran de supervision ouvre directement sur le tableau de bord — c'est sa
-     seule raison d'être (affichage mural permanent). */
-  useEffect(() => { if(me?.role === "dashboard"){
-    setTabState("suivi"); setSubs(s => ({ ...s, suivi:"dashboard" }));
-  } }, [me?.role]);
+  /* L'écran de supervision ouvre directement sur le tableau de bord de premier
+     niveau (destination « viz ») — c'est sa seule raison d'être (affichage mural
+     permanent). Le suivi de processus y est la vue par défaut. */
+  useEffect(() => { if(me?.role === "dashboard"){ setTabState("viz"); } }, [me?.role]);
 
   const onLogin = async (user, token) => {
     setToken(token); setMe(normalizeMe(user)); await loadState(); setPhase("ready");
@@ -379,7 +378,7 @@ export default function App(){
         {view==="programme" && <Programme db={db} set={set} me={me} sub={subs.programme}
           setSub={setSub("programme")} notify={notify} can={can} go={setTab}
           volet={volets.programme} />}
-        {view==="viz" && <TableauDeBord db={db} set={set} notify={notify} can={can} />}
+        {view==="viz" && <TableauDeBord db={db} set={set} notify={notify} can={can} go={setTab} onglets={allowed} />}
         {view==="map" && <MapView db={db} me={me} notify={notify} go={setTab} />}
         {/* `me` sert à l'exécution des scripts sur le serveur : elle est
             réservée au rôle `super` et non à la capacité « admin ». */}

@@ -9,6 +9,7 @@ import { RULE_TYPES, applyFormulas, applyRules, evalFormula, fmt, n, pct, profil
 import { C, MONTHS, SERIES } from "../lib/constants.js";
 import { anneeMoisDe, dateDansPeriode, libelleCourtPeriode, moisDansPeriode,
   normalisePeriode, periodeAnnee } from "../lib/periode.js";
+import { ProcessDashboard } from "./ProcessDashboard.jsx";
 import { BarrePeriode } from "./Reports.jsx";
 import { PageHead } from "./Shell.jsx";
 
@@ -28,17 +29,28 @@ function Analytics({ db, set, me, sub, setSub, notify, can }){
     </div>);
 }
 
-/* Le TABLEAU DE BORD des visualisations, promu en destination de premier niveau
-   (menu du haut) plutôt qu'en sous-onglet des Analyses. Il porte sa propre barre
-   de période et le tableau modifiable (Viz). */
-function TableauDeBord({ db, set, notify, can }){
+/* Le TABLEAU DE BORD, destination de premier niveau (menu du haut). Il réunit
+   DEUX vues :
+   1. « Suivi de processus » — la synthèse consolidée à partir des questionnaires
+      (XLSForms) : c'est la maquette de suivi, affichée par défaut ;
+   2. « Mes visualisations » — le tableau modifiable (Viz), mesures, croisements
+      et indicateurs composés sur la période choisie.
+   Rien n'a disparu : le suivi de processus, jadis sous « Suivi-évaluation », est
+   ici, en tête. */
+function TableauDeBord({ db, set, notify, can, go, onglets }){
+  const [sub,setSub] = useState("processus");
   const [periode,setPeriode] = useState(() => periodeAnnee(db.year));
+  const items = [["processus","Suivi de processus"],["viz","Mes visualisations"]];
   return (
     <div className="space-y-4">
       <PageHead title="Tableau de bord"
-        text="Vos visualisations, modifiables à volonté : mesures, croisements et indicateurs composés, sur la période choisie." />
-      <BarrePeriode db={db} periode={periode} onChange={setPeriode} />
-      <Viz db={db} set={set} periode={periode} notify={notify} can={can} />
+        text="La synthèse du suivi de processus tirée des questionnaires, et vos propres visualisations." />
+      <Tabs items={items} value={sub} onChange={setSub} />
+      {sub==="processus" && <ProcessDashboard db={db} go={go} notify={notify} onglets={onglets} />}
+      {sub==="viz" && (<>
+        <BarrePeriode db={db} periode={periode} onChange={setPeriode} />
+        <Viz db={db} set={set} periode={periode} notify={notify} can={can} />
+      </>)}
     </div>);
 }
 

@@ -200,7 +200,7 @@ const D_ROLES = {
   viewer: { label:"Lecteur",           tabs:["home","suivi","programme","reports"],              edit:false,del:false, validate:false,admin:false, sync:false },
   /* Écran de supervision (kiosque) : lecture seule du tableau de bord, pour un
      affichage mural permanent. Le serveur borne son accès de 07h30 à 18h00. */
-  dashboard:{label:"Écran de supervision", tabs:["suivi"],                                        edit:false,del:false, validate:false,admin:false, sync:false },
+  dashboard:{label:"Écran de supervision", tabs:["viz"],                                          edit:false,del:false, validate:false,admin:false, sync:false },
 };
 
 /* Les destinations réellement ouvertes à un compte, règle unique partagée par
