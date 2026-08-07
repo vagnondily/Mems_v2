@@ -199,7 +199,9 @@ L'audit complet et les durcissements recommandés : **`docs/SECURITE.md`**.
 
 - **En production**, l'API sert aussi l'interface compilée (`web/dist`) : un seul service à exposer,
   derrière un reverse proxy en HTTPS.
-- **Windows Server 2022** (sans Docker) : guide pas-à-pas dans **`docs/WINDOWS.md`**.
+- **Débuter sur un PC Windows, sans rien connaître au développement** : suivez
+  **`docs/DEMARRAGE-WINDOWS-DEBUTANT.md`** — chaque clic et chaque commande y sont expliqués.
+- **Windows Server 2022** (mise en production, sans Docker) : guide pour informaticien dans **`docs/WINDOWS.md`**.
 - **Sauvegarde / restauration**, débogage à la main, matrice des rôles, procédure de mise à jour :
   **`docs/MAINTENANCE.md`**.
 
@@ -225,7 +227,8 @@ cd web    && npm test     # tests de bout en bout de l'interface
 |---|---|
 | **`docs/MAINTENANCE.md`** | Lancer, **déboguer à la main** (logs, base, symptômes → causes), fond de carte, rôles, mise à jour, sauvegarde. |
 | **`docs/SECURITE.md`** | Revue de sécurité complète et durcissements recommandés. |
-| **`docs/WINDOWS.md`** | Déploiement sur Windows Server 2022, sans Docker. |
+| **`docs/DEMARRAGE-WINDOWS-DEBUTANT.md`** | **Lancer MEMS sur un PC Windows, pas à pas, pour un non-développeur.** |
+| **`docs/WINDOWS.md`** | Déploiement sur Windows Server 2022, sans Docker (pour informaticien). |
 | **`docs/UPGRADE.md`** | Notes de montée de version. |
 | **`docs/A_FAIRE.md`** | Analyse fonctionnelle et feuille de route (document de travail). |
 
