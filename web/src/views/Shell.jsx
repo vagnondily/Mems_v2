@@ -284,15 +284,19 @@ function Shell({ db, me, tab, sub, setTab, children, onLogout, sync, notify, onM
 
             Un menu qui duplique une navigation existante en la cassant n'est pas
             à réparer, il est à retirer. */}
-        <nav className="flex items-center gap-0.5 overflow-x-auto">
+        {/* `flex-1 min-w-0` : la barre prend la place restante et DÉFILE en son
+            sein quand les destinations sont trop nombreuses pour l'écran — sans
+            cela, un intitulé de trop (ex. l'ajout du « Tableau de bord ») poussait
+            « Administration » sous le badge d'enregistrement, à droite. */}
+        <nav className="flex items-center gap-0.5 overflow-x-auto flex-1 min-w-0">
           {NAV.filter(x=>allowed.includes(x.id)).map(x => (
             /* Un seul signal pour la destination courante : le filet. Le fond
                teinté et le texte blanc en plus faisaient trois marques pour une
                idée. */
             <button key={x.id} onClick={()=>setTab(x.id)}
-              className={clsx("flex items-center gap-1.5 px-3 h-14 f125 font-semibold whitespace-nowrap border-b-2 transition-colors",
+              className={clsx("flex items-center gap-1.5 px-2.5 h-14 f125 font-semibold whitespace-nowrap border-b-2 transition-colors",
                 tab===x.id ? "border-white text-white" : "border-transparent text-white/65 hover:text-white")}>
-              <x.icon size={15} className={tab===x.id ? "" : "opacity-80"} />{x.label}
+              <x.icon size={14} className={clsx("shrink-0", tab===x.id ? "" : "opacity-80")} />{x.label}
             </button>))}
         </nav>
         <div className="ml-auto flex items-center gap-3 shrink-0">

@@ -861,11 +861,15 @@ function chartEl(type, data, colors, names){
       return <Treemap data={data} dataKey="value" nameKey="name" stroke="#fff"
         content={<TreemapCell palette={pal} />} isAnimationActive={false} />;
     default: /* bar */
+      /* Marge gauche positive (et non le -14 des autres graphes) : les libellés
+         inclinés sont ancrés à droite et débordent vers la gauche ; sans marge, le
+         premier était rogné au bord du cadre. */
       return (
-        <BarChart data={data} margin={m}>{GRID}
-          <XAxis {...AXE_X} interval={0} angle={-18} textAnchor="end" height={52} />
-          <YAxis {...AXE_Y} /><Tooltip {...TIP} />
-          <Bar dataKey="value" radius={[2,2,0,0]}>{cellules(data, pal)}</Bar></BarChart>);
+        <BarChart data={data} margin={{top:6,right:8,left:6,bottom:4}}>{GRID}
+          <XAxis {...AXE_X} interval={0} angle={-18} textAnchor="end" height={54} />
+          <YAxis {...AXE_Y} /><Tooltip {...TIP} />{dual && <Legend wrapperStyle={{fontSize:10.5}} />}
+          <Bar dataKey="value" name={n0} fill={dual?c0:undefined} radius={[2,2,0,0]}>{dual ? null : cellules(data, pal)}</Bar>
+          {dual && <Bar dataKey="value2" name={n1} fill={c1} radius={[2,2,0,0]} />}</BarChart>);
   }
 }
 

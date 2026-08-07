@@ -73,7 +73,7 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go, onglets, vole
   /* Le tableau de bord est mis EN TÊTE, juste avant le résumé global (l'aperçu) :
      c'est la lecture de synthèse la plus consultée, elle doit ressortir en
      premier plutôt que d'être un onglet parmi d'autres. */
-  const items = [["dashboard","Tableau de bord"],["summary","Résumé global"],
+  const items = [["dashboard","Synthèse du suivi"],["summary","Résumé global"],
     ["monitoring","Suivi des sites"],
     ["mre","Plan MRE et budget"],["tpm","Suivi tiers"],
     ["coverage","Couverture et MMR"],

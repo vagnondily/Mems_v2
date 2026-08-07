@@ -352,7 +352,10 @@ const Sw = ({ label, hint, on, onChange, disabled }) => (
       <span className={clsx("absolute top3 w-4 h-4 bg-white rounded-full transition-all", on?"lf21":"lf3")} /></button>
   </div>);
 const Toast = ({ list }) => (
-  <div className="fixed bottom-4 left-4 z60 flex flex-col gap-2 max-w-md">
+  /* En bas à DROITE : à gauche, les notifications couvraient le rail latéral des
+     Paramètres et le libellé de pied de page. À droite, elles flottent au-dessus
+     d'une zone habituellement vide. */
+  <div className="fixed bottom-4 right-4 z60 flex flex-col items-end gap-2 max-w-md">
     {list.map(t => (<div key={t.id} className={clsx("px-4 py-2.5 rounded f13 text-white shadow-lg bl3",
       t.kind==="err"?"border-rose-500":t.kind==="warn"?"bd-warn":t.kind==="ok"?"border-lime-500":"bd-brand")}
       style={{background:C.t1}}>{t.text}</div>))}
