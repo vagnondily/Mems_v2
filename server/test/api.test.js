@@ -8764,6 +8764,13 @@ test("données réelles : les sites par tag sont importés, rattachés à l'arbr
       /* Le POI_code d'origine est conservé comme code externe. */
       assert.ok((await d2.prepare("SELECT COUNT(*) c FROM sites WHERE external_code IS NOT NULL").get()).c > 2000,
         "le POI_code d'origine est conservé");
+      /* Les BUREAUX de terrain nommés dans le fichier sont créés, et chaque site
+         est rattaché au sien : sans quoi planification, couverture et tableau de
+         bord — tous organisés par bureau — n'auraient aucun site à montrer. */
+      assert.ok((await d2.prepare("SELECT COUNT(*) c FROM offices WHERE kind='field'").get()).c > 0,
+        "des bureaux de terrain sont créés depuis la colonne « Field office »");
+      assert.ok((await d2.prepare("SELECT COUNT(*) c FROM sites WHERE office_id IS NOT NULL").get()).c > 2000,
+        "chaque site est rattaché à son bureau (office_id)");
     } finally { await fermer(); }
 
     /* Idempotence : relancé, il met à jour au lieu de dupliquer. */

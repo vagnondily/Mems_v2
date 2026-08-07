@@ -47,6 +47,38 @@ cd ../web && npm ci && npm run build       # prod : servi par l'API sur :4000
 cd ../server && npm start                  # http://localhost:4000
 ```
 
+### 2.1 Charger les données RÉELLES (pas la démo)
+
+`npm run seed` en production ne crée **que le compte admin** — aucune donnée de
+démonstration (celle-ci est réservée à `SEED_DEMO=1`). Pour partir des vraies
+données de référence :
+
+```bash
+cd server
+npm run seed         # compte admin seulement — AUCUNE démo
+npm run seed:reel    # découpage réel (communes + contours), masterlist et activités
+npm run seed:sites   # les sites réels (docs/List Sites per Tag.xlsx)
+```
+
+`seed:sites` crée aussi **les bureaux de terrain** nommés dans la colonne
+« Field office » du fichier et **rattache chaque site à son bureau** (`office_id`).
+C'est indispensable : la planification, la couverture et le tableau de bord
+s'organisent **par bureau**, donc sans ce rattachement ils n'auraient aucun site à
+montrer.
+
+Après cette étape, il reste la **configuration opérationnelle**, saisie dans
+l'application (elle ne se déduit d'aucun fichier) :
+1. vérifier/compléter les **bureaux** et leur **périmètre** (Paramètres → Bureaux,
+   Périmètre des bureaux) ;
+2. définir les **paramètres de couverture** (fréquence et durée de suivi par
+   bureau × activité) — c'est ce qui alimente les colonnes « Prévu » du plan ;
+3. les **visites** et la donnée de terrain arrivent ensuite par saisie ou ODK.
+
+> Symptôme typique : « je ne vois pas mes sites en planification / au tableau de
+> bord » alors que le registre et la carte les affichent → les sites existent mais
+> ne sont **rattachés à aucun bureau** (`office_id` NULL). Relancer `seed:sites`
+> (idempotent) crée les bureaux et fait le rattachement.
+
 **Vérifier que tout répond** : `curl -s localhost:4000/api/health | jq` →
 `status: ok`, taille de base, nombre de connexions.
 

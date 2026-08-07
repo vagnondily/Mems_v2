@@ -150,7 +150,7 @@ export async function importerSites(){
     ? `GPS${lat.toFixed(5)}_${lon.toFixed(5)}`.replace(/[^\w.\-]/g, "") : null;
 
   const bilan = { lus:0, ecrits:0, crees:0, majs:0, rattaches:0, parGps:0, sansGeo:0,
-                  activiteMatch:0, ignores:0 };
+                  activiteMatch:0, ignores:0, bureaux:0, sitesBureau:0 };
   let indexAuto = 0;
 
   /* Les deux requêtes ci-dessous (préparées plus bas, DANS la transaction)
@@ -261,12 +261,37 @@ export async function importerSites(){
     }
   } else {
     await ecrire();
+    /* Les BUREAUX de terrain. La colonne « Field office » nomme le bureau de
+       chaque site, mais l'import ne la posait que dans `antenne` (texte). Or la
+       planification, la couverture et le tableau de bord s'organisent par BUREAU
+       (office_id) : sans bureaux ni rattachement, ils n'avaient AUCUN site à
+       montrer — c'est le défaut signalé. On crée donc un bureau de terrain par
+       nom distinct (sans écraser ceux déjà créés à la main, grâce à ON CONFLICT
+       sur le nom) et on rattache chaque site au sien par office_id. */
+    await tx(async (db) => {
+      const noms = (await db.prepare(
+        "SELECT DISTINCT antenne AS n FROM sites WHERE antenne IS NOT NULL AND antenne<>''").all())
+        .map(r => r.n);
+      const insOff = db.prepare(
+        `INSERT INTO offices (id,name,code,kind,scope_mode,antennes,manager)
+         VALUES (?,?,?,'field','geo','[]','Chef de bureau') ON CONFLICT (name) DO NOTHING`);
+      for(const nom of noms){
+        const code = (nom.replace(/[^A-Za-z0-9]/g, "").slice(0, 6).toUpperCase()) || "FO";
+        const r = await insOff.run(newId("off"), nom, code);
+        if(r.changes) bilan.bureaux++;
+      }
+      /* Rattachement par NOM : robuste à un bureau déjà présent, et idempotent. */
+      const maj = await db.prepare(
+        `UPDATE sites s SET office_id = o.id FROM offices o
+         WHERE o.name = s.antenne AND s.office_id IS DISTINCT FROM o.id`).run();
+      bilan.sitesBureau = maj.changes;
+    });
   }
 
   log.info(dry ? "import des sites (simulation)" : "import des sites terminé", {
     fichier: path.basename(fichier), millesime: version.label,
     lus: bilan.lus, crees: bilan.crees, majs: bilan.majs,
-    rattaches: bilan.rattaches, sansGeo: bilan.sansGeo,
+    rattaches: bilan.rattaches, sansGeo: bilan.sansGeo, bureaux: bilan.bureaux, sitesBureau: bilan.sitesBureau,
     identiteParGps: bilan.parGps, activiteReconnue: bilan.activiteMatch });
   return bilan;
 }
