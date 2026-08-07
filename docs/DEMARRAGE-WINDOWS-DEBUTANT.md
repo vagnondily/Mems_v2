@@ -81,6 +81,90 @@ Vous devez voir quelque chose comme `v20.x.x` ou `v22.x.x`. Si oui, c'est bon.
 
 ---
 
+## Étape 2 bis — « PostgreSQL est déjà installé chez moi depuis longtemps »
+
+**Bonne nouvelle : inutile de réinstaller.** MEMS fonctionne avec **PostgreSQL 12
+ou plus récent** (16 est la version recommandée, mais 12, 13, 14, 15 conviennent).
+Vous allez seulement réutiliser l'installation existante. Trois choses à
+retrouver — la **version**, le **dossier**, le **mot de passe `postgres`** — puis
+vous reprendrez à l'étape 3.
+
+### a) Retrouver la version et le dossier
+
+Dans PowerShell, listez les versions présentes :
+
+```powershell
+dir "C:\Program Files\PostgreSQL"
+```
+
+Vous verrez un ou plusieurs dossiers nommés par leur version (`13`, `15`, `16`…).
+**Notez le plus grand numéro** : c'est celui à utiliser.
+
+- Si ce numéro est **12 ou plus** ➜ parfait, gardez cette installation.
+- S'il est **inférieur à 12** (très ancien) ➜ mieux vaut installer PostgreSQL 16
+  en plus (suivez l'étape 2). Les deux cohabitent ; la nouvelle prendra
+  automatiquement le port `5433` — retenez ce numéro pour l'étape 7.
+
+> Dans **toutes** les commandes de ce guide, remplacez le `16` du chemin
+> `C:\Program Files\PostgreSQL\16\bin` par **votre** numéro de version.
+
+### b) Vérifier que le service tourne, et sur quel port
+
+```powershell
+Get-Service | Where-Object { $_.Name -like "postgresql*" }
+```
+
+Le `Status` doit être **Running**. S'il est **Stopped**, démarrez-le :
+`Start-Service <nom-affiché>` (ou via l'appli « Services » de Windows).
+
+Le port est **presque toujours `5432`**. S'il y a plusieurs installations, la
+seconde peut être sur `5433` — vous en tiendrez compte dans le `DATABASE_URL`
+de l'étape 7 (voir l'encadré « autre port » là-bas).
+
+### c) Le mot de passe `postgres`, vous l'avez… ou pas
+
+- **Vous connaissez le mot de passe `postgres` :** parfait, rien à faire. Passez à
+  l'étape 3, et à l'étape 5 utilisez ce mot de passe.
+
+- **Vous l'avez oublié :** deux solutions.
+
+  **Solution simple — passer par pgAdmin (l'outil graphique).** EDB installe
+  **pgAdmin** avec PostgreSQL. Ouvrez-le depuis le menu Démarrer. S'il se
+  connecte tout seul à votre serveur (il a souvent le mot de passe enregistré),
+  vous pouvez créer le compte et la base **sans ligne de commande** :
+  1. Dépliez à gauche : *Servers → (votre serveur)*.
+  2. Clic droit sur **Login/Group Roles → Create → Login/Group Role**.
+     Onglet *General* : nom `mems`. Onglet *Definition* : mettez un mot de passe
+     (notez-le, ce sera votre `MOT_DE_PASSE_MEMS`). Onglet *Privileges* : activez
+     **Can login?**. Enregistrez.
+  3. Clic droit sur **Databases → Create → Database**. Nom `mems`, *Owner* =
+     `mems`. Enregistrez.
+  4. **L'étape 5 est alors déjà faite** : passez directement à l'étape 6.
+
+  **Solution de repli — réinitialiser le mot de passe `postgres`** (si pgAdmin
+  demande lui aussi un mot de passe que vous n'avez pas). Cela demande d'éditer un
+  fichier de configuration en tant qu'administrateur ; faites-le seulement si
+  nécessaire :
+  1. Ouvrez le Bloc-notes **en tant qu'administrateur** (clic droit → *Exécuter
+     en tant qu'administrateur*), puis ouvrez le fichier
+     `C:\Program Files\PostgreSQL\16\data\pg_hba.conf`.
+  2. Tout en bas, sur les lignes qui commencent par `host ... 127.0.0.1/32`,
+     remplacez le dernier mot (`scram-sha-256` ou `md5`) par **`trust`**.
+     Enregistrez.
+  3. Redémarrez le service : `Restart-Service <nom-du-service-postgresql>`.
+  4. Fixez un nouveau mot de passe (aucun mot de passe n'est demandé grâce à
+     `trust`) :
+     ```powershell
+     & "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -c "ALTER USER postgres PASSWORD 'NOUVEAU_MDP_POSTGRES';"
+     ```
+  5. **Remettez** le fichier `pg_hba.conf` comme avant (`trust` → `scram-sha-256`)
+     et redémarrez à nouveau le service. C'est important pour la sécurité.
+  6. Vous connaissez de nouveau le mot de passe `postgres` : passez à l'étape 3.
+
+Une fois version, dossier et mot de passe en main, **reprenez à l'étape 3**.
+
+---
+
 ## Étape 3 — Télécharger MEMS sur votre PC
 
 Le plus simple, sans rien installer de plus :
@@ -205,6 +289,11 @@ BOOTSTRAP_PASSWORD=
 
 **Enregistrez** (Fichier → Enregistrer) et fermez le Bloc-notes.
 
+> **Votre PostgreSQL est sur un autre port ?** (cas d'une seconde installation,
+> souvent `5433` — voir l'étape 2 bis.) Remplacez `5432` par votre port dans la
+> ligne `DATABASE_URL`, par exemple :
+> `DATABASE_URL=postgres://mems:MOT_DE_PASSE_MEMS@127.0.0.1:5433/mems`
+
 > **Important :** ne mettez **jamais** `SEED_DEMO` dans ce fichier pour un usage
 > réel. Sans lui, MEMS démarre **vide et propre**, prêt à recevoir vos vraies
 > données (voir étape 11).
@@ -312,7 +401,10 @@ C'est tout — plus besoin de refaire les étapes 1 à 9.
 | `DATABASE_URL est requis en production` | Le fichier `server\.env` manque ou est mal placé | Vérifiez qu'il s'appelle bien `.env` (pas `.env.txt`) et qu'il est dans le dossier `server`. |
 | `JWT_SECRET est absent ou trop court` | Clé manquante ou trop courte | Regénérez-la (étape 7a) et recollez-la dans `.env`. |
 | `psql.exe` introuvable (étape 5) | PostgreSQL pas en version 16, ou ailleurs | Ouvrez `C:\Program Files\PostgreSQL\` et corrigez le numéro de version dans le chemin. |
-| `password authentication failed` en migrant | Le mot de passe dans `DATABASE_URL` ne correspond pas à celui de l'étape 5 | Corrigez la ligne `DATABASE_URL=` dans `.env`. |
+| `password authentication failed` en migrant | Le mot de passe dans `DATABASE_URL` ne correspond pas à celui du rôle `mems` | Corrigez la ligne `DATABASE_URL=` dans `.env` (étape 5, ou 2 bis si base déjà installée). |
+| `could not connect` / `ECONNREFUSED 127.0.0.1:5432` | Le service PostgreSQL est arrêté, ou écoute sur un autre port | Démarrez le service (étape 2 bis-b) ; si le port est `5433`, corrigez `DATABASE_URL`. |
+| `role "mems" already exists` (étape 5) | Vous aviez déjà lancé cette commande | Sans gravité : le rôle existe, continuez. Pour changer son mot de passe : `ALTER USER mems PASSWORD '…';`. |
+| Mot de passe `postgres` oublié | Installation ancienne | Créez le rôle/base via **pgAdmin**, ou réinitialisez le mot de passe (étape 2 bis-c). |
 | La page reste blanche / erreur 404 | L'interface n'a pas été construite | Revenez dans `C:\mems` et refaites `npm run build`. |
 | « Ce site est inaccessible » dans le navigateur | MEMS n'est pas démarré | Vérifiez que la fenêtre `npm start` est bien ouverte et sans erreur. |
 
