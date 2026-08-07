@@ -2232,6 +2232,25 @@ function SetLocations({ db, set, notify, can, reload, me }){
                     sub={`${fmt(x.points_simple)} sommets sur ${fmt(x.points)}`} />))}</StatRow>
               : <Note>Les contours arrivent avec le shapefile importé depuis l'onglet <b>Pays &amp; découpage</b>,
                   ou avec le chargement serveur du découpage ci-dessus.</Note>}
+            {/* Serveur de tuiles interne : la vraie réponse quand la carte reste
+                vide parce qu'un pare-feu ou une instance hors-ligne bloque les
+                fonds publics (OpenStreetMap/Carto). L'URL saisie ici l'emporte
+                sur les fonds de la liste (MapView lit settings.tileUrl). */}
+            {can("admin") && (
+              <div className="mt-4 pt-3 border-t border-slate-100">
+                <div className="f11 font-bold uppercase tracking-wide text-slate-500 mb-1.5">
+                  Serveur de tuiles interne</div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Input className="flex-1 mnw260"
+                    placeholder="https://tuiles.interne/{z}/{x}/{y}.png"
+                    value={db.settings?.tileUrl || ""}
+                    onChange={e=>set(d=>{ d.settings.tileUrl = e.target.value; return d; })} />
+                  {db.settings?.tileUrl &&
+                    <Btn size="sm" kind="sec" onClick={()=>set(d=>{ d.settings.tileUrl = ""; return d; })}>Effacer</Btn>}
+                </div>
+                <p className="f105 text-slate-400 mt-1.5">
+                  {"Facultatif. Une URL de tuiles au gabarit {z}/{x}/{y} l'emporte sur les fonds publics — indispensable pour une instance hors-ligne ou derrière un pare-feu qui bloque OpenStreetMap/Carto. Pensez à ajouter son hôte à la variable TILE_HOSTS du serveur, sans quoi la politique de sécurité (CSP) refusera les images."}</p>
+              </div>)}
           </Card>
 
           {versions.length > 1 && (
