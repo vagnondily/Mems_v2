@@ -808,6 +808,39 @@ function PlanModal({ open, plan, tpms, db, me, can, busy, setBusy, notify, onClo
 
   const majZone = (i,k,v) => setZones(p => p.map((z,j)=> j===i ? { ...z, [k]:v } : z));
 
+  /* ── Deux stratégies d'équipe (demande : « selon le cas ») ────────────
+     Productivité de terrain : sites suivis par jour et par agent (réglage
+     global, repli à 3 si non renseigné). C'est elle qui relie le nombre
+     d'AGENTS au nombre TOTAL de sites des communes. */
+  const sitesJour = Math.max(1, n(db.settings?.sitesJourAgent) || 3);
+  const totalSites = zones.reduce((t,z)=>t+n(z.sites), 0);
+  /* Une seule équipe couvre TOUTES les communes : on les regroupe sous une
+     équipe unique, on porte l'effectif sur la première zone (les autres ne
+     comptent plus que leurs sites), et le nombre d'agents se DÉDUIT du total des
+     sites — agents = total sites ÷ (sites/jour/agent × jours). L'utilisateur
+     ajuste ensuite ; le serveur reste seul juge du budget à l'enregistrement. */
+  const equipeUnique = zones.length > 1 && zones.every(z => (z.team_label||"") === "Équipe unique");
+  const regrouperEquipe = () => {
+    if(zones.length < 2){ notify("Affectez d'abord au moins deux communes (« Zones à couvrir »)", "warn"); return; }
+    const jours = Math.max(2, ...zones.map(z=>n(z.days)));
+    const agents = Math.max(1, Math.ceil(totalSites / (sitesJour * jours)));
+    setZones(p => p.map((z,i)=> i===0
+      ? { ...z, team_label:"Équipe unique", supervisors:Math.max(1, n(z.supervisors)||1),
+          agents, days:jours, travel_days:Math.max(1, n(z.travel_days)),
+          vehicles:Math.max(1, n(z.vehicles)||1), fuel_litres:15*jours }
+      : { ...z, team_label:"Équipe unique", supervisors:0, agents:0, days:0,
+          travel_days:0, vehicles:0, fuel_litres:0 }));
+    notify(`Équipe unique : ${agents} agent(s) pour ${totalSites} site(s), ${jours} jours`, "ok");
+  };
+  /* Retour à une équipe par commune : chacune retrouve son effectif propre, les
+     jours restant fondés sur ses propres sites (à la productivité globale). */
+  const separerCommunes = () => {
+    setZones(p => p.map((z,i)=>{ const j = Math.max(2, Math.ceil(n(z.sites) / sitesJour));
+      return { ...z, team_label:`TEAM${i+1}`, supervisors:1, agents:1, days:j,
+        travel_days:1, vehicles:1, fuel_litres:15*j }; }));
+    notify("Une équipe par commune", "ok");
+  };
+
   return (
     <Modal open wide onClose={onClose}
       title={`${plan.tpm} — ${MONTHS_L[plan.month]} ${plan.year}`}
@@ -848,10 +881,12 @@ function PlanModal({ open, plan, tpms, db, me, can, busy, setBusy, notify, onClo
           L'affectation se fait par ZONE ENTIÈRE et pour toutes les activités à la
           fois, jamais site par site (analyse Q16 du classeur). Le budget en
           découle : ces quantités × le barème contractuel, aucun total saisi. */}
-      <div className="flex items-baseline gap-3 mb-2">
-        <div className="f13 font-semibold text-slate-800">① Affectation — commune par commune</div>
+      <div className="flex items-baseline gap-3 mb-2 flex-wrap">
+        <div className="f13 font-semibold text-slate-800">① Affectation des communes</div>
         <div className="f115 text-slate-500">
-          une commune, une équipe, toutes ses activités ; le budget en découle</div>
+          {equipeUnique
+            ? "une seule équipe pour toutes les communes — agents déduits du total des sites"
+            : "une commune, une équipe ; le budget découle des quantités × barème"}</div>
         {modifiable && <span className="ml-auto flex gap-2">
           <Btn size="sm" kind="sec" icon={Target} onClick={chargerSugg}>Zones à couvrir</Btn>
           <Btn size="sm" kind="sec" icon={Plus}
@@ -859,6 +894,18 @@ function PlanModal({ open, plan, tpms, db, me, can, busy, setBusy, notify, onClo
               travel_days:0, vehicles:1, fuel_litres:0, sites:0 }])}>Ajouter une zone</Btn>
         </span>}
       </div>
+
+      {/* Choix de la STRATÉGIE d'équipe (demande : « selon le cas »). Le budget peut
+          se faire pour toutes les communes en une fois (une équipe, agents = f(total
+          sites)) ou par commune. */}
+      {modifiable && zones.length > 1 && (
+        <div className="flex items-center gap-2 mb-3 p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex-wrap">
+          <span className="f115 text-slate-600 mr-1">Stratégie d'équipe :</span>
+          <Btn size="sm" kind={equipeUnique ? "primary" : "sec"} onClick={regrouperEquipe}>Une seule équipe (toutes communes)</Btn>
+          <Btn size="sm" kind={equipeUnique ? "sec" : "primary"} onClick={separerCommunes}>Une équipe par commune</Btn>
+          <span className="f105 text-slate-400 ml-1">
+            {totalSites} site(s) au total · {sitesJour} site(s)/jour/agent</span>
+        </div>)}
 
       {sugg && (
         <div className="mb-3 p-3 rounded-xl border border-sky-200 bg-sky-50">
