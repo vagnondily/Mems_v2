@@ -3,7 +3,7 @@ import { Activity, AlertTriangle, BarChart3, Code2, Database, Download, FileDown
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart,
          PolarAngleAxis, PolarGrid, PolarRadiusAxis, Radar, RadarChart, RadialBar, RadialBarChart,
          ResponsiveContainer, Tooltip, Treemap, XAxis, YAxis } from "recharts";
-import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
+import { Aide, Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
 import { RULE_TYPES, applyFormulas, applyRules, evalFormula, fmt, n, pct, profileColumn, r1, siteScore, uid } from "../lib/calc.js";
 import { C, MONTHS, SERIES } from "../lib/constants.js";
@@ -23,6 +23,12 @@ function Analytics({ db, set, me, sub, setSub, notify, can }){
   return (
     <div className="space-y-4">
       <PageHead title="Analyses" text="Constitution des jeux de données à partir d'ODK Central, apurement, scripts R ou SPSS." />
+      <Aide
+        faire={["Figer un « jeu de données » depuis un formulaire ODK, puis l'apurer avec des règles qui s'exécutent dans le navigateur (la source n'est jamais altérée).",
+          "Recalculer des indicateurs de performance par une formule, et profiler les variables.",
+          "Rédiger et versionner des scripts R ou SPSS, les exporter avec les données, et réimporter les résultats."]}
+        eviter={["Attendre que R ou SPSS s'exécutent dans le navigateur : ils tournent ailleurs (ou sur le serveur si l'exploitant l'a activé).",
+          "Chercher ici le tableau de bord de graphiques : il a sa propre destination « Tableau de bord » en haut."]} />
       <Tabs items={items} value={actif} onChange={setSub} />
       {actif==="datasets" && <Datasets db={db} set={set} notify={notify} can={can} />}
       {actif==="scripts" && <Scripts db={db} set={set} me={me} notify={notify} can={can} />}
@@ -45,6 +51,12 @@ function TableauDeBord({ db, set, notify, can, go, onglets }){
     <div className="space-y-4">
       <PageHead title="Tableau de bord"
         text="La synthèse du suivi de processus tirée des questionnaires, et vos propres visualisations." />
+      <Aide
+        faire={["« Suivi de processus » : lire la couverture, les alertes prioritaires et l'avancement par activité, tirés des questionnaires.",
+          "« Mes visualisations » : ajouter vos propres graphiques (histogramme, courbe, circulaire, treemap…), croiser deux mesures, ou composer un indicateur calculé — le tout modifiable à volonté et sauvegardé.",
+          "Choisir la période en haut ; personnaliser les couleurs de chaque graphique."]}
+        eviter={["Multiplier les graphiques redondants : un tableau de bord se lit d'un coup d'œil, il perd sa valeur s'il faut faire défiler longtemps.",
+          "Y saisir de la donnée : c'est une LECTURE ; les valeurs se corrigent dans leur écran d'origine."]} />
       <Tabs items={items} value={sub} onChange={setSub} />
       {sub==="processus" && <ProcessDashboard db={db} go={go} notify={notify} onglets={onglets} />}
       {sub==="viz" && (<>

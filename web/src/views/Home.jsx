@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Activity, CalendarRange, ClipboardList, Database, Download, FileText, Target, Users } from "lucide-react";
 import { PolarAngleAxis, Area, AreaChart, Bar, BarChart, CartesianGrid, ComposedChart, Legend, Line, LineChart, RadialBar, RadialBarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Badge, Bar2, Btn, Card, Empty, Select, Stat } from "../components/ui.jsx";
+import { Aide, Badge, Bar2, Btn, Card, Empty, Select, Stat } from "../components/ui.jsx";
 import { computeMMR, fmt, n, pct, r2 } from "../lib/calc.js";
 import { C, D_TAGS, MONTHS, MONTHS_L, SERIES } from "../lib/constants.js";
 import { tachesUtilisateur } from "../lib/taches.js";
@@ -68,6 +68,12 @@ function Home({ db, me, go }){
         <Btn kind="sec" icon={CalendarRange} onClick={()=>go("suivi","monitoring")}>Plan de suivi</Btn>
         <Btn icon={FileText} onClick={()=>go("reports","build")}>Générer un rapport</Btn>
       </PageHead>
+      <Aide
+        faire={["Lire d'un coup d'œil la couverture du suivi, la tendance des trois derniers mois et les réalisations par activité.",
+          "Rebondir vers le plan de suivi ou la génération d'un rapport avec les boutons en haut.",
+          "Consulter les échéances à traiter via la cloche, en haut de l'écran."]}
+        eviter={["Y chercher un chiffre à corriger : l'accueil ne fait que RÉSUMER, il ne se saisit pas — les valeurs se modifient dans leur écran d'origine (suivi, programme, indicateurs).",
+          "Le prendre pour le tableau de bord détaillé : pour analyser, passez par « Tableau de bord » ou « Analyses »."]} />
 
       <div className="grid gap-4" style={{gridTemplateColumns:"minmax(270px,320px) 1fr"}}>
         <Card title="Exigence minimale de suivi" subtitle={`Réalisé rapporté au requis, au prorata de ${mmr.elapsed} mois`}>

@@ -1,5 +1,5 @@
 import { useEffect, useId, useState, useSyncExternalStore } from "react";
-import { ChevronDown, ChevronUp, Eye, EyeOff, FlaskConical, HelpCircle, Layers, TestTube, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronUp, Eye, EyeOff, FlaskConical, HelpCircle, Layers, TestTube, X } from "lucide-react";
 import { clsx, n } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
 import { isSandbox, setSandbox, subscribeSandbox, isTestEnv, setTestEnv, subscribeTestEnv, api } from "../lib/api.js";
@@ -295,19 +295,39 @@ const TestEnvMenuItem = ({ onDone }) => {
 /* Aide repliable — « cache les commentaires en hide/show, ils occupent trop de
    place ». Une longue note explicative ne s'impose plus à l'écran : elle se
    dévoile d'un clic pour qui la veut, et reste repliée par défaut. */
-const Aide = ({ children, titre = "À quoi sert cet écran ?", tone, ouvert = false }) => {
+/* `faire` et `eviter` (facultatifs) donnent l'aide une FORME constante d'un écran
+   à l'autre : « ce que vous pouvez faire ici » d'un côté, « à éviter » de l'autre.
+   `children` reste possible pour un paragraphe d'introduction au-dessus des listes.
+   Comme toute aide, elle obéit à l'interrupteur global d'affichage des notes. */
+const Aide = ({ children, titre = "À quoi sert cet écran ?", tone, ouvert = false, faire, eviter }) => {
   const [open, setOpen] = useState(ouvert);
-  /* L'aide est explicative par nature : l'interrupteur global la masque aussi,
-     déclencheur compris — sinon un « À quoi sert cet écran ? » resterait accroché
-     au-dessus de notes que l'on vient justement de faire taire. */
   if(useNotesMasquees()) return null;
+  const faireL = Array.isArray(faire) ? faire.filter(Boolean) : [];
+  const eviterL = Array.isArray(eviter) ? eviter.filter(Boolean) : [];
   return (
     <div className="mb-3">
       <button onClick={()=>setOpen(o=>!o)}
         className="inline-flex items-center gap-1.5 f11 font-semibold text-slate-500 hover:text-slate-800">
         <HelpCircle size={13}/> {titre} {open ? <ChevronUp size={12}/> : <ChevronDown size={12}/>}
       </button>
-      {open && <div className="mt-2"><Note tone={tone}>{children}</Note></div>}
+      {open && <div className="mt-2"><Note tone={tone}>
+        {children}
+        {(faireL.length > 0 || eviterL.length > 0) && (
+          <div className={clsx("grid gap-x-6 gap-y-2 sm:grid-cols-2", children && "mt-2")}>
+            {faireL.length > 0 && (
+              <div>
+                <div className="f11 font-bold uppercase tracking-wide text-lime-800 mb-1 flex items-center gap-1">
+                  <Check size={12}/> Ce que vous pouvez faire</div>
+                <ul className="list-disc pl-4 space-y-0.5">{faireL.map((x,i)=><li key={i}>{x}</li>)}</ul>
+              </div>)}
+            {eviterL.length > 0 && (
+              <div>
+                <div className="f11 font-bold uppercase tracking-wide text-amber-800 mb-1 flex items-center gap-1">
+                  <AlertTriangle size={12}/> À éviter</div>
+                <ul className="list-disc pl-4 space-y-0.5">{eviterL.map((x,i)=><li key={i}>{x}</li>)}</ul>
+              </div>)}
+          </div>)}
+      </Note></div>}
     </div>);
 };
 /* Sous-navigation d'écran EN HAUT — le rail des catégories reste seul à gauche ;

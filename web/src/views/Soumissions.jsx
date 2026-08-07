@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, DownloadCloud, Inbox, Link2, RefreshCw, Search, SearchX,
          Unlink, UserCheck } from "lucide-react";
-import { Badge, Btn, Card, Empty, Modal, Note, Select, Stat, StatRow, TableWrap, Td, Th, inputCls }
+import { Aide, Badge, Btn, Card, Empty, Modal, Note, Select, Stat, StatRow, TableWrap, Td, Th, inputCls }
   from "../components/ui.jsx";
 import { api } from "../lib/api.js";
 import { clsx, fmt, pct } from "../lib/calc.js";
@@ -329,6 +329,12 @@ export default function Soumissions({ db, notify, can }){
 
   return (
     <div className="space-y-4">
+      <Aide
+        faire={["Contrôler l'état des soumissions ODK reçues : combien sont rattachées à un site, combien restent « non résolues » (orphelines).",
+          "Rattacher à la main une soumission orpheline au bon site quand la correspondance automatique n'a pas suffi.",
+          "Filtrer par formulaire, par période ou par état de résolution pour cibler ce qui reste à traiter."]}
+        eviter={["Confondre les deux vides : « aucune soumission reçue » (il faut verser) et « ce filtre ne rend rien » (il faut changer le filtre) — le bandeau les distingue.",
+          "Rattacher une soumission au petit bonheur : un mauvais rattachement fausse la couverture et les indicateurs du site concerné."]} />
       {!vide && (<>
         <StatRow>
           <Stat label="Soumissions" value={fmt(vue.total)} icon={Inbox}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Banknote, CalendarRange, Check, Download, Pencil, Plus, Save, Target, Trash2, Wallet, X } from "lucide-react";
-import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow,
+import { Aide, Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow,
          TableWrap, Td, Th, download, inputCls, toCSV } from "../components/ui.jsx";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api } from "../lib/api.js";
@@ -176,6 +176,12 @@ export default function MreView({ db, me, notify, can }){
 
   return (
     <div className="space-y-4">
+      <Aide
+        faire={["Bâtir le plan MRE (Monitoring, Reporting, Evaluation) par activité et par mois, avec son budget prévisionnel.",
+          "Basculer sur « Exécution budgétaire » pour saisir la dépense constatée et suivre l'écart au prévu.",
+          "Filtrer par année, par type d'activité ou par statut pour retrouver une ligne précise."]}
+        eviter={["Confondre budget prévu et dépense réelle : ce sont deux volets distincts du même plan, ne saisissez pas l'un à la place de l'autre.",
+          "Interpréter un plan vide comme « rien à faire » sans vérifier le bandeau d'erreur : une lecture ratée laisse aussi l'écran vide."]} />
       {/* Le prévu et le réalisé du budget sont deux vues du même plan : même
           bascule que partout ailleurs dans l'application. */}
       <div className="flex items-center gap-1 p-1 rounded bg-slate-100 border border-slate-200 w-max">

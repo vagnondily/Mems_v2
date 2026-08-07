@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api.js";
 import { Activity, Check, ChevronDown, ChevronRight, ClipboardList, Download, Globe, Link2, ListChecks, Pencil, Plus, Save, Target, Trash2, Users } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ComposedChart, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, TableWrap, Tabs, Td, Th } from "../components/ui.jsx";
+import { Aide, Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, TableWrap, Tabs, Td, Th } from "../components/ui.jsx";
 import { POP_BASE_YEAR, clsx, computeMMR, fmt, motifLisible, n, pct, populationFor, uid, visiteOdk } from "../lib/calc.js";
 import { C, D_ADJUST, MONTHS, MONTHS_L, SERIES } from "../lib/constants.js";
 import { DistributionActual, rate } from "./Planning.jsx";
@@ -17,6 +17,12 @@ function ActualData({ db, set, sub, setSub, me, notify, can, go }){
   return (
     <div className="space-y-4">
       <PageHead title="Actual Data" text="Données réellement collectées : soumissions ODK Central, couverture des sites, produits livrés et indicateurs de résultat." />
+      <Aide
+        faire={["Consulter les données réellement collectées : soumissions ODK, couverture des sites, distributions, outputs et outcomes.",
+          "Contrôler la cohérence des remontées avant de les exploiter dans un rapport ou un tableau de bord.",
+          "Importer un fichier Excel de données réelles quand la source n'est pas ODK."]}
+        eviter={["Prendre ces chiffres pour des cibles : ce sont des données CONSTATÉES ; les objectifs se fixent dans le plan (Suivi, Programme).",
+          "Corriger une valeur ici pour « rattraper » un écart : remontez plutôt à la source (soumission ODK ou fichier d'import) pour garder la traçabilité."]} />
       <Tabs items={items} value={sub} onChange={setSub} />
       {sub==="summary" && <ActualSummary db={db} />}
       {sub==="process" && <ProcessData db={db} set={set} notify={notify} can={can} go={go} />}

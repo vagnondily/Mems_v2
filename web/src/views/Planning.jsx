@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api.js";
 import { Activity, AlertTriangle, CalendarRange, Check, ClipboardList, Download, Layers, MapPin, Pencil, Plus, RefreshCw, Save, Search, Target, Trash2, Upload, Users, X } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
+import { Aide, Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, Sw, TableWrap, Tabs, Td, Th, download, inputCls, parseCSV, toCSV } from "../components/ui.jsx";
 import { clsx, computeParam, fmt, motifLisible, motifSaisissable, n, pct, r1, r2, siteScore, uid, visiteOdk, visitesDuMois } from "../lib/calc.js";
 import { ACT_CATEGORIES, C, DURATIONS, D_PARTNERS, MONITORING_TYPES, MONTHS, MONTHS_L, SITE_TYPES, coverageRows, siteDerived } from "../lib/constants.js";
 import { PageHead } from "./Shell.jsx";
@@ -60,6 +60,12 @@ function Planning({ db, set, me, sub, setSub, notify, can }){
   return (
     <div className="space-y-4">
       <PageHead title="Planning" text="Paramétrage de la couverture fondée sur le risque, puis déclinaison en plans mensuels de suivi, de distribution et de collecte des indicateurs." />
+      <Aide
+        faire={["Régler d'abord les paramètres de couverture (seuils de risque, fréquences), puis décliner en plans mensuels de suivi, de distribution et de résultats.",
+          "Vérifier que chaque site à couvrir est bien rattaché à son bureau et à sa commune avant de générer le plan.",
+          "Comparer le plan à la couverture réelle et au MMR pour ajuster la fréquence des visites."]}
+        eviter={["Planifier sur un référentiel de sites incomplet : un site absent ici n'apparaîtra ni sur la carte ni dans le plan.",
+          "Changer les paramètres de couverture en cours de mois sans concertation : cela recalcule le risque et donc le plan de tous les sites."]} />
       <Tabs items={items} value={sub} onChange={setSub} />
       {sub==="overreaching" && <Overreaching db={db} set={set} notify={notify} can={can} />}
       {sub==="process" && <ProcessPlan db={db} set={set} me={me} notify={notify} can={can} />}

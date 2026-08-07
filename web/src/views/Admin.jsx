@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Archive, ChevronLeft, ChevronRight, Download, HeartPulse, Monitor, RefreshCw,
          RotateCcw, Save, ScrollText, Search, Trash2, Wrench } from "lucide-react";
-import { Badge, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow,
+import { Aide, Badge, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow,
          TableWrap, Tabs, Td, Th, download, toCSV } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
 import { clsx, fmt, n } from "../lib/calc.js";
@@ -704,6 +704,12 @@ function Admin({ me, sub, setSub, notify }){
     <div className="space-y-4">
       <PageHead title="Administration"
         text="Exploitation de l'instance : sessions ouvertes, journal de sécurité, état du fichier de base et sauvegardes. Ces écrans ne touchent pas à la donnée métier." />
+      <Aide
+        faire={["Surveiller l'exploitation : sessions ouvertes, journal de sécurité, santé de la base et sauvegardes.",
+          "Fermer une session suspecte, lancer ou télécharger une sauvegarde, consulter les événements de sécurité.",
+          "Vérifier régulièrement que les sauvegardes se déroulent bien avant toute opération sensible."]}
+        eviter={["Chercher ici la donnée métier (sites, indicateurs, plans) : ces écrans gèrent l'INSTANCE, pas le contenu.",
+          "Fermer des sessions ou toucher aux sauvegardes sans savoir ce qu'elles couvrent : gardez une sauvegarde saine avant tout geste irréversible."]} />
       <Tabs items={items} value={sub} onChange={setSub} />
       {sub==="sessions"   && <Sessions notify={notify} />}
       {sub==="journal"    && <Journal notify={notify} />}

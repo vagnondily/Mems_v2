@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { CalendarRange, Download, FileText, Filter, Plus, Sparkles, Table2, Trash2 } from "lucide-react";
-import { Badge, Btn, Card, Empty, Field, Input, Note, Select, TableWrap, Tabs, Td, Th, download, inputCls, toCSV } from "../components/ui.jsx";
+import { Aide, Badge, Btn, Card, Empty, Field, Input, Note, Select, TableWrap, Tabs, Td, Th, download, inputCls, toCSV } from "../components/ui.jsx";
 import { LEVELS, evalComposite, evalFormula, fmt, n, pct, r2, siteRequirement, siteScore, variablesProcessus } from "../lib/calc.js";
 import { D_ADJUST } from "../lib/constants.js";
 import { GRANULARITES, anneesDisponibles, bornesPeriode, dateDansPeriode, libelleCourtPeriode,
@@ -27,6 +27,12 @@ function Reports({ db, set, sub, setSub, notify, can }){
   return (
     <div className="space-y-4">
       <PageHead title="Rapports" text="Extraction filtrée des données ODK Central, puis composition d'un rapport infographique à partir des données brutes ou apurées." />
+      <Aide
+        faire={["« Extraction ODK » : filtrer les soumissions par formulaire, période et site, puis les exporter en CSV ou JSON.",
+          "« Générateur de rapport » : composer un rapport en cochant les blocs voulus (couverture, indicateurs de résultat, activités…) et en choisissant les catégories d'indicateurs.",
+          "Régler la période en haut : elle s'applique à l'extraction comme au rapport."]}
+        eviter={["Attendre des lignes sans avoir choisi un formulaire qui contient des données sur la période : élargissez la période ou changez de formulaire.",
+          "Confondre les deux onglets : l'extraction sort la donnée BRUTE ; le générateur produit un DOCUMENT de restitution."]} />
       <Tabs items={items} value={sub} onChange={setSub} />
       <BarrePeriode db={db} periode={periode} onChange={setPeriode} />
       {sub==="extract" && <Extract db={db} periode={periode} notify={notify} />}

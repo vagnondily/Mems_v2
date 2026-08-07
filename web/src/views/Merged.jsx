@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { CalendarRange, Check } from "lucide-react";
-import { Tabs } from "../components/ui.jsx";
+import { Aide, Tabs } from "../components/ui.jsx";
 import { clsx } from "../lib/calc.js";
 import { PageHead } from "./Shell.jsx";
 import { CoveragePlan, DistributionActual, DistributionPlan, OutcomePlan, Overreaching,
@@ -81,6 +81,12 @@ export function Suivi({ db, set, me, sub, setSub, notify, can, go, onglets, vole
     <div className="space-y-4">
       <PageHead title="Suivi-évaluation"
         text="Plan MRE et budget, planification des visites fondée sur le risque, réalisation du suivi de processus et couverture géographique." />
+      <Aide
+        faire={["Suivre le déroulé complet : plan MRE et budget, plan de suivi fondé sur le risque, visites réalisées, suivi tiers (TPM) et couverture géographique.",
+          "Basculer entre « Plan de suivi » et « Visites réalisées » pour comparer le prévu au réalisé.",
+          "Passer d'un onglet à l'autre (Synthèse, Suivi, MRE, TPM, Couverture, Sites, Paramètres) selon l'étape que vous traitez."]}
+        eviter={["Saisir un réalisé avant d'avoir figé le plan : le calcul de couverture et de MMR s'appuie sur les cibles définies dans le plan.",
+          "Modifier les paramètres de couverture en pleine campagne sans prévenir l'équipe : cela recalcule le risque de tous les sites."]} />
       <Tabs items={items} value={sub} onChange={setSub} />
 
       {sub==="summary" && <ActualSummary db={db} />}
@@ -122,6 +128,12 @@ export function Programme({ db, set, me, sub, setSub, notify, can, go, volet:vol
     <div className="space-y-4">
       <PageHead title="Programme"
         text="Plan de distribution et réalisations, population ciblée, indicateurs de résultat, sources de données et soumissions collectées." />
+      <Aide
+        faire={["Piloter ce que le programme distribue et obtient : plan de distribution et réalisations, population ciblée, indicateurs de résultat.",
+          "Alimenter les résultats par import Excel ou via les soumissions ODK, selon la source de données choisie.",
+          "Comparer le plan de distribution aux réalisations grâce à la bascule en haut du volet."]}
+        eviter={["Ressaisir à la main des données déjà remontées par ODK : privilégiez l'import pour éviter les doublons.",
+          "Renseigner une population cible incohérente avec le référentiel : les indicateurs de couverture en dépendent directement."]} />
       <Tabs items={items} value={sub} onChange={setSub} />
 
       {sub==="distribution" && (<>

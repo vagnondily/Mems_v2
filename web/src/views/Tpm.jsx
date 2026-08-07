@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Banknote, Building2, CalendarRange, Check, ChevronRight, ClipboardList, Download,
          FileText, MapPin, Pencil, Plus, RefreshCw, Save, Send, Target, Trash2, Wallet, X } from "lucide-react";
-import { Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow,
+import { Aide, Badge, Bar2, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow,
          TableWrap, Td, Th, download, inputCls, toCSV } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
 import { clsx, fmt, n } from "../lib/calc.js";
@@ -108,6 +108,12 @@ export default function TpmView({ db, me, notify, can }){
       {/* Pas de titre de page ici : la destination Suivi-évaluation porte déjà le sien,
           et deux titres empilés repousseraient les données sous la ligne de flottaison. */}
       <Tabs2 items={items} value={onglet} onChange={setOnglet} />
+      <Aide
+        faire={["Enregistrer d'abord vos prestataires et leurs barèmes (Contrats), en délimitant les communes éligibles de chaque contrat.",
+          "Affecter ensuite les zones du mois dans « Plans mensuels » : le nombre d'agents et le budget se calculent tout seuls à partir des sites couverts.",
+          "Suivre l'écart entre budget prévu et dépense constatée dans « Suivi budgétaire »."]}
+        eviter={["Saisir un montant de budget à la main : ici le budget est la CONSÉQUENCE de l'affectation (zones × barème), il ne se tape pas.",
+          "Affecter un prestataire hors de son périmètre de communes éligibles : l'affectation sera refusée ou faussera le calcul."]} />
 
       {me?.tpm_id && (
         <Note><b>Vous êtes rattaché au prestataire « {me.tpm} ».</b> Vous ne voyez que

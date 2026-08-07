@@ -3,7 +3,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { Download, MapPin, RefreshCw, Save } from "lucide-react";
 import { api } from "../lib/api.js";
-import { Badge, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, TableWrap, Td, Th, download, toCSV } from "../components/ui.jsx";
+import { Aide, Badge, Btn, Card, Empty, Field, Input, Modal, Note, Select, Stat, StatRow, TableWrap, Td, Th, download, toCSV } from "../components/ui.jsx";
 import { clsx, fmt } from "../lib/calc.js";
 import { C } from "../lib/constants.js";
 
@@ -60,6 +60,12 @@ function GpsAudit({ notify, can }){
 
   return (
     <div className="space-y-4">
+      <Aide
+        faire={["Repérer les points GPS douteux : sites trop éloignés de leur commune ou carrément hors de l'emprise du pays.",
+          "Ajuster le seuil d'alerte (en km) puis recalculer, et exporter la liste des anomalies pour correction sur le terrain.",
+          "Traiter en priorité les points « hors emprise » : ce sont presque toujours des coordonnées saisies à l'envers ou mal converties."]}
+        eviter={["Prendre la distance affichée pour une distance routière exacte : c'est une estimation (vol d'oiseau × 1,3), utile pour trier, pas pour facturer.",
+          "Corriger une coordonnée ici : cet écran DIAGNOSTIQUE ; la correction se fait dans le référentiel des sites."]} />
       <div className="flex items-center gap-2 flex-wrap">
         <Select value={String(seuil)} onChange={e=>setSeuil(+e.target.value)} className="mi-py1 mi-xs mi-wauto"
           options={[5,10,15,20,30,50].map(s=>[String(s), `Seuil d'alerte : ${s} km`])} />

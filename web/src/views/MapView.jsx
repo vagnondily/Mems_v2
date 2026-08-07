@@ -5,7 +5,7 @@ import "leaflet/dist/leaflet.css";
 import { C, MONTHS_L, D_SECURITY } from "../lib/constants.js";
 import { fmt, pct, n, r2, clsx } from "../lib/calc.js";
 import { download, toCSV } from "../components/ui.jsx";
-import { Card, Btn, Select, Stat, StatRow, Empty, Note, Bar2, Modal, TableWrap, Th, Td, inputCls } from "../components/ui.jsx";
+import { Aide, Card, Btn, Select, Stat, StatRow, Empty, Note, Bar2, Modal, TableWrap, Th, Td, inputCls } from "../components/ui.jsx";
 import { api } from "../lib/api.js";
 import { useGeoCascade, names } from "../lib/geo.js";
 import { niveau, niveaux } from "../lib/levels.js";
@@ -575,6 +575,13 @@ export default function MapView({ db, me, notify, go }){
 
   return (
     <div className="space-y-4">
+      <Aide
+        faire={["Filtrer vos sites par bureau, région, district, activité ou statut, et les retrouver par leur nom dans le répertoire de gauche.",
+          "Changer la couleur des points (couverture, sécurité, activité, statut) et le fond administratif via le bouton « Affichage ».",
+          "Choisir les informations montrées au clic sur un site (bouton « Champs de la fiche »), et exporter la sélection.",
+          "Régler un fond de carte interne pour un usage hors-ligne (Paramètres → Localités)."]}
+        eviter={["Croire que la carte est vide quand le FOND ne se charge pas : les contours et les points s'affichent toujours ; c'est le réseau qui bloque les tuiles, pas l'application.",
+          "Y modifier un site : la carte affiche et filtre, mais la saisie se fait dans le registre des sites (« Ouvrir dans le registre »)."]} />
       <StatRow>
         <Stat label="Sites cartographiés" value={fmt(stats.total)} sub={`${fmt(rows.length)} ramenés du serveur`} icon={MapPin} />
         <Stat label="Sites actifs" value={fmt(stats.active)} icon={Activity} />
