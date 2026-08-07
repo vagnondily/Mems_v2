@@ -260,7 +260,10 @@ test("cartographie : points projetés, filtres actifs, fiche au clic", async () 
   assert.ok(byText("div", "Site sélectionné"), "la fiche du site s'ouvre");
   assert.ok(byText("dt", "Coordonnées"), "les coordonnées sont affichées");
 
-  /* Le mode de coloration change la légende. */
+  /* Le mode de coloration change la légende. Les options d'AFFICHAGE sont
+     repliées par défaut : on ouvre le panneau « Affichage » avant d'y accéder. */
+  const affichage = all("main button").find(b => b.textContent.trim() === "Affichage");
+  await click(affichage, "options d'affichage"); await flush();
   const modeSel = all("main select").find(s => [...s.options].some(o => o.value === "security"));
   await type(modeSel, "security"); await flush();
   assert.ok(document.body.textContent.includes("Aucune restriction"),

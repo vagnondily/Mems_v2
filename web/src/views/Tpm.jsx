@@ -690,6 +690,20 @@ function PlanModal({ open, plan, tpms, db, me, can, busy, setBusy, notify, onClo
   const [neuf, setNeuf]   = useState({});
   const [avis, setAvis]   = useState("");
   const [dep, setDep]     = useState(null);
+  const [avance, setAvance] = useState(false);  /* colonnes logistiques repliées par défaut */
+  /* Les colonnes de l'affectation. Seules Agents/Jours/Sites restent en vue ; la
+     logistique (superviseurs, trajet, véhicules, litres) se replie derrière un
+     interrupteur — c'est la densité qui rendait la saisie « trop compliquée ». */
+  const COLS_ZONE = [
+    { k:"supervisors", w:"w-16", l:"Sup.",   adv:true  },
+    { k:"agents",      w:"w-16", l:"Agents", adv:false },
+    { k:"days",        w:"w-16", l:"Jours",  adv:false },
+    { k:"travel_days", w:"w-16", l:"Trajet", adv:true  },
+    { k:"vehicles",    w:"w-16", l:"Véhic.", adv:true  },
+    { k:"fuel_litres", w:"w-20", l:"Litres", adv:true  },
+    { k:"sites",       w:"w-16", l:"Sites",  adv:false },
+  ];
+  const colsZone = COLS_ZONE.filter(c => avance || !c.adv);
 
   useEffect(()=>{
     if(!plan) return;
@@ -948,10 +962,16 @@ function PlanModal({ open, plan, tpms, db, me, can, busy, setBusy, notify, onClo
           </TableWrap>
         </div>)}
 
+      {modifiable && zones.length > 0 && (
+        <div className="flex justify-end mb-1.5">
+          <label className="inline-flex items-center gap-1.5 f115 text-slate-500 cursor-pointer">
+            <input type="checkbox" checked={avance} onChange={e=>setAvance(e.target.checked)} />
+            Colonnes logistiques (superviseurs, trajet, véhicules, litres)</label>
+        </div>)}
       <TableWrap max="mh340">
-        <thead><tr><Th>Zone</Th><Th>Activité</Th><Th>Équipe</Th><Th num>Sup.</Th><Th num>Agents</Th>
-          <Th num>Jours</Th><Th num>Trajet</Th><Th num>Véhic.</Th><Th num>Litres</Th>
-          <Th num>Sites</Th><Th num>Sous-total</Th><Th /></tr></thead>
+        <thead><tr><Th>Zone</Th><Th>Activité</Th><Th>Équipe</Th>
+          {colsZone.map(c => <Th key={c.k} num>{c.l}</Th>)}
+          <Th num>Sous-total</Th><Th /></tr></thead>
         <tbody>{zones.map((z,i)=>{
           const enregistree = plan.zones.find(x => x.id === z.id);
           return (
@@ -965,19 +985,18 @@ function PlanModal({ open, plan, tpms, db, me, can, busy, setBusy, notify, onClo
                 ? <input value={z.team_label||""} className={clsx(inputCls,"mi-py1 w-24")}
                     onChange={e=>majZone(i,"team_label",e.target.value)} />
                 : z.team_label || "—"}</Td>
-              {[["supervisors","w-16"],["agents","w-16"],["days","w-16"],["travel_days","w-16"],
-                ["vehicles","w-16"],["fuel_litres","w-20"],["sites","w-16"]].map(([k,w])=>(
-                <Td key={k} num>{modifiable
-                  ? <input type="number" value={z[k] ?? ""} className={clsx(inputCls,"mi-py1 text-right",w)}
-                      onChange={e=>majZone(i,k,e.target.value)} />
-                  : fmt(z[k])}</Td>))}
+              {colsZone.map(c=>(
+                <Td key={c.k} num>{modifiable
+                  ? <input type="number" value={z[c.k] ?? ""} className={clsx(inputCls,"mi-py1 text-right",c.w)}
+                      onChange={e=>majZone(i,c.k,e.target.value)} />
+                  : fmt(z[c.k])}</Td>))}
               <Td num className="font-semibold">
                 {fmt(Math.round(modifiable ? apercu(z) : (enregistree?.subtotal ?? 0)))}</Td>
               <Td className="text-right">{modifiable &&
                 <button className="px-1 text-slate-400 hover:text-rose-600"
                   onClick={()=>setZones(p=>p.filter((_,j)=>j!==i))}><X size={14}/></button>}</Td>
             </tr>); })}
-          {!zones.length && <tr><Td colSpan={12} className="text-center text-slate-400 py-4">
+          {!zones.length && <tr><Td colSpan={5 + colsZone.length} className="text-center text-slate-400 py-4">
             Aucune zone affectée. Le bouton « Zones à couvrir » propose celles où le suivi
             prévu du mois n'est pas fait.</Td></tr>}
         </tbody>

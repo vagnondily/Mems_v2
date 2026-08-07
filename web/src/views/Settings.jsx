@@ -2498,8 +2498,18 @@ function SetIndicators({ db, set, notify, can }){
   /* Les colonnes du sous-groupe courant, et le rendu d'une cellule par clé. Un
      indicateur retiré du cadre porte une méthode « Retiré… » ; sinon il est actif. */
   const colClés = IND_COLS[niv] || ["tags","cibles","cat"];
+  /* Une colonne VIDE pour tous les indicateurs affichés n'apporte qu'une rangée
+     de « — » : on la masque. Le test porte sur la liste filtrée courante, pas sur
+     la page, pour que la pagination ne fasse pas clignoter les colonnes. */
+  const champVide = {
+    tags:i=>!(i.activityTags||[]).length, cibles:i=>!i.targets, applic:i=>!i.applicability,
+    report:i=>!i.reportingReq, follow:i=>!i.followValue, type:i=>!i.outputType,
+    interm:i=>!i.intermediate, unite:i=>!i.unit, unitinterp:i=>!i.unitInterp,
+    flex:i=>!i.flexibility, cat:i=>!i.category,
+  };
+  const colVide = (k) => champVide[k] && liste.length > 0 && liste.every(champVide[k]);
   /* En arbre, la colonne « interm » n'est plus une colonne : c'est le parent. */
-  const colClésAff = estArbre ? colClés.filter(k => k !== "interm") : colClés;
+  const colClésAff = (estArbre ? colClés.filter(k => k !== "interm") : colClés).filter(k => !colVide(k));
   const indActif = (ind) => !/retir|inactiv|deac/i.test(ind.status || ind.method || "");
   const badgesTags = (tags) => (tags||[]).length
     ? <div className="flex flex-wrap gap-1">
@@ -2640,7 +2650,7 @@ function SetIndicators({ db, set, notify, can }){
                   <Td>{indActif(ind)
                     ? <Badge tone="g">{ind.status || "Actif"}</Badge>
                     : <Badge tone="r" >{ind.status || "Inactif"}</Badge>}</Td>
-                  {colClés.map(k => <Td key={k} className="text-slate-600 f11"
+                  {colClésAff.map(k => <Td key={k} className="text-slate-600 f11"
                     style={{whiteSpace:"normal", maxWidth: k==="cat"?240 : k==="tags"?280 : 200}}
                     title={typeof indCell(k,ind)==="string" ? indCell(k,ind) : undefined}>{indCell(k,ind)}</Td>)}
                 </> : <>

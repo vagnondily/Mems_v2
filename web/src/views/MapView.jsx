@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import { MapPin, Search, RefreshCw, Download, Users, Target, Activity, AlertTriangle, Phone, Clock, Layers } from "lucide-react";
+import { MapPin, Search, RefreshCw, Download, Users, Target, Activity, AlertTriangle, Phone, Clock, Layers, SlidersHorizontal } from "lucide-react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { C, MONTHS_L, D_SECURITY } from "../lib/constants.js";
@@ -115,6 +115,10 @@ export default function MapView({ db, me, notify, go }){
   /* Le fond retenu est mémorisé dans les réglages : le choix est propre à
      l'instance (selon d'où elle est hébergée), pas à la session de chacun. */
   const [fond, setFond] = useState(() => db.settings?.tileProvider || "carto");
+  /* Les options d'AFFICHAGE (contours, couleurs, taille, fond, GPS) sont repliées
+     par défaut : la barre ne montre plus que les filtres de sélection, et se
+     déplie à la demande — c'est la densité qui gâchait l'écran. */
+  const [optAff, setOptAff] = useState(false);
   /* État de chargement des tuiles, pour pouvoir DIRE que le fond n'arrive pas
      au lieu d'afficher un damier vide. C'est le défaut qu'avait la première
      version : silencieuse, elle laissait croire à un bogue de l'application. */
@@ -559,6 +563,7 @@ export default function MapView({ db, me, notify, go }){
           <Btn size="sm" kind="sec" icon={RefreshCw} onClick={load}>Actualiser</Btn>
           <Btn size="sm" kind="sec" icon={Download} disabled={!filtered.length} onClick={exportPoints}>Exporter</Btn>
         </>}>
+        {/* Rangée 1 — les FILTRES de sélection, toujours visibles. */}
         <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-slate-100 bg-slate-50">
           <Select value={f.office_id} onChange={e=>setF(x=>({...x, office_id:e.target.value}))}
             empty="Tous les bureaux" options={(db.offices||[]).map(o=>[o.id,o.name])} className="mi-py1 mi-xs mi-wauto" />
@@ -570,35 +575,41 @@ export default function MapView({ db, me, notify, go }){
             empty="Toutes les activités" options={tags} className="mi-py1 mi-xs mi-wauto" />
           <Select value={f.status} onChange={e=>setF(x=>({...x, status:e.target.value}))}
             empty="Tous les statuts" options={[["Active","Actifs"],["Inactive","Inactifs"]]} className="mi-py1 mi-xs mi-wauto" />
-          <span className="w-px h-6 bg-slate-300 mx-1" />
-          {db.geoVersion?.geom?.units > 0 && (<>
-            <label className="flex items-center gap-1.5 f115 text-slate-600"
-              title="Afficher ou masquer les limites administratives — bordures et remplissage">
-              <input type="checkbox" checked={contours} onChange={e=>basculerContours(e.target.checked)} />
-              contours</label>
-            {contours && (<>
-              <Select value={geoLevel} onChange={e=>setGeoLevel(e.target.value)}
-                options={GEO_LEVELS} className="mi-py1 mi-xs mi-wauto" />
-              <Select value={fillMode} onChange={e=>setFillMode(e.target.value)}
-                options={FILL_MODES} className="mi-py1 mi-xs mi-wauto" />
-            </>)}
-            <span className="w-px h-6 bg-slate-300 mx-1" />
-          </>)}
-          <Select value={colorMode} onChange={e=>setColorMode(e.target.value)}
-            options={COLOR_MODES} className="mi-py1 mi-xs mi-wauto" />
-          <label className="flex items-center gap-1.5 f115 text-slate-600">
-            <input type="checkbox" checked={sizeByBenef} onChange={e=>setSizeByBenef(e.target.checked)} />
-            taille selon les bénéficiaires</label>
-          <Select value={fond} onChange={e=>setFond(e.target.value)}
-            options={FONDS.map(f => [f[0], f[1]])} className="mi-py1 mi-xs mi-wauto" />
-          <label className="flex items-center gap-1.5 f115 text-slate-600"
-            title="Positions relevées au GPS par les formulaires de collecte, distinctes de la position déclarée du site">
-            <input type="checkbox" checked={gps} onChange={e=>setGps(e.target.checked)} />
-            relevés GPS{releves.count ? ` (${fmt(releves.count)})` : ""}</label>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            <Btn size="sm" kind={optAff ? "sec" : "ghost"} icon={SlidersHorizontal}
+              onClick={()=>setOptAff(v=>!v)}>Affichage</Btn>
             <Btn size="sm" kind="ghost" onClick={recentrer}>Recentrer</Btn>
           </div>
         </div>
+        {/* Rangée 2 — les options d'AFFICHAGE, dépliées à la demande. */}
+        {optAff && (
+          <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 border-b border-slate-100 bg-white">
+            {db.geoVersion?.geom?.units > 0 && (<>
+              <label className="flex items-center gap-1.5 f115 text-slate-600"
+                title="Afficher ou masquer les limites administratives — bordures et remplissage">
+                <input type="checkbox" checked={contours} onChange={e=>basculerContours(e.target.checked)} />
+                contours</label>
+              {contours && (<>
+                <Select value={geoLevel} onChange={e=>setGeoLevel(e.target.value)}
+                  options={GEO_LEVELS} className="mi-py1 mi-xs mi-wauto" />
+                <Select value={fillMode} onChange={e=>setFillMode(e.target.value)}
+                  options={FILL_MODES} className="mi-py1 mi-xs mi-wauto" />
+              </>)}
+              <span className="w-px h-6 bg-slate-300 mx-1" />
+            </>)}
+            <Select value={colorMode} onChange={e=>setColorMode(e.target.value)}
+              options={COLOR_MODES} className="mi-py1 mi-xs mi-wauto" />
+            <label className="flex items-center gap-1.5 f115 text-slate-600">
+              <input type="checkbox" checked={sizeByBenef} onChange={e=>setSizeByBenef(e.target.checked)} />
+              taille selon les bénéficiaires</label>
+            <span className="w-px h-6 bg-slate-300 mx-1" />
+            <Select value={fond} onChange={e=>setFond(e.target.value)}
+              options={FONDS.map(f => [f[0], f[1]])} className="mi-py1 mi-xs mi-wauto" />
+            <label className="flex items-center gap-1.5 f115 text-slate-600"
+              title="Positions relevées au GPS par les formulaires de collecte, distinctes de la position déclarée du site">
+              <input type="checkbox" checked={gps} onChange={e=>setGps(e.target.checked)} />
+              relevés GPS{releves.count ? ` (${fmt(releves.count)})` : ""}</label>
+          </div>)}
 
         {error ? <Note tone="err">{error}</Note> : null}
         {/* Un fond qui n'arrive pas ne doit pas se traduire par un damier vide

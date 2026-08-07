@@ -97,16 +97,22 @@ function Home({ db, me, go }){
           </div>
         </Card>
         <Card title="Trois derniers mois" subtitle="Sites actifs, visites planifiées et sites visités">
+          {/* Deux échelles : « Sites actifs » est un STOCK (le parc de sites, ~300)
+              tandis que les visites planifiées/réalisées sont des FLUX mensuels
+              (~quelques dizaines). Sur un axe unique, le stock écrasait les flux —
+              on lui donne donc l'axe de DROITE, en fond clair, et les flux gardent
+              l'axe de gauche à leur propre échelle, enfin lisibles. */}
           <ResponsiveContainer width="100%" height={228}>
-            <ComposedChart data={last3} margin={{top:6,right:6,left:-18,bottom:0}}>
+            <ComposedChart data={last3} margin={{top:6,right:2,left:-18,bottom:0}} barGap={2}>
               <CartesianGrid strokeDasharray="3 3" stroke="#eef2f5" vertical={false} />
               <XAxis dataKey="mois" tick={{fontSize:11,fill:C.t2}} axisLine={{stroke:"#e2e8ec"}} tickLine={false} />
-              <YAxis tick={{fontSize:11,fill:C.t2}} axisLine={false} tickLine={false} />
+              <YAxis yAxisId="flux" tick={{fontSize:11,fill:C.t2}} axisLine={false} tickLine={false} />
+              <YAxis yAxisId="stock" orientation="right" tick={{fontSize:10,fill:"#9fb3c0"}} axisLine={false} tickLine={false} width={30} />
               <Tooltip contentStyle={{fontSize:12,borderRadius:3,border:"1px solid "+C.line}} />
               <Legend wrapperStyle={{fontSize:11}} />
-              <Bar dataKey="Sites actifs" fill="#cfe0ea" radius={[2,2,0,0]} barSize={26} />
-              <Bar dataKey="Visites planifiées" fill={C.brandL} radius={[2,2,0,0]} barSize={26} />
-              <Line type="monotone" dataKey="Sites visités" stroke={C.ok} strokeWidth={2.5} dot={{r:3.5}} />
+              <Bar yAxisId="stock" dataKey="Sites actifs" fill="#dbe7ef" radius={[2,2,0,0]} barSize={30} />
+              <Bar yAxisId="flux" dataKey="Visites planifiées" fill={C.brandL} radius={[2,2,0,0]} barSize={18} />
+              <Line yAxisId="flux" type="monotone" dataKey="Sites visités" stroke={C.ok} strokeWidth={2.5} dot={{r:3.5}} />
             </ComposedChart>
           </ResponsiveContainer>
         </Card>
