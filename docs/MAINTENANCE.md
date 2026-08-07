@@ -128,6 +128,35 @@ curl -s -b /tmp/j localhost:4000/api/state | jq '.indicators | length'
 | Carte sans fond | hôtes de tuiles bloqués par la CSP/réseau | `TILE_HOSTS`, `imgSrc` de la CSP dans `index.js` |
 | `409` à la synchronisation | verrouillage optimiste : la ligne a changé entre lecture et écriture | recharger l'état ; c'est le comportement voulu |
 
+### 3.4bis Le fond de carte (base map)
+
+La carte dessine **toujours** les contours administratifs réels (régions →
+districts → communes) à partir du shapefile importé par `seed:reel` : même sans
+aucune tuile, on voit le pays, ses limites et les points des sites. Le **fond de
+carte** (le raster rues/relief) est une couche en plus, et il y a **trois façons**
+de l'obtenir, selon le réseau :
+
+1. **Internet disponible** — rien à faire : les fonds publics (Carto par défaut,
+   OpenStreetMap, OSM France) se chargent automatiquement. Leurs hôtes sont déjà
+   autorisés par la CSP (`config.tileHosts`).
+
+2. **Instance hors-ligne / derrière un pare-feu — fond servi par MEMS lui-même**
+   *(recommandé sur le terrain)*. Déposez une pyramide de tuiles raster dans
+   `server/tiles/` (arborescence `z/x/y.png`), redémarrez l'API, puis dans
+   **Paramètres → Localités → « Serveur de tuiles interne »** mettez
+   `‎/tiles/{z}/{x}/{y}.png`. Ces tuiles sont servies en **même origine** que
+   l'application : elles passent la CSP sans aucun réglage réseau. Le dossier peut
+   être ailleurs via la variable `TILES_DIR`. *(Comment obtenir les tuiles : un
+   export d'une région OSM, ou l'extraction d'un fichier `.mbtiles` avec
+   `mb-util`. `server/tiles/` n'est jamais versionné.)*
+
+3. **Serveur de tuiles interne séparé** — même champ « Serveur de tuiles interne »,
+   pointé vers l'URL de votre serveur (`https://tuiles.interne/{z}/{x}/{y}.png`) ;
+   pensez alors à ajouter son hôte à `TILE_HOSTS` pour la CSP.
+
+Si aucun fond ne convient, choisissez **« Aucun fond »** dans la carte : contours
+et points restent parfaitement lisibles.
+
 ### 3.5 Débloquer un compte à la main
 ```sql
 UPDATE users SET failed_logins=0, locked_until=NULL WHERE email='...';

@@ -208,6 +208,20 @@ app.use("/api/mre", authMirror, mreRoutes);
 app.use("/api/tpm", authMirror, tpmRoutes);
 app.use("/api", authMirror, collectionRoutes);
 
+/* Fond de carte HORS-LIGNE servi par l'APPLICATION elle-même. Déposez une
+   pyramide de tuiles raster (…/z/x/y.png) dans le dossier `server/tiles` (ou le
+   chemin TILES_DIR), et l'app les sert sur « /tiles/{z}/{x}/{y}.png ». Comme
+   c'est la MÊME ORIGINE que l'application, ces tuiles passent la CSP sans aucune
+   configuration réseau ni serveur tiers — la bonne réponse pour une instance sans
+   accès à Internet ou derrière un pare-feu. Il reste à pointer le fond de carte
+   sur cette URL dans Paramètres → Localités → « Serveur de tuiles interne ».
+   Doit être enregistré AVANT le repli SPA, qui capterait sinon « /tiles/… ». */
+const tilesDir = process.env.TILES_DIR || path.join(here, "..", "tiles");
+if(fs.existsSync(tilesDir)){
+  app.use("/tiles", express.static(tilesDir, { maxAge:"7d" }));
+  log.info("fond de carte hors-ligne disponible", { chemin: tilesDir, url: "/tiles/{z}/{x}/{y}.png" });
+}
+
 /* En production le serveur sert aussi le frontend compilé. */
 const webDist = path.join(here, "..", "..", "web", "dist");
 if(fs.existsSync(webDist)){

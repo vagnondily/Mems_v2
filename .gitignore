@@ -11,3 +11,6 @@ server/data/
 .DS_Store
 coverage/
 web/test/_app.mjs
+
+# Fond de carte hors-ligne : pyramide de tuiles déposée localement, jamais versionnée
+server/tiles/
